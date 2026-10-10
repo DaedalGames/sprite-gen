@@ -217,9 +217,10 @@ video: generation <id> was accepted, but its polls were refused (last answer 429
 video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again instead of submitting a new request; nothing was written
 ```
 
-The line carries no `(HTTP <n>)`: on a video line that marks a refused submission
-(docs/gen.md), which a caller may send again unbilled; the stderr notes before it say
-the status in plain digits for the same reason. With `--report` the run leaves a
+The line carries no `(HTTP <n>)`, the status of a refusal line (docs/gen.md): a caller
+that reads `(HTTP 429)` there sends the request again, which is unbilled only when the
+request was refused. The stderr notes before it say the status in plain digits for the
+same reason. With `--report` the run leaves a
 `sprite-gen-video-unfinished` report there, and nothing on stdout:
 
 ```json

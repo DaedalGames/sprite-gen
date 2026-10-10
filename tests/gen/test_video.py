@@ -598,7 +598,7 @@ def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_agai
     assert message == ("video: generation req-1 was accepted, but its polls were refused (last answer 429) until the "
                        "poll timeout (300s, 9 polls); it may still finish and be billed — ask for request_id=req-1 "
                        "again instead of submitting a new request; nothing was written")
-    # No `(HTTP n)`: that is a refused submission, which a caller may send again unbilled.
+    # No `(HTTP n)`, a refusal line's status: a caller reading `(HTTP 429)` sends the request again.
     assert HTTP_STATUS.search(message) is None
     assert "HTTP 429" not in message + capsys.readouterr().err
     assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.polls) == ("req-1", 429, 9)

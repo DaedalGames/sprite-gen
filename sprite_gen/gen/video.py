@@ -110,9 +110,9 @@ _FAILED_STATUSES = ("failed", "error", "expired")
 class GenerationUnfinished(SystemExit):
     """xAI accepted the request (it may bill it) and the poll timeout came before it ended.
 
-    The line names `request_id=<id>` and carries no `(HTTP n)`: that marks a refused submission,
-    which a caller may send again unbilled; this request is asked for again by its id instead.
-    `to_dict()` is the report the CLI leaves at `--report`."""
+    The line names `request_id=<id>` and carries no `(HTTP n)`, a refusal line's status: a caller
+    that reads `(HTTP 429)` there sends the request again, unbilled only when it was refused. This
+    one is asked for again by its id instead. `to_dict()` is the report the CLI leaves at `--report`."""
 
     def __init__(self, message: str, *, verb: str, request_id: str, auth_source: str, model: Any, out: Path,
                  polls: int, polls_refused: int, last_http: int, last_status: Any, elapsed_seconds: float) -> None:
@@ -522,7 +522,7 @@ def _submit_poll_publish(
             )
         wait = min(wait, deadline - now)
         if refused_in_a_row:
-            # The status in plain digits: `(HTTP n)` on this stream reads as a refused submission.
+            # The status in plain digits: `(HTTP 429)` on this stream reads as a refused request to send again.
             print(f"[{verb}] poll {polls} of generation {request_id} was refused ({http}); "
                   f"asking again in {wait:g}s", file=sys.stderr)
         sleep(wait)
