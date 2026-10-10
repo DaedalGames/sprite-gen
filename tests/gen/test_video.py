@@ -172,7 +172,7 @@ def test_audio_default_is_left_to_the_api(tmp_path: Path) -> None:
         ((403, {"code": "unauthenticated:bad-credentials", "error": "The OAuth2 access token could not be validated."}), None, "rejected the credential \\(grok-login\\) with HTTP 403"),
         ((200, {"request_id": "r"}), [(200, {"status": "failed", "error": "nsfw"})], "status='failed'"),
         ((200, {"request_id": "r"}), [(200, {"status": "expired"})], "status='expired'"),
-        ((200, {"request_id": "r"}), [(500, {"raw": "boom"})], "HTTP 500"),
+        ((200, {"request_id": "r"}), [(404, {"raw": "boom"})], "HTTP 404"),
         ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "reported no video url"),
     ],
 )
@@ -535,3 +535,126 @@ def test_a_refused_request_names_a_well_formed_code(tmp_path: Path, post, prefix
     message, _ = _refused(tmp_path, _FakeApi(post=post))
     assert message.startswith(prefix)
     assert HTTP_STATUS.search(message).group(1) == str(post[0])
+
+
+# --- a poll answered 429 or 5xx ----------------------------------------------
+# The POST was accepted, so xAI may bill the clip whatever its polls answer. A poll the
+# provider throttles (429) or fails on its side (5xx) asks the same request again; ending
+# the run there sends a caller that retries on `(HTTP 429)` (video-set, a product's
+# backoff) to submit a second clip and pay for both.
+
+DONE = (200, {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "duration": 6.0}, "model": "grok-imagine-video-1.5"})
+
+
+def _clock(monkeypatch) -> tuple[dict, list[float], object]:
+    clock = {"t": 0.0}
+    slept: list[float] = []
+    monkeypatch.setattr(video.time, "monotonic", lambda: clock["t"])
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    return clock, slept, sleep
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_a_throttled_poll_asks_the_same_request_again_and_publishes(tmp_path: Path, status) -> None:
+    api = _FakeApi(polls=[(status, {"code": "synthetic", "error": "slow down"}), (status, {"error": "slow down"}),
+                          (200, {"status": "pending"}), DONE])
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=api.call, download=api.download, sleep=slept.append)
+    assert [call[0] for call in api.calls] == ["POST", "GET", "GET", "GET", "GET"]
+    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    # The wait doubles from the poll interval while the polls are refused; an answer puts it back.
+    assert slept == [video.POLL_INTERVAL_SECONDS * 2, video.POLL_INTERVAL_SECONDS * 4, video.POLL_INTERVAL_SECONDS]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert payload["request_id"] == "req-1" and payload["polls"] == 4 and payload["polls_refused"] == 2
+
+
+def test_a_clip_whose_polls_were_never_refused_reports_no_retry(tmp_path: Path) -> None:
+    api = _FakeApi()
+    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
+    assert payload["polls"] == 1 and payload["polls_refused"] == 0
+
+
+def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_again(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi(polls=[(429, {"code": "synthetic", "error": "slow down"})])
+    clock, slept, sleep = _clock(monkeypatch)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=api.call, download=api.download, sleep=sleep, poll_timeout=300)
+    assert isinstance(unfinished.value, SystemExit)
+    assert [call[0] for call in api.calls].count("POST") == 1
+    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    # Doubling, held at the ceiling, the last wait cut to the timeout — and one more poll asked there.
+    assert slept == [8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0, 4.0]
+    assert clock["t"] == 300 and len(api.calls) == 1 + 9
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 was accepted, but its polls were refused (last answer 429) until the "
+                       "poll timeout (300s, 9 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       "again instead of submitting a new request; nothing was written")
+    # No `(HTTP n)`, a refusal line's status: a caller reading `(HTTP 429)` sends the request again.
+    assert HTTP_STATUS.search(message) is None
+    assert "HTTP 429" not in message + capsys.readouterr().err
+    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.polls) == ("req-1", 429, 9)
+    assert not request.out.exists() and not list(tmp_path.glob("*.part")) and api.downloads == []
+
+
+def test_a_poll_timeout_while_pending_names_the_request_to_ask_again(tmp_path: Path, monkeypatch) -> None:
+    api = _FakeApi(polls=[(200, {"status": "pending"})])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                             call=api.call, download=api.download, sleep=sleep, poll_timeout=10)
+    message = str(unfinished.value)
+    assert message.startswith("video: generation req-1 still 'pending' after 4 polls — poll timeout; ")
+    assert "request_id=req-1" in message and HTTP_STATUS.search(message) is None
+    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.last_status) == ("req-1", 200, "pending")
+
+
+@pytest.mark.parametrize("status", [400, 401, 404])
+def test_a_poll_refused_for_good_ends_at_once_with_its_status(tmp_path: Path, status) -> None:
+    api = _FakeApi(polls=[(status, {"error": "synthetic"})])
+    message, _ = _refused(tmp_path, api)
+    assert len(api.calls) == 2
+    assert HTTP_STATUS.search(message).group(1) == str(status)
+
+
+def test_a_refused_submission_is_never_sent_again(tmp_path: Path) -> None:
+    """The POST stays unretried (the provider may have taken it); its 429 keeps `(HTTP 429)` for the caller."""
+    api = _FakeApi(post=(429, {"error": "slow down"}))
+    message, _ = _refused(tmp_path, api)
+    assert [call[0] for call in api.calls] == ["POST"]
+    assert HTTP_STATUS.search(message).group(1) == "429"
+
+
+def test_the_cli_leaves_an_unfinished_report_naming_the_request(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi(polls=[(503, {"error": "unavailable"})])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video, "http_json", api.call)
+    monkeypatch.setattr(video, "http_download", api.download)
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", 30)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished):
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 4,
+        "polls_refused": 4,
+        "last_poll": {"http": 503, "status": None},
+        "elapsed_seconds": 30.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists()

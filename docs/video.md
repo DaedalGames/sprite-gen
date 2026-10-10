@@ -145,8 +145,15 @@ What happens, in order:
    credential source and its fix; any reply without a `request_id` fails with the
    API's own error text.
 3. `GET /v1/videos/{request_id}` every 4 s until `status` is `done`. `failed`,
-   `expired`, a non-2xx poll, or the timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`,
-   default 600) fail loudly. Nothing is written on any failure path.
+   `expired` or a non-2xx poll fails loudly — except a poll answered `429` or `500`,
+   `502`, `503`, `504`: the request was accepted, so that poll is asked again on the
+   same `request_id` (a new POST would buy the clip twice), after a wait that doubles
+   from 8 s up to 60 s while the polls are refused and goes back to 4 s on an answer.
+   A `[video] poll N of generation <id> was refused (429); asking again in 8s` line goes
+   to stderr each time. The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default
+   600, counted from the POST's answer) bounds the whole poll: no wait runs past it, one
+   last poll is asked at it, and a generation still pending or refused then is
+   *unfinished* (below). No clip is written on any failure path.
 4. Download `video.url`, verify the bytes start with an mp4 `ftyp` box, then move
    the file into `--out` atomically (`.part` staging).
 
@@ -195,13 +202,44 @@ refused locally with an ffmpeg trim hint; there is no `--duration` at all.
 `inputs` (local paths by role: `image`, `last_frame`, `reference_images`,
 `video`), `bytes`, `host`, requested/reported duration (`input_duration` for
 extend / edit), resolution, aspect ratio, audio flag, `elapsed_seconds`, and
-`polls`. The pre-modes `image` field stays. **Tokens and download URLs are never
+`polls`, and `polls_refused` (how many of `polls` xAI answered 429 or 5xx, each asked
+again). The pre-modes `image` field stays. **Tokens and download URLs are never
 printed or written** — only the download host (`vidgen.x.ai`).
+
+### An unfinished generation
+
+xAI accepted the request and the poll timeout came before it ended — its polls still
+pending, or still refused. It may finish and be billed, so the run ends naming the
+request to ask for again, never as a refusal to send again:
+
+```
+video: generation <id> was accepted, but its polls were refused (last answer 429) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again instead of submitting a new request; nothing was written
+video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again instead of submitting a new request; nothing was written
+```
+
+The line carries no `(HTTP <n>)`, the status of a refusal line (docs/gen.md): a caller
+that reads `(HTTP 429)` there sends the request again, which is unbilled only when the
+request was refused. The stderr notes before it say the status in plain digits for the
+same reason. With `--report` the run leaves a
+`sprite-gen-video-unfinished` report there, and nothing on stdout:
+
+```json
+{"kind": "sprite-gen-video-unfinished", "provider": "grok-imagine", "verb": "video",
+ "auth_source": "grok-login", "model": "grok-imagine-video-1.5", "request_id": "<id>",
+ "out": "/abs/clip.mp4", "polls": 14, "polls_refused": 14,
+ "last_poll": {"http": 429, "status": null}, "elapsed_seconds": 600.0}
+```
+
+`auth_source` is the credential that submitted it — the one that can ask for it again.
+A report already at that path is replaced, as on success. Every verb that polls
+(`video`, `video-extend`, `video-edit`) does the same, `verb` naming it.
 
 ## Quotas and limits
 
 - Imagine quota is a weekly SuperGrok allowance; when it is exhausted the API
-  refuses the POST and the run fails with that message (no retry loop here).
+  refuses the POST and the run fails with that message. A refused POST is never sent
+  again here — the provider may have taken it; only a poll of an accepted request is
+  asked again (step 3).
 - A refused request or a failed poll names the provider's code after the status,
   `(HTTP 400) code=invalid_argument`, read from a top-level `code` or the `error`
   object. `invalid_argument` covers moderation and bad parameters alike, so it is

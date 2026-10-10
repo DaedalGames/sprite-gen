@@ -65,7 +65,7 @@ def api(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no provider subprocess may be spawned"))
     state = {"status": 200, "body": {"data": [{"b64_json": encoded_image()}],
-                                     "usage": {"input_tokens": 12, "output_tokens": 340}}, "calls": []}
+                                     "usage": {"input_tokens": 12, "output_tokens": 340}}, "headers": {}, "calls": []}
 
     class Response:
         def __enter__(self):
@@ -78,6 +78,10 @@ def api(monkeypatch):
         def status(self):
             return state["status"]
 
+        @property
+        def headers(self):
+            return state["headers"]
+
         def read(self):
             return json.dumps(state["body"]).encode()
 
@@ -85,7 +89,7 @@ def api(monkeypatch):
         state["calls"].append((request, timeout))
         if state["status"] == 200:
             return Response()
-        raise urllib.error.HTTPError(request.full_url, state["status"], "error", {},
+        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"],
                                      io.BytesIO(json.dumps(state["body"]).encode()))
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
@@ -116,6 +120,24 @@ def test_generation_sends_the_billed_fields_and_publishes_a_png(tmp_path, api):
     assert report["extra"]["auth_source"] == "OPENAI_API_KEY"
     assert report["extra"]["usage"] == {"input_tokens": 12, "output_tokens": 340}
     assert KEY not in json.dumps(report)
+
+
+def test_the_report_carries_the_rate_limit_headers_that_came(tmp_path, api):
+    """What the account may spend and has left, read off real traffic: the response's
+    `x-ratelimit-*` headers, names lower-cased and values as sent, and no other header."""
+    api["headers"] = {"x-ratelimit-limit-requests": "50", "X-RateLimit-Remaining-Requests": "49",
+                      "x-ratelimit-reset-requests": "1.2s", "x-request-id": "req_synthetic",
+                      "openai-processing-ms": "5120", "Content-Type": "application/json"}
+    report = gen.generate_image("openai", "x", tmp_path / "out.png").to_dict()
+    assert report["extra"]["rate_limit"] == {"x-ratelimit-limit-requests": "50",
+                                             "x-ratelimit-remaining-requests": "49",
+                                             "x-ratelimit-reset-requests": "1.2s"}
+
+
+def test_a_response_without_rate_limit_headers_reports_that_none_came(tmp_path, api):
+    """Read and empty, not left out: an empty record is the answer that none came."""
+    api["headers"] = {"Content-Type": "application/json"}
+    assert gen.generate_image("openai", "x", tmp_path / "out.png").to_dict()["extra"]["rate_limit"] == {}
 
 
 @pytest.mark.parametrize("quality", openai.SUPPORTED_QUALITIES)
