@@ -174,9 +174,13 @@ covers the body, exactly as codex `image_gen` does — downstream extraction tre
 `alpha ≤ 16` as transparent, so this is usable as-is).
 
 Image reports include `extra.auth_source`, `extra.transport: "openai-api"`,
-`extra.endpoint`, `extra.quality`, `extra.size`, `extra.background` and, when the
+`extra.endpoint`, `extra.quality`, `extra.size`, `extra.background`, when the
 API returns it, `extra.usage` (token counts only — what the call cost, never what it
-contained).
+contained), and `extra.rate_limit`: every `x-ratelimit-*` header the response carried,
+names lower-cased and values as sent (`{"x-ratelimit-remaining-requests": "49", …}`),
+`{}` when none came. OpenAI's rate-limits guide names request, token and project-token
+limits there and lists images per minute among the limits without naming a header for
+it, so whatever the images endpoints send is what the report holds.
 
 API contract: [OpenAI Images](https://developers.openai.com/api/images/) (field names
 and enums confirmed there 2026-09-20).
