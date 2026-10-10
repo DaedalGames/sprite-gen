@@ -94,11 +94,55 @@ MODE_EXTEND = "extend"
 MODE_EDIT = "edit"
 POLL_INTERVAL_SECONDS = 4.0
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
+# A poll xAI throttles (429) or fails on its own side (5xx) is asked again, on the same request:
+# the POST was accepted, so a new submission would buy the clip twice. The wait doubles from
+# POLL_INTERVAL_SECONDS while the polls are refused, up to the ceiling; no wait runs past the
+# poll timeout, which bounds the whole poll however its polls are answered.
+POLL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+POLL_BACKOFF_MAX_SECONDS = 60.0
 # Every mp4/mov starts with a size-prefixed `ftyp` box: bytes 4..8 spell it.
 MP4_FTYP_OFFSET = 4
 MP4_FTYP = b"ftyp"
 _DONE_STATUSES = ("done", "complete", "completed")
 _FAILED_STATUSES = ("failed", "error", "expired")
+
+
+class GenerationUnfinished(SystemExit):
+    """xAI accepted the request (it may bill it) and the poll timeout came before it ended.
+
+    The line names `request_id=<id>` and carries no `(HTTP n)`: that marks a refused submission,
+    which a caller may send again unbilled; this request is asked for again by its id instead.
+    `to_dict()` is the report the CLI leaves at `--report`."""
+
+    def __init__(self, message: str, *, verb: str, request_id: str, auth_source: str, model: Any, out: Path,
+                 polls: int, polls_refused: int, last_http: int, last_status: Any, elapsed_seconds: float) -> None:
+        super().__init__(message)
+        self.verb = verb
+        self.request_id = request_id
+        self.auth_source = auth_source
+        self.model = model
+        self.out = out
+        self.polls = polls
+        self.polls_refused = polls_refused
+        self.last_http = last_http
+        self.last_status = last_status
+        self.elapsed_seconds = elapsed_seconds
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "sprite-gen-video-unfinished",
+            "provider": "grok-imagine",
+            "verb": self.verb,
+            "auth_source": self.auth_source,
+            "model": self.model,
+            "request_id": self.request_id,
+            "out": str(self.out),
+            "polls": self.polls,
+            "polls_refused": self.polls_refused,
+            "last_poll": {"http": self.last_http, "status": self.last_status},
+            "elapsed_seconds": round(self.elapsed_seconds, 3),
+        }
+
 
 def http_download(url: str, token: str) -> bytes:
     request = urllib.request.Request(url)
@@ -248,6 +292,7 @@ class VideoResult:
     polls: int
     duration_requested: int
     duration_reported: float | None = None
+    polls_refused: int = 0  # polls xAI answered 429 or 5xx, each asked again
     host: str | None = None
     image: Path | None = None
     prompt: str = ""
@@ -284,6 +329,7 @@ class VideoResult:
             "generate_audio": self.generate_audio,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "polls": self.polls,
+            "polls_refused": self.polls_refused,
             **({"extra": self.extra} if self.extra else {}),
             **({"facing": self.facing} if self.facing is not None else {}),
         }
@@ -368,6 +414,7 @@ class _Published:
     duration_reported: float | None
     host: str | None
     polls: int
+    polls_refused: int
     elapsed_seconds: float
 
 
@@ -421,8 +468,9 @@ def _submit_poll_publish(
             f"{verb}: {refused.reason('generation request refused')} (HTTP {status}){refused.suffix()}: {_error_detail(reply, credential.token)}"
         )
 
-    deadline = time.monotonic() + (POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout)
-    polls = 0
+    timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
+    deadline = time.monotonic() + timeout
+    polls = polls_refused = refused_in_a_row = 0
     video_url: str | None = None
     duration_reported: float | None = None
     model_reported: str | None = None
@@ -446,19 +494,38 @@ def _submit_poll_publish(
             duration_reported = video.get("duration") if isinstance(video, dict) else None
             model_reported = poll.get("model")
             break
-        if http not in (200, 202) or poll_status in _FAILED_STATUSES:
+        if http in POLL_RETRY_STATUSES:
+            polls_refused += 1
+            refused_in_a_row += 1
+            wait = min(POLL_INTERVAL_SECONDS * 2 ** refused_in_a_row, POLL_BACKOFF_MAX_SECONDS)
+        elif http not in (200, 202) or poll_status in _FAILED_STATUSES:
             # A failed poll carries `error` as an object `{code, message}`.
             refused = refusal.read("grok", poll)
             raise SystemExit(
                 f"{verb}: generation {request_id} {refused.reason(f'ended with status={poll_status!r}')} "
                 f"(HTTP {http}){refused.suffix()}: {_error_detail(poll, credential.token)}"
             )
-        if time.monotonic() >= deadline:
-            raise SystemExit(
-                f"{verb}: generation {request_id} still {poll_status!r} after {polls} polls — poll timeout; "
-                "nothing was written"
+        else:
+            refused_in_a_row = 0
+            wait = POLL_INTERVAL_SECONDS
+        now = time.monotonic()
+        if now >= deadline:
+            stopped = (f"was accepted, but its polls were refused (last answer {http}) until the poll timeout "
+                       f"({timeout:g}s, {polls} polls)" if refused_in_a_row
+                       else f"still {poll_status!r} after {polls} polls — poll timeout")
+            raise GenerationUnfinished(
+                f"{verb}: generation {request_id} {stopped}; it may still finish and be billed — ask for "
+                f"request_id={request_id} again instead of submitting a new request; nothing was written",
+                verb=verb, request_id=str(request_id), auth_source=credential.source, model=body.get("model"),
+                out=out, polls=polls, polls_refused=polls_refused, last_http=http, last_status=poll_status,
+                elapsed_seconds=now - started,
             )
-        sleep(POLL_INTERVAL_SECONDS)
+        wait = min(wait, deadline - now)
+        if refused_in_a_row:
+            # The status in plain digits: `(HTTP n)` on this stream reads as a refused submission.
+            print(f"[{verb}] poll {polls} of generation {request_id} was refused ({http}); "
+                  f"asking again in {wait:g}s", file=sys.stderr)
+        sleep(wait)
 
     if not video_url:
         raise SystemExit(f"{verb}: generation {request_id} is done but reported no video url")
@@ -478,7 +545,7 @@ def _submit_poll_publish(
     os.replace(tmp, out)
     return _Published(
         data=data, request_id=str(request_id), model=model_reported, duration_reported=duration_reported,
-        host=_redact_host(video_url), polls=polls, elapsed_seconds=elapsed,
+        host=_redact_host(video_url), polls=polls, polls_refused=polls_refused, elapsed_seconds=elapsed,
     )
 
 
@@ -542,6 +609,7 @@ def generate_video(
         auth_source=credential.source,
         elapsed_seconds=published.elapsed_seconds,
         polls=published.polls,
+        polls_refused=published.polls_refused,
         duration_requested=request.duration,
         duration_reported=published.duration_reported,
         host=published.host,
@@ -622,6 +690,7 @@ def extend_video(
     return VideoResult(
         out=out, bytes=len(published.data), model=published.model or request.model, request_id=published.request_id,
         auth_source=credential.source, elapsed_seconds=published.elapsed_seconds, polls=published.polls,
+        polls_refused=published.polls_refused,
         duration_requested=request.duration, duration_reported=published.duration_reported, host=published.host,
         prompt=request.prompt, mode=MODE_EXTEND, inputs={"video": str(clip)}, input_duration=input_seconds,
         output_duration=measured.get("output"),
@@ -682,6 +751,7 @@ def edit_video(
     return VideoResult(
         out=out, bytes=len(published.data), model=published.model or request.model, request_id=published.request_id,
         auth_source=credential.source, elapsed_seconds=published.elapsed_seconds, polls=published.polls,
+        polls_refused=published.polls_refused,
         duration_requested=0, duration_reported=published.duration_reported, host=published.host,
         prompt=request.prompt, mode=MODE_EDIT, inputs={"video": str(clip)}, input_duration=input_seconds,
         output_duration=measured.get("output"),
@@ -748,10 +818,18 @@ def _read_prompt(args: argparse.Namespace) -> str:
     return (prompt or "").strip()
 
 
-def _publish_report(args: argparse.Namespace, result: VideoResult) -> int:
+def _publish_report(args: argparse.Namespace, make: Callable[[], VideoResult]) -> int:
+    report_path = Path(args.report).expanduser().resolve() if args.report else None
+    try:
+        result = make()
+    except GenerationUnfinished as unfinished:
+        # The request is xAI's now and may still finish: the report names it, so whoever ran this
+        # asks for that id again instead of buying a second clip. Nothing goes to stdout.
+        if report_path is not None:
+            atomic_write_text(report_path, json.dumps(unfinished.to_dict(), ensure_ascii=False, indent=2) + "\n")
+        raise
     payload = result.to_dict()
-    if args.report:
-        report_path = Path(args.report).expanduser().resolve()
+    if report_path is not None:
         atomic_write_text(report_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         payload["report"] = str(report_path)
     _print_json(payload)
@@ -772,17 +850,17 @@ def _run(args: argparse.Namespace) -> int:
         reference_images=list(args.reference_images or []),
         direction=args.direction, facing=args.facing, facing_fix=args.facing_fix,
     )
-    return _publish_report(args, generate_video(request))
+    return _publish_report(args, lambda: generate_video(request))
 
 
 def _run_extend(args: argparse.Namespace) -> int:
     request = ExtendRequest(video=args.video, prompt=_read_prompt(args), out=args.out, duration=args.duration)
-    return _publish_report(args, extend_video(request))
+    return _publish_report(args, lambda: extend_video(request))
 
 
 def _run_edit(args: argparse.Namespace) -> int:
     request = EditRequest(video=args.video, prompt=_read_prompt(args), out=args.out)
-    return _publish_report(args, edit_video(request))
+    return _publish_report(args, lambda: edit_video(request))
 
 
 def _build_parser() -> argparse.ArgumentParser:

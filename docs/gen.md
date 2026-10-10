@@ -137,7 +137,10 @@ documented policy block (`sprite_gen/gen/refusal.py` `POLICY_CODES`: openai
 `moderation_blocked`, followed by `moderation_stage=input|output|unknown`). The
 `(HTTP <n>)` part never changes shape. The video verbs use the same `code=` and
 reason, and a clip xAI reports with `respect_moderation: false` is that refusal
-with `respect_moderation=false` in place of a code (docs/video.md).
+with `respect_moderation=false` in place of a code (docs/video.md). A clip xAI
+accepted and the poll timeout cut short is no refusal: its line names
+`request_id=<id>` and carries no `(HTTP <n>)`, so nothing that sends a refused
+request again sends it (docs/video.md, An unfinished generation).
 
 `<body>` is the provider's error body as received, last on the line: JSON on one
 line, anything else as its text (line breaks written as `\n`), nothing when the body
