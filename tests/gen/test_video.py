@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import socket
+import threading
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -908,3 +910,184 @@ def test_the_unified_cli_routes_video_resume_under_gen() -> None:
     for missing in (["--out", "o.mp4"], ["--request-id", "req-7"]):
         with pytest.raises(SystemExit):
             parser.parse_args(["video-resume", *missing])
+
+
+# --- an answer cut short, garbled or not JSON, over a real socket ---------------------
+# A poll whose answer began and broke (the body ends before its Content-Length, the status line is
+# not one) or came whole but is not JSON gave the run nothing to read: it is asked again on the same
+# request like a lost one, and at the poll timeout the run is unfinished on that id — never an
+# exception that leaves no id behind. A local server answers over a real socket, so http.client
+# raises what it raises on the wire.
+
+
+def _answer(status: str, body: bytes, *, length: int | None = None) -> bytes:
+    """A raw HTTP/1.1 answer whose Content-Length says `length` (by default the body's own)."""
+    head = (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body) if length is None else length}\r\nConnection: close\r\n\r\n")
+    return head.encode("latin-1") + body
+
+
+ACCEPTED = _answer("200 OK", b'{"request_id": "req-1"}')
+CUT = _answer("200 OK", b'{"status":', length=200)  # 10 of 200 bytes, then the connection closes
+CUT_REFUSAL = _answer("503 Service Unavailable", b'{"error":', length=200)  # a refusal's body cut the same way
+GARBLED = b"garbage\r\n"  # where the status line should be
+NOT_JSON = _answer("200 OK", b"<html>upstream busy</html>")  # whole, and not JSON
+PENDING_ON_WIRE = _answer("200 OK", b'{"status": "pending"}')
+DONE_ON_WIRE = _answer("200 OK", json.dumps(DONE[1]).encode("utf-8"))
+CUT_SAID = "IncompleteRead(10 bytes read, 190 more expected)"
+
+
+class _Wire:
+    """A local xAI on 127.0.0.1: each request, read whole, gets the next scripted bytes (the last one
+    repeats), then the server closes the connection whatever its Content-Length promised."""
+
+    def __init__(self, answers: list[bytes]) -> None:
+        self.answers = list(answers)
+        self.seen: list[tuple[str, str]] = []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.listener.settimeout(0.1)
+        self.base = f"http://127.0.0.1:{self.listener.getsockname()[1]}/v1"
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while not self.stopped.is_set():
+            try:
+                conn, _ = self.listener.accept()
+            except TimeoutError:
+                continue
+            with conn:
+                conn.settimeout(5)
+                received = b""
+                while b"\r\n\r\n" not in received:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    received += chunk
+                head, _, body = received.partition(b"\r\n\r\n")
+                lines = head.decode("latin-1").split("\r\n")
+                length = next((int(line.split(":", 1)[1]) for line in lines[1:]
+                               if line.lower().startswith("content-length:")), 0)
+                while len(body) < length:  # a body left unread would make the close a reset
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    body += chunk
+                method, path = lines[0].split(" ")[:2]
+                self.seen.append((method, path))
+                conn.sendall(self.answers.pop(0) if len(self.answers) > 1 else self.answers[0])
+                conn.shutdown(socket.SHUT_WR)
+
+    def close(self) -> None:
+        self.stopped.set()
+        self.thread.join(5)
+        self.listener.close()
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    """`wire(*answers)` starts a _Wire and points every xAI URL of the video module at it."""
+    started: list[_Wire] = []
+
+    def serve(*answers: bytes) -> _Wire:
+        server = _Wire(list(answers))
+        started.append(server)
+        monkeypatch.setattr(video, "API_BASE", server.base)
+        return server
+
+    yield serve
+    for server in started:
+        server.close()
+
+
+def _on_wire(method, url, token, body):
+    # The real transport, with a timeout a test can wait out if the server ever stalls.
+    return xai.http_json(method, url, token, body, timeout=5)
+
+
+@pytest.mark.parametrize(("answer", "line", "reason"), [
+    (CUT, xai.TRANSPORT_FAILED, CUT_SAID),
+    (CUT_REFUSAL, xai.TRANSPORT_FAILED, "IncompleteRead(9 bytes read, 191 more expected)"),
+    (GARBLED, xai.TRANSPORT_FAILED, "BadStatusLine('garbage\\r\\n')"),
+    (NOT_JSON, "xai: response was not valid JSON", "response was not valid JSON"),
+], ids=["cut", "cut-refusal", "garbled", "not-json"])
+def test_http_json_reads_an_answer_it_cannot_read_whole_as_no_answer(wire, answer, line, reason) -> None:
+    """The line each always had — the transport's, or the not-JSON one — on the type a poll asks again on."""
+    server = wire(answer)
+    with pytest.raises(xai.TransportError) as lost:
+        _on_wire("GET", f"{server.base}/videos/req-1", "t", None)
+    assert isinstance(lost.value, SystemExit)
+    assert (str(lost.value), lost.value.reason) == (line, reason)
+    assert server.seen == [("GET", "/v1/videos/req-1")]
+
+
+def test_a_poll_cut_short_garbled_or_not_json_is_asked_again_and_publishes(tmp_path: Path, wire, capsys) -> None:
+    server = wire(ACCEPTED, CUT, GARBLED, NOT_JSON, CUT_REFUSAL, PENDING_ON_WIRE, DONE_ON_WIRE)
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=_on_wire, download=lambda url, token: MP4, sleep=slept.append)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 6
+    # Four unreadable answers in a row wait like four lost polls; the pending answer puts the wait back.
+    assert slept == [8.0, 16.0, 32.0, 60.0, 4.0]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert (payload["request_id"], payload["polls"], payload["polls_refused"], payload["polls_unanswered"]) == ("req-1", 6, 0, 4)
+    err = capsys.readouterr().err
+    assert f"[video] poll 1 of generation req-1 got no answer ({CUT_SAID}); asking again in 8s" in err
+    assert "[video] poll 3 of generation req-1 got no answer (response was not valid JSON); asking again in 32s" in err
+
+
+def test_a_resume_whose_poll_is_cut_short_asks_the_same_request_again(tmp_path: Path, wire) -> None:
+    """The validator's counterexample: a resumed poll cut 10 bytes into its 200-byte body."""
+    server = wire(CUT, DONE_ON_WIRE)
+    result = video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
+                                call=_on_wire, download=lambda url, token: MP4, sleep=lambda s: None)
+    assert server.seen == [("GET", "/v1/videos/req-1")] * 2
+    assert result.out.read_bytes() == MP4 and result.to_dict()["polls_unanswered"] == 1
+
+
+def test_polls_cut_short_until_the_poll_timeout_leave_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    server = wire(ACCEPTED, CUT)
+    clock, slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", 30)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 4
+    assert slept == [8.0, 16.0, 6.0] and clock["t"] == 30
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 was accepted, but its polls got no answer (last: {CUT_SAID}) until the "
+                       "poll timeout (30s, 4 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       f"again with `sprite-gen video-resume --request-id req-1 --out {out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 4,
+        "polls_refused": 0,
+        "polls_unanswered": 4,
+        "last_poll": {"http": None, "status": None, "error": CUT_SAID},
+        "elapsed_seconds": 30.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_submission_cut_short_is_not_unfinished_and_is_never_sent_again(tmp_path: Path, wire) -> None:
+    """No request_id could be read, so there is nothing to ask for: the POST ends at once on the transport's line."""
+    server = wire(CUT)
+    with pytest.raises(SystemExit) as failed:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, download=lambda url, token: MP4, sleep=lambda s: None)
+    assert isinstance(failed.value, xai.TransportError) and not isinstance(failed.value, video.GenerationUnfinished)
+    assert str(failed.value) == xai.TRANSPORT_FAILED and failed.value.reason == CUT_SAID
+    assert server.seen == [("POST", "/v1/videos/generations")]
