@@ -101,8 +101,9 @@ MODE_RESUME = "resume"
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 POLL_INTERVAL_SECONDS = 4.0
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
-# A poll xAI throttles (429) or fails on its own side (5xx), or one that gets no answer at all (the
-# connection failed or timed out), is asked again, on the same request: the POST was accepted, so a
+# A poll xAI throttles (429) or fails on its own side (5xx), or one that gets no answer it can read (the
+# connection failed or timed out, the answer broke on the way or was not JSON — xai.TransportError), is
+# asked again, on the same request: the POST was accepted, so a
 # new submission would buy the clip twice, and a GET buys nothing. The wait doubles from
 # POLL_INTERVAL_SECONDS while the polls fail, up to the ceiling; no wait runs past the poll timeout,
 # which bounds the whole poll however its polls are answered.
@@ -138,7 +139,7 @@ class GenerationUnfinished(SystemExit):
         self.polls_unanswered = polls_unanswered
         self.last_http = last_http
         self.last_status = last_status
-        self.last_error = last_error  # what the socket said when the last poll got no answer
+        self.last_error = last_error  # what the transport said when the last poll got no answer it could read
         self.elapsed_seconds = elapsed_seconds
 
     def to_dict(self) -> dict[str, Any]:
@@ -316,7 +317,7 @@ class VideoResult:
     duration_requested: int | None  # video-resume: None, this run requested nothing
     duration_reported: float | None = None
     polls_refused: int = 0  # polls xAI answered 429 or 5xx, each asked again
-    polls_unanswered: int = 0  # polls that got no answer (connection failed or timed out), each asked again
+    polls_unanswered: int = 0  # polls that got no answer they could read (xai.TransportError), each asked again
     host: str | None = None
     image: Path | None = None
     prompt: str = ""
