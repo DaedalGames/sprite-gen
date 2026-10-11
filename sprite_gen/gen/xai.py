@@ -140,7 +140,7 @@ class TransportError(SystemExit):
     after it began (a body shorter than its Content-Length, a status line that is not one), or it came
     whole and was not JSON — and the server may have taken the request. Still the SystemExit and line
     it always was (`NOT_JSON` for the last); a caller that may safely ask again (a poll of an accepted
-    request) catches this type. `reason` is what the transport said."""
+    request, the download of a clip that is done) catches this type. `reason` is what the transport said."""
 
     def __init__(self, reason: str, line: str = TRANSPORT_FAILED) -> None:
         super().__init__(line)
@@ -150,10 +150,10 @@ class TransportError(SystemExit):
 # Everything that ends a request before its answer is read whole. http.client raises its own
 # HTTPException family (IncompleteRead, BadStatusLine, LineTooLong, …) past urllib once the answer
 # has begun; the socket's errors are OSError, inside a URLError while the request is still sent.
-_NO_ANSWER = (OSError, http.client.HTTPException)
+NO_ANSWER = (OSError, http.client.HTTPException)
 
 
-def _no_answer(exc: BaseException) -> TransportError:
+def no_answer(exc: BaseException) -> TransportError:
     said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
     # An http.client exception carries what the server sent (BadStatusLine its line, CRLF included);
     # its repr names the kind and keeps that on one line. RemoteDisconnected is a reset too: its words.
@@ -179,11 +179,11 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
         # A refusal's status alone is not an answer read whole: its body broken on the way is no answer too.
         try:
             raw = exc.read().decode("utf-8", "replace")
-        except _NO_ANSWER as cut:
-            raise _no_answer(cut) from cut
+        except NO_ANSWER as cut:
+            raise no_answer(cut) from cut
         try:
             return exc.code, json.loads(raw)
         except json.JSONDecodeError:
             return exc.code, refusal.RawBody(raw)
-    except _NO_ANSWER as exc:
-        raise _no_answer(exc) from exc
+    except NO_ANSWER as exc:
+        raise no_answer(exc) from exc

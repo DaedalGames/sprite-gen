@@ -165,7 +165,17 @@ What happens, in order:
    typically a login that expired — is unfinished at once. No clip is written on any
    failure path.
 4. Download `video.url`, verify the bytes start with an mp4 `ftyp` box, then move
-   the file into `--out` atomically (`.part` staging).
+   the file into `--out` atomically (`.part` staging). The clip is made by now and may
+   be billed, so a download that fails never ends the run without its `request_id`. One
+   that gets no answer it can read (the connection refused or timed out, the body cut
+   short of its `Content-Length`) or that the clip's host refuses with `429`, `500`,
+   `502`, `503` or `504` is downloaded again, after 8 s and then 16 s — three downloads
+   in all, each with its own 120 s read timeout and none bounded by the poll timeout —
+   and a `[video] download N of generation <id> got no answer (<reason>); downloading
+   again in 8s` (or `… was refused (503); …`) line goes to stderr before each. One still
+   failing, one refused with another status (a `401` or `403` is asked once more with
+   the bearer token first), or bytes that are not an mp4 end the run *unfinished*
+   (below).
 
 Reference-to-video tends to lock the opening composition to a referenced scene
 image (probe m3: the clip opened on the third reference's framing), so put
@@ -224,8 +234,10 @@ the request — the unfinished report's `auth_source`; refresh an expired login 
 - The report is a `sprite-gen-video-report` with `mode: "resume"`, the same
   `request_id`, `inputs: {}` and `duration_requested: null`; `model` and
   `duration_reported` are what the finished poll says.
-- Cut short again — the timeout, or a rejected credential — it is unfinished on the
-  same id, `verb: "video-resume"` (below), and can be resumed again.
+- Cut short again — the timeout, a rejected credential, or a download that failed —
+  it is unfinished on the same id, `verb: "video-resume"` (below), and can be resumed
+  again. Each resume polls afresh, so a clip whose download failed is fetched from the
+  URL the new poll names.
 - A request xAI does not know (`404`), or one that failed or expired, ends with its
   status like any failed poll.
 - The clip is checked as an mp4 (`ftyp` box) only: `video-extend`'s length rule needs
@@ -240,22 +252,29 @@ the request — the unfinished report's `auth_source`; refresh an expired login 
 `video`), `bytes`, `host`, requested/reported duration (`input_duration` for
 extend / edit), resolution, aspect ratio, audio flag, `elapsed_seconds`, and
 `polls`, `polls_refused` (how many of `polls` xAI answered 429 or 5xx, each asked
-again) and `polls_unanswered` (how many got no answer they could read, each asked
-again). The pre-modes `image` field stays. **Tokens and download URLs are never
+again), `polls_unanswered` (how many got no answer they could read, each asked
+again) and `downloads` (how many downloads the clip took, the last one whole: 1 unless
+one failed). The pre-modes `image` field stays. **Tokens and download URLs are never
 printed or written** — only the download host (`vidgen.x.ai`).
 
 ### An unfinished generation
 
 xAI accepted the request and the run ended before it did — the poll timeout came with
-its polls still pending, refused or unanswered, or xAI rejected the credential on a
-poll. It may finish and be billed, so the run ends naming the request and the
-`video-resume` command that asks for it again, never as a refusal to send again:
+its polls still pending, refused or unanswered, xAI rejected the credential on a
+poll, or the poll said done and the clip could not be downloaded (step 4). It may
+finish and be billed — a clip that is done is made — so the run ends naming the
+request and the `video-resume` command that asks for it again, never as a refusal to
+send again:
 
 ```
 video: generation <id> was accepted, but its polls were refused (last answer 429) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `sprite-gen video-resume --request-id <id> --out /abs/clip.mp4` instead of submitting a new request; nothing was written
 video: generation <id> was accepted, but its polls got no answer (last: timed out) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> was accepted, but xAI rejected the credential (grok-login) on poll 30 (answer 401); it may still finish and be billed — refresh the login with `grok models` run from an empty directory (e.g. `cd "$(mktemp -d)"`) or `grok login`, then ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its download got no answer (last: IncompleteRead(1048576 bytes read, 3195904 more expected)) after 3 attempts; the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its download was refused (last answer 503) after 3 attempts; the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its download was refused (answer 404); the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its download brought 34 bytes that are not an mp4 (no ftyp box); the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 ```
 
 The line carries no `(HTTP <n>)`, the status of a refusal line (docs/gen.md): a caller
@@ -273,9 +292,39 @@ same reason. With `--report` the run leaves a
 
 `last_poll` gains `"error"` (what the transport said: `timed out`,
 `IncompleteRead(10 bytes read, 190 more expected)`, `response was not valid JSON`, …)
-when the last poll got no answer it could read, its `http` then `null`. `auth_source`
-is the credential that submitted it — the one that can ask for it again. A report
-already at that path is replaced, as on success.
+when the last poll got no answer it could read, its `http` then `null`. A run whose
+clip could not be downloaded adds `downloads` (how many were tried) and
+`last_download`, how the last one ended: `http` the status the clip's host refused it
+with, else `null`; `error` what the transport said when it got no answer it could read,
+or `not an mp4 (no ftyp box)` with the `bytes` that came; its `last_poll` is the done
+poll (`{"http": 200, "status": "done"}`):
+
+```json
+{"kind": "sprite-gen-video-unfinished", "provider": "grok-imagine", "verb": "video",
+ "auth_source": "grok-login", "model": "grok-imagine-video-1.5", "request_id": "<id>",
+ "out": "/abs/clip.mp4", "polls": 31, "polls_refused": 0, "polls_unanswered": 0,
+ "last_poll": {"http": 200, "status": "done"}, "downloads": 3,
+ "last_download": {"http": null, "error": "IncompleteRead(1048576 bytes read, 3195904 more expected)"},
+ "elapsed_seconds": 144.0}
+```
+
+Bytes that came whole and are not an mp4 make the run unfinished, not refused, and
+are not downloaded again:
+
+- They are no verdict of xAI's on the request. Its one content-policy signal is
+  `respect_moderation: false` on the done poll, read before any download and refused
+  as a content-policy block. Anything else at the clip's URL — an expired link's page,
+  a proxy's or captive portal's error page served `200` — is a fault in delivering a
+  clip that is made.
+- The `request_id` is the only way back to a clip that may be billed. A refusal would
+  leave one path, a new submission, which buys it again; `video-resume` costs a poll
+  and polls afresh, so it downloads from the URL the new poll names. If those bytes
+  are not an mp4 either, it is unfinished again — never a second purchase.
+- The same URL would bring the same bytes, so the run does not download it again
+  itself.
+
+`auth_source` is the credential that submitted it — the one that can ask for it again.
+A report already at that path is replaced, as on success.
 Every verb that polls (`video`, `video-extend`, `video-edit`, `video-resume`) does
 the same, `verb` naming it; a `video-resume` report's `model` is `null`.
 

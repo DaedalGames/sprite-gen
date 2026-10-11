@@ -66,7 +66,7 @@ from sprite_gen.video import facing as facing_mod
 from .xai import (
     API_BASE, AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
     HTTP_TIMEOUT_SECONDS, GROK_REFRESH_COMMAND, GROK_REFRESH_WHERE, GROK_LOGIN_COMMAND,
-    Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json,
+    NO_ANSWER, Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json, no_answer,
 )
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
@@ -109,6 +109,13 @@ POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "6
 # which bounds the whole poll however its polls are answered.
 POLL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 POLL_BACKOFF_MAX_SECONDS = 60.0
+# A clip the poll says is done is made, and may be billed: its request_id is the one way back to it. A
+# download that gets no answer it can read, or that the clip's host refuses with one of
+# POLL_RETRY_STATUSES, is downloaded again after the polls' doubling wait (8 s, then 16 s), up to
+# DOWNLOAD_ATTEMPTS downloads in all. One still failing, one refused with another status, or bytes
+# that are not an mp4, end the run unfinished on that request_id: `video-resume` polls it again for
+# a fresh URL, where a new submission would buy the clip twice.
+DOWNLOAD_ATTEMPTS = 3
 # Every mp4/mov starts with a size-prefixed `ftyp` box: bytes 4..8 spell it.
 MP4_FTYP_OFFSET = 4
 MP4_FTYP = b"ftyp"
@@ -118,7 +125,7 @@ _FAILED_STATUSES = ("failed", "error", "expired")
 
 class GenerationUnfinished(SystemExit):
     """xAI accepted the request (it may bill it) and the run ended before it did: the poll timeout
-    came, or xAI rejected the credential on a poll.
+    came, xAI rejected the credential on a poll, or the clip it made could not be downloaded.
 
     The line names `request_id=<id>` and the `video-resume` command that asks for it again, and
     carries no `(HTTP n)`, a refusal line's status: a caller that reads `(HTTP 429)` there sends the
@@ -127,7 +134,8 @@ class GenerationUnfinished(SystemExit):
 
     def __init__(self, message: str, *, verb: str, request_id: str, auth_source: str, model: Any, out: Path,
                  polls: int, polls_refused: int, polls_unanswered: int, last_http: int | None, last_status: Any,
-                 last_error: str | None, elapsed_seconds: float) -> None:
+                 last_error: str | None, elapsed_seconds: float, downloads: int = 0,
+                 last_download: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.verb = verb
         self.request_id = request_id
@@ -141,6 +149,8 @@ class GenerationUnfinished(SystemExit):
         self.last_status = last_status
         self.last_error = last_error  # what the transport said when the last poll got no answer it could read
         self.elapsed_seconds = elapsed_seconds
+        self.downloads = downloads  # downloads of a clip the poll said is done; 0 when none was
+        self.last_download = last_download  # how the last of them failed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -156,26 +166,42 @@ class GenerationUnfinished(SystemExit):
             "polls_unanswered": self.polls_unanswered,
             "last_poll": {"http": self.last_http, "status": self.last_status,
                           **({"error": self.last_error} if self.last_error is not None else {})},
+            **({"downloads": self.downloads, "last_download": self.last_download} if self.downloads else {}),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
 
+class DownloadRefused(SystemExit):
+    """The clip's host answered its download with an error `status` (a 401 or 403 once more with the bearer token)."""
+
+    def __init__(self, status: int, line: str) -> None:
+        super().__init__(line)
+        self.status = status
+
+
 def http_download(url: str, token: str) -> bytes:
+    """The clip's bytes, read whole. An error status raises DownloadRefused; a download that gets no answer
+    it can read whole — the connection failed or timed out, the body broke on the way — raises
+    xai.TransportError, its words in `reason`."""
     request = urllib.request.Request(url)
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except urllib.error.HTTPError as first:
-        if first.code not in (401, 403):
-            raise SystemExit(f"video: download failed with HTTP {first.code}") from first
-        request.add_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                 return response.read()
-        except urllib.error.HTTPError as second:
-            raise SystemExit(f"video: download failed with HTTP {second.code} even with the bearer token") from second
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"video: cannot download the clip: {exc.reason}") from exc
+        except urllib.error.HTTPError as first:
+            if first.code not in (401, 403):
+                raise DownloadRefused(first.code, f"video: download failed with HTTP {first.code}") from first
+            request.add_header("Authorization", f"Bearer {token}")
+            try:
+                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                    return response.read()
+            except urllib.error.HTTPError as second:
+                raise DownloadRefused(
+                    second.code, f"video: download failed with HTTP {second.code} even with the bearer token"
+                ) from second
+    except NO_ANSWER as exc:
+        reason = no_answer(exc).reason
+        raise TransportError(reason, f"video: cannot download the clip: {reason}") from exc
 
 
 def _data_url(path: Path) -> str:
@@ -202,11 +228,8 @@ def _redact_host(url: str) -> str | None:
     return parts[2] if len(parts) > 2 else None
 
 
-def verify_mp4(data: bytes) -> None:
-    if len(data) < MP4_FTYP_OFFSET + len(MP4_FTYP) or data[MP4_FTYP_OFFSET : MP4_FTYP_OFFSET + len(MP4_FTYP)] != MP4_FTYP:
-        raise SystemExit(
-            f"video: downloaded {len(data)} bytes but they are not an mp4 (no ftyp box) — refusing to publish"
-        )
+def _is_mp4(data: bytes) -> bool:
+    return data[MP4_FTYP_OFFSET : MP4_FTYP_OFFSET + len(MP4_FTYP)] == MP4_FTYP
 
 
 def _resolved(path: Path | None) -> Path | None:
@@ -243,7 +266,7 @@ def _require_mp4_clip(clip: Path, *, verb: str) -> None:
         raise SystemExit(f"{verb}: input clip not found: {clip}")
     with clip.open("rb") as handle:
         head = handle.read(MP4_FTYP_OFFSET + len(MP4_FTYP))
-    if len(head) < MP4_FTYP_OFFSET + len(MP4_FTYP) or head[MP4_FTYP_OFFSET:] != MP4_FTYP:
+    if not _is_mp4(head):
         raise SystemExit(f"{verb}: {clip} is not an mp4 (no ftyp box); refusing to upload it")
 
 
@@ -318,6 +341,7 @@ class VideoResult:
     duration_reported: float | None = None
     polls_refused: int = 0  # polls xAI answered 429 or 5xx, each asked again
     polls_unanswered: int = 0  # polls that got no answer they could read (xai.TransportError), each asked again
+    downloads: int = 1  # downloads of the clip, the last one whole; more than one when one failed
     host: str | None = None
     image: Path | None = None
     prompt: str = ""
@@ -356,6 +380,7 @@ class VideoResult:
             "polls": self.polls,
             "polls_refused": self.polls_refused,
             "polls_unanswered": self.polls_unanswered,
+            "downloads": self.downloads,
             **({"extra": self.extra} if self.extra else {}),
             **({"facing": self.facing} if self.facing is not None else {}),
         }
@@ -442,6 +467,7 @@ class _Published:
     polls: int
     polls_refused: int
     polls_unanswered: int
+    downloads: int
     elapsed_seconds: float
 
 
@@ -524,21 +550,23 @@ def _poll_publish(
     staged file is removed and `out` is never written.
 
     The poll timeout counts from here. A run that ends before the request does — the timeout
-    came, or xAI rejected the credential — raises GenerationUnfinished naming the request."""
+    came, xAI rejected the credential, or the clip it made could not be downloaded (DOWNLOAD_ATTEMPTS)
+    — raises GenerationUnfinished naming the request."""
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
     deadline = time.monotonic() + timeout
-    polls = polls_refused = polls_unanswered = failed_in_a_row = 0
+    polls = polls_refused = polls_unanswered = failed_in_a_row = downloads = 0
     video_url: str | None = None
     duration_reported: float | None = None
     model_reported: str | None = None
     final: dict[str, Any] = {}
 
-    def unfinished(line: str, http: int | None, poll_status: Any, lost: str | None) -> GenerationUnfinished:
+    def unfinished(line: str, http: int | None, poll_status: Any, lost: str | None,
+                   last_download: dict[str, Any] | None = None) -> GenerationUnfinished:
         return GenerationUnfinished(
             f"{verb}: generation {request_id} {line}", verb=verb, request_id=request_id,
             auth_source=credential.source, model=model, out=out, polls=polls, polls_refused=polls_refused,
             polls_unanswered=polls_unanswered, last_http=http, last_status=poll_status, last_error=lost,
-            elapsed_seconds=time.monotonic() - started,
+            elapsed_seconds=time.monotonic() - started, downloads=downloads, last_download=last_download,
         )
 
     while True:
@@ -612,8 +640,42 @@ def _poll_publish(
 
     if not video_url:
         raise SystemExit(f"{verb}: generation {request_id} is done but reported no video url")
-    data = download(video_url, credential.token)
-    verify_mp4(data)
+    # The clip is made: whatever stops its download, the run ends naming the request, never a second purchase.
+    while True:
+        downloads += 1
+        said: str | None = None  # what the transport said when the download got no answer it could read
+        refused: int | None = None  # the status the clip's host refused it with
+        try:
+            data = download(video_url, credential.token)
+        except TransportError as failed:
+            said = failed.reason
+        except DownloadRefused as failed:
+            refused = failed.status
+        else:
+            if _is_mp4(data):
+                break
+            # Bytes read whole that are not an mp4 are no verdict of xAI's on the request (that is
+            # respect_moderation, above) and the same URL brings the same bytes: video-resume asks for a fresh one.
+            raise unfinished(f"is done, but its download brought {len(data)} bytes that are not an mp4 (no ftyp box); "
+                             f"the clip is made and may be billed — {_ask_again(request_id, out)}", http, poll_status, None,
+                             {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": len(data)})
+        again = said is not None or refused in POLL_RETRY_STATUSES
+        if not again or downloads == DOWNLOAD_ATTEMPTS:
+            if said is not None:
+                failure = f"got no answer (last: {said}) after {downloads} attempts"
+            elif again:
+                failure = f"was refused (last answer {refused}) after {downloads} attempts"
+            else:
+                failure = f"was refused (answer {refused})"
+            raise unfinished(f"is done, but its download {failure}; the clip is made and may be billed — "
+                             f"{_ask_again(request_id, out)}", http, poll_status, None,
+                             {"http": refused, **({"error": said} if said is not None else {})})
+        wait = POLL_INTERVAL_SECONDS * 2 ** downloads
+        # The status in plain digits, as the poll notes say it.
+        failure = f"got no answer ({said})" if said is not None else f"was refused ({refused})"
+        print(f"[{verb}] download {downloads} of generation {request_id} {failure}; downloading again in {wait:g}s",
+              file=sys.stderr)
+        sleep(wait)
     elapsed = time.monotonic() - started
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -629,7 +691,7 @@ def _poll_publish(
     return _Published(
         data=data, request_id=request_id, model=model_reported, duration_reported=duration_reported,
         host=_redact_host(video_url), polls=polls, polls_refused=polls_refused, polls_unanswered=polls_unanswered,
-        elapsed_seconds=elapsed,
+        downloads=downloads, elapsed_seconds=elapsed,
     )
 
 
@@ -695,6 +757,7 @@ def generate_video(
         polls=published.polls,
         polls_refused=published.polls_refused,
         polls_unanswered=published.polls_unanswered,
+        downloads=published.downloads,
         duration_requested=request.duration,
         duration_reported=published.duration_reported,
         host=published.host,
@@ -776,7 +839,7 @@ def extend_video(
         out=out, bytes=len(published.data), model=published.model or request.model, request_id=published.request_id,
         auth_source=credential.source, elapsed_seconds=published.elapsed_seconds, polls=published.polls,
         polls_refused=published.polls_refused, polls_unanswered=published.polls_unanswered,
-        duration_requested=request.duration, duration_reported=published.duration_reported, host=published.host,
+        downloads=published.downloads, duration_requested=request.duration, duration_reported=published.duration_reported, host=published.host,
         prompt=request.prompt, mode=MODE_EXTEND, inputs={"video": str(clip)}, input_duration=input_seconds,
         output_duration=measured.get("output"),
     )
@@ -837,7 +900,7 @@ def edit_video(
         out=out, bytes=len(published.data), model=published.model or request.model, request_id=published.request_id,
         auth_source=credential.source, elapsed_seconds=published.elapsed_seconds, polls=published.polls,
         polls_refused=published.polls_refused, polls_unanswered=published.polls_unanswered,
-        duration_requested=0, duration_reported=published.duration_reported, host=published.host,
+        downloads=published.downloads, duration_requested=0, duration_reported=published.duration_reported, host=published.host,
         prompt=request.prompt, mode=MODE_EDIT, inputs={"video": str(clip)}, input_duration=input_seconds,
         output_duration=measured.get("output"),
     )
@@ -876,7 +939,7 @@ def resume_video(
         out=out, bytes=len(published.data), model=published.model, request_id=published.request_id,
         auth_source=credential.source, elapsed_seconds=published.elapsed_seconds, polls=published.polls,
         polls_refused=published.polls_refused, polls_unanswered=published.polls_unanswered,
-        duration_requested=None, duration_reported=published.duration_reported, host=published.host, mode=MODE_RESUME,
+        downloads=published.downloads, duration_requested=None, duration_reported=published.duration_reported, host=published.host, mode=MODE_RESUME,
     )
 
 
