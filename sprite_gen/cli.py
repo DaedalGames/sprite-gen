@@ -325,7 +325,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         _add_video,
         video.run,
     ),
-    # Same declaration-once rule: the module owns the argument surface. Both verbs force
+    # Same declaration-once rule: the module owns the argument surface. Extend and edit force
     # the classic model and inherit resolution/length from the input clip (docs/video.md).
     "video-extend": (
         "Continue an existing clip by N seconds via Grok Imagine (POST /v1/videos/extensions).",
@@ -336,6 +336,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Edit an existing clip (≤ 8.7 s) with a prompt via Grok Imagine (POST /v1/videos/edits).",
         video.add_edit_arguments,
         video.run_edit,
+    ),
+    "video-resume": (
+        "Ask again for a clip a video / video-extend / video-edit run left unfinished, by its request_id (no new POST, nothing bought twice).",
+        video.add_resume_arguments,
+        video.run_resume,
     ),
     # Video -> sprite pipeline (docs/video-pipeline.md): canvas -> video -> frames -> loop, or video-set for a batch.
     "video-canvas": (

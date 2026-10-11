@@ -1,6 +1,6 @@
 # `sprite-gen video` — image to video with your own Grok login (engine SSoT)
 
-> Owns: `sprite-gen video` / `video-extend` / `video-edit`: stills and clips to mp4 through Grok Imagine with the user's own credential · Index: [docs/README.md](README.md)
+> Owns: `sprite-gen video` / `video-extend` / `video-edit` / `video-resume`: stills and clips to mp4 through Grok Imagine with the user's own credential · Index: [docs/README.md](README.md)
 
 `sprite-gen video` animates one still into a short mp4 through **Grok Imagine**
 (xAI `POST /v1/videos/generations`). It is the video counterpart of
@@ -9,8 +9,9 @@ on disk plus a machine-readable report. The sprite-gen skill routes standalone
 video requests here from any agent engine.
 
 The same engine also pins a **last frame**, guides a clip with **reference
-images**, **extends** an existing clip (`video-extend`) and **edits** one with a
-prompt (`video-edit`). The mode table below is the design memo for those modes
+images**, **extends** an existing clip (`video-extend`), **edits** one with a
+prompt (`video-edit`) and **asks again** for a generation a run left unfinished,
+by its `request_id` (`video-resume`). The mode table below is the design memo for those modes
 (2026-09-13); the pipeline verbs in [video-pipeline.md](video-pipeline.md)
 (`video-canvas` → `video` → `video-frames` → `video-loop`, `video-set`) keep
 calling `sprite-gen video --image …` exactly as before and know nothing about
@@ -33,6 +34,7 @@ limits from docs.x.ai `model-capabilities/video/*` read the same day.
 | `video --reference X [--reference Y …]` (+ optional `--image`) | same · 1.5 (classic accepts references alone, measured 2026-09-13, but not `--image` + references) | `reference_images:[{url}…]` (+ `image{url}`) | duration, aspect, audio; resolution **480p/720p only** | 1–7 references; prompt tags `<IMAGE_n>` with `0 ≤ n < count` (0-based); `--resolution 1080p` rejected; classic + `--image` + references rejected | `reference` |
 | `video-extend --video in.mp4 --duration N` | `POST /v1/videos/extensions` · **`grok-imagine-video` forced** (1.5 answers `400 Video extension is not supported for this model`) | `video{url}`, `duration` | duration 2–10 (extension length only; default 6). No resolution / aspect / model flags: output inherits the input's, capped at 720p | `.mp4` with an `ftyp` box; ffprobe duration 2–15 s | `extend` |
 | `video-edit --video in.mp4` | `POST /v1/videos/edits` · **`grok-imagine-video` forced** (1.5 answers `400 Video editing is not supported for this model`) | `video{url}` | none of duration / resolution / aspect / model: output inherits the input's, capped at 720p | `.mp4` with an `ftyp` box; ffprobe duration ≤ 8.7 s | `edit` |
+| `video-resume --request-id <id>` | **no POST** — `GET /v1/videos/{id}` only; the model is whatever the request was made with | — | none: the request is the one an earlier run submitted | the id is letters, digits, `.`, `_`, `-` | `resume` |
 
 Invariants:
 
@@ -146,14 +148,18 @@ What happens, in order:
    API's own error text.
 3. `GET /v1/videos/{request_id}` every 4 s until `status` is `done`. `failed`,
    `expired` or a non-2xx poll fails loudly — except a poll answered `429` or `500`,
-   `502`, `503`, `504`: the request was accepted, so that poll is asked again on the
-   same `request_id` (a new POST would buy the clip twice), after a wait that doubles
-   from 8 s up to 60 s while the polls are refused and goes back to 4 s on an answer.
-   A `[video] poll N of generation <id> was refused (429); asking again in 8s` line goes
-   to stderr each time. The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default
-   600, counted from the POST's answer) bounds the whole poll: no wait runs past it, one
-   last poll is asked at it, and a generation still pending or refused then is
-   *unfinished* (below). No clip is written on any failure path.
+   `502`, `503`, `504`, or one that gets no answer at all (the connection failed or
+   timed out): the request was accepted, so that poll is asked again on the same
+   `request_id` (a new POST would buy the clip twice; a GET buys nothing), after a wait
+   that doubles from 8 s up to 60 s while the polls fail and goes back to 4 s on an
+   answer. A `[video] poll N of generation <id> was refused (429); asking again in 8s`
+   line — or `… got no answer (timed out); asking again in 8s` — goes to stderr each
+   time. The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600, counted
+   from the POST's answer) bounds the whole poll: no wait runs past it, one last poll is
+   asked at it, and a generation still pending, refused or unanswered then is
+   *unfinished* (below). A poll answered `401` or `403` — the credential stopped
+   working after the POST, typically a login that expired — is unfinished at once. No
+   clip is written on any failure path.
 4. Download `video.url`, verify the bytes start with an mp4 `ftyp` box, then move
    the file into `--out` atomically (`.part` staging).
 
@@ -196,25 +202,56 @@ Same fixed classic model, same inherited resolution / aspect / length (the probe
 8.00 s input came back 7.71 s — the API trims the tail). Inputs over 8.7 s are
 refused locally with an ffmpeg trim hint; there is no `--duration` at all.
 
+### `sprite-gen video-resume` — ask again for an unfinished generation
+
+```bash
+sprite-gen video-resume \
+  --request-id <id> \                  # the request_id an unfinished run named
+  --out clip.mp4 \
+  [--report clip.report.json]
+```
+
+No POST: it polls `GET /v1/videos/{id}` exactly as step 3 above (the same retries,
+backoff and poll timeout, counted from the first poll), then downloads, verifies and
+publishes the clip as step 4. Nothing is submitted, so nothing is bought twice and the
+`XAI_API_KEY` route prints no charge notice. Run it on the credential that submitted
+the request — the unfinished report's `auth_source`; refresh an expired login first.
+
+- The report is a `sprite-gen-video-report` with `mode: "resume"`, the same
+  `request_id`, `inputs: {}` and `duration_requested: null`; `model` and
+  `duration_reported` are what the finished poll says.
+- Cut short again — the timeout, or a rejected credential — it is unfinished on the
+  same id, `verb: "video-resume"` (below), and can be resumed again.
+- A request xAI does not know (`404`), or one that failed or expired, ends with its
+  status like any failed poll.
+- The clip is checked as an mp4 (`ftyp` box) only: `video-extend`'s length rule needs
+  the input clip, which this verb does not take.
+- The id is refused before any call unless it is letters, digits, `.`, `_` and `-`
+  (it goes into the URL path).
+
 ### The report
 
 `sprite-gen-video-report` carries `auth_source`, `model`, `mode`, `request_id`,
 `inputs` (local paths by role: `image`, `last_frame`, `reference_images`,
 `video`), `bytes`, `host`, requested/reported duration (`input_duration` for
 extend / edit), resolution, aspect ratio, audio flag, `elapsed_seconds`, and
-`polls`, and `polls_refused` (how many of `polls` xAI answered 429 or 5xx, each asked
-again). The pre-modes `image` field stays. **Tokens and download URLs are never
+`polls`, `polls_refused` (how many of `polls` xAI answered 429 or 5xx, each asked
+again) and `polls_unanswered` (how many got no answer, each asked again). The
+pre-modes `image` field stays. **Tokens and download URLs are never
 printed or written** — only the download host (`vidgen.x.ai`).
 
 ### An unfinished generation
 
-xAI accepted the request and the poll timeout came before it ended — its polls still
-pending, or still refused. It may finish and be billed, so the run ends naming the
-request to ask for again, never as a refusal to send again:
+xAI accepted the request and the run ended before it did — the poll timeout came with
+its polls still pending, refused or unanswered, or xAI rejected the credential on a
+poll. It may finish and be billed, so the run ends naming the request and the
+`video-resume` command that asks for it again, never as a refusal to send again:
 
 ```
-video: generation <id> was accepted, but its polls were refused (last answer 429) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again instead of submitting a new request; nothing was written
-video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again instead of submitting a new request; nothing was written
+video: generation <id> was accepted, but its polls were refused (last answer 429) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `sprite-gen video-resume --request-id <id> --out /abs/clip.mp4` instead of submitting a new request; nothing was written
+video: generation <id> was accepted, but its polls got no answer (last: timed out) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> was accepted, but xAI rejected the credential (grok-login) on poll 30 (answer 401); it may still finish and be billed — refresh the login with `grok models` run from an empty directory (e.g. `cd "$(mktemp -d)"`) or `grok login`, then ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 ```
 
 The line carries no `(HTTP <n>)`, the status of a refusal line (docs/gen.md): a caller
@@ -226,13 +263,20 @@ same reason. With `--report` the run leaves a
 ```json
 {"kind": "sprite-gen-video-unfinished", "provider": "grok-imagine", "verb": "video",
  "auth_source": "grok-login", "model": "grok-imagine-video-1.5", "request_id": "<id>",
- "out": "/abs/clip.mp4", "polls": 14, "polls_refused": 14,
+ "out": "/abs/clip.mp4", "polls": 14, "polls_refused": 14, "polls_unanswered": 0,
  "last_poll": {"http": 429, "status": null}, "elapsed_seconds": 600.0}
 ```
 
-`auth_source` is the credential that submitted it — the one that can ask for it again.
-A report already at that path is replaced, as on success. Every verb that polls
-(`video`, `video-extend`, `video-edit`) does the same, `verb` naming it.
+`last_poll` gains `"error"` (what the socket said) when the last poll got no answer,
+its `http` then `null`. `auth_source` is the credential that submitted it — the one
+that can ask for it again. A report already at that path is replaced, as on success.
+Every verb that polls (`video`, `video-extend`, `video-edit`, `video-resume`) does
+the same, `verb` naming it; a `video-resume` report's `model` is `null`.
+
+A POST that gets no answer is not unfinished: no `request_id` came back, and the line
+is the transport's own (`xai: request failed or timed out; no automatic retry (the
+server may have accepted it)`). Python callers catch `xai.TransportError`, a
+`SystemExit` with that line and the socket's words in `reason`.
 
 ## Quotas and limits
 
