@@ -179,7 +179,7 @@ def test_audio_default_is_left_to_the_api(tmp_path: Path) -> None:
         ((200, {"request_id": "r"}), [(200, {"status": "failed", "error": "nsfw"})], "status='failed'"),
         ((200, {"request_id": "r"}), [(200, {"status": "expired"})], "status='expired'"),
         ((200, {"request_id": "r"}), [(404, {"raw": "boom"})], "HTTP 404"),
-        ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "reported no video url"),
+        ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "poll named no video url to download"),
     ],
 )
 def test_api_failures_are_named_and_write_nothing(tmp_path: Path, post, polls, expected) -> None:
@@ -588,18 +588,18 @@ def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_agai
     assert isinstance(unfinished.value, SystemExit)
     assert [call[0] for call in api.calls].count("POST") == 1
     assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
-    # Doubling, held at the ceiling, the last wait cut to the timeout — and one more poll asked there.
-    assert slept == [8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0, 4.0]
-    assert clock["t"] == 300 and len(api.calls) == 1 + 9
+    # Doubling, held at the ceiling; the poll at 296 s would wait past the timeout for the next, so it is the last.
+    assert slept == [8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
+    assert clock["t"] == 296 and len(api.calls) == 1 + 8
     message = str(unfinished.value)
     assert message == ("video: generation req-1 was accepted, but its polls were refused (last answer 429) until the "
-                       "poll timeout (300s, 9 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       "poll timeout (300s, 8 polls); it may still finish and be billed — ask for request_id=req-1 "
                        f"again with `sprite-gen video-resume --request-id req-1 --out {request.out.resolve()}` "
                        "instead of submitting a new request; nothing was written")
     # No `(HTTP n)`, a refusal line's status: a caller reading `(HTTP 429)` sends the request again.
     assert HTTP_STATUS.search(message) is None
     assert "HTTP 429" not in message + capsys.readouterr().err
-    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.polls) == ("req-1", 429, 9)
+    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.polls) == ("req-1", 429, 8)
     assert not request.out.exists() and not list(tmp_path.glob("*.part")) and api.downloads == []
 
 
@@ -610,7 +610,7 @@ def test_a_poll_timeout_while_pending_names_the_request_to_ask_again(tmp_path: P
         video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
                              call=api.call, download=api.download, sleep=sleep, poll_timeout=10)
     message = str(unfinished.value)
-    assert message.startswith("video: generation req-1 still 'pending' after 4 polls — poll timeout; ")
+    assert message.startswith("video: generation req-1 still 'pending' after 3 polls — poll timeout; ")
     assert "request_id=req-1" in message and HTTP_STATUS.search(message) is None
     assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.last_status) == ("req-1", 200, "pending")
 
@@ -650,11 +650,11 @@ def test_the_cli_leaves_an_unfinished_report_naming_the_request(tmp_path: Path, 
         "model": video.DEFAULT_MODEL,
         "request_id": "req-1",
         "out": str(out.resolve()),
-        "polls": 4,
-        "polls_refused": 4,
+        "polls": 3,
+        "polls_refused": 3,
         "polls_unanswered": 0,
         "last_poll": {"http": 503, "status": None},
-        "elapsed_seconds": 30.0,
+        "elapsed_seconds": 24.0,
     }
     assert capsys.readouterr().out == "" and not out.exists()
 
@@ -725,15 +725,15 @@ def test_polls_that_get_no_answer_until_the_poll_timeout_end_unfinished_naming_t
         video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
                              call=api.call, download=api.download, sleep=sleep, poll_timeout=30)
     assert [call[0] for call in api.calls].count("POST") == 1
-    assert slept == [8.0, 16.0, 6.0] and clock["t"] == 30 and len(api.calls) == 1 + 4
+    assert slept == [8.0, 16.0] and clock["t"] == 24 and len(api.calls) == 1 + 3
     message = str(unfinished.value)
     assert message == ("video: generation req-1 was accepted, but its polls got no answer (last: timed out) until the "
-                       "poll timeout (30s, 4 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       "poll timeout (30s, 3 polls); it may still finish and be billed — ask for request_id=req-1 "
                        f"again with `sprite-gen video-resume --request-id req-1 --out {request.out.resolve()}` "
                        "instead of submitting a new request; nothing was written")
     assert HTTP_STATUS.search(message) is None
     report = unfinished.value.to_dict()
-    assert (report["polls"], report["polls_refused"], report["polls_unanswered"]) == (4, 0, 4)
+    assert (report["polls"], report["polls_refused"], report["polls_unanswered"]) == (3, 0, 3)
     assert report["last_poll"] == {"http": None, "status": None, "error": "timed out"}
     assert not request.out.exists() and not list(tmp_path.glob("*.part")) and api.downloads == []
 
@@ -885,11 +885,11 @@ def test_the_resume_cli_leaves_an_unfinished_report_on_the_same_request(tmp_path
         "model": None,
         "request_id": "req-7",
         "out": str(out.resolve()),
-        "polls": 4,
+        "polls": 3,
         "polls_refused": 0,
         "polls_unanswered": 0,
         "last_poll": {"http": 200, "status": "pending"},
-        "elapsed_seconds": 10.0,
+        "elapsed_seconds": 8.0,
     }
     assert capsys.readouterr().out == "" and not out.exists()
 
@@ -1090,11 +1090,11 @@ def test_polls_cut_short_until_the_poll_timeout_leave_an_unfinished_report_namin
     out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
     with pytest.raises(video.GenerationUnfinished) as unfinished:
         video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
-    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 4
-    assert slept == [8.0, 16.0, 6.0] and clock["t"] == 30
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 3
+    assert slept == [8.0, 16.0] and clock["t"] == 24
     message = str(unfinished.value)
     assert message == (f"video: generation req-1 was accepted, but its polls got no answer (last: {CUT_SAID}) until the "
-                       "poll timeout (30s, 4 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       "poll timeout (30s, 3 polls); it may still finish and be billed — ask for request_id=req-1 "
                        f"again with `sprite-gen video-resume --request-id req-1 --out {out.resolve()}` "
                        "instead of submitting a new request; nothing was written")
     assert HTTP_STATUS.search(message) is None
@@ -1106,11 +1106,11 @@ def test_polls_cut_short_until_the_poll_timeout_leave_an_unfinished_report_namin
         "model": video.DEFAULT_MODEL,
         "request_id": "req-1",
         "out": str(out.resolve()),
-        "polls": 4,
+        "polls": 3,
         "polls_refused": 0,
-        "polls_unanswered": 4,
+        "polls_unanswered": 3,
         "last_poll": {"http": None, "status": None, "error": CUT_SAID},
-        "elapsed_seconds": 30.0,
+        "elapsed_seconds": 24.0,
     }
     assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
 
