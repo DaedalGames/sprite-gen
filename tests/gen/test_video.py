@@ -10,6 +10,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,13 +50,13 @@ class _FakeApi:
         self.downloads: list[str] = []
         self.payload = MP4
 
-    def call(self, method, url, token, body):
+    def call(self, method, url, token, body, *, deadline=None):
         self.calls.append((method, url, token, body))
         if method == "POST":
             return self.post
         return self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
 
-    def download(self, url, token):
+    def download(self, url, token, *, deadline=None):
         self.downloads.append(url)
         return self.payload
 
@@ -368,10 +369,10 @@ def test_every_verb_announces_the_charge_before_the_request_leaves(tmp_path: Pat
     api = _FakeApi()
     heard: list[str] = []
 
-    def call(method, url, token, body):
+    def call(method, url, token, body, **kw):
         if method == "POST":
             heard.append(capsys.readouterr().err)  # everything said before the job was submitted
-        return api.call(method, url, token, body)
+        return api.call(method, url, token, body, **kw)
 
     _billed_run(verb, tmp_path, credential=video.Credential("console-key", video.AUTH_SOURCE_API_KEY),
                 call=call, download=api.download, sleep=lambda s: None)
@@ -667,7 +668,7 @@ LOST = "lost"  # a scripted poll that gets no HTTP answer
 
 
 class _LossyApi(_FakeApi):
-    def call(self, method, url, token, body):
+    def call(self, method, url, token, body, *, deadline=None):
         reply = super().call(method, url, token, body)
         if reply == LOST:
             raise video.TransportError("timed out")
@@ -747,7 +748,7 @@ def test_a_submission_that_gets_no_answer_is_not_unfinished_and_is_never_sent_ag
 
     with pytest.raises(SystemExit) as failed:
         video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
-                             call=call, download=lambda url, token: MP4, sleep=lambda s: None)
+                             call=call, download=lambda url, token, **_: MP4, sleep=lambda s: None)
     assert not isinstance(failed.value, video.GenerationUnfinished)
     assert calls == ["POST"] and "no automatic retry" in str(failed.value)
 
@@ -937,12 +938,21 @@ class _Hold:
         self.data = data
 
 
+class _Trickle:
+    """A scripted answer whose head comes at once and whose body comes a byte every `every` seconds — an
+    answer that keeps coming, too slowly for one read's timeout ever to fire — then the connection closes."""
+
+    def __init__(self, head: bytes, body: bytes, every: float) -> None:
+        self.head, self.body, self.every = head, body, every
+
+
 class _Wire:
     """A local xAI on 127.0.0.1: each request, read whole, gets the next scripted bytes (the last one
     repeats), then the server closes the connection whatever its Content-Length promised — or, for a
-    `_Hold`, keeps it open until the client closes it."""
+    `_Hold`, keeps it open until the client closes it; a `_Trickle` comes as it says, until the client
+    closes."""
 
-    def __init__(self, answers: list[bytes | _Hold]) -> None:
+    def __init__(self, answers: list[bytes | _Hold | _Trickle]) -> None:
         self.answers = list(answers)
         self.seen: list[tuple[str, str]] = []
         self.listener = socket.create_server(("127.0.0.1", 0))
@@ -986,6 +996,16 @@ class _Wire:
                             pass
                     except OSError:
                         pass
+                elif isinstance(answer, _Trickle):
+                    try:
+                        conn.sendall(answer.head)
+                        for at in range(len(answer.body)):
+                            if self.stopped.wait(answer.every):
+                                break
+                            conn.sendall(answer.body[at:at + 1])
+                        conn.shutdown(socket.SHUT_WR)
+                    except OSError:  # the client gave up and closed
+                        pass
                 else:
                     conn.sendall(answer)
                     conn.shutdown(socket.SHUT_WR)
@@ -1001,7 +1021,7 @@ def wire(monkeypatch):
     """`wire(*answers)` starts a _Wire and points every xAI URL of the video module at it."""
     started: list[_Wire] = []
 
-    def serve(*answers: bytes | _Hold) -> _Wire:
+    def serve(*answers: bytes | _Hold | _Trickle) -> _Wire:
         server = _Wire(list(answers))
         started.append(server)
         monkeypatch.setattr(video, "API_BASE", server.base)
@@ -1012,9 +1032,9 @@ def wire(monkeypatch):
         server.close()
 
 
-def _on_wire(method, url, token, body):
-    # The real transport, with a timeout a test can wait out if the server ever stalls.
-    return xai.http_json(method, url, token, body, timeout=5)
+def _on_wire(method, url, token, body, **deadline):
+    # The real transport, with a timeout a test can wait out if the server ever stalls, and the run's deadline.
+    return xai.http_json(method, url, token, body, timeout=5, **deadline)
 
 
 @pytest.mark.parametrize(("answer", "line", "reason"), [
@@ -1023,11 +1043,13 @@ def _on_wire(method, url, token, body):
     (GARBLED, xai.TRANSPORT_FAILED, "BadStatusLine('garbage\\r\\n')"),
     (NOT_JSON, "xai: response was not valid JSON", "response was not valid JSON"),
 ], ids=["cut", "cut-refusal", "garbled", "not-json"])
-def test_http_json_reads_an_answer_it_cannot_read_whole_as_no_answer(wire, answer, line, reason) -> None:
-    """The line each always had — the transport's, or the not-JSON one — on the type a poll asks again on."""
+@pytest.mark.parametrize("bounded", [False, True], ids=["no-deadline", "deadline"])
+def test_http_json_reads_an_answer_it_cannot_read_whole_as_no_answer(wire, answer, line, reason, bounded) -> None:
+    """The line each always had — the transport's, or the not-JSON one — on the type a poll asks again on,
+    whether or not a deadline bounds the read (a body read a chunk at a time still knows it was cut short)."""
     server = wire(answer)
     with pytest.raises(xai.TransportError) as lost:
-        _on_wire("GET", f"{server.base}/videos/req-1", "t", None)
+        _on_wire("GET", f"{server.base}/videos/req-1", "t", None, **({"deadline": time.monotonic() + 60} if bounded else {}))
     assert isinstance(lost.value, SystemExit)
     assert (str(lost.value), lost.value.reason) == (line, reason)
     assert server.seen == [("GET", "/v1/videos/req-1")]
@@ -1037,7 +1059,7 @@ def test_a_poll_cut_short_garbled_or_not_json_is_asked_again_and_publishes(tmp_p
     server = wire(ACCEPTED, CUT, GARBLED, NOT_JSON, CUT_REFUSAL, PENDING_ON_WIRE, DONE_ON_WIRE)
     slept: list[float] = []
     result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
-                                  call=_on_wire, download=lambda url, token: MP4, sleep=slept.append)
+                                  call=_on_wire, download=lambda url, token, **_: MP4, sleep=slept.append)
     assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 6
     # Four unreadable answers in a row wait like four lost polls; the pending answer puts the wait back.
     assert slept == [8.0, 16.0, 32.0, 60.0, 4.0]
@@ -1053,7 +1075,7 @@ def test_a_resume_whose_poll_is_cut_short_asks_the_same_request_again(tmp_path: 
     """The validator's counterexample: a resumed poll cut 10 bytes into its 200-byte body."""
     server = wire(CUT, DONE_ON_WIRE)
     result = video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
-                                call=_on_wire, download=lambda url, token: MP4, sleep=lambda s: None)
+                                call=_on_wire, download=lambda url, token, **_: MP4, sleep=lambda s: None)
     assert server.seen == [("GET", "/v1/videos/req-1")] * 2
     assert result.out.read_bytes() == MP4 and result.to_dict()["polls_unanswered"] == 1
 
@@ -1098,7 +1120,7 @@ def test_a_submission_cut_short_is_not_unfinished_and_is_never_sent_again(tmp_pa
     server = wire(CUT)
     with pytest.raises(SystemExit) as failed:
         video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
-                             call=_on_wire, download=lambda url, token: MP4, sleep=lambda s: None)
+                             call=_on_wire, download=lambda url, token, **_: MP4, sleep=lambda s: None)
     assert isinstance(failed.value, xai.TransportError) and not isinstance(failed.value, video.GenerationUnfinished)
     assert str(failed.value) == xai.TRANSPORT_FAILED and failed.value.reason == CUT_SAID
     assert server.seen == [("POST", "/v1/videos/generations")]
@@ -1130,7 +1152,7 @@ def _done_at(url: str) -> bytes:
     return _answer("200 OK", json.dumps({**DONE[1], "video": {**DONE[1]["video"], "url": url}}).encode("utf-8"))
 
 
-def _clip_wire(wire, *downloads: bytes | _Hold, clip_url: str | None = None) -> _Wire:
+def _clip_wire(wire, *downloads: bytes | _Hold | _Trickle, clip_url: str | None = None) -> _Wire:
     """The POST accepted, one poll done naming the clip at `clip_url` (by default on the wire itself,
     `/clips/1.mp4`), then `downloads` answer the clip's downloads in turn."""
     server = wire()
@@ -1294,3 +1316,227 @@ def test_a_clip_left_unfinished_by_its_download_is_published_by_video_resume(tmp
     assert (resumed["polls"], resumed["downloads"]) == (1, 1)
     assert json.loads(capsys.readouterr().out)["report"] == str(report.resolve())
     assert out.read_bytes() == MP4 and not list(tmp_path.glob("*.part"))
+
+
+# --- one time limit: the poll timeout bounds the polls and the downloads ------------------
+# A caller that stops the run at a hard limit (an app's clip stage) sets the poll timeout under it, and must
+# get the request_id back before that limit: a run it kills leaves no id, and the clip it may be billed for
+# can then only be bought again. So the timeout counts from the request's send, every poll and download
+# reads only what is left of it — one that stalls, or keeps coming too slowly for a read's timeout ever to
+# fire, is cut when it comes — and a poll or download whose wait would reach it is not asked: the run is
+# unfinished on the request_id then. A done poll that names nothing to download is unfinished on its id
+# too. The slow cases run on the real clock and a real socket, with a timeout of BUDGET seconds.
+
+BUDGET = 1.5  # a run's poll timeout on the real clock
+SLACK = 1.0  # what a run cut at BUDGET may take past it on a busy host; a read timeout or a wait is more
+EARLY = 0.05  # a socket's timeout may fire this much before the instant it was set for
+SLOW_CLIP = MP4 + b"\x00" * 240  # a clip whose bytes, a byte every 20 ms, come for about 6 s
+SLOW_CLIP_HEAD = _answer("200 OK", b"", length=len(SLOW_CLIP), content_type="video/mp4")  # its head alone
+PENDING_BODY = b'{"status": "pending"}'
+
+
+def _cli_on_real_clock(monkeypatch) -> list[float]:
+    """The CLI on its own transports and the real clock, its poll timeout BUDGET and its read timeout
+    longer than that — the 120 s read against what is left of a 210 s stage. Its waits are recorded,
+    not slept, so only the reads take time."""
+    slept: list[float] = []
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", slept.append)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", BUDGET)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", BUDGET + 2.5)
+    return slept
+
+
+@pytest.mark.parametrize("slow", ["stalled", "trickled"])
+def test_a_download_slower_than_the_time_left_leaves_an_unfinished_report_by_the_poll_timeout(
+        tmp_path: Path, wire, monkeypatch, capsys, slow) -> None:
+    """The counterexample: a download that stalls (its read timeout longer than what is left) or that keeps
+    coming a byte at a time is cut when the poll timeout comes, and the run leaves its report naming the
+    request then — not three downloads and two waits later, when its caller has killed it."""
+    answer = (_Hold(SLOW_CLIP_HEAD + SLOW_CLIP[:10]) if slow == "stalled"
+              else _Trickle(SLOW_CLIP_HEAD, SLOW_CLIP, 0.02))
+    server = _clip_wire(wire, answer)
+    slept = _cli_on_real_clock(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    # One download, cut at the deadline; another one's wait would run past it, so none is tried.
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")]
+    assert slept == []
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 is done, but its download got no answer (last: timed out) until the "
+                       f"poll timeout ({BUDGET:g}s, 1 attempt); the clip is made and may be billed — ask for "
+                       f"request_id=req-1 again with `sprite-gen video-resume --request-id req-1 --out {out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    left = json.loads(report.read_text(encoding="utf-8"))
+    assert BUDGET - EARLY <= left.pop("elapsed_seconds") < BUDGET + SLACK
+    assert left == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "downloads": 1,
+        "last_download": {"http": None, "error": "timed out"},
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_whose_next_wait_would_reach_the_poll_timeout_is_not_tried_again(
+        tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    """The downloads and their waits (8 s, then 16 s) run inside the poll timeout: a refused download whose
+    next wait would reach it ends the run on the request_id there, not a wait and a download later."""
+    server = _clip_wire(wire, CLIP_REFUSED)
+    clock, slept, sleep = _clock(monkeypatch)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=sleep, poll_timeout=20)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 2
+    assert slept == [8.0] and clock["t"] == 8.0
+    assert str(unfinished.value) == (
+        "video: generation req-1 is done, but its download was refused (last answer 503) until the poll timeout "
+        "(20s, 2 attempts); the clip is made and may be billed — ask for request_id=req-1 again with `sprite-gen "
+        f"video-resume --request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; "
+        "nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["downloads"], report["last_download"], report["elapsed_seconds"]) == (2, {"http": 503}, 8.0)
+    assert "[video] download 1 of generation req-1 was refused (503); downloading again in 8s" in capsys.readouterr().err
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.parametrize("slow", ["stalled", "trickled"])
+def test_a_poll_slower_than_the_time_left_ends_unfinished_by_the_poll_timeout(tmp_path: Path, wire, monkeypatch, slow) -> None:
+    """A poll's own read is cut by the poll timeout too: one that stalls past it, or whose answer keeps coming
+    too slowly, does not hold the run a read timeout past the limit its caller set."""
+    head = _answer("200 OK", b"", length=len(PENDING_BODY))
+    server = wire(ACCEPTED, PENDING_ON_WIRE, _Hold(head) if slow == "stalled" else _Trickle(head, PENDING_BODY, 0.2))
+    monkeypatch.setattr(video, "POLL_INTERVAL_SECONDS", 0.1)
+    slept: list[float] = []
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, download=lambda url, token, **_: MP4, sleep=slept.append, poll_timeout=BUDGET)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 2
+    assert slept == [0.1]
+    message = str(unfinished.value)
+    assert message.startswith("video: generation req-1 was accepted, but its polls got no answer (last: timed out) "
+                              f"until the poll timeout ({BUDGET:g}s, 2 polls); it may still finish and be billed — "
+                              "ask for request_id=req-1 again with ")
+    report = unfinished.value.to_dict()
+    assert BUDGET - EARLY <= report["elapsed_seconds"] < BUDGET + SLACK
+    assert (report["polls"], report["polls_unanswered"], report["last_poll"]) == (
+        2, 1, {"http": None, "status": None, "error": "timed out"})
+    assert not request.out.exists()
+
+
+def test_the_poll_timeout_counts_from_the_requests_send(tmp_path: Path, monkeypatch) -> None:
+    """A caller's limit covers the POST: the polls get what the POST's answer left of the timeout."""
+    api = _FakeApi(polls=[(200, {"status": "pending"})])
+    clock, slept, sleep = _clock(monkeypatch)
+
+    def call(method, url, token, body, **kw):
+        if method == "POST":
+            clock["t"] += 12.0  # the upload and xAI's answer took 12 of the 20 seconds
+        return api.call(method, url, token, body, **kw)
+
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=call, download=api.download, sleep=sleep, poll_timeout=20)
+    # Polls at 12 s and 16 s; a third at 20 s would have no time left to be answered.
+    assert [sent[0] for sent in api.calls] == ["POST", "GET", "GET"] and slept == [4.0]
+    assert str(unfinished.value).startswith("video: generation req-1 still 'pending' after 2 polls — poll timeout; ")
+    assert (unfinished.value.polls, unfinished.value.elapsed_seconds) == (2, 16.0)
+
+
+def test_a_request_accepted_after_the_whole_poll_timeout_is_unfinished_before_any_poll(tmp_path: Path, monkeypatch) -> None:
+    """The POST is not cut by the poll timeout — its answer is the one way to the id — and one that comes after
+    the whole of it ends the run there, naming the request, without a poll that would run past the limit."""
+    api = _FakeApi()
+    clock, slept, sleep = _clock(monkeypatch)
+
+    def call(method, url, token, body, **kw):
+        if method == "POST":
+            clock["t"] += 25.0
+        return api.call(method, url, token, body, **kw)
+
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=call, download=api.download, sleep=sleep, poll_timeout=20)
+    assert [sent[0] for sent in api.calls] == ["POST"] and slept == [] and api.downloads == []
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 was accepted after the poll timeout (20s) had run out, before any poll; "
+                       "it may still finish and be billed — ask for request_id=req-1 again with `sprite-gen video-resume "
+                       f"--request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; "
+                       "nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    report = unfinished.value.to_dict()
+    assert (report["request_id"], report["polls"], report["last_poll"], report["elapsed_seconds"]) == (
+        "req-1", 0, {"http": None, "status": None}, 25.0)
+    assert not request.out.exists()
+
+
+def _done_naming(named) -> bytes:
+    """A done poll on the wire whose `video` is `named`."""
+    return _answer("200 OK", json.dumps({"status": "done", "video": named, "model": video.DEFAULT_MODEL}).encode("utf-8"))
+
+
+@pytest.mark.parametrize("named", [
+    {"duration": 6.0},
+    {"url": "", "duration": 6.0},
+    {"url": None},
+    {"url": 7},
+    {"url": "vidgen.x.ai/v/1.mp4"},
+    "a clip",
+], ids=["no-url", "empty-url", "null-url", "a-number", "no-scheme", "not-an-object"])
+def test_a_done_poll_that_names_no_url_leaves_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys, named) -> None:
+    """The second counterexample: xAI says done — the clip is made and may be billed — and names nothing the
+    run can download. The run ends unfinished on the request_id, its report left for the caller, never as a
+    refusal or a crash that leaves no id; `video-resume` polls it afresh."""
+    server = wire(ACCEPTED, _done_naming(named))
+    _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert server.seen == SUBMITTED
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 is done, but its poll named no video url to download; the clip is made "
+                       "and may be billed — ask for request_id=req-1 again with `sprite-gen video-resume --request-id "
+                       f"req-1 --out {out.resolve()}` instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "elapsed_seconds": 0.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_resume_whose_done_poll_names_no_url_is_unfinished_on_the_same_request(tmp_path: Path, wire) -> None:
+    server = wire(_done_naming({"duration": 6.0}))
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
+                           call=_on_wire, sleep=lambda s: None)
+    assert server.seen == [("GET", "/v1/videos/req-1")]
+    assert str(unfinished.value).startswith(
+        "video-resume: generation req-1 is done, but its poll named no video url to download; ")
+    assert (unfinished.value.verb, unfinished.value.request_id) == ("video-resume", "req-1")
+    assert not (tmp_path / "clip.mp4").exists()

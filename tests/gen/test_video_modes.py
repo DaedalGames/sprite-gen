@@ -35,11 +35,11 @@ class _FakeApi:
         self.done = done or {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "duration": 5.04}, "model": "grok-imagine-video-1.5"}
         self.calls: list[tuple[str, str, str, dict | None]] = []
 
-    def call(self, method, url, token, body):
+    def call(self, method, url, token, body, *, deadline=None):
         self.calls.append((method, url, token, body))
         return self.post if method == "POST" else (200, self.done)
 
-    def download(self, url, token):
+    def download(self, url, token, *, deadline=None):
         return MP4
 
     def kw(self):
