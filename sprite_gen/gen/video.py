@@ -67,6 +67,7 @@ from .xai import (
     API_BASE, AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
     HTTP_TIMEOUT_SECONDS, GROK_REFRESH_COMMAND, GROK_REFRESH_WHERE, GROK_LOGIN_COMMAND,
     NO_ANSWER, Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json, no_answer,
+    read_whole, time_left,
 )
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
@@ -100,21 +101,27 @@ MODE_RESUME = "resume"
 # What `video-resume` takes for an id: it goes into the `/videos/{id}` path, so no `/`, `?`, `#` or `%`.
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 POLL_INTERVAL_SECONDS = 4.0
+# The poll timeout is the one time limit of an accepted request: it counts from the moment the request is
+# sent (a resume: its first poll) and bounds its polls, their waits and the clip's downloads alike. Each
+# poll and download reads only what is left of it (xai.read_whole), and one whose wait would reach it is
+# not asked: the run ends unfinished on the request_id instead. So a caller that stops the run at a hard
+# limit gets the id back when it sets the timeout under that limit. The POST is not cut by it — its
+# answer is the one way to the id; an answer that comes after the whole timeout ends the run at once.
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
 # A poll xAI throttles (429) or fails on its own side (5xx), or one that gets no answer it can read (the
 # connection failed or timed out, the answer broke on the way or was not JSON — xai.TransportError), is
 # asked again, on the same request: the POST was accepted, so a
 # new submission would buy the clip twice, and a GET buys nothing. The wait doubles from
-# POLL_INTERVAL_SECONDS while the polls fail, up to the ceiling; no wait runs past the poll timeout,
-# which bounds the whole poll however its polls are answered.
+# POLL_INTERVAL_SECONDS while the polls fail, up to the ceiling.
 POLL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 POLL_BACKOFF_MAX_SECONDS = 60.0
 # A clip the poll says is done is made, and may be billed: its request_id is the one way back to it. A
 # download that gets no answer it can read, or that the clip's host refuses with one of
 # POLL_RETRY_STATUSES, is downloaded again after the polls' doubling wait (8 s, then 16 s), up to
-# DOWNLOAD_ATTEMPTS downloads in all. One still failing, one refused with another status, or bytes
-# that are not an mp4, end the run unfinished on that request_id: `video-resume` polls it again for
-# a fresh URL, where a new submission would buy the clip twice.
+# DOWNLOAD_ATTEMPTS downloads in all, within the poll timeout. One still failing, one refused with
+# another status, bytes that are not an mp4, or a done poll that names no URL to download, end the run
+# unfinished on that request_id: `video-resume` polls it again for a fresh URL, where a new submission
+# would buy the clip twice.
 DOWNLOAD_ATTEMPTS = 3
 # Every mp4/mov starts with a size-prefixed `ftyp` box: bytes 4..8 spell it.
 MP4_FTYP_OFFSET = 4
@@ -125,7 +132,8 @@ _FAILED_STATUSES = ("failed", "error", "expired")
 
 class GenerationUnfinished(SystemExit):
     """xAI accepted the request (it may bill it) and the run ended before it did: the poll timeout
-    came, xAI rejected the credential on a poll, or the clip it made could not be downloaded.
+    came, xAI rejected the credential on a poll, or the clip it made could not be downloaded (or its
+    done poll named no URL to download it from).
 
     The line names `request_id=<id>` and the `video-resume` command that asks for it again, and
     carries no `(HTTP n)`, a refusal line's status: a caller that reads `(HTTP 429)` there sends the
@@ -171,6 +179,10 @@ class GenerationUnfinished(SystemExit):
         }
 
 
+# How a clip is downloaded: `(url, token, *, deadline)` -> its bytes, read whole by the deadline (http_download).
+Download = Callable[..., bytes]
+
+
 class DownloadRefused(SystemExit):
     """The clip's host answered its download with an error `status` (a 401 or 403 once more with the bearer token)."""
 
@@ -179,22 +191,23 @@ class DownloadRefused(SystemExit):
         self.status = status
 
 
-def http_download(url: str, token: str) -> bytes:
-    """The clip's bytes, read whole. An error status raises DownloadRefused; a download that gets no answer
-    it can read whole — the connection failed or timed out, the body broke on the way — raises
-    xai.TransportError, its words in `reason`."""
+def http_download(url: str, token: str, *, deadline: float | None = None) -> bytes:
+    """The clip's bytes, read whole — by `deadline` (a `time.monotonic()` instant) when one is given: each
+    wait is cut to what is left of it (xai.read_whole). An error status raises DownloadRefused; a download
+    that gets no answer it can read whole — the connection failed or timed out, the body broke on the way,
+    the deadline came — raises xai.TransportError, its words in `reason`."""
     request = urllib.request.Request(url)
     try:
         try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                return response.read()
+            with urllib.request.urlopen(request, timeout=time_left(HTTP_TIMEOUT_SECONDS, deadline)) as response:
+                return read_whole(response, HTTP_TIMEOUT_SECONDS, deadline)
         except urllib.error.HTTPError as first:
             if first.code not in (401, 403):
                 raise DownloadRefused(first.code, f"video: download failed with HTTP {first.code}") from first
             request.add_header("Authorization", f"Bearer {token}")
             try:
-                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                    return response.read()
+                with urllib.request.urlopen(request, timeout=time_left(HTTP_TIMEOUT_SECONDS, deadline)) as response:
+                    return read_whole(response, HTTP_TIMEOUT_SECONDS, deadline)
             except urllib.error.HTTPError as second:
                 raise DownloadRefused(
                     second.code, f"video: download failed with HTTP {second.code} even with the bearer token"
@@ -486,7 +499,7 @@ def _submit_poll_publish(
     out: Path,
     credential: Credential,
     call: HttpCall,
-    download: Callable[[str, str], bytes],
+    download: Download,
     sleep: Callable[[float], None],
     poll_timeout: float | None,
     accept: Callable[[Path, dict[str, Any]], None] | None = None,
@@ -537,7 +550,7 @@ def _poll_publish(
     out: Path,
     credential: Credential,
     call: HttpCall,
-    download: Callable[[str, str], bytes],
+    download: Download,
     sleep: Callable[[float], None],
     poll_timeout: float | None,
     started: float,
@@ -549,13 +562,16 @@ def _poll_publish(
     still the `.part` file — `video-extend` measures the staged bytes with ffprobe; the
     staged file is removed and `out` is never written.
 
-    The poll timeout counts from here. A run that ends before the request does — the timeout
-    came, xAI rejected the credential, or the clip it made could not be downloaded (DOWNLOAD_ATTEMPTS)
-    — raises GenerationUnfinished naming the request."""
+    The poll timeout counts from `started`, when the request was sent (a resume: its first poll), and
+    is one deadline for the polls and the downloads: `call` (as http_json) and `download` take it as
+    `deadline=` and read only what is left of it, and a poll or download whose wait would reach it is
+    not asked. A run that ends before the request does — the deadline came, xAI rejected the credential,
+    the done poll named no URL, or the clip it made could not be downloaded (DOWNLOAD_ATTEMPTS) — raises
+    GenerationUnfinished naming the request."""
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
-    deadline = time.monotonic() + timeout
+    deadline = started + timeout
     polls = polls_refused = polls_unanswered = failed_in_a_row = downloads = 0
-    video_url: str | None = None
+    video_url: Any = None
     duration_reported: float | None = None
     model_reported: str | None = None
     final: dict[str, Any] = {}
@@ -569,11 +585,15 @@ def _poll_publish(
             elapsed_seconds=time.monotonic() - started, downloads=downloads, last_download=last_download,
         )
 
+    if time.monotonic() >= deadline:
+        # The POST is not cut by the deadline (its answer is the one way to the id); this one came after it.
+        raise unfinished(f"was accepted after the poll timeout ({timeout:g}s) had run out, before any poll; "
+                         f"it may still finish and be billed — {_ask_again(request_id, out)}", None, None, None)
     while True:
         polls += 1
         lost: str | None = None
         try:
-            http, poll = call("GET", f"{API_BASE}/videos/{request_id}", credential.token, None)
+            http, poll = call("GET", f"{API_BASE}/videos/{request_id}", credential.token, None, deadline=deadline)
         except TransportError as failed:
             lost, http, poll = failed.reason, None, None
         poll_status = poll.get("status") if isinstance(poll, dict) else None
@@ -619,8 +639,8 @@ def _poll_publish(
             failed_in_a_row = 0
         wait = (min(POLL_INTERVAL_SECONDS * 2 ** failed_in_a_row, POLL_BACKOFF_MAX_SECONDS) if failed_in_a_row
                 else POLL_INTERVAL_SECONDS)
-        now = time.monotonic()
-        if now >= deadline:
+        if time.monotonic() + wait >= deadline:
+            # The next poll would leave no time to read its answer: the run ends here, not at the deadline.
             if failed_in_a_row:
                 last = f"got no answer (last: {lost})" if lost is not None else f"were refused (last answer {http})"
                 stopped = f"was accepted, but its polls {last} until the poll timeout ({timeout:g}s, {polls} polls)"
@@ -628,7 +648,6 @@ def _poll_publish(
                 stopped = f"still {poll_status!r} after {polls} polls — poll timeout"
             raise unfinished(f"{stopped}; it may still finish and be billed — {_ask_again(request_id, out)}",
                              http, poll_status, lost)
-        wait = min(wait, deadline - now)
         if lost is not None:
             print(f"[{verb}] poll {polls} of generation {request_id} got no answer ({lost}); "
                   f"asking again in {wait:g}s", file=sys.stderr)
@@ -638,15 +657,18 @@ def _poll_publish(
                   f"asking again in {wait:g}s", file=sys.stderr)
         sleep(wait)
 
-    if not video_url:
-        raise SystemExit(f"{verb}: generation {request_id} is done but reported no video url")
+    if not (isinstance(video_url, str) and video_url.lower().startswith(("https://", "http://"))):
+        # Done is xAI's word that the clip is made, so it may be billed: a poll that names nothing to download
+        # (no url, an empty one, not a web address) ends naming the request, and video-resume polls it afresh.
+        raise unfinished(f"is done, but its poll named no video url to download; the clip is made and may be billed — "
+                         f"{_ask_again(request_id, out)}", http, poll_status, None)
     # The clip is made: whatever stops its download, the run ends naming the request, never a second purchase.
     while True:
         downloads += 1
         said: str | None = None  # what the transport said when the download got no answer it could read
         refused: int | None = None  # the status the clip's host refused it with
         try:
-            data = download(video_url, credential.token)
+            data = download(video_url, credential.token, deadline=deadline)
         except TransportError as failed:
             said = failed.reason
         except DownloadRefused as failed:
@@ -660,17 +682,22 @@ def _poll_publish(
                              f"the clip is made and may be billed — {_ask_again(request_id, out)}", http, poll_status, None,
                              {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": len(data)})
         again = said is not None or refused in POLL_RETRY_STATUSES
-        if not again or downloads == DOWNLOAD_ATTEMPTS:
+        wait = POLL_INTERVAL_SECONDS * 2 ** downloads
+        out_of_time = time.monotonic() + wait >= deadline  # the next download would leave no time to read it
+        if not again or downloads == DOWNLOAD_ATTEMPTS or out_of_time:
             if said is not None:
-                failure = f"got no answer (last: {said}) after {downloads} attempts"
+                failure = f"got no answer (last: {said})"
             elif again:
-                failure = f"was refused (last answer {refused}) after {downloads} attempts"
+                failure = f"was refused (last answer {refused})"
             else:
                 failure = f"was refused (answer {refused})"
+            if again and downloads == DOWNLOAD_ATTEMPTS:
+                failure += f" after {downloads} attempts"
+            elif again:
+                failure += f" until the poll timeout ({timeout:g}s, {downloads} attempt{'s' if downloads > 1 else ''})"
             raise unfinished(f"is done, but its download {failure}; the clip is made and may be billed — "
                              f"{_ask_again(request_id, out)}", http, poll_status, None,
                              {"http": refused, **({"error": said} if said is not None else {})})
-        wait = POLL_INTERVAL_SECONDS * 2 ** downloads
         # The status in plain digits, as the poll notes say it.
         failure = f"got no answer ({said})" if said is not None else f"was refused ({refused})"
         print(f"[{verb}] download {downloads} of generation {request_id} {failure}; downloading again in {wait:g}s",
@@ -708,7 +735,7 @@ def generate_video(
     *,
     credential: Credential | None = None,
     call: HttpCall | None = None,
-    download: Callable[[str, str], bytes] | None = None,
+    download: Download | None = None,
     sleep: Callable[[float], None] | None = None,
     poll_timeout: float | None = None,
 ) -> VideoResult:
@@ -797,7 +824,7 @@ def extend_video(
     *,
     credential: Credential | None = None,
     call: HttpCall | None = None,
-    download: Callable[[str, str], bytes] | None = None,
+    download: Download | None = None,
     sleep: Callable[[float], None] | None = None,
     poll_timeout: float | None = None,
     probe: Callable[[Path], float] | None = None,
@@ -866,7 +893,7 @@ def edit_video(
     *,
     credential: Credential | None = None,
     call: HttpCall | None = None,
-    download: Callable[[str, str], bytes] | None = None,
+    download: Download | None = None,
     sleep: Callable[[float], None] | None = None,
     poll_timeout: float | None = None,
     probe: Callable[[Path], float] | None = None,
@@ -911,7 +938,7 @@ def resume_video(
     *,
     credential: Credential | None = None,
     call: HttpCall | None = None,
-    download: Callable[[str, str], bytes] | None = None,
+    download: Download | None = None,
     sleep: Callable[[float], None] | None = None,
     poll_timeout: float | None = None,
 ) -> VideoResult:

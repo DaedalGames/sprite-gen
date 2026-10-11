@@ -157,25 +157,41 @@ What happens, in order:
    back to 4 s on an answer. A `[video] poll N of generation <id> was refused (429);
    asking again in 8s` line — or `… got no answer (timed out); asking again in 8s`,
    the reason `IncompleteRead(10 bytes read, 190 more expected)` or `response was not
-   valid JSON` for an answer it could not read — goes to stderr each time. The poll
-   timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600, counted from the POST's
-   answer) bounds the whole poll: no wait runs past it, one last poll is asked at it,
-   and a generation still pending, refused or unanswered then is *unfinished* (below).
-   A poll answered `401` or `403` — the credential stopped working after the POST,
+   valid JSON` for an answer it could not read — goes to stderr each time.
+
+   The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600) is the one time
+   limit of the accepted request. It counts from the POST's send and bounds the polls,
+   their waits and the clip's downloads (step 4) alike:
+
+   - Each poll reads only what is left of it. One whose answer stalls, or comes too
+     slowly for its 120 s read timeout ever to fire, is cut when the timeout comes and
+     counts as a poll that got no answer (`timed out`).
+   - A poll whose wait would reach the timeout is not asked. A generation still
+     pending, refused or unanswered then is *unfinished* (below) at once.
+   - The POST is not cut by it: its answer is the one way to the `request_id`, under its
+     own 120 s read timeout. One answered after the whole timeout is unfinished before
+     any poll.
+
+   So a caller that kills the run at a hard limit gets the `request_id` back when it
+   sets the timeout under that limit, with room for the process to start and for the
+   POST. A poll answered `401` or `403` — the credential stopped working after the POST,
    typically a login that expired — is unfinished at once. No clip is written on any
    failure path.
 4. Download `video.url`, verify the bytes start with an mp4 `ftyp` box, then move
    the file into `--out` atomically (`.part` staging). The clip is made by now and may
-   be billed, so a download that fails never ends the run without its `request_id`. One
-   that gets no answer it can read (the connection refused or timed out, the body cut
-   short of its `Content-Length`) or that the clip's host refuses with `429`, `500`,
-   `502`, `503` or `504` is downloaded again, after 8 s and then 16 s — three downloads
-   in all, each with its own 120 s read timeout and none bounded by the poll timeout —
-   and a `[video] download N of generation <id> got no answer (<reason>); downloading
-   again in 8s` (or `… was refused (503); …`) line goes to stderr before each. One still
-   failing, one refused with another status (a `401` or `403` is asked once more with
-   the bearer token first), or bytes that are not an mp4 end the run *unfinished*
-   (below).
+   be billed, so a download that fails never ends the run without its `request_id`, and
+   a done poll that names no URL to download (none, an empty one, anything but an
+   `http(s)://` string) is *unfinished* too. A download that gets no answer it can read
+   (the connection refused or timed out, the body cut short of its `Content-Length`) or
+   that the clip's host refuses with `429`, `500`, `502`, `503` or `504` is downloaded
+   again, after 8 s and then 16 s — three downloads in all, within the poll timeout: each
+   reads only what is left of it, so one that stalls or whose bytes come too slowly is
+   cut when it comes (`timed out`), and one whose wait would reach it is not tried. A
+   `[video] download N of generation <id> got no answer (<reason>); downloading again in
+   8s` (or `… was refused (503); …`) line goes to stderr before each. One still failing,
+   one refused with another status (a `401` or `403` is asked once more with the bearer
+   token first), a download the timeout leaves no time for, or bytes that are not an mp4
+   end the run *unfinished* (below).
 
 Reference-to-video tends to lock the opening composition to a referenced scene
 image (probe m3: the clip opened on the third reference's framing), so put
@@ -226,7 +242,7 @@ sprite-gen video-resume \
 ```
 
 No POST: it polls `GET /v1/videos/{id}` exactly as step 3 above (the same retries,
-backoff and poll timeout, counted from the first poll), then downloads, verifies and
+backoff and poll timeout, counted from the first poll and bounding the downloads too), then downloads, verifies and
 publishes the clip as step 4. Nothing is submitted, so nothing is bought twice and the
 `XAI_API_KEY` route prints no charge notice. Run it on the credential that submitted
 the request — the unfinished report's `auth_source`; refresh an expired login first.
@@ -260,8 +276,9 @@ printed or written** — only the download host (`vidgen.x.ai`).
 ### An unfinished generation
 
 xAI accepted the request and the run ended before it did — the poll timeout came with
-its polls still pending, refused or unanswered, xAI rejected the credential on a
-poll, or the poll said done and the clip could not be downloaded (step 4). It may
+its polls still pending, refused or unanswered (or before any poll), xAI rejected the
+credential on a poll, or the poll said done and the clip could not be downloaded in
+time or at all, or the poll named no URL to download it from (step 4). It may
 finish and be billed — a clip that is done is made — so the run ends naming the
 request and the `video-resume` command that asks for it again, never as a refusal to
 send again:
@@ -269,11 +286,14 @@ send again:
 ```
 video: generation <id> was accepted, but its polls were refused (last answer 429) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `sprite-gen video-resume --request-id <id> --out /abs/clip.mp4` instead of submitting a new request; nothing was written
 video: generation <id> was accepted, but its polls got no answer (last: timed out) until the poll timeout (600s, 14 polls); it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
-video: generation <id> still 'pending' after 151 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> still 'pending' after 150 polls — poll timeout; it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> was accepted after the poll timeout (600s) had run out, before any poll; it may still finish and be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> was accepted, but xAI rejected the credential (grok-login) on poll 30 (answer 401); it may still finish and be billed — refresh the login with `grok models` run from an empty directory (e.g. `cd "$(mktemp -d)"`) or `grok login`, then ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> is done, but its download got no answer (last: IncompleteRead(1048576 bytes read, 3195904 more expected)) after 3 attempts; the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> is done, but its download was refused (last answer 503) after 3 attempts; the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> is done, but its download was refused (answer 404); the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its download got no answer (last: timed out) until the poll timeout (210s, 1 attempt); the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
+video: generation <id> is done, but its poll named no video url to download; the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 video: generation <id> is done, but its download brought 34 bytes that are not an mp4 (no ftyp box); the clip is made and may be billed — ask for request_id=<id> again with `…` instead of submitting a new request; nothing was written
 ```
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -162,7 +163,50 @@ def no_answer(exc: BaseException) -> TransportError:
     return TransportError((str(said) or type(said).__name__)[:200])
 
 
-def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> tuple[int, Any]:
+ANSWER_CHUNK = 1 << 16  # what one read of an answer bounded by a deadline asks for
+
+
+def time_left(timeout: float, deadline: float | None) -> float:
+    """What one read may wait: `timeout`, cut to what is left before `deadline`, a `time.monotonic()`
+    instant (None: no deadline). With nothing left it is a TimeoutError before anything is sent or read."""
+    if deadline is None:
+        return timeout
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("timed out")
+    return min(timeout, left)
+
+
+def read_whole(response: http.client.HTTPResponse, timeout: float, deadline: float | None) -> bytes:
+    """`response`'s body read whole, as `response.read()` reads it — and with a `deadline`, by then.
+
+    A socket's timeout bounds one read, so an answer that keeps coming a little at a time is never cut
+    by it. With a deadline the body is read a chunk at a time, each read waiting only what is left, so
+    an answer that stalls or comes too slowly ends in `TimeoutError('timed out')` when the deadline
+    comes. A body that ends short of its Content-Length raises IncompleteRead, as `read()` does."""
+    if deadline is None:
+        return response.read()
+    chunks: list[bytes] = []
+    while not response.isclosed():
+        # http.client keeps no public handle on the connection once its answer began; the socket under
+        # the response's reader is where a read's wait is set.
+        response.fp.raw._sock.settimeout(time_left(timeout, deadline))
+        chunk = response.read1(ANSWER_CHUNK)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if response.length:  # read1 stops where the connection closed, short of the Content-Length, without a word
+        raise http.client.IncompleteRead(data, response.length)
+    return data
+
+
+def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS,
+              deadline: float | None = None) -> tuple[int, Any]:
+    """One request, its JSON answer read whole. `timeout` bounds each wait on the connection. A `deadline`
+    (a `time.monotonic()` instant) cuts the waits for the answer to what is left of it when the request
+    goes and the reads of its body to what is left at each (read_whole): an answer that stalls or comes
+    too slowly is no answer when it comes (TransportError, `timed out`)."""
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method)
     request.add_header("Authorization", f"Bearer {token}")
@@ -170,15 +214,15 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
     if body is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+        with urllib.request.urlopen(request, timeout=time_left(timeout, deadline)) as response:
+            raw = read_whole(response, timeout, deadline).decode("utf-8")
             return response.status, (json.loads(raw) if raw else {})
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise TransportError("response was not valid JSON", NOT_JSON) from exc
     except urllib.error.HTTPError as exc:
         # A refusal's status alone is not an answer read whole: its body broken on the way is no answer too.
         try:
-            raw = exc.read().decode("utf-8", "replace")
+            raw = read_whole(exc.fp, timeout, deadline).decode("utf-8", "replace")
         except NO_ANSWER as cut:
             raise no_answer(cut) from cut
         try:
