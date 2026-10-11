@@ -148,18 +148,22 @@ What happens, in order:
    API's own error text.
 3. `GET /v1/videos/{request_id}` every 4 s until `status` is `done`. `failed`,
    `expired` or a non-2xx poll fails loudly — except a poll answered `429` or `500`,
-   `502`, `503`, `504`, or one that gets no answer at all (the connection failed or
-   timed out): the request was accepted, so that poll is asked again on the same
-   `request_id` (a new POST would buy the clip twice; a GET buys nothing), after a wait
-   that doubles from 8 s up to 60 s while the polls fail and goes back to 4 s on an
-   answer. A `[video] poll N of generation <id> was refused (429); asking again in 8s`
-   line — or `… got no answer (timed out); asking again in 8s` — goes to stderr each
-   time. The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600, counted
-   from the POST's answer) bounds the whole poll: no wait runs past it, one last poll is
-   asked at it, and a generation still pending, refused or unanswered then is
-   *unfinished* (below). A poll answered `401` or `403` — the credential stopped
-   working after the POST, typically a login that expired — is unfinished at once. No
-   clip is written on any failure path.
+   `502`, `503`, `504`, or one that gets no answer it can read (the connection failed
+   or timed out; the answer broke on the way — a body shorter than its
+   `Content-Length`, a status line that is not one, a refusal's body cut the same way;
+   or a `200` body that is not JSON): the request was accepted, so that poll is asked
+   again on the same `request_id` (a new POST would buy the clip twice; a GET buys
+   nothing), after a wait that doubles from 8 s up to 60 s while the polls fail and goes
+   back to 4 s on an answer. A `[video] poll N of generation <id> was refused (429);
+   asking again in 8s` line — or `… got no answer (timed out); asking again in 8s`,
+   the reason `IncompleteRead(10 bytes read, 190 more expected)` or `response was not
+   valid JSON` for an answer it could not read — goes to stderr each time. The poll
+   timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600, counted from the POST's
+   answer) bounds the whole poll: no wait runs past it, one last poll is asked at it,
+   and a generation still pending, refused or unanswered then is *unfinished* (below).
+   A poll answered `401` or `403` — the credential stopped working after the POST,
+   typically a login that expired — is unfinished at once. No clip is written on any
+   failure path.
 4. Download `video.url`, verify the bytes start with an mp4 `ftyp` box, then move
    the file into `--out` atomically (`.part` staging).
 
@@ -236,8 +240,8 @@ the request — the unfinished report's `auth_source`; refresh an expired login 
 `video`), `bytes`, `host`, requested/reported duration (`input_duration` for
 extend / edit), resolution, aspect ratio, audio flag, `elapsed_seconds`, and
 `polls`, `polls_refused` (how many of `polls` xAI answered 429 or 5xx, each asked
-again) and `polls_unanswered` (how many got no answer, each asked again). The
-pre-modes `image` field stays. **Tokens and download URLs are never
+again) and `polls_unanswered` (how many got no answer they could read, each asked
+again). The pre-modes `image` field stays. **Tokens and download URLs are never
 printed or written** — only the download host (`vidgen.x.ai`).
 
 ### An unfinished generation
@@ -267,16 +271,20 @@ same reason. With `--report` the run leaves a
  "last_poll": {"http": 429, "status": null}, "elapsed_seconds": 600.0}
 ```
 
-`last_poll` gains `"error"` (what the socket said) when the last poll got no answer,
-its `http` then `null`. `auth_source` is the credential that submitted it — the one
-that can ask for it again. A report already at that path is replaced, as on success.
+`last_poll` gains `"error"` (what the transport said: `timed out`,
+`IncompleteRead(10 bytes read, 190 more expected)`, `response was not valid JSON`, …)
+when the last poll got no answer it could read, its `http` then `null`. `auth_source`
+is the credential that submitted it — the one that can ask for it again. A report
+already at that path is replaced, as on success.
 Every verb that polls (`video`, `video-extend`, `video-edit`, `video-resume`) does
 the same, `verb` naming it; a `video-resume` report's `model` is `null`.
 
-A POST that gets no answer is not unfinished: no `request_id` came back, and the line
-is the transport's own (`xai: request failed or timed out; no automatic retry (the
-server may have accepted it)`). Python callers catch `xai.TransportError`, a
-`SystemExit` with that line and the socket's words in `reason`.
+A POST that gets no answer it can read is not unfinished: no `request_id` could be
+read, so it ends at once and is never sent again. Its line is the transport's own
+(`xai: request failed or timed out; no automatic retry (the server may have accepted
+it)`), or `xai: response was not valid JSON` for a whole answer that is not JSON.
+Python callers catch `xai.TransportError`, a `SystemExit` with that line and the
+transport's words in `reason`.
 
 ## Quotas and limits
 

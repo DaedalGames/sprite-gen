@@ -7,6 +7,7 @@ that login. Never spawn an agent or switch sources after a login failure.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -131,16 +132,34 @@ def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | Non
 HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]
 
 TRANSPORT_FAILED = "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
+NOT_JSON = "xai: response was not valid JSON"
 
 
 class TransportError(SystemExit):
-    """No HTTP answer came back: the connection failed or timed out, and the server may have taken the
-    request. Still the SystemExit and line it always was; a caller that may safely ask again (a poll of
-    an accepted request) catches this type. `reason` is what the socket said."""
+    """No answer that could be read came back: the connection failed or timed out, the answer broke
+    after it began (a body shorter than its Content-Length, a status line that is not one), or it came
+    whole and was not JSON — and the server may have taken the request. Still the SystemExit and line
+    it always was (`NOT_JSON` for the last); a caller that may safely ask again (a poll of an accepted
+    request) catches this type. `reason` is what the transport said."""
 
-    def __init__(self, reason: str) -> None:
-        super().__init__(TRANSPORT_FAILED)
+    def __init__(self, reason: str, line: str = TRANSPORT_FAILED) -> None:
+        super().__init__(line)
         self.reason = reason
+
+
+# Everything that ends a request before its answer is read whole. http.client raises its own
+# HTTPException family (IncompleteRead, BadStatusLine, LineTooLong, …) past urllib once the answer
+# has begun; the socket's errors are OSError, inside a URLError while the request is still sent.
+_NO_ANSWER = (OSError, http.client.HTTPException)
+
+
+def _no_answer(exc: BaseException) -> TransportError:
+    said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    # An http.client exception carries what the server sent (BadStatusLine its line, CRLF included);
+    # its repr names the kind and keeps that on one line. RemoteDisconnected is a reset too: its words.
+    if isinstance(said, http.client.HTTPException) and not isinstance(said, OSError):
+        return TransportError(repr(said)[:200])
+    return TransportError((str(said) or type(said).__name__)[:200])
 
 
 def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> tuple[int, Any]:
@@ -155,13 +174,16 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
             raw = response.read().decode("utf-8")
             return response.status, (json.loads(raw) if raw else {})
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise SystemExit("xai: response was not valid JSON") from exc
+        raise TransportError("response was not valid JSON", NOT_JSON) from exc
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
+        # A refusal's status alone is not an answer read whole: its body broken on the way is no answer too.
+        try:
+            raw = exc.read().decode("utf-8", "replace")
+        except _NO_ANSWER as cut:
+            raise _no_answer(cut) from cut
         try:
             return exc.code, json.loads(raw)
         except json.JSONDecodeError:
             return exc.code, refusal.RawBody(raw)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-        raise TransportError((str(said) or type(said).__name__)[:200]) from exc
+    except _NO_ANSWER as exc:
+        raise _no_answer(exc) from exc
