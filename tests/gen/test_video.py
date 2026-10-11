@@ -4,7 +4,9 @@ verified mp4 publishing, and loud failures. No network — the HTTP layer is a f
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import socket
 import threading
@@ -207,15 +209,6 @@ def test_poll_timeout_fails_loud(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     with pytest.raises(SystemExit, match="poll timeout"):
         video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=sleep, poll_timeout=10)
-    assert not request.out.exists()
-
-
-def test_non_mp4_download_is_refused(tmp_path: Path) -> None:
-    api = _FakeApi()
-    api.payload = b"<html>not a video</html>"
-    request = _request(tmp_path)
-    with pytest.raises(SystemExit, match="not an mp4"):
-        video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=lambda s: None)
     assert not request.out.exists()
 
 
@@ -920,9 +913,9 @@ def test_the_unified_cli_routes_video_resume_under_gen() -> None:
 # raises what it raises on the wire.
 
 
-def _answer(status: str, body: bytes, *, length: int | None = None) -> bytes:
+def _answer(status: str, body: bytes, *, length: int | None = None, content_type: str = "application/json") -> bytes:
     """A raw HTTP/1.1 answer whose Content-Length says `length` (by default the body's own)."""
-    head = (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+    head = (f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n"
             f"Content-Length: {len(body) if length is None else length}\r\nConnection: close\r\n\r\n")
     return head.encode("latin-1") + body
 
@@ -937,16 +930,25 @@ DONE_ON_WIRE = _answer("200 OK", json.dumps(DONE[1]).encode("utf-8"))
 CUT_SAID = "IncompleteRead(10 bytes read, 190 more expected)"
 
 
+class _Hold:
+    """Scripted bytes after which the server holds the connection open, until the client gives up and closes it."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
 class _Wire:
     """A local xAI on 127.0.0.1: each request, read whole, gets the next scripted bytes (the last one
-    repeats), then the server closes the connection whatever its Content-Length promised."""
+    repeats), then the server closes the connection whatever its Content-Length promised — or, for a
+    `_Hold`, keeps it open until the client closes it."""
 
-    def __init__(self, answers: list[bytes]) -> None:
+    def __init__(self, answers: list[bytes | _Hold]) -> None:
         self.answers = list(answers)
         self.seen: list[tuple[str, str]] = []
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.listener.settimeout(0.1)
-        self.base = f"http://127.0.0.1:{self.listener.getsockname()[1]}/v1"
+        self.root = f"http://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.base = f"{self.root}/v1"
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
@@ -976,8 +978,17 @@ class _Wire:
                     body += chunk
                 method, path = lines[0].split(" ")[:2]
                 self.seen.append((method, path))
-                conn.sendall(self.answers.pop(0) if len(self.answers) > 1 else self.answers[0])
-                conn.shutdown(socket.SHUT_WR)
+                answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+                if isinstance(answer, _Hold):
+                    conn.sendall(answer.data)
+                    try:
+                        while conn.recv(65536):
+                            pass
+                    except OSError:
+                        pass
+                else:
+                    conn.sendall(answer)
+                    conn.shutdown(socket.SHUT_WR)
 
     def close(self) -> None:
         self.stopped.set()
@@ -990,7 +1001,7 @@ def wire(monkeypatch):
     """`wire(*answers)` starts a _Wire and points every xAI URL of the video module at it."""
     started: list[_Wire] = []
 
-    def serve(*answers: bytes) -> _Wire:
+    def serve(*answers: bytes | _Hold) -> _Wire:
         server = _Wire(list(answers))
         started.append(server)
         monkeypatch.setattr(video, "API_BASE", server.base)
@@ -1091,3 +1102,196 @@ def test_a_submission_cut_short_is_not_unfinished_and_is_never_sent_again(tmp_pa
     assert isinstance(failed.value, xai.TransportError) and not isinstance(failed.value, video.GenerationUnfinished)
     assert str(failed.value) == xai.TRANSPORT_FAILED and failed.value.reason == CUT_SAID
     assert server.seen == [("POST", "/v1/videos/generations")]
+
+
+# --- a clip that is done and could not be downloaded, over a real socket ---------------
+# The poll said done: the clip is made and may be billed, and its request_id is the one way back to
+# it. A download that gets no answer it can read (the connection refused, the body cut short, a read
+# that timed out) or that the clip's host refuses with 429 or 5xx is downloaded again, up to three
+# downloads; one still failing — or refused with another status, or bytes that are not an mp4 —
+# leaves the run unfinished on that request_id, never an exception that names no request, and
+# `video-resume` polls it again for a fresh URL. Before, a refused connection ended on
+# `video: cannot download the clip: …` and a cut or timed-out read escaped raw.
+
+CLIP = _answer("200 OK", MP4, content_type="video/mp4")
+CLIP_CUT = _answer("200 OK", MP4[:10], length=len(MP4), content_type="video/mp4")  # closes 10 bytes in
+CLIP_HELD = _Hold(CLIP_CUT)  # the same 10 bytes, then the connection stays open: the read times out
+CLIP_REFUSED = _answer("503 Service Unavailable", b"busy", content_type="text/plain")
+CLIP_GONE = _answer("404 Not Found", b"gone", content_type="text/plain")
+NOT_A_CLIP_BODY = b"<html>this link has expired</html>"
+NOT_A_CLIP = _answer("200 OK", NOT_A_CLIP_BODY, content_type="text/html")  # whole, and not an mp4
+CLIP_CUT_SAID = f"IncompleteRead(10 bytes read, {len(MP4) - 10} more expected)"
+REFUSED_SAID = f"[Errno {errno.ECONNREFUSED}] {os.strerror(errno.ECONNREFUSED)}"
+READ_TIMEOUT_SECONDS = 1.0
+SUBMITTED = [("POST", "/v1/videos/generations"), ("GET", "/v1/videos/req-1")]
+
+
+def _done_at(url: str) -> bytes:
+    """The done poll, naming the clip at `url`."""
+    return _answer("200 OK", json.dumps({**DONE[1], "video": {**DONE[1]["video"], "url": url}}).encode("utf-8"))
+
+
+def _clip_wire(wire, *downloads: bytes | _Hold, clip_url: str | None = None) -> _Wire:
+    """The POST accepted, one poll done naming the clip at `clip_url` (by default on the wire itself,
+    `/clips/1.mp4`), then `downloads` answer the clip's downloads in turn."""
+    server = wire()
+    server.answers = [ACCEPTED, _done_at(clip_url or f"{server.root}/clips/1.mp4"), *downloads]
+    return server
+
+
+def _refused_url() -> str:
+    """A clip URL on a port nothing holds: a free port is taken and let go, so a connection to it is refused.
+    (A port held bound and not listening is no such port on macOS: its SYN is dropped and the connect times out.)"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"http://127.0.0.1:{port}/clips/1.mp4"
+
+
+def _cli_on_wire(monkeypatch) -> list[float]:
+    """The CLI on its own transports, a read that waits READ_TIMEOUT_SECONDS for the clip, a clock its waits move."""
+    _clock_state, slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", READ_TIMEOUT_SECONDS)
+    return slept
+
+
+@pytest.mark.parametrize(("failure", "said"), [
+    ("cut", CLIP_CUT_SAID),
+    ("read-timeout", "timed out"),
+    ("refused-connection", REFUSED_SAID),
+], ids=["cut", "read-timeout", "refused-connection"])
+def test_a_clip_whose_downloads_get_no_answer_leaves_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys, failure, said) -> None:
+    if failure == "refused-connection":
+        server, downloads = _clip_wire(wire, clip_url=_refused_url()), []
+    else:
+        server = _clip_wire(wire, CLIP_CUT if failure == "cut" else CLIP_HELD)
+        downloads = [("GET", "/clips/1.mp4")] * 3
+    slept = _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    # One POST, one poll; the clip downloaded three times with waits 8 and 16 between.
+    assert server.seen == SUBMITTED + downloads
+    assert slept == [8.0, 16.0]
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 is done, but its download got no answer (last: {said}) after 3 "
+                       "attempts; the clip is made and may be billed — ask for request_id=req-1 again with "
+                       f"`sprite-gen video-resume --request-id req-1 --out {out.resolve()}` instead of submitting a "
+                       "new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "downloads": 3,
+        "last_download": {"http": None, "error": said},
+        "elapsed_seconds": 24.0,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"[video] download 1 of generation req-1 got no answer ({said}); downloading again in 8s" in captured.err
+    assert f"[video] download 2 of generation req-1 got no answer ({said}); downloading again in 16s" in captured.err
+    assert not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_cut_short_or_refused_is_downloaded_again_and_publishes(tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    server = _clip_wire(wire, CLIP_CUT, CLIP_REFUSED, CLIP)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", READ_TIMEOUT_SECONDS)
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=_on_wire, sleep=slept.append)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 3
+    assert slept == [8.0, 16.0]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert (payload["request_id"], payload["polls"], payload["downloads"]) == ("req-1", 1, 3)
+    err = capsys.readouterr().err
+    assert f"[video] download 1 of generation req-1 got no answer ({CLIP_CUT_SAID}); downloading again in 8s" in err
+    assert "[video] download 2 of generation req-1 was refused (503); downloading again in 16s" in err
+
+
+def test_a_clip_downloaded_whole_at_once_reports_one_download(tmp_path: Path) -> None:
+    api = _FakeApi()
+    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
+    assert payload["downloads"] == 1
+
+
+@pytest.mark.parametrize(("answer", "downloads", "said", "status"), [
+    (CLIP_REFUSED, 3, "was refused (last answer 503) after 3 attempts", 503),
+    (CLIP_GONE, 1, "was refused (answer 404)", 404),
+], ids=["refused-503", "gone-404"])
+def test_a_download_refused_ends_unfinished_on_the_same_request(tmp_path: Path, wire, answer, downloads, said, status) -> None:
+    """429 and 5xx are downloaded again; any other status ends at once — `video-resume` asks for a fresh URL."""
+    server = _clip_wire(wire, answer)
+    slept: list[float] = []
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=slept.append)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * downloads
+    assert slept == [8.0, 16.0][:downloads - 1]
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 is done, but its download {said}; the clip is made and may be billed — "
+                       f"ask for request_id=req-1 again with `sprite-gen video-resume --request-id req-1 --out "
+                       f"{request.out.resolve()}` instead of submitting a new request; nothing was written")
+    # No `(HTTP n)`: a caller reading `(HTTP 503)` sends the request again and buys the clip twice.
+    assert HTTP_STATUS.search(message) is None
+    report = unfinished.value.to_dict()
+    assert (report["request_id"], report["downloads"], report["last_download"]) == ("req-1", downloads, {"http": status})
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_that_is_not_an_mp4_is_unfinished_on_the_same_request(tmp_path: Path, wire) -> None:
+    """The ruling on a failed mp4 check: bytes that came whole and are not an mp4 are not xAI's verdict on
+    the request (that is `respect_moderation`, read before the download), so the run is unfinished on its
+    id — `video-resume` polls for a fresh URL — and never a refusal that leaves only a second purchase.
+    The same URL would bring the same bytes, so it is not downloaded again."""
+    server = _clip_wire(wire, NOT_A_CLIP)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=lambda s: None)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")]
+    size = len(NOT_A_CLIP_BODY)
+    assert str(unfinished.value) == (
+        f"video: generation req-1 is done, but its download brought {size} bytes that are not an mp4 (no ftyp box); "
+        "the clip is made and may be billed — ask for request_id=req-1 again with `sprite-gen video-resume "
+        f"--request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["downloads"], report["last_download"]) == (
+        1, {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": size})
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_clip_left_unfinished_by_its_download_is_published_by_video_resume(tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    """The run's report names the request; `video-resume` on that id polls without a POST, gets the clip's
+    fresh URL and publishes it."""
+    server = _clip_wire(wire, CLIP_CUT, CLIP_CUT, CLIP_CUT)
+    server.answers += [_done_at(f"{server.root}/clips/2.mp4"), CLIP]
+    _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished):
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    left = json.loads(report.read_text(encoding="utf-8"))
+    assert (left["kind"], left["request_id"], left["downloads"]) == ("sprite-gen-video-unfinished", "req-1", 3)
+    capsys.readouterr()
+
+    assert video.run_resume(request_id=left["request_id"], out=out, report=report) == 0
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 3 + [("GET", "/v1/videos/req-1"), ("GET", "/clips/2.mp4")]
+    resumed = json.loads(report.read_text(encoding="utf-8"))
+    assert (resumed["kind"], resumed["mode"], resumed["request_id"]) == ("sprite-gen-video-report", "resume", "req-1")
+    assert (resumed["polls"], resumed["downloads"]) == (1, 1)
+    assert json.loads(capsys.readouterr().out)["report"] == str(report.resolve())
+    assert out.read_bytes() == MP4 and not list(tmp_path.glob("*.part"))
