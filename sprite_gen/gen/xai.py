@@ -130,6 +130,18 @@ def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | Non
 
 HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]
 
+TRANSPORT_FAILED = "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
+
+
+class TransportError(SystemExit):
+    """No HTTP answer came back: the connection failed or timed out, and the server may have taken the
+    request. Still the SystemExit and line it always was; a caller that may safely ask again (a poll of
+    an accepted request) catches this type. `reason` is what the socket said."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(TRANSPORT_FAILED)
+        self.reason = reason
+
 
 def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> tuple[int, Any]:
     data = None if body is None else json.dumps(body).encode("utf-8")
@@ -151,4 +163,5 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
         except json.JSONDecodeError:
             return exc.code, refusal.RawBody(raw)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SystemExit("xai: request failed or timed out; no automatic retry (the server may have accepted it)") from exc
+        said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        raise TransportError((str(said) or type(said).__name__)[:200]) from exc
