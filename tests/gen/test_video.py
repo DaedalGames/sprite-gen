@@ -1110,8 +1110,7 @@ def test_a_submission_cut_short_is_not_unfinished_and_is_never_sent_again(tmp_pa
 # that timed out) or that the clip's host refuses with 429 or 5xx is downloaded again, up to three
 # downloads; one still failing — or refused with another status, or bytes that are not an mp4 —
 # leaves the run unfinished on that request_id, never an exception that names no request, and
-# `video-resume` polls it again for a fresh URL. Before, a refused connection ended on
-# `video: cannot download the clip: …` and a cut or timed-out read escaped raw.
+# `video-resume` polls it again for a fresh URL.
 
 CLIP = _answer("200 OK", MP4, content_type="video/mp4")
 CLIP_CUT = _answer("200 OK", MP4[:10], length=len(MP4), content_type="video/mp4")  # closes 10 bytes in
