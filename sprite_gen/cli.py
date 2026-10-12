@@ -14,7 +14,7 @@ from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compos
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
 from sprite_gen.frames import cutout, extract, slice_sheet, unpack_atlas
-from sprite_gen.gen import gen_set, prepare, video
+from sprite_gen.gen import gen_set, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
@@ -319,6 +319,12 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Generate every state row of a prepared run, N at a time — one report per row, table.md, non-zero exit on any failure.",
         gen_set.add_arguments,
         gen_set.run,
+    ),
+    # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
+    "pixel-draw": (
+        "Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (ANTHROPIC_API_KEY, billed per call).",
+        pixel_draw.add_arguments,
+        pixel_draw.run,
     ),
     "video": (
         "Animate a still (or pin a last frame / guide with references) into a verified mp4 via Grok Imagine (your own grok login or XAI_API_KEY).",

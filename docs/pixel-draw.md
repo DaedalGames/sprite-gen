@@ -1,0 +1,227 @@
+# `sprite-gen pixel-draw` — Claude Opus draws pixel art as a pixel grid
+
+> Owns: `sprite-gen pixel-draw`: the inputs, the run folder and `report.json`, gates G1–G7, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
+
+The model does not paint an image that is then shrunk to a grid. It writes the grid itself: a
+palette of keys and, per frame, one line of keys per pixel row. Code checks every answer, asks for
+broken rows again one at a time, renders the frames and, among candidates that pass, has one
+vision call pick. `grid.txt` — the palette and the rows — is the truth of a run; every PNG is
+derived from it and can be derived again.
+
+Use it for a single small asset: an item icon, a prop, a monster, a character still, four facing
+directions, a draft walk cycle, a grass or water tile. It was measured on `claude-opus-5-5` on
+2026-10-12 (250 drawings of 12 subjects at 16–48 px, judged by a vision model against the same
+subjects made with GPT images shrunk by sprite-gen's own functions):
+
+- single assets at 32 px and below came out shippable, and beat the shrunk GPT images at 16 px and
+  on characters, where one-pixel details (eyes, a belt, a glint) are placed on the grid from the
+  start instead of being averaged away;
+- 48 px held up (7 of 8 shippable) but is the edge of what was measured; past 48 px, painterly
+  styles, or a character from a picture the user gave, use [`gen`](gen.md) and
+  [pixel-unfake](pixel-unfake.md) instead;
+- a walk cycle keeps the body consistent but the legs barely change sides between the two contact
+  frames: it is a draft for a touch-up, and the run says so (G6 warning). A real loop belongs to the
+  [video → loop pipeline](video-pipeline.md);
+- a fixed palette (`pico8`) was kept every time, at a visible cost in material rendering;
+- dense small-pattern tiles (cobblestones) sometimes spent every token thinking and wrote nothing,
+  at effort xhigh only.
+
+It runs on `ANTHROPIC_API_KEY` and **every call is billed per call** against that key; the run
+says so on stderr before the first request leaves, and `report.json` adds up what it cost.
+
+## Quick start
+
+```bash
+export ANTHROPIC_API_KEY=<your Claude Console key>
+
+# one sprite, 32x32, two candidates, the vision pick
+sprite-gen pixel-draw --out-dir runs/slime \
+  --subject "A green slime monster: a glossy jelly blob with two black eyes and a white highlight, front view."
+
+# an inventory icon at 16 px, PICO-8 colours only
+sprite-gen pixel-draw --out-dir runs/potion --kind icon --size 16 --palette pico8 \
+  --subject "An inventory icon of a red health potion: a round glass flask with a cork stopper."
+
+# four directions in one call (say what each frame is in the subject)
+sprite-gen pixel-draw --out-dir runs/knight-4dir --frames down,up,left,right \
+  --subject "A small RPG knight, standing idle: down = facing the viewer, up = back turned, left and right = profiles."
+
+# a walk cycle draft
+sprite-gen pixel-draw --out-dir runs/knight-walk --frames walk1,walk2,walk3,walk4 --walk-cycle \
+  --subject "A small RPG knight, side view facing right, walking."
+
+# a repeating tile, twenty of them at half price: --batch
+sprite-gen pixel-draw --out-dir runs/grass --kind tile --batch \
+  --subject "A top-down grass ground tile: short green grass with a few lighter blades and small darker tufts."
+```
+
+On success the report is printed on stdout and written to `<out-dir>/report.json`; the picked
+candidate's files are at the top of the run folder.
+
+## Inputs
+
+| Flag | Values (default) | What it does |
+|---|---|---|
+| `--subject TEXT` | words | What to draw. For several frames, say what each one is (the frame names are listed for the model, their meaning comes from your words). |
+| `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette` instead of the flags. A key given both in the file and as a flag is refused. |
+| `--size N` | 8–48 (32) | Canvas side in pixels; every frame is N×N. Measured best at 32 or less. |
+| `--kind` | `sprite`, `icon`, `tile` (`sprite`) | Sprites and icons have a transparent background and a dark outline; a tile fills every pixel and repeats seamlessly. |
+| `--frames a,b,…` | 1–4 names (one frame named after `--kind`) | Frames drawn **in one call**, so they share one palette and one design. Names are letters, digits, `_` and `-`. |
+| `--walk-cycle` | flag | The four frames are contact, passing, contact, passing: the prompt says so and G6 checks the legs change sides. |
+| `--palette` | `free[:N]` (`free:16`), `pico8`, `#RRGGBB,…`, or a file | A free palette allows at most N colours; a fixed one allows only its colours. A file is JSON (a list, or `{"colors": [...]}`) or one colour per line (`RRGGBB` or `#RRGGBB`, `;` comments — Lospec's `.hex`). |
+| `--candidates K` | 1–6 (2) | Answers drawn for the request, each on its own; one is picked (G7). |
+| `--effort` | `medium`, `high`, `xhigh` (`high`) | Thinking effort of each drawing. |
+| `--format` | `chargrid`, `json` (`chargrid`) | How the model writes the grid. `grid.txt` is a character grid either way. |
+| `--batch` | flag | Draw through Message Batches at half price and wait for the batch (below). |
+| `--batch-wait S` | seconds (3600) | How long to wait for one batch before the run ends unfinished; `--resume` collects it later. `0` submits and returns. |
+| `--max-tokens N` | 1024–128000 (32000 for one frame, 64000 for more) | Output cap of each drawing, thinking included. |
+| `--pick` | `vision`, `human` (`vision`) | Who picks among candidates that passed. |
+| `--out-dir DIR` | a new or empty folder | The run folder. |
+| `--resume` | flag | Continue the run in `--out-dir` from its `request.json` (below). |
+| `--grid FILE` | a `grid.txt` | Check and render an edited grid; no model call (below). |
+
+## What a run does
+
+For each candidate, independently (in parallel, or in one batch):
+
+1. **Draw** at `--effort`, with the prompt built from the inputs: the subject, the canvas, the frames
+   (and the walk cycle), the palette rule, the kind's background and style rules, and the exact
+   output format.
+2. **G1 parse.** The answer is read strictly ([below](#gates)). A row one key too long or short, a
+   key that is not in the palette, rows missing at the end — those rows go back to the model on
+   their own, each with the rows above and below and a column ruler, and it answers
+   `ROW <frame> <n>: <row>` lines that code splices in (effort medium, about $0.01 and six seconds
+   each). Two rounds at most.
+3. **Redraw, once.** An answer still broken after its repairs, or broken beyond its rows (no block,
+   a broken palette, a frame missing, too many rows), is drawn again at the same effort. An answer
+   that spent all `--max-tokens` thinking and wrote nothing is drawn again **one effort lower**
+   (xhigh → high → medium → low). A candidate is drawn at most twice in all.
+4. **G2–G6** on the pixels. G2, G3 and G6 fail the candidate; G4, G5 and the walk check warn.
+5. **G7 pick.** Of two or more candidates that passed, one vision call (`claude-opus-5-5`, effort
+   low, structured output) looks at all of them on one sheet, shuffled under letters, scores each and
+   names the best; with `--pick human` nobody picks and the candidates wait for a person. One that
+   passed alone is the pick.
+
+A refusal is reported as it came and that candidate is not drawn again. Nothing falls back to
+another model, provider or effort beyond the one lowered redraw.
+
+## Gates
+
+| Gate | Checks | On failure |
+|---|---|---|
+| G1 parse | One block; palette lines `<key> #RRGGBB` (`.` is transparent and nothing else); the frames asked for, each exactly N rows of N palette keys | Row issues → row repair (two rounds), then one redraw; anything else → one redraw. Recovered by code and recorded: a single frame written without its `FRAME` line or under another name, frames in another order, the fence tagged otherwise, no `END` line |
+| G2 palette | Opaque colours used ≤ the limit; a fixed palette's colours only | fails |
+| G3 alpha | Sprite/icon: something drawn, four transparent corners, border at least half transparent. Tile: every pixel opaque | fails |
+| G4 tile seam | Colour step across the wrap edges ÷ the mean step inside the tile ≤ 1.5 | warns — mortar lines that meet the edge raise it on tiles that repeat cleanly; look at `tiled-3x3.png` |
+| G5 stray pixels | Opaque pixels of a sprite/icon with no opaque 4-neighbour | warns |
+| G6 frames | Same bottom row in every frame, heights within one pixel, no two frames the same. With `--walk-cycle`: the contact frames differ by at least 40% of the mean contact↔passing difference | fails; the walk check warns ("weak leg alternation — touch up the legs") |
+| G7 pick | Two or more passed: the vision pick (or a person) | a pick that fails ends the run `pick_failed`, candidates kept |
+
+## The run folder
+
+```
+<out-dir>/
+  request.json            the resolved request (what --resume reads)
+  report.json             everything below, and what it cost
+  grid.txt                the picked candidate's grid: the truth, editable, diffable
+  palette.json            its keys and colours, the rule, the colours used
+  frame-<name>.png        each frame at its own size, byte for byte reproducible
+  preview-x<s>.png        the frames side by side, nearest-neighbour ×s (about 256 px a frame)
+  tiled-3x3.png           a tile repeated 3×3 (×s)
+  anim.gif                two or more frames, 150 ms each (×s)
+  candidates/c1/…         the same files for every candidate whose grid parsed whole
+  calls/<id>.json         every model call: prompt, answer, thinking summary, usage, request id
+  batches/<id>.json       every batch submitted, the moment it was
+  pick-sheet.png          the sheet the vision pick looked at
+```
+
+The top-level files are the picked candidate's, copied. With `--pick human`, or when nothing
+passed, there are none: the candidates are under `candidates/`.
+
+`frame-<name>.png` is written by sprite-gen's own encoder (stored deflate blocks): its bytes depend
+on the pixels alone, so the same `grid.txt` gives the same file on any machine and any Pillow or
+zlib build. The previews, the tiling and the GIF are views for the eye.
+
+### `report.json`
+
+| Field | |
+|---|---|
+| `status` | `ok`, `failed` (no candidate passed), `refused` (every candidate refused), `pick_failed`, `unfinished` (a batch not collected yet) |
+| `request` | the resolved inputs (`palette` with its rule and colours) |
+| `chosen`, `files`, `warnings` | the picked candidate, its top-level files, its warnings |
+| `pick` | `by` (`vision` / `only` / `human`), `best`, and for the vision pick its `labels`, `sheet` and `verdict` |
+| `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 with their measures), `warnings`, `files` |
+| `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `pick`), `purpose`, `mode` (`realtime` / `batch`), `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
+| `batches[]` | per batch: `id`, `custom_ids`, `submitted_at`, `collected`, `ended_at`, `waited_seconds` |
+| `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |
+
+`cost_usd` is each call's usage at the published price (below), Message Batches at half. It is
+what the calls cost by the API's own usage counts, not a console bill.
+
+## Failures
+
+The run ends non-zero with one line on stderr, and the report says the rest:
+
+- **No candidate passed** — `pixel-draw: no candidate passed the gates (c1: <reason>; c2: …)`.
+- **Every candidate refused** — `pixel-draw: refused by the provider's content policy
+  (stop_reason=refusal category=<category>); every candidate was refused` (the
+  [refusal marker](gen.md#direct-openai-calls-and-authentication) callers already read).
+- **A call failed** — a request the API refused before answering (429, 5xx, 529 overloaded) made
+  nothing and is asked again twice, each wait said on stderr. Anything else — a 400, a rejected key,
+  a stream that broke after it began (what was written may be billed) — ends that candidate with
+  the API's line (the key masked) and is not asked again.
+- **A batch not collected** — `unfinished`, below.
+
+## Message Batches and `--resume`
+
+`--batch` sends the drawings through Message Batches, which bill half and may take up to 24 hours
+(most finish within one). The row repairs and the pick stay realtime: they cost about a cent and
+would add a batch wait each. The batch is recorded in `batches/<id>.json` the moment it is
+submitted.
+
+If it has not ended within `--batch-wait`, the run ends `unfinished`, naming the batch and the
+command that collects it:
+
+```bash
+sprite-gen pixel-draw --out-dir runs/grass --resume
+```
+
+`--resume` reads the request from `request.json` (generation flags are refused with it), reads every
+call already answered back from `calls/` instead of asking it again, collects a batch already
+submitted instead of submitting it again, and carries on. A call that ended in an error, and a
+realtime call that was cut off mid-answer, are asked again. A `calls/` record built from another
+request than the one in `request.json` stops the run rather than being reused.
+
+## Editing `grid.txt` — `--grid`
+
+```bash
+sprite-gen pixel-draw --grid runs/slime/grid.txt --out-dir runs/slime-edit [--kind sprite] [--palette free:16] [--walk-cycle]
+```
+
+Reads a character grid (the frames and size are what it holds), runs G1 (no repair: an issue is
+reported with its frame and row) and G2–G6, and writes the same files and a report with no calls.
+Pass the `--kind`, `--palette` and `--walk-cycle` the grid was drawn under; the run's
+`request.json` has them.
+
+## Model, effort and price
+
+| | Value | Source |
+|---|---|---|
+| Model | `claude-opus-5-5` | Models API `GET /v1/models/claude-opus-5-5`, 2026-10-12: output cap 128,000 tokens |
+| Thinking | `{type: adaptive, display: summarized}` | the only mode the model takes (`disabled` and a token budget are 400s); the summary keeps the stream alive and is kept in `calls/` |
+| Effort | `output_config.effort`, always sent | the model's own default is `medium`, so the run never leaves it implicit |
+| Price | $4 input, $20 output per million tokens; thinking is billed as output; Message Batches half | platform.claude.com pricing, 2026-10-12 |
+
+Measured at 32 px on one candidate (median, realtime): effort high $0.17 and about 80 seconds,
+xhigh $0.59 and 2–5 minutes, medium $0.10 and about 50 seconds; judged quality hardly moved between
+them, which is why high is the default. Medium and high break the grid more often (a quarter or
+more of answers at 32 px, against a sixth at xhigh) — the row repair fixed 21 of 29 broken answers on its
+own. xhigh alone ended five times with nothing written at the token cap.
+
+A run of this verb, 2026-10-12, at 32 px, effort high, two candidates and the vision pick: a
+sprite $0.39 in 104 seconds, an icon $0.31 in 79, a tile $0.21 in 56, a four-frame walk cycle $0.96
+in 274. One drawing of a single frame cost $0.09–0.20, a row repair $0.01–0.02 and the pick about
+$0.01.
+
+The transport is raw HTTPS over urllib, as for the other providers: the runtime dependency surface
+stays Pillow and NumPy ([SECURITY.md](../SECURITY.md)).
