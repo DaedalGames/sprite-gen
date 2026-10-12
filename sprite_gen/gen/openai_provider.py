@@ -94,6 +94,12 @@ _REFERENCE_MIMES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp
 # drawn image was blocked. Only these documented values reach the line.
 MODERATION_STAGES = ("input", "output", "unknown")
 
+# The account's limits and what is left of them ride on the response as `x-ratelimit-*`
+# headers (rate-limits guide, 2026-10-10: requests, tokens and project tokens — limit,
+# remaining, reset). It lists images per minute among the limits but names no header for it
+# and no endpoint that sends them, so the report keeps every `x-ratelimit-*` that came.
+RATE_LIMIT_HEADER_PREFIX = "x-ratelimit-"
+
 
 def resolve_credential(env: dict[str, str] | None = None) -> str:
     """Return the OpenAI API key, or fail loud naming the variable that is missing."""
@@ -207,8 +213,8 @@ def _multipart_request(fields: dict[str, str], refs: list[Path]) -> tuple[bytes,
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout: float) -> tuple[int, Any]:
-    """POST an images request and return (status, parsed JSON).
+def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout: float) -> tuple[int, Any, Any]:
+    """POST an images request and return (status, parsed JSON, response headers).
 
     A transport error is terminal: the server may already have accepted and billed
     the request, so it is never retried here.
@@ -220,19 +226,25 @@ def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-            return response.status, (json.loads(raw) if raw else {})
+            return response.status, (json.loads(raw) if raw else {}), response.headers
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SystemExit("openai-gen: response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", "replace")
         try:
-            return exc.code, json.loads(raw)
+            return exc.code, json.loads(raw), exc.headers
         except json.JSONDecodeError:
-            return exc.code, refusal.RawBody(raw)
+            return exc.code, refusal.RawBody(raw), exc.headers
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise SystemExit(
             "openai-gen: request failed or timed out; no automatic retry (the server may have accepted it)"
         ) from exc
+
+
+def rate_limit_headers(headers: Any) -> dict[str, str]:
+    """The response's `x-ratelimit-*` headers, names lower-cased and values as sent; {} when none came."""
+    return {name.lower(): value for name, value in headers.items()
+            if name.lower().startswith(RATE_LIMIT_HEADER_PREFIX)}
 
 
 def _refusal(reply: Any) -> refusal.Refusal:
@@ -265,9 +277,9 @@ class OpenAIProvider:
         from . import facing_vision as vision
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, " (facing vision check).")
-        status, reply = http_image(API_BASE + "/responses", token,
-                                  json.dumps(vision.request_body(path, vision.OPENAI_MODEL)).encode("utf-8"),
-                                  "application/json", timeout=GEN_TIMEOUT_SECONDS)
+        status, reply, _headers = http_image(API_BASE + "/responses", token,
+                                             json.dumps(vision.request_body(path, vision.OPENAI_MODEL)).encode("utf-8"),
+                                             "application/json", timeout=GEN_TIMEOUT_SECONDS)
         text, metadata = vision.response_text(status, reply)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -287,7 +299,7 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply = http_image(API_BASE + endpoint, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS)
+        status, reply, headers = http_image(API_BASE + endpoint, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS)
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).
@@ -320,5 +332,6 @@ class OpenAIProvider:
                 "background": fields["background"],
                 # Token counts only — what the call cost, never what it contained.
                 **({"usage": usage} if isinstance(usage, dict) else {}),
+                "rate_limit": rate_limit_headers(headers),
             },
         )
