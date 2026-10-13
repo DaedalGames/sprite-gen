@@ -46,7 +46,7 @@ sprite-gen pixel-draw --kind effect --subject 'a small orange fire burst' \
    sprite-gen video-loop --frames-dir frames/keyed --fps 24 --state effect \
      --cycle lifetime --out-dir result --name fire
    ```
-   Replace `24` with the FPS from `frames/frames.report.json`. State `effect` automatically selects `lifetime`. An empty ending is required; incomplete clips fail without return-to-start conditions and never convert into periodic loops. No particle cleanup or edge failure checks occur. Origin is fixed across all frames; brightest and darkest motion changes are preserved in PNG/WebP.
+   Set playback using the FPS from `frames/frames.report.json`. The effect runtime automatically selects lifetime around a fixed origin without requiring particle cleanup passes or edge checks. The ending frame must reach alpha zero so the sequence terminates cleanly.
 
 Automate all stages using `video-set`:
 ```bash
@@ -57,11 +57,9 @@ No per-direction variations are needed; rotate a single front effect at runtime.
 
 ## Brightness Alpha & Rendering
 
-Calculates alpha as $a = \max(R, G, B) / 255$. Unpremultiplied color is $U = C / a$ (where $C$ is source-on-black, $0$ when $a = 0$). Output additive rendering in 0–255 units is:
-$$\text{output} = \min(255, B + a \cdot U)$$
-This preserves saturated colors and faint glows without double-multiplying brightness. There is no threshold: black disappears, dark smoke is faint and cannot occlude, and light saturates to white over pure white backgrounds. Use normal or chroma modes for opaque dark smoke (chroma defaults unchanged).
+Channel brightness is evaluated across 8-bit channels as $m = \max(R, G, B)$. A shared floor of 2 is applied to every frame and effect, reported as `brightness_noise_floor=2`. If $m \le 2$, all RGBA channels are set to zero. For $m > 2$, alpha is computed as $a = m / 255$, and straight color is reconstructed as $U = C / a$, where $C$ is the source-on-black color. Values 3 and above are not dimmed by subtracting the floor.
 
-GIF cannot represent partial transparency, providing only a preview of emission against black with limited alpha. Use PNG or WebP with additive blending for true alpha.
+Additive output is calculated as $\min(255, B + a \cdot U)$ against background $B$. Pure white additive output saturates cleanly to white. Dark smoke becomes faint and black cannot occlude; use chroma keying when rendering opaque smoke. While PNG and WebP retain partial alpha, GIF cannot retain partial alpha.
 
 ## Metadata
 
