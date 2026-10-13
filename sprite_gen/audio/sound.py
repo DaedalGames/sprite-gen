@@ -77,12 +77,14 @@ def run(**kwargs):
     add_arguments(parser)
     args = namespace_from_kwargs(parser, kwargs)
     try:
-        prompt = args.prompt_file.read_text() if args.prompt_file else args.prompt
+        if (args.prompt is None) == (args.prompt_file is None):
+            raise ValueError('provide exactly one of prompt or prompt_file')
+        prompt = Path(args.prompt_file).read_text() if args.prompt_file is not None else args.prompt
         result = generate(kind=args.kind, prompt=prompt, duration=args.duration, event=args.event,
                           out_dir=args.out_dir, cache_dir=args.cache_dir, loop=args.loop,
                           target_lufs=args.target_lufs, crossfade=args.crossfade)
     except (ValueError, OSError) as exc:
         raise SystemExit(f'sound: {exc}') from None
-    print(json.dumps({'ok': True, 'manifest': str(args.out_dir/'sound.json'),
+    print(json.dumps({'ok': True, 'manifest': str(Path(args.out_dir)/'sound.json'),
                       'cache_hit': result['cache_hit'], 'duration_seconds': result['duration_seconds']}))
     return 0

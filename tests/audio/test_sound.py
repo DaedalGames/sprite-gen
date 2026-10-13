@@ -165,7 +165,7 @@ def test_error_body_and_transport_cannot_disclose_key(monkeypatch, capsys):
 
 def test_broken_refusal_body_is_not_retried_or_printed(monkeypatch, capsys):
     calls = []
-    class Broken:
+    class Broken(io.BytesIO):
         def read(self, *args): raise http.client.IncompleteRead(b'secret-key', 100)
     def send(req, **kw):
         calls.append(req)
@@ -174,3 +174,17 @@ def test_broken_refusal_body_is_not_retried_or_printed(monkeypatch, capsys):
     with pytest.raises(ValueError, match='unresolved') as err:
         provider.generate(provider.request('sfx', 'impact', 1, False))
     assert len(calls) == 1 and 'secret-key' not in str(err.value) + capsys.readouterr().err
+
+
+def test_cli_and_python_entry_publish_the_same_bundle(tmp_path, monkeypatch, capsys):
+    from sprite_gen.cli import main
+    monkeypatch.setattr(provider, 'generate', lambda req: (wav_bytes(1), {}))
+    args = ['sound', '--kind', 'sfx', '--prompt', 'synthetic', '--duration', '1', '--event', 'hit',
+            '--out-dir', str(tmp_path/'out'), '--cache-dir', str(tmp_path/'cache')]
+    assert main(args) == 0
+    monkeypatch.delenv('ELEVENLABS_API_KEY')
+    assert sound.run(kind='sfx',prompt='synthetic',duration=1,event='hit',out_dir=str(tmp_path/'out'),
+                     cache_dir=tmp_path/'cache') == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[1]['cache_hit'] is True
+    assert lines[0]['manifest'] == lines[1]['manifest']
