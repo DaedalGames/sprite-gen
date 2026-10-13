@@ -135,21 +135,24 @@ def thinking_tokens(usage: dict[str, Any]) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def cost_usd(usage: dict[str, Any], *, batch: bool, model: str = MODEL) -> float:
-    """What `usage` costs at the published prices; Message Batches bill half."""
-    price = PRICE_PER_MTOK[model]
+def billed_tokens(usage: dict[str, Any]) -> dict[str, Any]:
+    """One call's tokens by the price each is billed at, keyed as `PRICE_PER_MTOK` prices them. Thinking is inside
+    `output_tokens`. Cache writes are split by their lifetime (`usage.cache_creation`); a reply that does not split
+    them wrote for five minutes. Each count is as the reply gave it — None where it gave none — so a caller pricing
+    the call at rates of its own reads a missing count its own way; `cost_usd` reads it as nothing."""
     creation = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
     write_5m = creation.get("ephemeral_5m_input_tokens")
     write_1h = creation.get("ephemeral_1h_input_tokens")
     if write_5m is None and write_1h is None:
-        write_5m, write_1h = usage.get("cache_creation_input_tokens") or 0, 0
-    total = (
-        (usage.get("input_tokens") or 0) * price["input"]
-        + (write_5m or 0) * price["cache_write_5m"]
-        + (write_1h or 0) * price["cache_write_1h"]
-        + (usage.get("cache_read_input_tokens") or 0) * price["cache_read"]
-        + (usage.get("output_tokens") or 0) * price["output"]
-    ) / 1_000_000
+        write_5m, write_1h = usage.get("cache_creation_input_tokens"), 0
+    return {"input": usage.get("input_tokens"), "cache_write_5m": write_5m, "cache_write_1h": write_1h,
+            "cache_read": usage.get("cache_read_input_tokens"), "output": usage.get("output_tokens")}
+
+
+def cost_usd(usage: dict[str, Any], *, batch: bool, model: str = MODEL) -> float:
+    """What `usage` costs at the published prices (`billed_tokens` at `PRICE_PER_MTOK`); Message Batches bill half."""
+    price = PRICE_PER_MTOK[model]
+    total = sum((count or 0) * price[kind] for kind, count in billed_tokens(usage).items()) / 1_000_000
     return round(total * (BATCH_DISCOUNT if batch else 1.0), 6)
 
 
