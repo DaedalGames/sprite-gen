@@ -178,5 +178,10 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
     }
   } finally { await browser.close(); }
 }
+for (const item of cases) for (const rate of [44100,48000]) {
+  const rows=reports.filter(row=>row.name===item.name && row.rate===rate);
+  assert.equal(rows.length,4, 'both codecs must render in both engines');
+  assert.equal(new Set(rows.map(row=>row.length)).size,1, 'engine or codec changed the loop length');
+}
 await writeFile(resolve(outputDir,'render.json'),JSON.stringify({module_sha256:digest,reports},null,2));
 console.log(JSON.stringify({passed:reports.length,module_sha256:digest}));
