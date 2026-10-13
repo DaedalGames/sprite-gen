@@ -79,6 +79,6 @@ GIF and WebP play once. The video GIF ends on a fully opaque black frame; the tr
 | Component | Reuse Details |
 |---|---|
 | `effect.on_black` | Black compositing body extracted unchanged from `effect.canvas` so generation canvas and video GIF call one function |
-| `util.gif_utils.save_clean_gif` | Reused unchanged |
+| `util.gif_utils.save_clean_gif` | Added an explicit `opaque=True` mode for pre-composited frames; transparent default remains unchanged |
 | `video.loop.verify_animation` | Verifies every frame's opacity and corner color only with its explicit background parameter; its default transparent corner check and loop checks are unchanged |
 | `write_webp` | Reused unchanged |

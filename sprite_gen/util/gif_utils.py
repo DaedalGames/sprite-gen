@@ -60,7 +60,9 @@ def save_clean_gif(
     if duration_ms <= 0:
         raise ValueError("duration_ms must be positive")
     if opaque:
-        prepared = [frame.convert("RGB").convert("P", palette=Image.ADAPTIVE) for frame in frames]
+        # Sparse highlights need palette coverage even beside a large glow body.
+        prepared = [frame.convert("RGB").quantize(colors=256, method=Image.Quantize.MAXCOVERAGE)
+                    for frame in frames]
         for frame in prepared:
             frame.info.pop("transparency", None)
         # Restore-to-background depends on palette indices that can change per

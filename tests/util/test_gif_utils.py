@@ -4,6 +4,7 @@ from PIL import Image
 import pytest
 
 from sprite_gen.util.gif_utils import save_clean_gif
+from sprite_gen._deps import np
 
 
 @pytest.mark.parametrize("loop", [None, 0])
@@ -54,3 +55,17 @@ def test_default_transparency_clears_moving_subject_and_preserves_playback(tmp_p
             assert preview.convert("RGBA").tobytes() == expected.tobytes(), k
             assert preview.disposal_method == 2
             assert preview.info["duration"] == 70
+
+
+def test_opaque_palette_retains_a_rare_light_colour(tmp_path):
+    y, x = np.mgrid[:128, :128]
+    rgb = np.stack([x * 2, y * 2, np.zeros_like(x)], axis=2).astype(np.uint8)
+    rgb[:64, :, 2] = rgb[:64, :, 1]
+    rgb[-2, -2] = (128, 128, 200)
+    path = tmp_path / "light.gif"
+    save_clean_gif([Image.fromarray(rgb)], path, duration_ms=60, opaque=True)
+
+    with Image.open(path) as preview:
+        error = np.abs(np.asarray(preview.convert("RGB"), dtype=int) - rgb)
+    assert error[-2, -2].max() <= 16
+    assert error.mean() < 4
