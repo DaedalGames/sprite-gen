@@ -77,6 +77,26 @@ def test_nonloop_states_have_terminal_prompts_and_route_once(state):
     assert canvas.profile_for(state) != canvas.profile_for(None)
 
 
+@pytest.mark.parametrize("facing", ["right", "left"])
+def test_collapse_has_a_body_length_of_room_on_both_sides(facing):
+    still = Image.new("RGB", (120, 160), (0, 255, 0))
+    ImageDraw.Draw(still).rectangle((50, 20, 70, 145), fill=(200, 80, 30))
+    image, report = canvas.pad_canvas(still, canvas.profile_for("death"), facing=facing)
+    foot_x = report["offset"][0] + 60
+    body_height = 125
+    assert foot_x - body_height > 0
+    assert foot_x + body_height < image.width
+
+
+def test_collapsing_body_preserves_anatomy_without_a_standing_constraint():
+    from sprite_gen.video.body_plan import Body
+    horse = batch.build_prompt("side", "death", None, body_plan=[Body("quadruped")])
+    assert "It stays on all four legs" not in horse
+    assert "quadruped" in horse
+    slime = batch.build_prompt("side", "death", None, body_plan=[Body("legless")])
+    assert "limbless" in slime
+
+
 def test_end_pose_input_is_distinct_from_first_frame_pin():
     record = clip_prompt.plan_prompt(direction="side", state="death", end_frame=Path("final.png"))
     assert record["cycle"] == "once" and record["last_frame"] == "final.png"
@@ -95,6 +115,15 @@ def test_terminal_gate_rejects_still_and_accumulated_drift():
     values = np.r_[np.linspace(0, 1, 25), np.linspace(1, 1.04, 5)]
     with pytest.raises(ValueError, match="stable"):
         select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24)
+
+
+def test_once_refuses_an_action_that_returns_to_its_start_pose(tmp_path):
+    files = keyed(tmp_path / "keyed")
+    initial = Image.open(files / "0000.png")
+    for k in range(75, 90):
+        initial.save(files / f"{k:04d}.png")
+    with pytest.raises(SystemExit, match="starting pose"):
+        cut(tmp_path)
 
 
 def test_batch_sends_terminal_pin_and_does_not_reuse_a_changed_pin(tmp_path, monkeypatch):
