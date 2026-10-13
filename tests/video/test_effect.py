@@ -46,6 +46,20 @@ def test_brightness_run_skips_chroma_cleanup(tmp_path, monkeypatch):
     assert report["alpha_mode"] == "brightness" and report["blend"] == "add"
 
 
+def test_brightness_black_floor_removes_noise_without_dimming_light(tmp_path):
+    src = tmp_path / "raw.png"
+    rgb = np.zeros((8, 8, 3), dtype=np.uint8)
+    rgb[0, :4] = [(1, 1, 1), (0, 2, 1), (3, 3, 3), (70, 20, 4)]
+    Image.fromarray(rgb).save(src)
+    report = frames.key_frames([src], tmp_path / "keyed", alpha_mode="brightness")
+    rgba = np.array(Image.open(tmp_path / "keyed" / src.name)).astype(float)
+    assert not rgba[0, :2].any()
+    assert rgba[0, 2, 3] == 3
+    emitted = rgba[0, 2:4, :3] * rgba[0, 2:4, 3:] / 255
+    assert np.max(abs(emitted - rgb[0, 2:4])) <= .5
+    assert report["brightness_noise_floor"] == 2
+
+
 def test_effect_prompt_uses_black_end_and_lifetime_only():
     prompt = batch.build_prompt("front", "effect", "A burst of fire")
     assert "black" in prompt and "disappear" in prompt
