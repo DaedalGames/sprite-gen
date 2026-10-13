@@ -59,7 +59,7 @@ No per-direction variations are needed; rotate a single front effect at runtime.
 
 Channel brightness is evaluated across 8-bit channels as $m = \max(R, G, B)$. A shared floor of 2 is applied to every frame and effect, reported as `brightness_noise_floor=2`. If $m \le 2$, all RGBA channels are set to zero. For $m > 2$, alpha is computed as $a = m / 255$, and straight color is reconstructed as $U = C / a$, where $C$ is the source-on-black color. Values 3 and above are not dimmed by subtracting the floor.
 
-Additive output is calculated as $\min(255, B + a \cdot U)$ against background $B$. Pure white additive output saturates cleanly to white. Dark smoke becomes faint and black cannot occlude; use chroma keying when rendering opaque smoke. While PNG and WebP retain partial alpha, GIF cannot retain partial alpha.
+Additive output is calculated as $\min(255, B + a \cdot U)$ against background $B$. Pure white additive output saturates cleanly to white. Dark smoke becomes faint and black cannot occlude; use chroma keying when rendering opaque smoke. While PNG and WebP retain partial alpha, GIF cannot retain partial alpha ([Pillow](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#gif): the transparency option selects a palette color index). Video lifetime GIF is now an opaque preview on a baked black background. It is NOT a transparent overlay; on a white page it intentionally has a solid black rectangle. PNG strips and WebP remain the transparent effect outputs, retain partial alpha and end on an alpha-zero cell/frame. Their normal-alpha preview on white is checked using ordinary alpha compositing (not addition).
 
 ## Metadata
 
@@ -70,6 +70,15 @@ Shared attributes:
 
 Pipeline differences:
 - **Pixel**: `events: []`
-- **Video**: `kind: lifetime`, `events: [{frame: <int>, name: "motion_peak"}]`, and `source_cut.samples` naming source frames.
+- **Video**: `kind: lifetime`, `events: [{frame: <int>, name: "motion_peak"}]`, and `source_cut.samples` naming source frames. The video `<name>.loop.report.json` `gif` object contains `background: "#000000"`, `opaque: true`, `corners_transparent: false`. Strip metadata `blend: add` remains unchanged.
 
-GIF and WebP play once and retain the empty endpoint. Strips can subsample while retaining both endpoints.
+GIF and WebP play once. The video GIF ends on a fully opaque black frame; the transparent outputs end on an empty frame. Pixel GIF behavior has not changed. Strips can subsample while retaining both endpoints.
+
+## Shared Code Reuse
+
+| Component | Reuse Details |
+|---|---|
+| `effect.on_black` | Black compositing body extracted unchanged from `effect.canvas` so generation canvas and video GIF call one function |
+| `util.gif_utils.save_clean_gif` | Reused unchanged |
+| `video.loop.verify_animation` | Verifies every frame's opacity and corner color only with its explicit background parameter; its default transparent corner check and loop checks are unchanged |
+| `write_webp` | Reused unchanged |
