@@ -30,7 +30,7 @@ def request_body(path: Path, model: str) -> dict:
 
 def response_text(status: int, reply) -> tuple[str, dict]:
     if status != 200:
-        raise SystemExit(f"facing-vision: HTTP {status}; no retry or fallback")
+        raise SystemExit(f"facing-vision: HTTP {status}; not asked again, no fallback")
     if not isinstance(reply, dict):
         raise ValueError("invalid vision envelope")
     text = "".join(part["text"] for item in reply.get("output", [])
