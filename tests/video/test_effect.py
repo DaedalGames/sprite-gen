@@ -114,3 +114,32 @@ def test_lifetime_cut_keeps_dim_edge_spark_and_terminal_sample(tmp_path):
 def test_lifetime_refuses_an_end_with_even_one_dim_pixel(tmp_path):
     with pytest.raises(SystemExit, match="empty"):
         cut(lifetime_frames(tmp_path, fade=False), tmp_path / "out", cycle_mode="lifetime")
+
+
+def test_video_set_routes_effect_through_black_pin_and_shared_cut(tmp_path, monkeypatch):
+    keyed = lifetime_frames(tmp_path)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for src in sorted(keyed.glob("*.png")):
+        rgba = np.array(Image.open(src)).astype(float)
+        Image.fromarray(np.rint(rgba[:, :, :3] * rgba[:, :, 3:] / 255).astype(np.uint8)).save(raw / src.name)
+    base = raw / "frame-010.png"
+    captured = {}
+    def runner(image, prompt, clip, report, **kwargs):
+        assert "no effects" not in prompt and "black" in prompt
+        assert Image.open(kwargs["last_frame"]).getextrema() == ((0, 0), (0, 0), (0, 0))
+        assert kwargs["last_frame"] != image
+        captured["pinned"] = True
+        clip.write_bytes(b"synthetic")
+        return 0
+    monkeypatch.setattr(frames, "probe", lambda _: {"stream_index": 0, "fps": 24})
+    monkeypatch.setattr(frames, "extract", lambda *a: sorted(raw.glob("*.png")))
+    def forbidden(*a, **kw):
+        pytest.fail("effects must not trigger facing analysis or chroma cleanup")
+    monkeypatch.setattr(batch.facing_mod, "prepare_still", forbidden)
+    monkeypatch.setattr(frames, "cutout", forbidden)
+    result = batch.run_item(item="side-effect", direction="side", state="effect", base=base,
+                            root=tmp_path / "batch", character="A spark", duration=3, resolution="480p",
+                            key="auto", force=False, gap=0, video_runner=runner)
+    assert captured["pinned"] and result["ok"], result
+    assert result["loop"]["kind"] == "lifetime"
