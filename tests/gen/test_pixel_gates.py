@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sprite_gen.gen import pixel_gates, prepare
 from sprite_gen.gen import pixel_grid as pg
 from sprite_gen.gen.pixel_gates import evaluate, g6_frames, seam_ratio
 
@@ -108,3 +109,112 @@ def test_g6_failures():
     assert spread["height_spread"] == 2 and not spread["ok"]
     gates = evaluate({"a": low, "b": [row[:] for row in low]}, kind="sprite", rule=FREE16, walk_cycle=False)
     assert gates["failed"] == ["G6"]
+
+
+# ----------------------------------------------------------------------------- G8 safe area
+
+def canvas(size: int = 32):
+    return [[CLEAR] * size for _ in range(size)]
+
+
+def paint(frame, x0: int, y0: int, x1: int, y1: int, fill=INK):
+    """`frame` with columns x0..x1 of rows y0..y1 opaque (inclusive)."""
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            frame[y][x] = fill
+    return frame
+
+
+def figure(size: int = 32):
+    """A body filling the safe area's height: at 32 px columns 8..23 of rows 3..28, the 26x26 box's
+    rows from top to the floor row."""
+    m = int(size * prepare.DEFAULT_SAFE_MARGIN_RATIO)
+    return paint(canvas(size), size // 4, m, size - 1 - size // 4, size - 1 - m)
+
+
+@pytest.mark.parametrize("size,margin,inner", [(8, 0, 8), (16, 1, 14), (24, 2, 20), (32, 3, 26), (48, 4, 40)])
+def test_the_safe_area_is_the_engines(size, margin, inner):
+    area = pixel_gates.safe_area(size, size)
+    cell = prepare.normalize_cell({"width": size, "height": size}, size, None)
+    assert area["margin"] == [margin, margin] == [cell["safe_margin_x"], cell["safe_margin_y"]]
+    assert margin == int(size * prepare.DEFAULT_SAFE_MARGIN_RATIO)
+    assert area["size"] == [inner, inner]
+    assert area["box"] == [margin, margin, size - 1 - margin, size - 1 - margin]
+    assert area["floor_row"] == size - 1 - margin  # where prepare's fit grounds a frame: the safe area's last row
+
+
+def test_the_safe_area_follows_prepares_ratio(monkeypatch):
+    monkeypatch.setattr(prepare, "DEFAULT_SAFE_MARGIN_RATIO", 0.125)
+    assert pixel_gates.safe_area(32, 32)["margin"] == [4, 4]
+    assert pixel_gates.safe_area(32, 16)["margin"] == [4, 2]  # an edited grid need not be square
+
+
+def test_g8_passes_a_body_inside_the_safe_area():
+    gates = evaluate({"f": figure()}, kind="sprite", rule=FREE16, walk_cycle=False)
+    g8 = gates["G8"]
+    assert gates["ok"] and gates["warnings"] == []
+    assert g8["ok"] and g8["margin"] == [3, 3] and g8["safe_area"] == [26, 26] and g8["floor_row"] == 28
+    frame = g8["frames"]["f"]
+    assert frame["edge_pixels"] == 0 and frame["body_box"] == [8, 3, 23, 28] and frame["baseline"] == 28
+    assert frame["overflow"] == {"left": 0, "top": 0, "right": 0, "bottom": 0}
+
+
+def test_g8_fails_a_pixel_on_the_canvas_edge():
+    for x, y in ((31, 15), (15, 0), (0, 20), (12, 31)):
+        frame = figure()
+        frame[y][x] = INK
+        gates = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)
+        assert not gates["ok"] and gates["failed"] == ["G8"], (x, y)
+        assert gates["G8"]["frames"]["f"]["edge_pixels"] == 1 and gates["G8"]["edge_pixels"] == 1
+    standing_on_the_edge = paint(canvas(), 8, 6, 23, 31)
+    gates = evaluate({"f": standing_on_the_edge}, kind="icon", rule=FREE16, walk_cycle=False)
+    assert gates["failed"] == ["G8"] and gates["G8"]["frames"]["f"]["edge_pixels"] == 16
+
+
+def test_g8_lets_a_thin_tip_into_the_margin():
+    frame = paint(figure(), 24, 15, 30, 15)  # a blade from the body's right side to 2 px past the safe area
+    gates = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)
+    measure = gates["G8"]["frames"]["f"]
+    assert gates["ok"] and gates["warnings"] == []
+    assert measure["bbox"] == [8, 3, 30, 28] and measure["body_box"] == [8, 3, 23, 28]
+
+
+def test_g8_warns_when_the_body_leaves_the_safe_area_by_more_than_a_pixel():
+    one_over = paint(canvas(), 2, 3, 20, 28)
+    assert evaluate({"f": one_over}, kind="sprite", rule=FREE16, walk_cycle=False)["warnings"] == []
+    two_over = paint(canvas(), 1, 2, 20, 28)
+    gates = evaluate({"f": two_over}, kind="sprite", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and gates["G8"]["frames"]["f"]["overflow"] == {"left": 2, "top": 1, "right": 0, "bottom": 0}
+    assert gates["warnings"] == ["G8 the body reaches past the 26x26 safe area by more than 1 px "
+                                 "(f: 2 px left) — only a thin detail may go into the 3 px margin"]
+
+
+def test_g8_warns_a_sprite_off_the_floor_row():
+    floating = paint(canvas(), 8, 3, 23, 26)
+    gates = evaluate({"a": floating, "b": paint(canvas(), 9, 3, 23, 26)}, kind="sprite", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and gates["G6"]["ok"]
+    assert gates["warnings"] == ["G8 the feet are not on the floor row (the safe area's bottom row): "
+                                 "a 2 px above it, b 2 px above it"]
+    below = paint(canvas(), 8, 3, 23, 29)
+    assert evaluate({"f": below}, kind="sprite", rule=FREE16, walk_cycle=False)["warnings"] == [
+        "G8 the feet are not on the floor row (the safe area's bottom row): f 1 px below it"]
+    icon = evaluate({"f": floating}, kind="icon", rule=FREE16, walk_cycle=False)
+    assert icon["warnings"] == [] and icon["G8"]["floor_row"] is None
+
+
+def test_g8_has_no_edge_to_keep_below_a_one_pixel_margin():
+    plus = paint(paint(canvas(8), 3, 0, 4, 7), 0, 3, 7, 4)  # touches every side, corners clear
+    gates = evaluate({"f": plus}, kind="icon", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and gates["G8"]["margin"] == [0, 0] and gates["G8"]["edge_pixels"] == 0
+
+
+def test_g8_leaves_tiles_alone():
+    gates = evaluate({"tile": [[GRASS] * 32 for _ in range(32)]}, kind="tile", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and "G8" not in gates
+
+
+def test_recorded_answers_from_the_full_canvas_prompt_fail_g8():
+    """Drawn when the prompt asked to fill the canvas: the knight's helmet is on row 1 and its boots
+    on row 16, the 16 px canvas's own edge rows."""
+    gates = evaluate(frames_of("sprite-16-pass.txt", 16, ("front",)), kind="sprite", rule=FREE16, walk_cycle=False)
+    assert gates["failed"] == ["G8"] and gates["G8"]["frames"]["front"]["edge_pixels"] == 14

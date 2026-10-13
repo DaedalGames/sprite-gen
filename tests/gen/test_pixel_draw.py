@@ -534,3 +534,76 @@ def test_the_cli_names_the_verb_and_its_flags():
     flags = help_options("-m", "sprite_gen.cli", "pixel-draw")
     assert {"--subject", "--spec", "--grid", "--size", "--kind", "--frames", "--walk-cycle", "--palette", "--candidates",
             "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume"} <= flags
+
+
+def pixel_request(**changes) -> pixel_draw.PixelRequest:
+    base = dict(subject="a knight", size=32, kind="sprite", frames=("sprite",), walk_cycle=False,
+                palette=pg.palette_rule("free"), candidates=1, effort="high", answer_format="chargrid",
+                batch=False, max_tokens=32000, pick="vision")
+    return pixel_draw.PixelRequest(**{**base, **changes})
+
+
+@pytest.mark.parametrize("size,margin,inner,first,last", [(16, 1, 14, 2, 15), (24, 2, 20, 3, 22), (32, 3, 26, 4, 29),
+                                                          (48, 4, 40, 5, 44)])
+def test_the_prompt_says_the_safe_area_in_pixels(size, margin, inner, first, last):
+    """The engine's safe area (prepare's 9.4% margin, floored), in numbers the model can count."""
+    sprite = pixel_draw.generation_prompt(pixel_request(size=size))
+    assert "fill most of the canvas" not in sprite and "1-2 pixel margin" not in sprite
+    assert (f"Safe area: keep a {margin}-pixel margin on every side and draw the subject's body inside the central "
+            f"{inner}x{inner} pixels: rows {first}-{last} and columns {first}-{last}, counting rows and columns "
+            "from 1.") in sprite
+    assert f"the outermost rows and columns (rows 1 and {size}, columns 1 and {size})" in sprite.lower()
+    assert (f"Floor: row {last}, the bottom row of the safe area, is the ground. The feet (or the lowest point the "
+            f"subject rests on) stand on row {last}, and nothing of the body goes below it.") in sprite
+    if margin > 1:
+        assert (f"Only a thin detail (a weapon tip, a strand of hair, an effect) may reach into the margin, at most "
+                f"{margin - 1} pixel{'s' if margin > 2 else ''} past the safe area;") in sprite
+    else:
+        assert "at this size nothing reaches past the safe area." in sprite
+
+
+def test_the_prompt_keeps_every_frame_on_the_floor_row_and_icons_off_it():
+    walk = pixel_draw.generation_prompt(pixel_request(frames=("walk1", "walk2", "walk3", "walk4"), walk_cycle=True))
+    assert "stand on row 29 in every frame, and nothing of the body goes below it." in walk
+    assert "the same bottom row" not in walk
+    icon = pixel_draw.generation_prompt(pixel_request(kind="icon", frames=("icon",)))
+    assert "draw the icon inside the central 26x26 pixels: rows 4-29 and columns 4-29" in icon
+    assert "Floor:" not in icon
+    tile = pixel_draw.generation_prompt(pixel_request(kind="tile", frames=("tile",)))
+    assert "Safe area" not in tile and "Floor:" not in tile
+    tiny = pixel_draw.generation_prompt(pixel_request(size=8))
+    assert ("Safe area: at 8x8 there is no margin; the subject may use the whole canvas, with the four corner pixels "
+            "transparent.") in tiny
+    assert "Floor: row 8, the bottom row of the safe area, is the ground." in tiny
+
+
+def test_the_prompt_takes_the_margin_from_prepare(monkeypatch):
+    from sprite_gen.gen import prepare
+    monkeypatch.setattr(prepare, "DEFAULT_SAFE_MARGIN_RATIO", 0.125)
+    prompt = pixel_draw.generation_prompt(pixel_request())
+    assert "keep a 4-pixel margin on every side" in prompt and "the central 24x24 pixels: rows 5-28" in prompt
+
+
+def test_the_pick_knows_the_margin_is_meant():
+    pick = pixel_draw.pick_prompt(pixel_request(), ["A", "B"])
+    assert ("The request was: a knight Canvas 32x32 pixels per frame, the body kept inside the central 26x26 with a "
+            "3-pixel margin.") in pick
+    tile = pixel_draw.pick_prompt(pixel_request(kind="tile", frames=("tile",), subject="grass"), ["A", "B"])
+    assert "The request was: grass Canvas 32x32 pixels per frame." in tile
+
+
+def test_an_edited_grid_goes_through_the_safe_area_gate(tmp_path):
+    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("front",))
+    full = tmp_path / "full.txt"
+    full.write_text(pg.to_text(grid), encoding="utf-8")  # drawn under the old prompt: rows 1 and 16 are used
+    with pytest.raises(SystemExit, match=r"full.txt fails G8"):
+        pixel_draw.main(["--grid", str(full), "--out-dir", str(tmp_path / "full")])
+    report = report_of(tmp_path / "full")
+    assert report["status"] == "failed" and report["gates"]["G8"]["frames"]["front"]["edge_pixels"] == 14
+    inside = tmp_path / "inside.txt"
+    rows = ["." * 16] + ["...." + "a" * 8 + "...."] * 14 + ["." * 16]
+    inside.write_text("PALETTE\n. transparent\na #2a1f2e\nFRAME front\n" + "\n".join(rows) + "\nEND\n", encoding="utf-8")
+    assert pixel_draw.main(["--grid", str(inside), "--out-dir", str(tmp_path / "inside")]) == 0
+    report = report_of(tmp_path / "inside")
+    assert report["status"] == "ok" and report["warnings"] == []
+    assert report["gates"]["G8"]["floor_row"] == 14 and report["gates"]["G8"]["safe_area"] == [14, 14]
