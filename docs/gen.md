@@ -325,7 +325,9 @@ strategy it can execute, and `--alpha-mode auto` (the default) follows it:
   refused after the paid call: `alpha.decontam` records `{"requested": …, "skipped":
   …}` and stderr says so (a warning for `palette`, which demands the pass). The check
   is the counts, not the rounded percentages: a raw with a single alpha-0 pixel is
-  `ambiguous`, reported as `0.0`.
+  `ambiguous`, reported as `0.0`. The judgment of the alpha band is one function,
+  `chroma.alpha_verdict`: [`pixel-draw`](pixel-draw.md#gates)'s G3 asks it of every frame
+  it drew (a sprite or icon frame must be `real-alpha`, a tile `no-alpha`).
   Measured 2026-10-04 (codex `image_gen`, subscription, one transparent front still as
   the reference, three takes per arm): with the step down's prompt (no transparency
   request, no key colour), a transparent (RGBA) reference came back with real alpha

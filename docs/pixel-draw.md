@@ -4,7 +4,7 @@
 > varies from run to run: expect to compare candidates, re-draw, or touch up `grid.txt` by hand. The numbers below come from a
 > small set of measured runs, not from a benchmark.
 
-> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the run folder and `report.json`, gates G1–G8, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
+> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the run folder and `report.json`, gates G1–G8 and what they take from sprite-gen, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
 
 The model does not paint an image that is then shrunk to a grid. It writes the grid itself: a
 palette of keys and, per frame, one line of keys per pixel row. Code checks every answer, asks for
@@ -102,7 +102,8 @@ For each candidate, independently (in parallel, or in one batch):
    (xhigh → high → medium → low). A candidate is drawn at most twice in all.
 4. **G2–G6 and G8** on the pixels. G2, G3 and G6 fail the candidate; G4, G5, the walk check and G8
    (a frame past the physical cap, feet off the floor row) warn; G8 also notes a frame past the safe
-   area within the cap in an info line, which asks for nothing.
+   area within the cap in an info line, which asks for nothing. G3, G4, G5 and G8 are judgments
+   sprite-gen already makes elsewhere, asked rather than copied ([below](#what-it-takes-from-sprite-gen)).
 5. **G7 pick.** Of two or more candidates that passed, one vision call (`claude-opus-5-5`, effort
    low, structured output) looks at all of them on one sheet, shuffled under letters, scores each and
    names the best; with `--pick human` nobody picks and the candidates wait for a person. One that
@@ -162,12 +163,38 @@ past the safe area has not been measured yet.
 |---|---|---|
 | G1 parse | One block; palette lines `<key> #RRGGBB` (`.` is transparent and nothing else); the frames asked for, each exactly N rows of N palette keys | Row issues → row repair (two rounds), then one redraw; anything else → one redraw. Recovered by code and recorded: a single frame written without its `FRAME` line or under another name, frames in another order, the fence tagged otherwise, no `END` line |
 | G2 palette | Opaque colours used ≤ the limit; a fixed palette's colours only | fails |
-| G3 alpha | Sprite/icon: something drawn, four transparent corners, border at least half transparent. Tile: every pixel opaque | fails |
-| G4 tile seam | Colour step across the wrap edges ÷ the mean step inside the tile ≤ 1.5 | warns — mortar lines that meet the edge raise it on tiles that repeat cleanly; look at `tiled-3x3.png` |
-| G5 stray pixels | Opaque pixels of a sprite/icon with no opaque 4-neighbour | warns |
+| G3 alpha | Each frame's background by the judgment `gen` reads a generated raw by (`alpha_verdict`, [gen.md](gen.md#transparent-output--strategy-per-provider)): `real-alpha` is at least 5 % of the pixels and half the one-pixel border alpha 0, `no-alpha` none. Sprite/icon: `real-alpha`, something drawn, four transparent corners. Tile: `no-alpha` | fails |
+| G4 tile seam | Each tile frame's join along x and along y, by the measure `background-tile` reports (`inspect_tile`, [asset-tools.md](asset-tools.md#repeating-tiles)): the wrap edge against the tile's own neighbours | warns where it says `needs-review`, with its reasons — a local measure, never proof that the tile repeats cleanly; look at `tiled-3x3.png` |
+| G5 stray pixels | Lone pixels of a sprite/icon by the judgment the matte cleanup erases them by (`isolated_dots`, [chroma-alpha.md](chroma-alpha.md#chromamode-ycbcr--chrominance-plane-matting-opt-in)): opaque, with no opaque pixel among their eight neighbours — a pixel touching another only at a corner, as in a diagonal stroke, is joined | warns |
 | G6 frames | Same bottom row in every frame, heights within one pixel, no two frames the same; a sprite's or icon's rows are measured inside the [safe area](#the-safe-area), so a staff raised or a spark into the margin in one frame is not a taller figure (the margin is G8's). With `--walk-cycle`: the contact frames differ by at least 40% of the mean contact↔passing difference | fails; the walk check warns ("weak leg alternation — touch up the legs") |
 | G8 safe area | Sprite/icon: each frame's opaque box against the [safe area](#the-safe-area) and the physical cap, by the pixel snap's own judgment (`safe_area_fit`, [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode)); a sprite's body box ending on the floor row | never fails: past the physical cap, and feet off the floor row, warn; past the safe area within the cap is an info line (`info`), which asks for nothing. Below 11 px the margin is 0: the safe area and the cap are the canvas |
 | G7 pick | Two or more passed: the vision pick (or a person) | a pick that fails ends the run `pick_failed`, candidates kept |
+
+## What it takes from sprite-gen
+
+`pixel-draw` is a new way to make a picture, not a new set of rules for one. Where sprite-gen already
+answers a question the verb asks, it asks that function; a part that is its own says why.
+
+| Part | Taken from | Owner of the rule |
+|---|---|---|
+| The safe area's numbers (margin, floor row) | `prepare`'s cell normalisation (`gen.prepare.normalize_cell`) | [run-contract.md](run-contract.md) |
+| G3 transparent background | `gen.chroma.alpha_verdict`, which `classify_raw_alpha` reads a raw by | [gen.md](gen.md#transparent-output--strategy-per-provider) |
+| G4 tile seam | `background.tile.inspect_tile`, `background-tile`'s join measure | [asset-tools.md](asset-tools.md#repeating-tiles) |
+| G5 stray pixels | `frames.extract.isolated_dots`, the YCbCr matte cleanup's lone pixels | [chroma-alpha.md](chroma-alpha.md#chromamode-ycbcr--chrominance-plane-matting-opt-in) |
+| G8 safe area | `frames.extract.safe_area_fit`, the pixel snap's judgment | [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode) |
+| `anim.gif` | `util.gif_utils.save_clean_gif` | — |
+| The pick sheet's checker | `qa.preview.checker`, the contact sheets' | — |
+| The billing line, the printed report | `gen.base.announce_api_billing`, `gen.base.print_json` | [gen.md](gen.md) |
+| The refusal line | `gen.refusal` (`CONTENT_POLICY`) | [gen.md](gen.md#direct-openai-calls-and-authentication) |
+| What ends a call unanswered, and its words | `gen.xai` (`NO_ANSWER`, `no_answer_reason`) | — |
+
+Its own, because nothing in sprite-gen does it: the grid and its parse (G1), the row repair, the palette
+rules (`--palette`), `frame-<name>.png`'s encoder (its bytes depend on the pixels alone, which Pillow's
+do not), G2's count against the rule, G6 (one pixel of height across a drawn set — `extract`'s size
+check is for a frame the matte broke, under 35 % or over 275 % of the median frame's area), the walk check (the
+video path's legs read a filmed cycle's steps, not whether two drawn contact frames swap legs), the
+3×3 tiling, the vision pick, Message Batches and `--resume` (`video-resume` asks xAI again by request
+id; a batch is collected, and every answered call read back), and the cost in `report.json`.
 
 ## The run folder
 
