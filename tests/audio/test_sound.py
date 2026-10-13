@@ -13,6 +13,11 @@ from sprite_gen.audio import cache, provider, processing, sound
 from sprite_gen.gen import retry
 
 
+@pytest.fixture(autouse=True)
+def fake_credential(monkeypatch):
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'synthetic-key')
+
+
 def wav_bytes(seconds=3):
     t = np.arange(round(seconds * 48000)) / 48000
     x = .08 * np.sin(2 * np.pi * 321.3 * t)
