@@ -48,7 +48,7 @@ from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
-from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback
+from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
@@ -76,7 +76,7 @@ ONE_SHOT_MIN_MOVED = 0.4
 ONE_SHOT_MIN_COHERENCE = 3.0  # departure must exceed three ordinary playback steps
 ONE_SHOT_MIN_ACTIVE = 4  # isolated keying/jitter spikes are not a performed action
 ONE_SHOT_PAD = 2  # one-shot: rest frames kept on each side of the excursion so the seam is rest -> rest
-CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned")
+CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", "once")
 # --cycle pinned: the clip was asked to end on its first frame (first-last mode). A re-rendered
 # first frame is never byte-identical to its source; on the analysis thumbnail (mean absolute
 # RGBA difference, 0..1) it lands within this of it, well under one frame of visible motion.
@@ -723,7 +723,7 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     cap = max(1, min(max_cells, max_width // max(1, w)))
     idx = list(range(L))
     if L > cap:
-        idx = [round(k * L / cap) for k in range(cap)]
+        idx = nonloop.samples(L, cap) if kind in nonloop.KINDS else [round(k * L / cap) for k in range(cap)]
     chosen = [frames[i] for i in idx]
     if feet:
         cells = []
@@ -747,7 +747,7 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
         # (rest -> action -> rest) plays once on a trigger; every other cut is a loop.
         # The spec asset loader reads `loop` from this sidecar.
         "kind": kind,
-        "loop": kind != "one-shot",
+        "loop": kind not in ("one-shot", *nonloop.KINDS),
         "body_h": round(body_src * scale),
         "body_src_h": body_src,  # the standing height as filmed; body_h / body_src_h > 1 means the cells were upscaled
         "body_ref": ("cut-first-frame" if standing_frame else "first-frame") if standing_src is not None else "tallest-grounded",
@@ -789,7 +789,7 @@ def img2webp_supports_exact(binary: str | None = None) -> bool:
     return "-exact" in (proc.stdout + proc.stderr)
 
 
-def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: Path) -> None:
+def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: Path, loop: int = 0) -> None:
     """Animated WebP through libwebp's img2webp with -exact (Pillow's animated writer drops `exact`
     and rewrites RGB under alpha 0 to white; measured 2026-09-08)."""
     img2webp = shutil.which("img2webp")
@@ -806,12 +806,12 @@ def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: 
         p = workdir / f"webp-{k:03d}.png"
         im.save(p)
         paths.append(str(p))
-    proc = subprocess.run([img2webp, "-loop", "0", "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
+    proc = subprocess.run([img2webp, "-loop", str(loop), "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
     if proc.returncode != 0 or not out.is_file():
         raise SystemExit(f"video-loop: img2webp failed: {proc.stderr.strip()[:300]}")
 
 
-def verify_animation(path: Path, *, expect_frames: int, check_stale: bool) -> dict[str, Any]:
+def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0) -> dict[str, Any]:
     # Closed on the way out: `video-follow` checks its animations before it moves them over the loop's.
     with Image.open(path) as im:
         n = getattr(im, "n_frames", 1)
@@ -829,8 +829,8 @@ def verify_animation(path: Path, *, expect_frames: int, check_stale: bool) -> di
     problems = []
     if n != expect_frames:
         problems.append(f"{n} frames, expected {expect_frames}")
-    if loop != 0:
-        problems.append(f"loop={loop!r}, expected 0 (infinite)")
+    if loop != expected_loop:
+        problems.append(f"loop={loop!r}, expected {expected_loop!r}")
     if not corners_ok:
         problems.append("a corner is not transparent")
     if stale:
@@ -1115,6 +1115,21 @@ def run_loop(
     size_hold: str = "auto",
     steps: int | None = None,
 ) -> dict[str, Any]:
+    state = state.strip().lower() if state else state
+    if state in nonloop.STATES:
+        if cycle_mode == "auto":
+            cycle_mode = "once"
+        elif cycle_mode != "once":
+            raise SystemExit(f"video-loop: non-loop state {state} requires --cycle once")
+    if cycle_mode in nonloop.KINDS:
+        if state in nonloop.CYCLIC_STATES:
+            raise SystemExit(f"video-loop: cyclic state {state} cannot use --cycle {cycle_mode}")
+        if anchor not in (None, "none"):
+            raise SystemExit("video-loop: a single-play cut requires --anchor none")
+        if start is not None or length is not None:
+            raise SystemExit("video-loop: a single-play cut selects its terminal bounds; drop --start/--length")
+        if not math.isfinite(fps) or fps <= 0 or not math.isfinite(gif_fps) or gif_fps <= 0 or (n_out is not None and n_out < 2):
+            raise SystemExit("video-loop: positive fps and at least two output frames are required")
     if steps is not None and steps not in STEPS:
         raise SystemExit(f"video-loop: --steps {steps}: the cut holds {' or '.join(map(str, STEPS))} steps here")
     if size_hold not in SIZE_HOLD_MODES:
@@ -1248,6 +1263,9 @@ def run_loop(
                     raise failed from first
             if steps is not None:
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
+        elif cycle_mode == "once":
+            nonloop.validate_body([Image.open(f).convert("RGBA") for f in files])
+            cycle = nonloop.select_cut(D, masses, fps=fps)
         elif cycle_mode == "fixed":
             if start is None or length is None:
                 raise SystemExit("video-loop: --cycle fixed needs --start and --length")
@@ -1468,6 +1486,8 @@ def run_loop(
     seam_frames = [as_filmed.get(k, f) for k, f in enumerate(frames)]
     strip_meta["source_cut"] = {"source": report_base["source"], "start": i, "length": L,
                                 "samples": [i + k for k in strip_meta["sample_indices"]]}
+    if cycle["kind"] in nonloop.KINDS:
+        strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"]))
     # The scaled-back frames are read for the last time above; the cycle cells keep them.
     shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
     if state:
@@ -1510,8 +1530,14 @@ def run_loop(
     atomic_write_text(out_dir / f"{name}.strip.json", json.dumps(strip_meta, indent=2) + "\n")
 
     # resampled GIF/WebP frames: same crop as the strip, n_out evenly across the cycle
-    idx = [min(L - 1, i2) for i2 in (round(k * L / n_out) for k in range(n_out))]
-    pick = resampled_cells(strip, strip_meta, idx, L)
+    single_play = cycle["kind"] in nonloop.KINDS
+    if single_play:
+        preview_indices = nonloop.samples(strip_meta["frames"], n_out)
+        idx = [strip_meta["sample_indices"][k] for k in preview_indices]
+        pick = [strip.crop((k * strip_meta["w"], 0, (k + 1) * strip_meta["w"], strip_meta["h"])) for k in preview_indices]
+    else:
+        idx = [min(L - 1, i2) for i2 in (round(k * L / n_out) for k in range(n_out))]
+        pick = resampled_cells(strip, strip_meta, idx, L)
     seam_idx = [i + j for j in idx]
     resampled_adjacent = float(np.mean([D[seam_idx[k], seam_idx[k + 1]] for k in range(len(seam_idx) - 1)]))
     resampled_seam = float(D[seam_idx[-1], seam_idx[0]])
@@ -1537,7 +1563,7 @@ def run_loop(
                                       "resampled_inner_mean_adjacent": resampled_adjacent,
                                       "resampled_seam_ratio": seam_ratio})
             raise SystemExit(error)
-    elif seam_ratio > seam_max:
+    elif not single_play and seam_ratio > seam_max:
         error = (
             f"video-loop: loop seam ratio {seam_ratio:.2f} exceeds {seam_max} "
             f"({cycle['kind']} length {L} frames from {i}); the cycle does not close — "
@@ -1549,13 +1575,13 @@ def run_loop(
                                   "resampled_inner_mean_adjacent": resampled_adjacent,
                                   "resampled_seam_ratio": seam_ratio})
         raise SystemExit(error)
-    save_clean_gif(pick, gif_path, duration_ms=delay_ms, loop=0, alpha_threshold=128)
-    write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames")
+    save_clean_gif(pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0, alpha_threshold=128)
+    write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
     shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
     # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
     shown = shown_runs(pick)
-    gif_report = verify_animation(gif_path, expect_frames=shown, check_stale=False)
-    webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True)
+    gif_report = verify_animation(gif_path, expect_frames=shown, check_stale=False, **({"expected_loop": None} if single_play else {}))
+    webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
 
     payload = {
         **report_base,
@@ -1577,7 +1603,8 @@ def run_loop(
         "status": "passed",
         "resampled_seam": resampled_seam,
         "resampled_inner_mean_adjacent": resampled_adjacent,
-        "resampled_seam_ratio": round(seam_ratio, 4),
+        "resampled_seam_ratio": None if single_play else round(seam_ratio, 4),
+        **({"seam_measurement": "not-applicable", "playback_indices": preview_indices} if single_play else {}),
         "seam_max": seam_max,
         "scrubbed_rgb_pixels": scrubbed,
         "specks_dropped": specks,
@@ -1600,7 +1627,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
     parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX})")
-    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="auto: periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin)")
+    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin)")
     parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
     parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
     parser.add_argument("--strip-height", type=int, default=STRIP_MAX_HEIGHT, help=f"cell/strip/GIF height cap in px (default {STRIP_MAX_HEIGHT}); the cycle is scaled down to fit, and never up unless --body-height asks for it")
