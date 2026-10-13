@@ -228,6 +228,25 @@ def test_a_recorded_blade_reaches_into_the_margin_and_the_body_stays_inside():
     assert all(3 <= m["body_box"][0] and m["body_box"][2] <= 28 and m["baseline"] == 28 for m in measures.values())
 
 
+def test_g6_measures_the_frames_inside_the_safe_area():
+    """What reaches into the margin - a staff raised in one frame, a spark in another - is G8's to
+    judge; G6 compares the figures inside the safe area."""
+    still, raised = figure(), paint(figure(), 20, 1, 20, 2)  # the staff 2 px into the top margin
+    g6 = evaluate({"a": still, "b": raised}, kind="sprite", rule=FREE16, walk_cycle=False)["G6"]
+    assert g6["ok"] and g6["heights"] == {"a": 26, "b": 26} and g6["baselines"] == {"a": 28, "b": 28}
+    taller = paint(canvas(), 8, 5, 23, 28)  # the body itself 2 px shorter inside the safe area
+    assert not evaluate({"a": still, "b": taller}, kind="sprite", rule=FREE16, walk_cycle=False)["G6"]["ok"]
+
+
+def test_a_recorded_staff_and_spark_in_the_margin_pass():
+    """Drawn under the safe-area prompt: the staff pulled back reaches 2 px into the top margin and the
+    spark 1 px, the figure is the same height in every frame."""
+    frames = frames_of("attack-32-margin-detail.txt", 32, ("attack1", "attack2", "attack3", "attack4"))
+    gates = evaluate(frames, kind="sprite", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and gates["warnings"] == [] and gates["G6"]["height_spread"] == 0
+    assert [m["bbox"][1] for m in gates["G8"]["frames"].values()] == [3, 1, 2, 3]
+
+
 def test_recorded_answers_from_the_full_canvas_prompt_fail_g8():
     """Drawn when the prompt asked to fill the canvas: the knight's helmet is on row 1 and its boots
     on row 16, the 16 px canvas's own edge rows."""
