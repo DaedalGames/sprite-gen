@@ -91,6 +91,10 @@ def g3_alpha(frames: dict[str, Frame], kind: str) -> dict[str, Any]:
     per = {name: _frame_alpha(frame) for name, frame in frames.items()}
     if kind == "tile":
         ok = all(m["verdict"] == RAW_ALPHA_NONE for m in per.values())
+    elif kind == "effect":
+        ok = (any(m["opaque_pixels"] > 0 for m in per.values())
+              and all(m["corners_transparent"] and (m["opaque_pixels"] == 0 or m["verdict"] == RAW_ALPHA_REAL)
+                      for m in per.values()))
     else:
         ok = all(m["opaque_pixels"] > 0 and m["corners_transparent"] and m["verdict"] == RAW_ALPHA_REAL
                  for m in per.values())
@@ -252,16 +256,19 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
     warnings: list[str] = []
     info: list[str] = []
     first = next(iter(frames.values()))
-    area = None if kind == "tile" else safe_area(len(first[0]), len(first))
+    area = None if kind in ("tile", "effect") else safe_area(len(first[0]), len(first))
     if kind == "tile":
         gates["G4"] = g4_seam(frames)
         if gates["G4"]["warn"]:
             warnings.append(_g4_line(gates["G4"]))
-    else:
+    elif kind != "effect":
         gates["G5"] = g5_isolated(frames)
         if gates["G5"]["warn"]:
             warnings.append(f"G5 {gates['G5']['isolated_pixels']} stray pixel(s) with no opaque neighbour")
-    if len(frames) > 1:
+    if kind == "effect":
+        gates["G6"] = {"ok": 2 <= len(frames) <= 8 and any(frame != first for frame in frames.values()),
+                       "rule": "2..8 frames with a visible change; extent, height and empty frames may differ"}
+    elif len(frames) > 1:
         gates["G6"] = g6_frames(frames, walk_cycle=walk_cycle, box=area["box"] if area else None)
         walk = gates["G6"].get("walk")
         if walk and walk["warn"]:
