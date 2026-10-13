@@ -817,27 +817,41 @@ def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: 
         raise SystemExit(f"video-loop: img2webp failed: {proc.stderr.strip()[:300]}")
 
 
-def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0) -> dict[str, Any]:
+def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0,
+                     background: str | None = None) -> dict[str, Any]:
     # Closed on the way out: `video-follow` checks its animations before it moves them over the loop's.
     with Image.open(path) as im:
         n = getattr(im, "n_frames", 1)
         loop = im.info.get("loop")
         corners_ok = True
+        background_pixel = Image.new("RGBA", (1, 1), background).getpixel((0, 0)) if background is not None else None
+        background_ok = True
+        opaque = True
         stale = 0
         for k in range(n):
             im.seek(k)
             f = im.convert("RGBA")
             w, h = f.size
             corners_ok &= all(f.getpixel(c)[3] == 0 for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+            if background_pixel is not None:
+                background_ok &= all(f.getpixel(c) == background_pixel for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+                opaque &= f.getchannel("A").getextrema() == (255, 255)
             if check_stale:
                 stale += sum(1 for p in f.get_flattened_data() if p[3] == 0 and (p[0] or p[1] or p[2]))
         report = {"file": path.name, "format": im.format, "n_frames": n, "loop": loop, "size": list(im.size), "corners_transparent": corners_ok, "stale_rgb_under_alpha0": stale, "bytes": path.stat().st_size}
+        if background is not None:
+            report.update(background=background, opaque=opaque)
     problems = []
     if n != expect_frames:
         problems.append(f"{n} frames, expected {expect_frames}")
     if loop != expected_loop:
         problems.append(f"loop={loop!r}, expected {expected_loop!r}")
-    if not corners_ok:
+    if background is not None:
+        if not opaque:
+            problems.append("a frame is not opaque on its declared background")
+        if not background_ok:
+            problems.append("a corner does not match the declared background")
+    elif not corners_ok:
         problems.append("a corner is not transparent")
     if stale:
         problems.append(f"{stale} transparent pixels carry RGB")
@@ -1592,13 +1606,18 @@ def run_loop(
                                   "resampled_inner_mean_adjacent": resampled_adjacent,
                                   "resampled_seam_ratio": seam_ratio})
         raise SystemExit(error)
-    save_clean_gif(pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
-                   alpha_threshold=0 if cycle["kind"] == "lifetime" else 128)
+    # GIF has binary transparency. Bake the effect onto its declared black preview
+    # background instead of turning its faint partial-alpha glow into opaque dark pixels.
+    gif_background = "#000000" if cycle["kind"] == "lifetime" else None
+    gif_pick = [effect.on_black(im) for im in pick] if gif_background is not None else pick
+    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0, alpha_threshold=128)
     write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
     shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
     # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
     shown = shown_runs(pick)
-    gif_report = verify_animation(gif_path, expect_frames=shown, check_stale=False, **({"expected_loop": None} if single_play else {}))
+    gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
+                                  **({"expected_loop": None} if single_play else {}),
+                                  **({"background": gif_background} if gif_background is not None else {}))
     webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
 
     payload = {

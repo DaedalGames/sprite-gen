@@ -6,6 +6,7 @@ import pytest
 from sprite_gen._deps import np
 from sprite_gen.video import frames, batch, clip_prompt
 from sprite_gen.video import loop, canvas
+from sprite_gen.util.gif_utils import save_clean_gif
 
 
 def test_brightness_alpha_reconstructs_dark_and_saturated_emission(tmp_path):
@@ -154,10 +155,23 @@ def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_
         if extension == "gif":
             assert all(extrema == (255, 255) for extrema in opacity)
             assert background == "#000000"
+            assert report[extension]["opaque"] is True
             assert decoded.getextrema() == ((0, 0), (0, 0), (0, 0), (255, 255))
         else:
             assert background is None
             assert decoded.getchannel("A").getbbox() is None
+
+
+def test_animation_background_is_explicit_and_requires_full_opacity(tmp_path):
+    path = tmp_path / "preview.gif"
+    image = Image.new("RGBA", (8, 8), "black")
+    save_clean_gif([image], path, duration_ms=100, loop=None)
+    with pytest.raises(SystemExit, match="corner is not transparent"):
+        loop.verify_animation(path, expect_frames=1, check_stale=False, expected_loop=None)
+    image.putpixel((4, 4), (0, 0, 0, 0))
+    save_clean_gif([image], path, duration_ms=100, loop=None)
+    with pytest.raises(SystemExit, match="not opaque"):
+        loop.verify_animation(path, expect_frames=1, check_stale=False, expected_loop=None, background="#000000")
 
 
 def test_lifetime_refuses_an_end_with_even_one_dim_pixel(tmp_path):

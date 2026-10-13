@@ -61,11 +61,16 @@ def prompt(character: str | None, motion: str | None) -> str:
             "hold complete black with no remaining glow. Perform the effect once.")
 
 
-def canvas(image: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
-    """Keep the effect's frame and centre; composite transparent artwork onto black."""
+def on_black(image: Image.Image) -> Image.Image:
+    """Composite emitted light onto an opaque black canvas without changing its frame."""
     rgba = image.convert("RGBA")
     black = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
-    result = Image.alpha_composite(black, rgba).convert("RGB")
+    return Image.alpha_composite(black, rgba).convert("RGB")
+
+
+def canvas(image: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+    """Keep the effect's frame and centre; composite transparent artwork onto black."""
+    result = on_black(image)
     return result, {"fit": "state", "shape": "source", "canvas": list(result.size), "offset": [0, 0],
                     "key": "black", "key_rgb": [0, 0, 0], "why": "fixed effect origin on black"}
 
