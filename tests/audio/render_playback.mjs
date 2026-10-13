@@ -1,20 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
-// node tests/audio/render_playback.mjs <cases.json> <output-dir>
+// node tests/audio/render_playback.mjs <cases.json> <output-dir> [chromium,webkit]
 // PLAYWRIGHT_MODULE may name an installed Playwright entry point.
+// PLAYWRIGHT_CHROMIUM_EXECUTABLE explicitly selects an installed Chromium browser.
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 const { chromium, webkit } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const [caseFile, outputDir] = process.argv.slice(2);
+const [caseFile, outputDir, engineList = 'chromium,webkit'] = process.argv.slice(2);
+const engines = engineList.split(',');
+assert.ok(engines.length && new Set(engines).size===engines.length &&
+  engines.every(name=>['chromium','webkit'].includes(name)), 'select chromium, webkit, or both');
 const cases = JSON.parse(await readFile(caseFile, 'utf8'));
 await mkdir(outputDir, { recursive: true });
 const modulePath = resolve('sprite_gen/audio/sprite-gen-audio-v2.mjs');
 const moduleBytes = await readFile(modulePath);
 const digest = createHash('sha256').update(moduleBytes).digest('hex');
 const reports = [];
-for (const [name, engine] of Object.entries({ chromium, webkit })) {
-  const browser = await engine.launch({ headless: true });
+const report = { module_sha256:digest, engines,
+  chromium_executable:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || 'bundled', reports };
+for (const name of engines) {
+  const engine = { chromium, webkit }[name];
+  const browser = await engine.launch({ headless: true,
+    ...(name==='chromium' && process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ?
+      {executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE} : {}) });
   try {
     const page = await browser.newPage();
     await page.goto('about:blank');
@@ -35,27 +44,74 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           const x=input.getChannelData(c);
           for (let i=0;i<x.length;i++) x[i]=.2*Math.cos(2*Math.PI*(c ? 73 : 1000)*i/rate)+.1*i/x.length;
         }
-        // A PCM WAVE with a fractional resampled frame count exercises the
-        // actual decoder rather than constructing an idealized AudioBuffer.
-        const waveFrames=144003, wave=new ArrayBuffer(44+waveFrames*2), view=new DataView(wave);
-        const ascii=(offset,text)=>{for(let i=0;i<text.length;i++) view.setUint8(offset+i,text.charCodeAt(i));};
-        ascii(0,'RIFF'); view.setUint32(4,36+waveFrames*2,true); ascii(8,'WAVE');
-        ascii(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
-        view.setUint16(22,1,true); view.setUint32(24,48000,true); view.setUint32(28,96000,true);
-        view.setUint16(32,2,true); view.setUint16(34,16,true); ascii(36,'data');
-        view.setUint32(40,waveFrames*2,true);
-        for(let i=0;i<waveFrames;i++) view.setInt16(44+2*i,Math.round(5000*Math.sin(2*Math.PI*317*i/48000)),true);
-        const waveDecoded=await new OfflineAudioContext(1,1,rate).decodeAudioData(wave);
-        const waveMeta={version:2,sample_rate:48000,start_frame:0,end_frame:waveFrames,overlap_frames:12000};
-        const wavePrepared=prepareAudioBuffer(waveDecoded,waveMeta);
-        check(wavePrepared.length===Math.round((waveFrames-12000)*rate/48000),'resampled loop duration changed');
-        const completeFrames=Math.floor(waveFrames*rate/48000);
-        const oneShot=prepareAudioBuffer(waveDecoded,{...waveMeta,overlap_frames:0});
-        check(oneShot.length===completeFrames,'one-shot interval or padding is wrong');
-        let truncatedRejected=false;
-        try { prepareAudioBuffer(new AudioBuffer({sampleRate:rate,length:completeFrames-1,numberOfChannels:1}),waveMeta); }
-        catch { truncatedRejected=true; }
-        check(truncatedRejected,'missing complete frame silently clamped');
+        // Exercise both integer and fractional resampled lengths through the
+        // real decoder and the public source factory, for one-shots and loops.
+        const resampling=[];
+        for (const waveFrames of [48000, 144003]) {
+          const wave=new ArrayBuffer(44+waveFrames*2), view=new DataView(wave);
+          const ascii=(offset,text)=>{for(let i=0;i<text.length;i++) view.setUint8(offset+i,text.charCodeAt(i));};
+          ascii(0,'RIFF'); view.setUint32(4,36+waveFrames*2,true); ascii(8,'WAVE');
+          ascii(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
+          view.setUint16(22,1,true); view.setUint32(24,48000,true); view.setUint32(28,96000,true);
+          view.setUint16(32,2,true); view.setUint16(34,16,true); ascii(36,'data');
+          view.setUint32(40,waveFrames*2,true);
+          for(let i=0;i<waveFrames;i++) view.setInt16(44+2*i,Math.round(5000*Math.sin(2*Math.PI*317*i/48000)),true);
+          const waveDecoded=await new OfflineAudioContext(1,1,rate).decodeAudioData(wave);
+          const waveMeta={version:2,sample_rate:48000,start_frame:0,end_frame:waveFrames,overlap_frames:12000};
+          const completeFrames=Math.floor(waveFrames*rate/48000);
+          for (const loop of [false, true]) {
+            const coordinates={...waveMeta,overlap_frames:loop ? 12000 : 0};
+            // The decoder exercises its own rounding. Constructed buffers also
+            // enforce the one-frame tolerance and reject two missing frames.
+            for (const delta of [null, -1, 0, 7, -2]) {
+              const raw=delta===null ? waveDecoded : new AudioBuffer({sampleRate:rate,
+                length:completeFrames+delta,numberOfChannels:1});
+              if (delta!==null) raw.copyToChannel(waveDecoded.getChannelData(0).subarray(0,raw.length),0);
+              const expected=loop ? Math.round((waveFrames-12000)*rate/48000) : Math.min(completeFrames,raw.length);
+              const context=new OfflineAudioContext(1,expected*2,rate);
+              if (delta===-2) {
+                let error;
+                try { createAudioSource(context,raw,{loop,playback:coordinates}); } catch (caught) { error=caught; }
+                check(error instanceof RangeError && /playback interval/.test(error.message),'two missing frames must be an interval error');
+                continue;
+              }
+              const prepared=prepareAudioBuffer(raw,coordinates);
+              const node=createAudioSource(context,raw,{loop,playback:coordinates});
+              check(prepared.length===expected,'resampled playback duration changed');
+              check(node.loop===loop && node.loopEnd===expected/rate,'source interval is wrong');
+              if (!loop) check(prepared.getChannelData(0).every((v,i)=>v===raw.getChannelData(0)[i]),'one-shot samples changed');
+              node.connect(context.destination); node.start();
+              const rendered=(await context.startRendering()).getChannelData(0), samples=prepared.getChannelData(0);
+              let renderError=0;
+              for(let i=0;i<rendered.length;i++) renderError=Math.max(renderError,Math.abs(rendered[i]-(loop ? samples[i%expected] : (i<expected ? samples[i] : 0))));
+              check(renderError<1e-7,'resampled source rendering changed');
+              if (loop) {
+                const overlap=Math.min(completeFrames,raw.length)-expected, x=raw.getChannelData(0);
+                check((rendered[expected]-rendered[expected-1])-(x[overlap]-x[overlap-1])===0,'resampled wrap error');
+                const join=expected-overlap;
+                check((samples[join]-samples[join-1])-(x[expected]-x[expected-1])===0,'resampled join error');
+              }
+              resampling.push({source_frames:waveFrames,complete_frames:completeFrames,
+                decoded_frames:raw.length,delta,loop,length:prepared.length,render_error:renderError});
+            }
+          }
+        }
+        for (const overlap of [0, 1]) {
+          const coordinates=overlap ? {version:2,sample_rate:rate,start_frame:0,end_frame:12,overlap_frames:2}
+            : {version:2,sample_rate:rate*2,start_frame:0,end_frame:24,overlap_frames:2};
+          const raw=new AudioBuffer({sampleRate:rate,length:11,numberOfChannels:1});
+          let error;
+          try { createAudioSource(new OfflineAudioContext(1,12,rate),raw,{loop:true,playback:coordinates}); }
+          catch (caught) { error=caught; }
+          check(error instanceof RangeError && /overlap too short after decoder one-frame shortfall/.test(error.message),
+            `mapped overlap ${overlap} must be an explicit shortfall error`);
+        }
+        const minimumRateInput=new AudioBuffer({sampleRate:8000,length:7999,numberOfChannels:1});
+        for(let i=0;i<minimumRateInput.length;i++) minimumRateInput.getChannelData(0)[i]=.1*Math.sin(i/5);
+        const minimumRateMeta={version:2,sample_rate:48000,start_frame:0,end_frame:48005,overlap_frames:21};
+        const minimumRateBuffer=prepareAudioBuffer(minimumRateInput,minimumRateMeta);
+        check(minimumRateBuffer.length===7997,'minimum supported rate lost the declared loop length');
+        check(minimumRateBuffer.getChannelData(0).every(Number.isFinite),'minimum overlap generated nonfinite samples');
         const before = input.getChannelData(0).slice();
         const out = prepareAudioBuffer(input, meta);
         check(out.length === length, 'one-frame rounding drift');
@@ -141,7 +197,7 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         check(controls===4, 'rendered discontinuity control escaped detection');
         return { length, count, duration_round_trips:roundTrips, added_wrap_error:0, added_join_error:0,
           controls_detected:controls, control_added_wrap_error:controlError, render_error:maxError,
-          wave_decoded_frames:waveDecoded.length, wave_complete_frames:completeFrames, wave_loop_frames:wavePrepared.length };
+          resampling };
       }, { code: `data:text/javascript;base64,${moduleBytes.toString('base64')}`, rate });
       reports.push({ browser:name, browser_version:browser.version(), rate, synthetic });
       for (const item of cases) {
@@ -161,7 +217,9 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
             const decoded=await decoder.decodeAudioData(data.buffer);
             const buffer=prepareAudioBuffer(decoded,record.playback);
             const m=record.playback, map=f=>f*decoded.sampleRate/m.sample_rate;
-            const first=Math.floor(map(m.start_frame)), n=Math.floor(map(m.end_frame))-first;
+            const first=Math.floor(map(m.start_frame)), last=Math.floor(map(m.end_frame));
+            if (decoded.length<last-1) throw new Error('decoded interval is more than one frame short');
+            const n=Math.min(last,decoded.length)-first;
             const length=m.overlap_frames ? Math.round(map(m.end_frame-m.start_frame-m.overlap_frames)) : n, count=n-length;
             if (buffer.length!==length) throw new Error('wrong prepared duration');
             const context=new OfflineAudioContext(buffer.numberOfChannels,length*3,rate);
@@ -186,8 +244,9 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
                 renderError=Math.max(renderError,Math.abs(r[i]-expected));
               }
             }
-            const interleaved=new Float32Array(rendered.length*rendered.numberOfChannels);
-            for(let i=0;i<rendered.length;i++) for(let c=0;c<rendered.numberOfChannels;c++)
+            const pcmFrames=record.loop ? rendered.length : buffer.length;
+            const interleaved=new Float32Array(pcmFrames*rendered.numberOfChannels);
+            for(let i=0;i<pcmFrames;i++) for(let c=0;c<rendered.numberOfChannels;c++)
               interleaved[i*rendered.numberOfChannels+c]=rendered.getChannelData(c)[i];
             const u8=new Uint8Array(interleaved.buffer);
             let binary=''; for(let i=0;i<u8.length;i+=16384) binary+=String.fromCharCode(...u8.subarray(i,i+16384));
@@ -202,8 +261,8 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           const pcmName=`${item.name}-${name}-${rate}-${fmt}.f32`;
           await writeFile(resolve(outputDir,pcmName),Buffer.from(result.pcm,'base64'));
           delete result.pcm;
-          reports.push({ name:item.name,browser:name,rate,fmt,target_lufs:record.target_lufs,pcm:pcmName,...result });
-          await writeFile(resolve(outputDir,'render.json'),JSON.stringify({module_sha256:digest,reports},null,2));
+          reports.push({ name:item.name,browser:name,rate,fmt,loop:record.loop,target_lufs:record.target_lufs,pcm:pcmName,...result });
+          await writeFile(resolve(outputDir,'render.json'),JSON.stringify(report,null,2));
         }
       }
     }
@@ -211,8 +270,10 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
 }
 for (const item of cases) for (const rate of [44100,48000]) {
   const rows=reports.filter(row=>row.name===item.name && row.rate===rate);
-  assert.equal(rows.length,4, 'both codecs must render in both engines');
-  assert.equal(new Set(rows.map(row=>row.length)).size,1, 'engine or codec changed the loop length');
+  assert.equal(rows.length,engines.length*2, 'both codecs must render in every selected engine');
+  if(rows[0].loop) assert.equal(new Set(rows.map(row=>row.length)).size,1, 'engine or codec changed the loop length');
+  else assert.ok(Math.max(...rows.map(row=>row.length))-Math.min(...rows.map(row=>row.length))<=1,
+    'one-shot lengths differ by more than the single-frame decode tolerance');
 }
-await writeFile(resolve(outputDir,'render.json'),JSON.stringify({module_sha256:digest,reports},null,2));
+await writeFile(resolve(outputDir,'render.json'),JSON.stringify(report,null,2));
 console.log(JSON.stringify({passed:reports.length,module_sha256:digest}));

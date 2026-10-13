@@ -213,6 +213,23 @@ def test_export_keeps_source_frames_until_browser_preparation(tmp_path, monkeypa
     np.testing.assert_array_equal(seen[0], x)
 
 
+@pytest.mark.parametrize('overlap', [20, 21])
+def test_export_reserves_overlap_for_minimum_playback_rate(tmp_path, monkeypatch, overlap):
+    # At 8 kHz, the 20-frame overlap leaves only one blend frame after
+    # interval quantization, loop rounding and a one-frame decoder shortfall.
+    monkeypatch.setattr(processing, 'decode', lambda path: np.ones((48005, 2), dtype='<f4'))
+    def reached_normalization(*args):
+        raise RuntimeError('normalization reached')
+    monkeypatch.setattr(processing, 'normalize', reached_normalization)
+    if overlap == 20:
+        with pytest.raises(ValueError, match='overlap too short.*8000 Hz'):
+            processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=overlap/48000)
+        assert not list(tmp_path.iterdir())
+    else:
+        with pytest.raises(RuntimeError, match='normalization reached'):
+            processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=overlap/48000)
+
+
 def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))

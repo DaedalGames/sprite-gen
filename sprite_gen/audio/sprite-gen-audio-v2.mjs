@@ -19,16 +19,23 @@ export function prepareAudioBuffer(decoded, playback) {
   }
   if (cached.get(decoded)?.has(key)) return cached.get(decoded).get(key);
   const rescale = frames => frames * decoded.sampleRate / rate;
-  // Decode resampling can discard the fractional terminal frame. Map the
-  // declared interval to complete frames, independently of decoder padding.
+  // Resampling truncates fractional frames; double division can also lose one
+  // complete frame. Permit that single shortfall and discard decoder padding.
   const first = Math.floor(rescale(start));
-  const last = Math.floor(rescale(end));
+  const mappedEnd = Math.floor(rescale(end));
+  if (decoded.length < mappedEnd - 1) {
+    throw new RangeError(`Decoded audio does not contain the playback interval: requires at least ${mappedEnd - 1} frames, has ${decoded.length} frames at ${decoded.sampleRate} Hz`);
+  }
+  const last = Math.min(mappedEnd, decoded.length);
   // Round the declared final duration once. Independent rounding of N and M can
   // change N-M by a frame; derive the overlap from the mapped interval instead.
   const length = overlap ? Math.round(rescale(end - start - overlap)) : last - first;
   const count = last - first - length;
-  if (last > decoded.length || length < 1 || count < 0 ||
-      (overlap > 0 && (count < 2 || count * 2 >= last - first))) {
+  if (overlap > 0 && count < 2) {
+    const reason = last < mappedEnd ? 'overlap too short after decoder one-frame shortfall' : 'overlap too short after sample-rate conversion';
+    throw new RangeError(`Audio playback ${reason}: requires at least 2 frames, has ${count}`);
+  }
+  if (length < 1 || count < 0 || (overlap > 0 && count * 2 >= last - first)) {
     throw new RangeError(`Decoded audio does not contain the playback interval: requires [${first}, ${last}), has ${decoded.length} frames at ${decoded.sampleRate} Hz`);
   }
   const output = new AudioBuffer({ numberOfChannels: decoded.numberOfChannels,

@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 VERSION = 2
+MIN_PLAYBACK_RATE = 8000
 PLAYER_PATH = Path(__file__).with_name('sprite-gen-audio-v2.mjs')
 
 
@@ -20,6 +21,10 @@ def validate(value, loop):
         raise ValueError('invalid audio playback interval')
     if (loop and not 2 <= overlap < (end-start)/2) or (not loop and overlap != 0):
         raise ValueError('invalid audio playback overlap')
+    # Reserve 3.5 destination frames: interval truncation (<1), final-loop
+    # rounding (<=0.5), and a decoder shortfall (1) still leave >=2 blend frames.
+    if loop and 2*overlap*MIN_PLAYBACK_RATE < 7*rate:
+        raise ValueError(f'audio playback overlap too short for {MIN_PLAYBACK_RATE} Hz decoding')
     return {'version': VERSION, **{k: value[k] for k in fields}}
 
 
