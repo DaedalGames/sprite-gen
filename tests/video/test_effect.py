@@ -140,6 +140,7 @@ def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_
     background = report[extension].get("background")
     with Image.open(tmp_path / "out" / f"effect.{extension}") as preview:
         assert preview.n_frames == len(cells)
+        opacity = []
         for k, cell in enumerate(cells):
             preview.seek(k)
             decoded = preview.convert("RGBA")
@@ -149,9 +150,9 @@ def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_
             # additive compositing on white would make this comparison vacuous.
             delta = np.array(expected, dtype=int) - np.array(actual, dtype=int)
             assert np.abs(delta).max() <= 2, f"{extension} frame {k} has an unreported matte"
-            if extension == "gif":
-                assert decoded.getchannel("A").getextrema() == (255, 255)
+            opacity.append(decoded.getchannel("A").getextrema())
         if extension == "gif":
+            assert all(extrema == (255, 255) for extrema in opacity)
             assert background == "#000000"
             assert decoded.getextrema() == ((0, 0), (0, 0), (0, 0), (255, 255))
         else:
