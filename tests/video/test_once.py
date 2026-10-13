@@ -117,7 +117,7 @@ def test_terminal_gate_rejects_still_and_accumulated_drift():
         select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24)
 
 
-@pytest.mark.parametrize("after", ["standing", "shaking"])
+@pytest.mark.parametrize("after", ["standing", "shaking", "clipped"])
 def test_once_cuts_at_the_first_settled_ground_pose_before_later_motion(tmp_path, after):
     files = keyed(tmp_path / "keyed")
     initial = Image.open(files / "0000.png")
@@ -126,6 +126,10 @@ def test_once_cuts_at_the_first_settled_ground_pose_before_later_motion(tmp_path
         settled.save(files / f"{k:04d}.png")
     for k in range(55, 90):
         (initial if after == "standing" or k % 2 else settled).save(files / f"{k:04d}.png")
+    if after == "clipped":
+        outside = Image.new("RGBA", initial.size)
+        ImageDraw.Draw(outside).rectangle((0, 40, 20, 60), fill=(200, 80, 30, 255))
+        outside.save(files / "0070.png")
     report = cut(tmp_path)
     assert report["cycle"]["end_frame"] == 44
     assert report["cycle"]["terminal"]["start"] == 40

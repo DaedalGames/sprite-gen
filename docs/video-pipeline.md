@@ -714,6 +714,24 @@ forced canvas is the forced-wide row (35 % above), so a jump in that batch keeps
 head-room; an attack in it gets that row too, not its own 20 %. A walk or run gets its own wide
 row, with nothing above (section 1).
 
+## Video Processing Pipeline and Terminal Gate
+
+```bash
+sprite-gen video-canvas --still still.png --state death --out canvas.png
+sprite-gen video-prompt --direction side --state death > prompt.txt
+sprite-gen video --image canvas.png --prompt-file prompt.txt --duration 3 --resolution 480p --out clip.mp4
+sprite-gen video-frames --clip clip.mp4 --out-dir frames --spill auto --reference canvas.png
+sprite-gen video-loop --frames-dir frames/keyed --fps 24 --state death --cycle once --out-dir out
+```
+
+In the sequence above, replace 24 with the `fps` value from `frames.report.json`. For batch operations, `sprite-gen video-set --end-frame` takes `ITEM=PATH` (e.g., `--end-frame side-death=final.png`). With no seam gate or wrap correction, nonloop insists on `--anchor none` and `--fit state`, with no optional override to anchor; nonloop states reject non-none anchor and tight fit. See [states-and-frames.md](states-and-frames.md) for the state table.
+
+For `--cycle once`, the terminal gate searches the whole clip for the first stable terminal window of $K = \max(4, \lceil\text{fps} \times 0.2\rceil)$ frames after action departure, then ends at the window end and discards later recovery or shaking. Across the window, pairwise window distance diameter divided by median subject mass must be $\le 0.025$ (premultiplied RGBA thumbnail difference divided by median terminal subject mass), detecting jitter and slow drift regardless of canvas padding. The first frame precedes departure from the initial pose. The gate refuses clips with no action; the retained cut must have a visible body and no alpha >= 8 pixels touching any source edge, ignoring the discarded tail for that check. Candidate end pose geometry uses alpha >= 8 body boxes, rejecting candidates as returned starting geometry if height and width/height ratio are each within 5% of initial and bottom movement is <= 2% of initial height. `death` and `fall` require median end-window height <= 80% of initial height, while other `once` states require changed geometry. This provides a conservative geometric screen; inspect semantic pose visually.
+
+Strip and preview downsampling preserves start and end endpoints. Strip metadata includes `loop: false`, `hold_last: true`, `end_frame`, and candidate `events:[{"frame": n, "name":"motion_peak"}]`. Strip `end_frame` and event `frame` are zero-based output cell indices. Report `cycle.end_frame` and `cycle.event_frame` are keyed source frame indices. `source_cut.samples` maps each strip output cell to its keyed source frame; they are not numerically equal after trimming/subsampling. WebP previews set `loop=1`, GIF previews omit loop extension, and decoded preview verification enforces `once` behavior.
+
+In `sprite-gen video`, `--image` is the start frame and `--last-frame` is the end frame. Unpinned execution is the default when omitting terminal canvas arguments. Newly added flags are `video-prompt --end-frame final.png` and `video-set --end-frame ITEM=PATH`. Both are nonloop-only; `video-prompt` also refuses `--no-last-frame`. `video-prompt` only prints instructions, does not open/validate image, whereas `video-set` checks final canvas dimensions and corner key match initial canvas. Nonloop clip cache identity includes end image SHA256; a changed end pin cache rejects until user explicitly `--force` regenerates. Terminal stability checks remain strictly enforced with pins.
+
 ## 4. Loop — period first, seam second, then the gait floor
 
 The 2026-09-08 lesson: a single-start "most similar later frame" search lands on the
