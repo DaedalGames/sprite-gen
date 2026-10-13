@@ -55,6 +55,7 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 |---|---|
 | [user-workflow.md](user-workflow.md) | Two conversation flows, access checks, optional curation and saved defaults |
 | [atlas-workflow.md](atlas-workflow.md) | Execution of GPT row sprites through the existing extraction pipeline |
+| [Effects](effects.md) | `pixel-draw --kind effect`, `video-frames --alpha-mode brightness`, `video-loop --cycle lifetime` |
 
 ## Contract & structure
 

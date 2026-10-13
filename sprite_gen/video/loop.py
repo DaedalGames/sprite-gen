@@ -48,7 +48,7 @@ from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
-from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop
+from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
@@ -76,7 +76,7 @@ ONE_SHOT_MIN_MOVED = 0.4
 ONE_SHOT_MIN_COHERENCE = 3.0  # departure must exceed three ordinary playback steps
 ONE_SHOT_MIN_ACTIVE = 4  # isolated keying/jitter spikes are not a performed action
 ONE_SHOT_PAD = 2  # one-shot: rest frames kept on each side of the excursion so the seam is rest -> rest
-CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", "once")
+CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", *nonloop.KINDS)
 # --cycle pinned: the clip was asked to end on its first frame (first-last mode). A re-rendered
 # first frame is never byte-identical to its source; on the analysis thumbnail (mean absolute
 # RGBA difference, 0..1) it lands within this of it, well under one frame of visible motion.
@@ -678,7 +678,8 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     `max_cells`: the crop is measured over every cycle frame first, then as many evenly
     spaced frames as fit are kept. Subsampling is recorded in the meta, never silent."""
     L = len(frames)
-    boxes = [im.getchannel("A").point(lambda v: 255 if v >= 8 else 0).getbbox() for im in frames]
+    lifetime = kind == "lifetime"
+    boxes = [(im.getchannel("A") if lifetime else im.getchannel("A").point(lambda v: 255 if v >= 8 else 0)).getbbox() for im in frames]
     boxes = [b for b in boxes if b]
     if not boxes:
         raise SystemExit("video-loop: every cycle frame is fully transparent")
@@ -686,9 +687,9 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     # edge (video-frames --allow-subject-edge-contact) still gets its 8 transparent columns,
     # so no cell corner is ever the subject. `crop` fills outside the frame with alpha 0.
     left = min(b[0] for b in boxes) - 8
-    top = max(0, min(b[1] for b in boxes) - 8)
+    top = min(b[1] for b in boxes) - 8 if lifetime else max(0, min(b[1] for b in boxes) - 8)
     right = max(b[2] for b in boxes) + 8
-    bottom = max(b[3] for b in boxes)
+    bottom = max(b[3] for b in boxes) + (8 if lifetime else 0)
     # body_h = the STANDING height: the tallest frame whose feet touch the floor. A median
     # over the whole cycle undercounts a jump (crouch + airborne frames dominate) and then
     # over-scales it — the 2026-09-09 hero read 22 % taller than the walk beside it.
@@ -698,7 +699,8 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     # first frame, or the cut's first — clip frame `standing_frame` — where the cut is filmed at
     # another size than it). The tallest grounded frame counts whatever is raised overhead — an attack's
     # windup lifts the weapon above the head — and would shrink that state against the others.
-    body_src = standing_src if standing_src is not None else max(grounded)
+    body_src = (max(b[3] for b in boxes) - min(b[1] for b in boxes) if lifetime else
+                standing_src if standing_src is not None else max(grounded))
     # max_height is a ceiling on the CELL; an explicit body_height is a target for the BODY.
     # Without one, nothing is ever scaled up. With one, a state whose source body is SHORTER
     # than the request has to grow — clamping to 1.0 first made the option a downward clamp
@@ -718,8 +720,8 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
         cell_src_w = lead + trail
     else:
         cell_src_w = right - left
-    w = round(cell_src_w * scale)
-    h = round((bottom - top) * scale)
+    w = max(1, round(cell_src_w * scale))
+    h = max(1, round((bottom - top) * scale))
     cap = max(1, min(max_cells, max_width // max(1, w)))
     idx = list(range(L))
     if L > cap:
@@ -767,6 +769,10 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     }
     if standing_src is not None and standing_frame:
         meta["body_ref_frame"] = standing_frame  # the clip frame the standing height was read on
+    if lifetime:
+        meta.update(blend="add", body_ref="effect-extent",
+                    anchor=[(frames[0].width / 2 - left) * w / (right - left),
+                            (frames[0].height / 2 - top) * h / (bottom - top)])
     if feet:
         # the spec asset loader reads a sidecar `anchor` as the [x, y] pivot (default:
         # bottom-centre); with feet alignment the true pivot is the foot line at the
@@ -811,27 +817,41 @@ def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: 
         raise SystemExit(f"video-loop: img2webp failed: {proc.stderr.strip()[:300]}")
 
 
-def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0) -> dict[str, Any]:
+def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0,
+                     background: str | None = None) -> dict[str, Any]:
     # Closed on the way out: `video-follow` checks its animations before it moves them over the loop's.
     with Image.open(path) as im:
         n = getattr(im, "n_frames", 1)
         loop = im.info.get("loop")
         corners_ok = True
+        background_pixel = Image.new("RGBA", (1, 1), background).getpixel((0, 0)) if background is not None else None
+        background_ok = True
+        opaque = True
         stale = 0
         for k in range(n):
             im.seek(k)
             f = im.convert("RGBA")
             w, h = f.size
             corners_ok &= all(f.getpixel(c)[3] == 0 for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+            if background_pixel is not None:
+                background_ok &= all(f.getpixel(c) == background_pixel for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+                opaque &= f.getchannel("A").getextrema() == (255, 255)
             if check_stale:
                 stale += sum(1 for p in f.get_flattened_data() if p[3] == 0 and (p[0] or p[1] or p[2]))
         report = {"file": path.name, "format": im.format, "n_frames": n, "loop": loop, "size": list(im.size), "corners_transparent": corners_ok, "stale_rgb_under_alpha0": stale, "bytes": path.stat().st_size}
+        if background is not None:
+            report.update(background=background, opaque=opaque)
     problems = []
     if n != expect_frames:
         problems.append(f"{n} frames, expected {expect_frames}")
     if loop != expected_loop:
         problems.append(f"loop={loop!r}, expected {expected_loop!r}")
-    if not corners_ok:
+    if background is not None:
+        if not opaque:
+            problems.append("a frame is not opaque on its declared background")
+        if not background_ok:
+            problems.append("a corner does not match the declared background")
+    elif not corners_ok:
         problems.append("a corner is not transparent")
     if stale:
         problems.append(f"{stale} transparent pixels carry RGB")
@@ -1116,6 +1136,11 @@ def run_loop(
     steps: int | None = None,
 ) -> dict[str, Any]:
     state = state.strip().lower() if state else state
+    if state == effect.STATE:
+        if cycle_mode == "auto":
+            cycle_mode = "lifetime"
+        elif cycle_mode != "lifetime":
+            raise SystemExit("video-loop: an effect requires --cycle lifetime")
     if state in nonloop.STATES:
         if cycle_mode == "auto":
             cycle_mode = "once"
@@ -1177,7 +1202,7 @@ def run_loop(
     # The clip's steps as keyed, before `--anchor motion-auto` reads its own distance or moves a frame:
     # the hold is read on them, over the clip and over the cut (sprite_gen/video/held.py).
     clip_steps = [float(D[k, k + 1]) for k in range(n - 1)]
-    masses = frame_masses(files)
+    masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
     target = (report_path or (out_dir / f"{name}.loop.report.json")).expanduser().resolve()
     report_base = {
@@ -1269,6 +1294,9 @@ def run_loop(
             cycle = nonloop.select_cut(D, masses, fps=fps,
                                       ending=partial(nonloop.hold_ending, boxes=boxes, state=state))
             nonloop.validate_body(source_frames[cycle["start"]:cycle["end_frame"] + 1])
+        elif cycle_mode == "lifetime":
+            cycle = nonloop.select_cut(D, masses, fps=fps, kind=cycle_mode,
+                                      ending=effect.lifetime_ending)
         elif cycle_mode == "fixed":
             if start is None or length is None:
                 raise SystemExit("video-loop: --cycle fixed needs --start and --length")
@@ -1340,7 +1368,7 @@ def run_loop(
         # Motion review is pixel preserving: cleanup belongs to the keyed input (`video-frames` erases
         # the specks far from the body). The other cuts erase every loose piece of solid pixels under
         # the speck size, wherever it is: the outline's islands and a drawn shadow as well.
-        if anchor not in ("motion", "motion-auto"):
+        if anchor not in ("motion", "motion-auto") and cycle["kind"] != "lifetime":
             scrubbed += _scrub(im)
             im, d = drop_specks(im, alpha_over=16, diagonal=False, apart=0)
             specks += d
@@ -1369,7 +1397,7 @@ def run_loop(
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
-    if anchor in ("none", "body"):
+    if anchor in ("none", "body") and cycle["kind"] != "lifetime":
         from sprite_gen.video.source import RECIPE
         report_base["source_projection"] = {
             "recipe": RECIPE, "wrap_dx_px": wrap_dx,
@@ -1482,7 +1510,7 @@ def run_loop(
         if abs(report_base["cut_size"]["change"]) >= gait_fallback.SIZE_HOLD_MIN:
             standing_frame = i
     strip_of = partial(build_strip, max_height=strip_height, cycle_seconds=cycle_seconds, body_height=body_height, anchor="feet" if anchor == "feet" else "none", kind=str(cycle.get("kind") or "periodic"),
-                       standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None else None,
+                       standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None and cycle["kind"] != "lifetime" else None,
                        standing_frame=standing_frame)
     strip, strip_meta = strip_of(frames)
     # The cut as its seam is read: each cell given way to the frame beside it as filmed (`seam_as_filmed`).
@@ -1578,12 +1606,19 @@ def run_loop(
                                   "resampled_inner_mean_adjacent": resampled_adjacent,
                                   "resampled_seam_ratio": seam_ratio})
         raise SystemExit(error)
-    save_clean_gif(pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0, alpha_threshold=128)
+    # GIF has binary transparency. Bake the effect onto its declared black preview
+    # background instead of turning its faint partial-alpha glow into opaque dark pixels.
+    gif_background = "#000000" if cycle["kind"] == "lifetime" else None
+    gif_pick = [effect.on_black(im) for im in pick] if gif_background is not None else pick
+    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
+                   alpha_threshold=128, opaque=gif_background is not None)
     write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
     shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
     # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
     shown = shown_runs(pick)
-    gif_report = verify_animation(gif_path, expect_frames=shown, check_stale=False, **({"expected_loop": None} if single_play else {}))
+    gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
+                                  **({"expected_loop": None} if single_play else {}),
+                                  **({"background": gif_background} if gif_background is not None else {}))
     webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
 
     payload = {

@@ -55,7 +55,7 @@ STATE_DURATION_SECONDS = {"attack": 2}
 # States whose clip is pinned to end on the frame it starts from (first-last mode): the model
 # has to come back to the still, which closes a one-shot action instead of leaving it wherever
 # the strike ended, and closes an idle without asking for a repeating rhythm.
-PIN_LAST_FRAME_STATES = frozenset({"attack", "idle"})
+PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", "effect"})
 # Pinned states whose whole clip is the loop: it starts and ends on the canvas, so `video-loop
 # --cycle pinned` keeps every frame but the last (a re-render of the first). An attack asked
 # for once is ready stance -> strike -> ready stance, so its whole clip is one attack too.
@@ -436,6 +436,9 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
     to the first frame (`handedness.text(clip=True)`), the one piece `prompt_parts.Prompt.add` checks.
     """
     validate_facing(facing)
+    if state == "effect":
+        from . import effect
+        return prompt_parts.Prompt(effect.prompt(character, motion), caller=f"{character or ''} {motion or ''}", sep=" ")
     view = VIEW_TEXT.get(direction, f"seen from the {direction}").format(facing=facing)
     turned = facing if direction in handed_mod.LATERAL_VIEWS else None
     if state in nonloop.STATES:
@@ -717,7 +720,7 @@ def run_item(
                     raise ValueError("incomplete canvas report")
                 if canvas_report.get("fit", "state") != fit:
                     raise ValueError("cached canvas was framed with another --fit")
-                if direction == "side":
+                if direction == "side" and state != "effect":
                     prior = canvas_report.get("facing_check") or {}
                     if not isinstance(prior, dict):
                         raise ValueError("invalid cached facing")
@@ -733,7 +736,7 @@ def run_item(
                 still, result["walk_start"] = walk_start_still(base, direction, item_dir, key=key, force=force,
                                                                runner=redraw_runner, provider=still_provider, handed=handed,
                                                                body_plan=body_plan)
-            if direction == "side":
+            if direction == "side" and state != "effect":
                 if prepare_side is not None:
                     still, facing_report = prepare_side(base)
                 else:
@@ -753,7 +756,8 @@ def run_item(
             # One run of `sprite-gen video`: a 429 is sent again inside it (`gen.retry`), so a second run here
             # would be a second retry loop on top of the first, each of its POSTs a request.
             _staggered_start(gap)
-            pin = {"last_frame": canvas_png} if pins_last_frame(state, direction) else {}
+            pin_frame = Path(canvas_report["end_frame"]) if state == "effect" else canvas_png
+            pin = {"last_frame": pin_frame} if pins_last_frame(state, direction) else {}
             if end_frame is not None:
                 with Image.open(end_frame) as final, Image.open(canvas_png) as initial:
                     if final.size != initial.size or canvas_mod.corner_key(final) != canvas_mod.corner_key(initial):
@@ -772,11 +776,13 @@ def run_item(
         # a tight frame is clipped on purpose; leftover key background still fails. The default
         # call keeps its pre-decontam signature, so a stand-in for run_frames still fits
         extra = {} if decontam == "off" else {"decontam": decontam}
+        if state == "effect":
+            extra["alpha_mode"] = "brightness"
         fr = frames_mod.run_frames(clip, item_dir / "frames", key=key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", **extra)
         result["frames"] = {k: fr[k] for k in ("fps", "frames", "alpha_zero_pct_min", "alpha_zero_pct_max")}
         result["frames"]["spill"] = fr.get("spill", {}).get("mode")
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
-                               cycle_mode="once" if state in nonloop.STATES else "pinned" if state in PINNED_LOOP_STATES else "auto",
+                               cycle_mode="lifetime" if state == "effect" else "once" if state in nonloop.STATES else "pinned" if state in PINNED_LOOP_STATES else "auto",
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right")
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
