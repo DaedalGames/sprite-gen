@@ -78,7 +78,25 @@ def normalize(samples, target, loop):
     result = _ffmpeg([*_pcm_args(), '-af', filt, '-ar', str(RATE), '-f', 'f32le', 'pipe:1'],
                      source.astype('<f4').tobytes())
     output = np.frombuffer(result.stdout, dtype='<f4').reshape(-1, 2).copy()
-    return output[len(samples):2*len(samples)] if loop else output[:len(samples)]
+    output = output[len(samples):2*len(samples)] if loop else output[:len(samples)]
+    corrections = 0
+    # A short transient can make loudnorm stop at the peak ceiling below the LUFS target.
+    # Measure the actual playback, then apply gain with an oversampled lookahead limiter.
+    # These are local DSP passes over the paid source, never provider retries.
+    for _ in range(3):
+        context = np.tile(output, (3, 1)) if loop else output
+        stats = measure(context, target)
+        if abs(stats['input_i'] - target) <= .2 and stats['input_tp'] <= -1.8:
+            break
+        gain = target - stats['input_i']
+        filt = (f'aresample=192000,volume={gain}dB,'
+                'alimiter=limit=0.794328:level=false:latency=true:attack=1:release=20')
+        corrected = _ffmpeg([*_pcm_args(), '-af', filt, '-ar', str(RATE), '-f', 'f32le', 'pipe:1'],
+                            context.astype('<f4').tobytes())
+        pcm = np.frombuffer(corrected.stdout, dtype='<f4').reshape(-1, 2).copy()
+        output = pcm[len(output):2*len(output)] if loop else pcm[:len(output)]
+        corrections += 1
+    return output, corrections
 
 
 def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
@@ -86,7 +104,7 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
     source_seconds = len(samples) / RATE
     if loop:
         samples = make_loop(samples, crossfade)
-    samples = normalize(samples, target_lufs, loop)
+    samples, corrections = normalize(samples, target_lufs, loop)
     duration = len(samples) / RATE
     files = {}
     for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
@@ -107,4 +125,5 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
             files[fmt]['seam_delta'] = float(np.max(np.abs(playback[-1] - playback[0])))
     return {'files': files, 'duration_seconds': duration, 'source_duration_seconds': source_seconds,
             'sample_rate': RATE, 'loop_start_seconds': 0, 'loop_end_seconds': duration,
-            'crossfade_seconds': crossfade if loop else 0}
+            'crossfade_seconds': crossfade if loop else 0,
+            'normalization': {'method': 'loudnorm-two-pass', 'peak_limit_dbtp': -2, 'gain_limiter_passes': corrections}}

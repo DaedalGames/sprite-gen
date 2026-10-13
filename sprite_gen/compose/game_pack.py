@@ -227,7 +227,8 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
             raise ValueError(f"duplicate audio id: {asset_id}")
         if not isinstance(entry.get("source"), str) or not entry["source"]:
             raise ValueError("each audio entry requires a source path")
-        record, files, paths = load_sound(request.parent / entry["source"], max_bytes)
+        remaining = max_bytes - sum(map(len, audio_payloads.values()))
+        record, files, paths = load_sound(request.parent / entry["source"], remaining)
         for fmt, data in files.items():
             name = f"audio-{asset_id}.{fmt}"
             record["files"][fmt]["path"] = name
