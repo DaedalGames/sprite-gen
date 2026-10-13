@@ -1264,8 +1264,11 @@ def run_loop(
             if steps is not None:
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
         elif cycle_mode == "once":
-            nonloop.validate_body([Image.open(f).convert("RGBA") for f in files])
-            cycle = nonloop.select_cut(D, masses, fps=fps)
+            source_frames = [Image.open(f).convert("RGBA") for f in files]
+            boxes = [nonloop.body_box(frame) for frame in source_frames]
+            cycle = nonloop.select_cut(D, masses, fps=fps,
+                                      ending=partial(nonloop.hold_ending, boxes=boxes, state=state))
+            nonloop.validate_body(source_frames[cycle["start"]:cycle["end_frame"] + 1])
         elif cycle_mode == "fixed":
             if start is None or length is None:
                 raise SystemExit("video-loop: --cycle fixed needs --start and --length")
