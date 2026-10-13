@@ -337,7 +337,15 @@ def key_frames(
     spill: str = "small",
     allow_subject: bool = False,
     decontam: str = "off",
+    alpha_mode: str = "chroma",
 ) -> dict[str, Any]:
+    from . import effect
+    if alpha_mode not in effect.ALPHA_MODES:
+        raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
+    if alpha_mode == "brightness":
+        if decontam != "off":
+            raise SystemExit("video-frames: brightness alpha does not use --decontam")
+        return effect.key_frames(raw_files, keyed_dir)
     if spill not in ("small", "full"):
         raise SystemExit(f"video-frames: key_frames takes a resolved spill mode (small|full), got {spill!r}")
     if decontam not in DECONTAM_MODES:
@@ -460,7 +468,12 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
-def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = "off", source_manifest: Path | None = None) -> dict[str, Any]:
+def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = "off", source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
+    from . import effect
+    if alpha_mode not in effect.ALPHA_MODES:
+        raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
+    if alpha_mode == "brightness" and decontam != "off":
+        raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if source_manifest is not None and reference is None:
         raise SystemExit("video-frames: --source-manifest needs --reference (the source canvas)")
     if source_manifest is not None:
@@ -472,7 +485,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
             raise SystemExit("video-frames: source manifest cannot overwrite source files or report")
     if spill not in SPILL_MODES:
         raise SystemExit(f"video-frames: unknown --spill {spill!r}; expected one of {', '.join(SPILL_MODES)}")
-    if spill == "auto" and reference is None:
+    if alpha_mode == "chroma" and spill == "auto" and reference is None:
         raise SystemExit("video-frames: --spill auto needs --reference (the still the clip was made from)")
     if decontam not in DECONTAM_MODES:
         raise SystemExit(f"video-frames: unknown --decontam {decontam!r}; expected one of {', '.join(DECONTAM_MODES)}")
@@ -483,9 +496,10 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     meta = probe(clip)
     raw_dir = out_dir / "raw"
     keyed_dir = out_dir / "keyed"
-    decision = decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"}
+    decision = ({"mode": "off", "reason": "brightness alpha"} if alpha_mode == "brightness" else
+                decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"})
     files = extract(clip, raw_dir, meta["stream_index"])
-    report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam)
+    report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode)
     payload = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir), "keyed_dir": str(keyed_dir), "key": key, "spill": decision, **meta, **report}
     target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
     if source_manifest is not None:
@@ -504,6 +518,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--alpha-mode", choices=("chroma", "brightness"), default="chroma", help="chroma key (default), or emitted light on black: brightness alpha, unpremultiplied RGB, no speck/edge cleanup; dark smoke becomes faint")
     parser.add_argument("--clip", required=True, type=Path, help="mp4 from `sprite-gen video`, or one made elsewhere from a `video-canvas` still (a video MCP such as ZCRE); an audio track and a cover image are left out")
     parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here")
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto", help="background key (auto reads the corners)")
@@ -521,7 +536,8 @@ def run(**kwargs: object) -> int:
                          allow_edge_contact=bool(kwargs.get("allow_edge_contact")), report_path=kwargs.get("report"),  # type: ignore[arg-type]
                          spill=str(kwargs.get("spill") or "small"), reference=kwargs.get("reference"),  # type: ignore[arg-type]
                          allow_subject_edge_contact=bool(kwargs.get("allow_subject_edge_contact")),
-                         decontam=str(kwargs.get("decontam") or "off"), source_manifest=kwargs.get("source_manifest"))  # type: ignore[arg-type]
+                         decontam=str(kwargs.get("decontam") or "off"), source_manifest=kwargs.get("source_manifest"),
+                         alpha_mode=str(kwargs.get("alpha_mode") or "chroma"))  # type: ignore[arg-type]
     summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

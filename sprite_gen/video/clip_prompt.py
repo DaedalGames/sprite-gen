@@ -53,6 +53,8 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         if not last_frame:
             raise SystemExit("video-prompt: this source cannot pin an end frame")
     wants_pin = batch_mod.pins_last_frame(state, direction)
+    if state == "effect" and not last_frame:
+        raise SystemExit("video-prompt: an effect requires an empty black end-frame pin; this source cannot pin it")
     warnings: list[str] = []
     pinned: bool | None = None
     if wants_pin and not last_frame:
@@ -70,13 +72,13 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
     prompt = parts.text
     # the caller's own words (--character, --motion) against the engine's: a conflict is a warning
     warnings += [note["text"] for note in parts.notes if note["kind"] == "conflict"]
-    cycle = "once" if state in nonloop.STATES else "pinned" if pins and state in batch_mod.PINNED_LOOP_STATES else "auto"
+    cycle = "lifetime" if state == "effect" else "once" if state in nonloop.STATES else "pinned" if pins and state in batch_mod.PINNED_LOOP_STATES else "auto"
     # as video-set places and cuts: a side or diagonal view takes the facing, front and back face right
     canvas_facing = loop_facing = facing if direction in handed_mod.LATERAL_VIEWS else "right"
     mid_step = batch_mod.starts_mid_step(state, direction, body_plan)
     still = "<dir>/walk-start.png" if mid_step else "<still.png>"
     duration = batch_mod.duration_for(state, duration)
-    end = f", end frame {end_frame}" if end_frame is not None else ", end frame <dir>/canvas.png" if pins else ""
+    end = f", end frame {end_frame}" if end_frame is not None else (", end frame <dir>/canvas.end.png" if state == "effect" else ", end frame <dir>/canvas.png") if pins else ""
     record: dict[str, Any] = {
         "kind": "sprite-gen-video-prompt",
         "direction": direction,
@@ -87,7 +89,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         "model": model,
         "prompt": prompt,
         "duration": duration,
-        "last_frame": str(end_frame) if end_frame is not None else "canvas" if pins else None,
+        "last_frame": str(end_frame) if end_frame is not None else ("black" if state == "effect" else "canvas") if pins else None,
         "cycle": cycle,
         "commands": {
             "canvas": f"sprite-gen video-canvas --still {still} --state {state} --facing {canvas_facing} --out <dir>/canvas.png --report <dir>/canvas.report.json",
@@ -98,6 +100,9 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         "warnings": warnings,
         **({"notes": parts.notes} if parts.notes else {}),
     }
+    if state == "effect":
+        record["commands"]["frames"] = "sprite-gen video-frames --clip <dir>/clip.mp4 --out-dir <dir>/frames --alpha-mode brightness"
+        record["blend"] = "add"
     needs = handed_mod.first_frame_needs(handed or [], direction, canvas_facing if direction in handed_mod.LATERAL_VIEWS else None,
                                          gait=state in batch_mod.GAIT_STATES)
     if needs:

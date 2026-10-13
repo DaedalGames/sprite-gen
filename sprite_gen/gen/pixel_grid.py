@@ -545,6 +545,6 @@ def tiled_3x3(pixels: Sequence[Sequence[Pixel]], scale: int) -> Image.Image:
     return tiled.resize((tiled.width * scale, tiled.height * scale), Image.NEAREST)
 
 
-def save_gif(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int, path: Path, duration_ms: int) -> None:
+def save_gif(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int, path: Path, duration_ms: int, *, loop: int | None = 0) -> None:
     images = [image_of(f).resize((len(f[0]) * scale, len(f) * scale), Image.NEAREST) for f in frames]
-    save_clean_gif(images, path, duration_ms=duration_ms)
+    save_clean_gif(images, path, duration_ms=duration_ms, loop=loop)

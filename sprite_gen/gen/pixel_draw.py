@@ -60,13 +60,15 @@ from .pixel_gates import colors_used, evaluate, safe_area
 from .pixel_grid import (
     FORMATS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, palette_rule, parse_answer,
     parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text, recovered, row_issues, row_text,
-    save_gif, splice, structural, tiled_3x3, to_text,
+    save_gif, splice, structural, tiled_3x3, to_text, image_of,
 )
 
 VERB = "pixel-draw"
 SIZE_MIN, SIZE_MAX, SIZE_DEFAULT = 8, 48, 32
 FRAMES_MAX = 4
-KINDS = ("sprite", "icon", "tile")
+EFFECT_FRAMES_MAX = 8
+EFFECT_FRAMES = ("birth", "peak", "decay", "gone")
+KINDS = ("sprite", "icon", "tile", "effect")
 CANDIDATES_MIN, CANDIDATES_MAX, CANDIDATES_DEFAULT = 1, 6, 2
 EFFORT_CHOICES = ("medium", "high", "xhigh")
 EFFORT_DEFAULT = "high"
@@ -144,7 +146,7 @@ def _refuse(message: str) -> SystemExit:
     return SystemExit(f"{VERB}: {message}")
 
 
-def _frames(value: Any) -> tuple[str, ...]:
+def _frames(value: Any, kind: str = "sprite") -> tuple[str, ...]:
     names = [n.strip() for n in value.split(",")] if isinstance(value, str) else value
     if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
         raise _refuse("--frames takes comma-separated frame names, e.g. down,up,left,right")
@@ -153,7 +155,9 @@ def _frames(value: Any) -> tuple[str, ...]:
         raise _refuse("frame names are letters, digits, '_' or '-' (at most 32): " + ", ".join(map(repr, bad)))
     if len(set(names)) != len(names):
         raise _refuse("frame names must differ: " + ", ".join(names))
-    if len(names) > FRAMES_MAX:
+    if kind == "effect" and not 2 <= len(names) <= EFFECT_FRAMES_MAX:
+        raise _refuse(f"an effect needs 2..{EFFECT_FRAMES_MAX} frames, got {len(names)}")
+    if kind != "effect" and len(names) > FRAMES_MAX:
         raise _refuse(f"at most {FRAMES_MAX} frames in one call, got {len(names)}")
     return tuple(names)
 
@@ -186,8 +190,10 @@ def resolve_request(args: argparse.Namespace) -> PixelRequest:
     kind = merged.get("kind", "sprite")
     if kind not in KINDS:
         raise _refuse(f"--kind is one of {', '.join(KINDS)}, got {kind!r}")
-    frames = _frames(merged["frames"]) if "frames" in merged else (kind,)
+    frames = _frames(merged["frames"], kind) if "frames" in merged else (EFFECT_FRAMES if kind == "effect" else (kind,))
     walk_cycle = bool(merged.get("walk_cycle", False))
+    if walk_cycle and kind == "effect":
+        raise _refuse("--walk-cycle does not apply to an effect")
     if walk_cycle and len(frames) != 4:
         raise _refuse(f"--walk-cycle is four frames (contact, passing, contact, passing), got {len(frames)}")
     try:
@@ -263,7 +269,11 @@ def safe_area_lines(request: PixelRequest) -> list[str]:
 def generation_prompt(request: PixelRequest) -> str:
     frames = request.frames
     lines = [f"Draw: {request.subject}", f"Canvas: exactly {request.size}x{request.size} pixels per frame."]
-    if len(frames) > 1:
+    if request.kind == "effect":
+        lines.append(f"Frames: {', '.join(frames)}. One effect's lifetime: appears, grows to a peak, then disappears. "
+                     "Keep its origin fixed at the center of every frame. The final frame may be empty. "
+                     "Share a palette with several brightness levels for the glow; extent and shape change over time.")
+    elif len(frames) > 1:
         lines.append(f"Frames: {', '.join(frames)}. All frames share one palette and show the same subject with "
                      "the same proportions, colors and size.")
     if request.walk_cycle:
@@ -282,6 +292,9 @@ def generation_prompt(request: PixelRequest) -> str:
                      "No border or outline around the tile.")
         lines.append("Style: clean, readable pixel art for a 2D RPG: 2-3 shades per material, light from the "
                      "top-left, no noisy single-pixel speckle.")
+    elif request.kind == "effect":
+        lines.append("Background: transparent. Draw readable clusters of light; detached sparks are intentional. "
+                     "No dark outline, no ground plane, no antialiasing. Use the full canvas around its fixed center.")
     else:
         lines.append("Background: transparent.")
         lines += safe_area_lines(request)
@@ -350,7 +363,7 @@ def repair_prompt(request: PixelRequest, grid: Grid, issues: list[Issue]) -> tup
 def _kept(request: PixelRequest) -> str:
     """The safe area in the pick's words, so a margin the prompt asked for is not read as wasted canvas."""
     area = safe_area(request.size, request.size)
-    if request.kind == "tile" or area["margin"][0] == 0:
+    if request.kind in ("tile", "effect") or area["margin"][0] == 0:
         return ""
     inner = area["size"][0]
     return (f", the body about the size of the central {inner}x{inner}, inside a {area['margin'][0]}-pixel margin a "
@@ -376,7 +389,9 @@ def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
         "- craft 1-5: pixel-art craft: clean silhouette and outline, consistent shading and light, no noise, sensible "
         "use of the canvas (5 professional, 3 acceptable indie, 1 broken)."
         + (" For tiles, visible seams in the 3x3 repeat count against craft." if request.kind == "tile" else ""),
-        ("- consistency 1-5: the same subject, proportions and colours across frames, and correct poses/directions "
+        ("- consistency 1-5: a readable lifetime around a fixed center, with a peak and decay; "
+         "changing extent, detached sparks and an empty final frame are intentional." if request.kind == "effect" else
+         "- consistency 1-5: the same subject, proportions and colours across frames, and correct poses/directions "
          "for the frame names." if multi else "- consistency: 0 (single frame)."),
         "- verdict: ship (usable in a game as is), touch_up (usable after a few pixel fixes), redraw (not usable).",
         "- note: one short sentence naming the main flaw or strength.",
@@ -848,8 +863,19 @@ def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], ki
         tiled_3x3(frames[request_frames[0]], scale).save(directory / "tiled-3x3.png")
         files["tiled"] = "tiled-3x3.png"
     if len(frames) > 1:
-        save_gif(list(frames.values()), scale, directory / "anim.gif", GIF_FRAME_MS)
+        save_gif(list(frames.values()), scale, directory / "anim.gif", GIF_FRAME_MS, loop=None if kind == "effect" else 0)
         files["gif"] = "anim.gif"
+    if kind == "effect":
+        strip = Image.new("RGBA", (grid.width * len(frames), grid.height))
+        for i, pixels in enumerate(frames.values()):
+            strip.paste(image_of(pixels), (i * grid.width, 0))
+        strip.save(directory / "effect.strip.png")
+        meta = {"kind": "effect", "frames": len(frames), "w": grid.width, "h": grid.height,
+                "loop": False, "hold_last": False, "end_frame": len(frames) - 1,
+                "events": [], "blend": "add", "anchor": [grid.width / 2, grid.height / 2],
+                "delay_ms": GIF_FRAME_MS, "frame_names": list(frames)}
+        atomic_write_text(directory / "effect.strip.json", json.dumps(meta, indent=2) + "\n")
+        files.update(strip="effect.strip.png", metadata="effect.strip.json")
     return files
 
 
@@ -890,9 +916,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--size", type=int, help=f"canvas side in pixels, {SIZE_MIN}..{SIZE_MAX} (default {SIZE_DEFAULT}; "
                                                  "measured best at 32 or less)")
     parser.add_argument("--kind", choices=KINDS, help="sprite (default) and icon have a transparent background; a tile is "
-                                                     "opaque and repeats")
+                                                     "opaque and repeats; an effect has a centered lifetime")
     parser.add_argument("--frames", help=f"comma-separated frame names drawn in one call, at most {FRAMES_MAX} "
-                                         "(default: one frame named after --kind)")
+                                         "(effect: 2..8, default birth,peak,decay,gone; others: one named after --kind)")
     parser.add_argument("--walk-cycle", action="store_true", default=None,
                         help="the four frames are one walk cycle (contact, passing, contact, passing): says so in the "
                              "prompt and checks the legs change sides")
@@ -955,6 +981,10 @@ def _run_grid(args: argparse.Namespace) -> int:
     if grid is not None and not (SIZE_MIN <= grid.width <= SIZE_MAX and SIZE_MIN <= grid.height <= SIZE_MAX):
         raise _refuse(f"--grid {args.grid}: {grid.width}x{grid.height}; each side is {SIZE_MIN}..{SIZE_MAX} pixels")
     frames = tuple(grid.frames) if grid is not None else ()
+    if kind == "effect" and grid is not None:
+        _frames(list(frames), kind)
+        if args.walk_cycle:
+            raise _refuse("--walk-cycle does not apply to an effect")
     if args.walk_cycle and len(frames) != 4:
         raise _refuse(f"--walk-cycle is four frames, the grid holds {len(frames)}")
     out_dir = Path(args.out_dir).expanduser().resolve()
