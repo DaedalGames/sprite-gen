@@ -20,9 +20,10 @@ def inputs(tmp_path):
         (source/f'sound.{fmt}').write_bytes(data)
         files[fmt] = {'path':f'sound.{fmt}', 'duration_seconds':1, 'lufs':-18,
                       'true_peak_dbfs':-2, 'sha256':hashlib.sha256(data).hexdigest()}
-    manifest = {'kind':'sprite-gen-sound','version':1,'event':'combat.hit', 'audio_kind':'sfx',
+    manifest = {'kind':'sprite-gen-sound','version':2,'event':'combat.hit', 'audio_kind':'sfx',
                 'loop':False,'duration_seconds':1,'target_lufs':-18,'files':files,
-                'loop_start_seconds':0, 'loop_end_seconds':1}
+                'playback': {'version':2, 'sample_rate':48000, 'start_frame':0,
+                             'end_frame':48000, 'overlap_frames':0}}
     (source/'sound.json').write_text(json.dumps(manifest))
     path = tmp_path/'request.json'
     path.write_text(json.dumps(request))
@@ -30,7 +31,7 @@ def inputs(tmp_path):
 
 
 def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
-    path, request, _ = inputs(tmp_path)
+    path, request, original = inputs(tmp_path)
     pack(path, tmp_path/'before')
     request['audio'] = []
     path.write_text(json.dumps(request))
@@ -44,6 +45,11 @@ def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
     assert audio['event'] == result['animations']['hero']['events'][0]['name']
     assert (tmp_path/'with'/audio['files']['ogg']['path']).read_bytes() == b'synthetic-ogg'
     assert audio['files']['m4a']['path'] == 'audio-hit.m4a'
+    assert audio['playback'] == original['playback']
+    helper = audio['player']
+    assert helper['path'] == 'sprite-gen-audio-v2.mjs'
+    assert helper['export'] == 'prepareAudioBuffer'
+    assert hashlib.sha256((tmp_path/'with'/helper['path']).read_bytes()).hexdigest() == helper['sha256']
     assert pack(path, tmp_path/'with') == result
     total = sum(p.stat().st_size for p in (tmp_path/'with').iterdir())
     with pytest.raises(ValueError, match='bytes'):
@@ -51,7 +57,7 @@ def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
     assert not (tmp_path/'small').exists()
 
 
-@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop'])
+@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop', 'old', 'fraction', 'overlap'])
 def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     path, request, manifest = inputs(tmp_path)
     request['audio'] = [{'id':'hit','source':'audio/sound.json'}]
@@ -60,6 +66,9 @@ def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     if defect == 'digest': manifest['files']['ogg']['sha256'] = '0'*64
     if defect == 'nonfinite': manifest['target_lufs'] = float('nan')
     if defect == 'badloop': manifest['loop'] = 'false'
+    if defect == 'old': manifest['version'] = 1
+    if defect == 'fraction': manifest['playback']['end_frame'] = 48000.5
+    if defect == 'overlap': manifest['playback']['overlap_frames'] = 24000
     path.write_text(json.dumps(request))
     (tmp_path/'audio'/'sound.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError): pack(path, tmp_path/'bad')

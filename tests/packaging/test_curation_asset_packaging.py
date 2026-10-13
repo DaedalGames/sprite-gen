@@ -209,3 +209,7 @@ def test_the_package_never_reaches_into_the_scripts_wrappers(module: str) -> Non
         f"{module} builds a path into scripts/ ({offenders}) — those wrappers are not "
         f"installed, so this works in a checkout and fails in an install. Shell out with "
         f"`-m sprite_gen.<module>` instead.")
+
+
+def test_built_wheel_carries_browser_audio_player(wheel_names: set[str]) -> None:
+    assert 'sprite_gen/audio/sprite-gen-audio-v2.mjs' in wheel_names

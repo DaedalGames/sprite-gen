@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from sprite_gen.audio import cache, processing, provider
+from sprite_gen.audio import cache, processing, provider, playback
 from sprite_gen.audio.manifest import event_name, load as load_sound
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
@@ -27,7 +27,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
         raise ValueError('crossfade must be positive and shorter than half the duration')
     out_dir = Path(out_dir).expanduser().resolve()
     recipe = {'request': cache.digest(request), 'event': event, 'loop': loop,
-              'target_lufs': target, 'crossfade_seconds': crossfade, 'processing_version': 1}
+              'target_lufs': target, 'crossfade_seconds': crossfade, 'processing_version': playback.VERSION}
     if out_dir.exists():
         manifest = json.loads((out_dir / 'sound.json').read_text()) if (out_dir / 'sound.json').is_file() else {}
         if manifest.get('recipe') != recipe:
@@ -49,7 +49,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
         source.write_bytes(data)
         details = processing.export(source, stage, target_lufs=target, loop=loop, crossfade=crossfade)
         source.unlink()
-        manifest = {'kind': 'sprite-gen-sound', 'version': 1, 'event': event, 'audio_kind': kind,
+        manifest = {'kind': 'sprite-gen-sound', 'version': playback.VERSION, 'event': event, 'audio_kind': kind,
                     'loop': loop, 'target_lufs': target, 'recipe': recipe, 'provider': receipt, **details}
         (stage/'sound.json').write_text(json.dumps(manifest, indent=2, allow_nan=False)+'\n')
         stage.rename(out_dir)

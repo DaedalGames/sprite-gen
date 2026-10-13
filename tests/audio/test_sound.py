@@ -89,15 +89,6 @@ def test_cache_serializes_paid_requests_and_survives_uncertain_results(tmp_path)
         cache.obtain(db, {'a':2}, lambda: pytest.fail('ambiguous POST resent'))
 
 
-def test_loop_overlaps_ends_without_discontinuity():
-    t = np.arange(48000 * 4) / 48000
-    x = np.stack([.1*np.sin(2*np.pi*317.25*t) + .2*t/4]*2, axis=1)
-    y = processing.make_loop(x, .2)
-    assert len(y) == len(x) - 9600
-    assert np.max(np.abs(y[-1] - y[0])) < .01
-    assert np.max(np.abs(np.diff(y, axis=0))) < .01
-
-
 def test_actual_exports_are_normalized_and_reused(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(provider, 'generate', lambda req: (called.append(req) or wav_bytes(), {}))
@@ -133,11 +124,11 @@ def test_short_effect_and_loop_encoded_playback(tmp_path, monkeypatch, kind, dur
     result = sound.generate(kind=kind, prompt='synthetic', duration=duration, event='sample',
                             cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
     assert result['loop'] is loop
-    assert abs(result['duration_seconds'] - (duration-result['crossfade_seconds'])) < .001
-    if loop:
-        for file in result['files'].values():
-            decoded = processing.decode(tmp_path/'out'/file['path'])[:round(result['loop_end_seconds']*48000)]
-            assert np.max(np.abs(decoded[-1]-decoded[0])) < .025
+    meta = result['playback']
+    assert meta == {'version': 2, 'sample_rate': 48000, 'start_frame': 0,
+                    'end_frame': round(duration*48000), 'overlap_frames': 12000 if loop else 0}
+    assert result['duration_seconds'] == (meta['end_frame']-meta['overlap_frames'])/48000
+    assert 'loop_end_seconds' not in result and 'codec_taper_seconds' not in result
 
 
 def test_preflight_does_not_claim_and_cached_source_works_without_key(tmp_path, monkeypatch):
@@ -205,18 +196,31 @@ def test_codec_reconstruction_keeps_a_broadband_transient_below_peak_ceiling(tmp
         assert abs(file['lufs']+18) <= 1
 
 
-def test_loop_codec_boundary_at_nonzero_stereo_phase(tmp_path, monkeypatch):
+def test_export_keeps_source_frames_until_browser_preparation(tmp_path, monkeypatch):
     t = np.arange(48000*3)/48000
-    x = np.stack([.1*np.sin(2*np.pi*121*t+.5), .4*np.cos(2*np.pi*73*t)], axis=1)
-    stream = io.BytesIO()
-    with wave.open(stream, 'wb') as f:
-        f.setnchannels(2); f.setsampwidth(2); f.setframerate(48000)
-        f.writeframes((x*32767).astype('<i2').tobytes())
-    monkeypatch.setattr(provider, 'generate', lambda _: (stream.getvalue(), {}))
-    result = sound.generate(kind='bgm', prompt='synthetic stereo loop', duration=3, event='music',
-                            out_dir=tmp_path/'out', cache_dir=tmp_path/'cache')
-    for file in result['files'].values():
-        decoded = processing.decode(tmp_path/'out'/file['path'])[:round(result['duration_seconds']*48000)]
-        # Codec priming must not turn a large nonzero start into a wrap impulse.
-        assert np.max(np.abs(decoded[-1]-decoded[0])) < .003
-        assert np.max(np.abs(decoded[[0,-1]])) < .003
+    x = np.stack([.1*np.sin(2*np.pi*121*t+.5), .4*np.cos(2*np.pi*73*t)], axis=1).astype('<f4')
+    monkeypatch.setattr(processing, 'decode', lambda path: x.copy())
+    seen = []
+    def normalize(samples, target, loop):
+        seen.append(samples.copy())
+        return samples, 0
+    monkeypatch.setattr(processing, 'normalize', normalize)
+    monkeypatch.setattr(processing, 'measure', lambda *a: {'input_i': -20, 'input_tp': -2})
+    processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=.25)
+    np.testing.assert_array_equal(seen[0], x)
+
+
+def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))
+    kw = dict(kind='bgm', prompt='synthetic', duration=3, event='music',
+              cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
+    result = sound.generate(**kw)
+    assert result['version'] == result['recipe']['processing_version'] == 2
+    old = {**result, 'version': 1, 'recipe': {**result['recipe'], 'processing_version': 1}}
+    (kw['out_dir']/'sound.json').write_text(json.dumps(old))
+    with pytest.raises(ValueError, match='different sound'):
+        sound.generate(**kw)
+    monkeypatch.delenv('ELEVENLABS_API_KEY')
+    fresh = sound.generate(**{**kw, 'out_dir': tmp_path/'new'})
+    assert fresh['cache_hit'] and len(calls) == 1

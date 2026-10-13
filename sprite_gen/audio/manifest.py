@@ -8,6 +8,8 @@ import math
 from pathlib import Path
 import re
 
+from sprite_gen.audio import playback
+
 
 def event_name(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
@@ -24,17 +26,17 @@ def _number(value, name, low, high):
 def load(path, max_bytes):
     path = Path(path).resolve()
     value = json.loads(path.read_text())
-    if not isinstance(value, dict) or value.get('kind') != 'sprite-gen-sound' or value.get('version') != 1:
-        raise ValueError('audio source must be a sprite-gen-sound version 1 manifest')
+    if not isinstance(value, dict) or value.get('kind') != 'sprite-gen-sound' or value.get('version') != playback.VERSION:
+        raise ValueError('audio source must be a sprite-gen-sound version 2 manifest')
     if value.get('audio_kind') not in ('sfx', 'bgm') or type(value.get('loop')) is not bool:
         raise ValueError('invalid audio kind or loop flag')
-    duration = _number(value.get('duration_seconds'), 'duration', .001, 601)
+    frames = playback.validate(value.get('playback'), value['loop'])
+    duration = playback.duration(frames)
+    if value.get('duration_seconds') != duration:
+        raise ValueError('audio duration must be derived from playback frames')
     result = {'event': event_name(value.get('event')), 'audio_kind': value['audio_kind'], 'loop': value['loop'],
               'duration_seconds': duration, 'target_lufs': _number(value.get('target_lufs'), 'target LUFS', -36, -9),
-              'loop_start_seconds': _number(value.get('loop_start_seconds'), 'loop start', 0, duration),
-              'loop_end_seconds': _number(value.get('loop_end_seconds'), 'loop end', .001, duration), 'files': {}}
-    if result['loop_start_seconds'] >= result['loop_end_seconds']:
-        raise ValueError('audio loop interval must have positive duration')
+              'playback': frames, 'files': {}}
     files = value.get('files')
     if not isinstance(files, dict) or set(files) != {'ogg', 'm4a'}:
         raise ValueError('audio source requires ogg and m4a files')
@@ -54,7 +56,7 @@ def load(path, max_bytes):
         if hashlib.sha256(data).hexdigest() != file.get('sha256'):
             raise ValueError('audio file digest does not match its manifest')
         record = {'path': name, 'sha256': file['sha256'],
-                  'duration_seconds': _number(file.get('duration_seconds'), 'file duration', duration-2/48000, 602),
+                  'duration_seconds': _number(file.get('duration_seconds'), 'file duration', frames['end_frame']/frames['sample_rate']-2/frames['sample_rate'], 602),
                   'lufs': _number(file.get('lufs'), 'LUFS', -70, 0),
                   'true_peak_dbfs': _number(file.get('true_peak_dbfs'), 'true peak', -100, -1)}
         if abs(record['lufs'] - result['target_lufs']) > 1:

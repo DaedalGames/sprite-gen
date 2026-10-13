@@ -14,6 +14,7 @@ import tempfile
 from PIL import Image
 
 from sprite_gen.audio.manifest import load as load_sound
+from sprite_gen.audio.playback import player as audio_player
 from sprite_gen.spec.assets import finite, load_asset_states
 from sprite_gen.util.resample import resize_cell
 
@@ -239,6 +240,10 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
         raise ValueError("output directory must not contain any source file")
     result, payloads = _encode(_layout(frames, page_size), animations, max_bytes)
     if audio:
+        helper, module = audio_player()
+        audio_payloads[helper["path"]] = module
+        for record in audio.values():
+            record["player"] = helper
         result["audio"] = dict(sorted(audio.items()))
         payloads.update(audio_payloads)
         payloads["game-pack.json"] = (json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PCM loop overlap, EBU R128 normalization and measured browser audio encodes."""
+"""EBU R128 normalization and unspliced browser audio encodes."""
 from __future__ import annotations
 
 import hashlib
@@ -12,8 +12,9 @@ import subprocess
 
 import numpy as np
 
+from sprite_gen.audio import playback
+
 RATE = 48000
-CODEC_TAPER_SECONDS = .005
 
 
 def require_tools():
@@ -42,22 +43,6 @@ def decode(path):
     if not len(samples) or not np.isfinite(samples).all():
         raise ValueError('source has no finite audio samples')
     return samples
-
-
-def make_loop(samples, seconds):
-    count = round(seconds * RATE)
-    if count < 2 or count * 2 >= len(samples):
-        raise ValueError('loop crossfade must be positive and shorter than half the source')
-    weight = (.5 - .5 * np.cos(np.linspace(0, np.pi, count)))[:, None]
-    overlap = samples[-count:] * (1 - weight) + samples[:count] * weight
-    output = np.concatenate((samples[count:-count], overlap)).astype('<f4')
-    # Lossy encoders have no preceding signal at the beginning of a standalone file.
-    # A short, smooth zero boundary prevents that priming error becoming a wrap impulse.
-    guard = min(round(CODEC_TAPER_SECONDS * RATE), len(output)//4)
-    taper = (.5 - .5*np.cos(np.linspace(0, np.pi, guard)))[:, None]
-    output[:guard] *= taper
-    output[-guard:] *= taper[::-1]
-    return output
 
 
 def _pcm_args():
@@ -115,11 +100,10 @@ def normalize(samples, target, loop):
 
 def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
     samples = decode(source)
-    source_seconds = len(samples) / RATE
-    if loop:
-        samples = make_loop(samples, crossfade)
+    frames = playback.validate({'version': playback.VERSION, 'sample_rate': RATE,
+                                'start_frame': 0, 'end_frame': len(samples),
+                                'overlap_frames': round(crossfade*RATE) if loop else 0}, loop)
     samples, corrections = normalize(samples, target_lufs, loop)
-    duration = len(samples) / RATE
     files = {}
     for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
         path = out_dir / f'sound.{fmt}'
@@ -129,8 +113,8 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
             decoded = decode(path)
             if len(decoded) < len(samples) - 2:
                 raise ValueError(f'{fmt} truncated the audio')
-            playback = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
-            measured = measure(np.tile(playback, (3, 1)) if loop else playback, target_lufs)
+            interval = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
+            measured = measure(np.tile(interval, (3, 1)) if loop else interval, target_lufs)
             lufs, peak = measured['input_i'], measured['input_tp']
             if math.isfinite(lufs) and abs(lufs - target_lufs) <= 1 and peak <= -1:
                 break
@@ -144,10 +128,5 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
                       'lufs': lufs, 'true_peak_dbfs': peak, 'encode_passes': attempt + 1,
                       'pcm_peak_limit_dbtp': ceiling,
                       'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-        if loop:
-            files[fmt]['seam_delta'] = float(np.max(np.abs(playback[-1] - playback[0])))
-    return {'files': files, 'duration_seconds': duration, 'source_duration_seconds': source_seconds,
-            'sample_rate': RATE, 'loop_start_seconds': 0, 'loop_end_seconds': duration,
-            'crossfade_seconds': crossfade if loop else 0,
-            'codec_taper_seconds': CODEC_TAPER_SECONDS if loop else 0,
+    return {'files': files, 'duration_seconds': playback.duration(frames), 'playback': frames,
             'normalization': {'method': 'loudnorm-two-pass', 'peak_limit_dbtp': -2, 'gain_limiter_passes': corrections}}
