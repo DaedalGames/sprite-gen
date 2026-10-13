@@ -10,7 +10,9 @@
   repeat cleanly, so it warns and never fails until the measure is refined.
 - G5 stray pixels (warning): opaque pixels of a sprite or icon with no opaque 4-neighbour.
 - G6 frames: every frame stands on the same bottom row, heights differ by at most one pixel and
-  no two frames are the same. A walk cycle (contact, passing, contact, passing) also warns when
+  no two frames are the same. A sprite's or icon's rows and heights are measured inside its safe
+  area: a staff raised or a spark into the margin in one frame is not a taller figure (G8 judges
+  the margin). A walk cycle (contact, passing, contact, passing) also warns when
   its two contact frames differ by less than 40% of the mean contact↔passing difference: the legs
   barely change sides.
 - G8 safe area, on a sprite or icon: the engine's safe area (`safe_area`, the margin `prepare`
@@ -119,8 +121,9 @@ def g5_isolated(frames: dict[str, Frame]) -> dict[str, Any]:
     return {"warn": total > 0, "isolated_pixels": total, "frames": per}
 
 
-def _bbox_rows(frame: Frame) -> tuple[int, int] | None:
-    rows = [y for y, row in enumerate(frame) if any(_opaque(p) for p in row)]
+def _bbox_rows(frame: Frame, box: Sequence[int] | None) -> tuple[int, int] | None:
+    left, top, right, bottom = box or (0, 0, len(frame[0]) - 1, len(frame) - 1)
+    rows = [y for y in range(top, bottom + 1) if any(_opaque(p) for p in frame[y][left:right + 1])]
     return (rows[0], rows[-1]) if rows else None
 
 
@@ -128,9 +131,11 @@ def _difference(a: Frame, b: Frame) -> int:
     return sum(1 for y in range(len(a)) for x in range(len(a[0])) if a[y][x] != b[y][x])
 
 
-def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool) -> dict[str, Any]:
+def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool, box: Sequence[int] | None = None) -> dict[str, Any]:
+    """`box` (first and last column and row) is where the rows and heights are measured: a sprite's
+    or icon's safe area, the whole frame without one."""
     names = list(frames)
-    spans = {name: _bbox_rows(frames[name]) for name in names}
+    spans = {name: _bbox_rows(frames[name], box) for name in names}
     baselines = {name: (span[1] if span else None) for name, span in spans.items()}
     heights = {name: (span[1] - span[0] + 1 if span else 0) for name, span in spans.items()}
     identical = [[names[i], names[j]] for i in range(len(names)) for j in range(i + 1, len(names))
@@ -140,6 +145,7 @@ def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool) -> dict[str, Any]:
         "ok": len(set(baselines.values())) == 1 and None not in baselines.values()
         and spread <= HEIGHT_SPREAD_MAX and not identical,
         "baselines": baselines, "heights": heights, "height_spread": spread, "identical_pairs": identical,
+        "measured_in": list(box) if box else None,
     }
     if walk_cycle:
         a, b, c, d = (frames[n] for n in names)
@@ -194,9 +200,7 @@ def _frame_safe(frame: Frame, area: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def g8_safe_area(frames: dict[str, Frame], kind: str) -> dict[str, Any]:
-    first = next(iter(frames.values()))
-    area = safe_area(len(first[0]), len(first))
+def g8_safe_area(frames: dict[str, Frame], kind: str, area: dict[str, Any]) -> dict[str, Any]:
     per = {name: _frame_safe(frame, area) for name, frame in frames.items()}
     edge = sum(m["edge_pixels"] for m in per.values())
     body_overflow = {}
@@ -232,6 +236,8 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
     the walk check and G8 found, one line each."""
     gates: dict[str, Any] = {"G2": g2_palette(frames, rule), "G3": g3_alpha(frames, kind)}
     warnings: list[str] = []
+    first = next(iter(frames.values()))
+    area = None if kind == "tile" else safe_area(len(first[0]), len(first))
     if kind == "tile":
         gates["G4"] = g4_seam(frames)
         if gates["G4"]["warn"]:
@@ -242,14 +248,14 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
         if gates["G5"]["warn"]:
             warnings.append(f"G5 {gates['G5']['isolated_pixels']} stray pixel(s) with no opaque neighbour")
     if len(frames) > 1:
-        gates["G6"] = g6_frames(frames, walk_cycle=walk_cycle)
+        gates["G6"] = g6_frames(frames, walk_cycle=walk_cycle, box=area["box"] if area else None)
         walk = gates["G6"].get("walk")
         if walk and walk["warn"]:
             warnings.append(f"G6 weak leg alternation: the contact frames differ by {walk['contact_difference']} "
                             f"pixels, {walk['ratio']:.0%} of the contact-passing difference (under "
                             f"{WALK_CONTACT_RATIO_MIN:.0%}) — touch up the legs")
-    if kind != "tile":
-        gates["G8"] = g8_safe_area(frames, kind)
+    if area is not None:
+        gates["G8"] = g8_safe_area(frames, kind, area)
         warnings += _g8_warnings(gates["G8"])
     failed = [name for name in ("G2", "G3", "G6", "G8") if name in gates and not gates[name]["ok"]]
     return {"ok": not failed, "failed": failed, "warnings": warnings, **gates}
