@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gates G2..G6 and G8 of `pixel-draw` on recorded answers (tests/fixtures/pixel_draw) and on grids
 made to break exactly one rule. G2, G3 and G6 fail a candidate; G4, G5 and the walk check only warn.
-G8 never fails: its judgment is the image path's, `frames.extract.safe_area_fit`
-(tests/frames/test_safe_area_fit.py) - a frame past the physical cap warns, one past the safe area
-within the cap is an info line - and a sprite whose feet are off the floor row warns. The
-`*-safe-area-pass` answers were drawn under the safe-area prompt; the other recorded sprites when the
-prompt asked to fill the canvas."""
+G3, G4, G5 and G8 ask the engine's own judgments, each tested with its owner: G3 the transparent
+background of `gen.chroma.alpha_verdict` (tests/gen/test_alpha_verdict.py), G4 the join measure of
+`background.tile.inspect_tile` (tests/background/test_tile.py), G5 the lone pixels of
+`frames.extract.isolated_dots` (tests/frames/test_isolated_dots.py), and G8 the safe area of
+`frames.extract.safe_area_fit` (tests/frames/test_safe_area_fit.py) - a frame past the physical cap
+warns, one past the safe area within the cap is an info line - and a sprite whose feet are off the
+floor row warns. The `*-safe-area-pass` answers were drawn under the safe-area prompt; the other
+recorded sprites when the prompt asked to fill the canvas."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +17,7 @@ import pytest
 
 from sprite_gen.gen import pixel_gates, prepare
 from sprite_gen.gen import pixel_grid as pg
-from sprite_gen.gen.pixel_gates import evaluate, g6_frames, seam_ratio
+from sprite_gen.gen.pixel_gates import evaluate, g6_frames
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "pixel_draw"
 WALK = ("walk1", "walk2", "walk3", "walk4")
@@ -42,6 +45,7 @@ def test_recorded_sprite_passes_every_gate():
     assert gates["ok"] and gates["failed"] == [] and gates["warnings"] == [] and gates["info"] == []
     assert gates["G2"]["colors_used"] <= 16
     assert gates["G3"]["frames"]["sprite"]["corners_transparent"]
+    assert gates["G3"]["frames"]["sprite"]["verdict"] == "real-alpha"
     assert gates["G5"]["isolated_pixels"] == 0 and "G6" not in gates and "G4" not in gates
     assert gates["G8"]["frames"]["sprite"]["bbox"] == [3, 1, 12, 14] and gates["G8"]["floor_row"] == 14
 
@@ -49,7 +53,9 @@ def test_recorded_sprite_passes_every_gate():
 def test_recorded_tile_is_opaque_and_repeats():
     gates = evaluate(frames_of("tile-16-pass.txt", 16, ("tile",)), kind="tile", rule=FREE16, walk_cycle=False)
     assert gates["ok"] and gates["G3"]["frames"]["tile"]["opaque_fraction"] == 1.0 and gates["info"] == []
-    assert gates["G4"]["seam_ratio"] <= 1.5 and not gates["G4"]["warn"]
+    assert gates["G3"]["frames"]["tile"]["verdict"] == "no-alpha"
+    assert gates["G4"]["needs_review"] == [] and not gates["G4"]["warn"]
+    assert {axis: report["status"] for axis, report in gates["G4"]["frames"]["tile"].items()} == {"x": "pass", "y": "pass"}
 
 
 def test_g2_counts_colours_against_the_limit_and_the_fixed_set():
@@ -78,9 +84,10 @@ def test_g3_alpha_failures(frame, kind):
 def test_g4_seam_only_warns():
     striped = [[GRASS if x < 2 or x >= 6 else MOSS for x in range(8)] for _ in range(8)]  # wraps cleanly
     seam = [[GRASS if x < 7 else INK for x in range(8)] for _ in range(8)]
-    assert seam_ratio(striped) <= 1.5
+    clean = evaluate({"tile": striped}, kind="tile", rule=FREE16, walk_cycle=False)
+    assert clean["ok"] and not clean["G4"]["warn"] and clean["warnings"] == []
     gates = evaluate({"tile": seam}, kind="tile", rule=FREE16, walk_cycle=False)
-    assert gates["G4"]["warn"] and gates["G4"]["seam_ratio"] > 1.5
+    assert gates["G4"]["warn"] and gates["G4"]["needs_review"] == ["tile x"]
     assert gates["ok"] and any(w.startswith("G4 tile seam") for w in gates["warnings"])
 
 
@@ -90,6 +97,18 @@ def test_g5_stray_pixels_only_warn():
     frame[0][4] = INK  # a speck above the block, touching nothing
     gates = evaluate({"f": frame}, kind="icon", rule=FREE16, walk_cycle=False)  # an icon has no floor row
     assert gates["G5"]["isolated_pixels"] == 1 and gates["ok"]
+    assert gates["warnings"] == ["G5 1 stray pixel(s) with no opaque neighbour"]
+
+
+def test_g5_a_one_pixel_diagonal_stroke_is_not_stray():
+    """Each pixel of a diagonal stroke touches the next at a corner: joined, as a staff or a blade drawn
+    at 45 degrees is. Only the speck that touches nothing is stray."""
+    frame = [[INK if 6 <= y <= 11 and 6 <= x <= 11 else CLEAR for x in range(16)] for y in range(16)]
+    for step in (3, 4, 5):
+        frame[step][step] = INK
+    frame[2][12] = INK
+    gates = evaluate({"f": frame}, kind="icon", rule=FREE16, walk_cycle=False)
+    assert gates["G5"]["isolated_pixels"] == 1 and gates["G5"]["frames"] == {"f": 1}
     assert gates["warnings"] == ["G5 1 stray pixel(s) with no opaque neighbour"]
 
 
