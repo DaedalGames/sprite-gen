@@ -14,7 +14,7 @@ def keyed(root, *, unsettled=False, clipped=False, count=90):
     for k in range(count):
         t = min(1, max(0, (k - 10) / (count - 25)))
         x = round(28 + 28 * t)
-        if unsettled and k >= count - 10:
+        if unsettled and k >= 20:
             x += 8 * (k % 2)
         im = Image.new("RGBA", (128, 96))
         ImageDraw.Draw(im).rectangle((x, 20 + round(35 * t), x + 16 + round(24 * t), 85), fill=(200, 80, 30, 255))
@@ -37,7 +37,7 @@ def test_cut_keeps_final_pose_in_strip_and_once_previews(tmp_path):
     assert report["cycle"]["kind"] == "once"
     assert meta["loop"] is False and meta["hold_last"] is True
     assert meta["end_frame"] == meta["frames"] - 1
-    assert meta["source_cut"]["samples"][-1] == 89
+    assert meta["source_cut"]["samples"][-1] == report["cycle"]["end_frame"]
     assert meta["sample_indices"][-1] == report["cycle"]["length"] - 1
     assert 0 <= meta["events"][0]["frame"] <= meta["end_frame"]
     strip = Image.open(meta["path"]).convert("RGBA")
@@ -117,19 +117,26 @@ def test_terminal_gate_rejects_still_and_accumulated_drift():
         select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24)
 
 
-def test_once_refuses_an_action_that_returns_to_its_start_pose(tmp_path):
+@pytest.mark.parametrize("after", ["standing", "shaking"])
+def test_once_cuts_at_the_first_settled_ground_pose_before_later_motion(tmp_path, after):
     files = keyed(tmp_path / "keyed")
     initial = Image.open(files / "0000.png")
-    for k in range(75, 90):
-        initial.save(files / f"{k:04d}.png")
-    with pytest.raises(SystemExit, match="starting pose"):
-        cut(tmp_path)
+    settled = Image.open(files / "0089.png")
+    for k in range(40, 55):
+        settled.save(files / f"{k:04d}.png")
+    for k in range(55, 90):
+        (initial if after == "standing" or k % 2 else settled).save(files / f"{k:04d}.png")
+    report = cut(tmp_path)
+    assert report["cycle"]["end_frame"] == 44
+    assert report["cycle"]["terminal"]["start"] == 40
+    assert report["strip"]["source_cut"]["samples"][-1] == 44
+    assert report["strip"]["hold_last"] is True
 
 
 def test_a_recolored_upright_endpoint_is_not_a_collapse(tmp_path):
     files = keyed(tmp_path / "keyed")
     upright = Image.new("RGBA", (128, 96))
-    ImageDraw.Draw(upright).rectangle((34, 20, 50, 85), fill=(30, 80, 200, 255))
+    ImageDraw.Draw(upright).rectangle((34, 27, 50, 85), fill=(30, 80, 200, 255))
     for k in range(75, 90):
         upright.save(files / f"{k:04d}.png")
     with pytest.raises(SystemExit, match="lowered"):
