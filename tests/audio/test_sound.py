@@ -124,3 +124,39 @@ def test_processing_failure_reuses_paid_audio(tmp_path, monkeypatch):
     assert not kw['out_dir'].exists()
     monkeypatch.setattr(processing, 'export', original)
     assert sound.generate(**kw)['cache_hit'] and len(called) == 1
+
+
+@pytest.mark.parametrize('kind,duration,loop', [('sfx', .5, False), ('bgm', 3, True)])
+def test_short_effect_and_loop_encoded_playback(tmp_path, monkeypatch, kind, duration, loop):
+    monkeypatch.setattr(provider, 'generate', lambda req: (wav_bytes(duration), {}))
+    result = sound.generate(kind=kind, prompt='synthetic', duration=duration, event='sample',
+                            cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
+    assert result['loop'] is loop
+    assert abs(result['duration_seconds'] - (duration-result['crossfade_seconds'])) < .001
+    if loop:
+        for file in result['files'].values():
+            decoded = processing.decode(tmp_path/'out'/file['path'])[:round(result['loop_end_seconds']*48000)]
+            assert np.max(np.abs(decoded[-1]-decoded[0])) < .025
+
+
+def test_preflight_does_not_claim_and_cached_source_works_without_key(tmp_path, monkeypatch):
+    db = tmp_path/'cache.sqlite3'
+    def no_key(): raise ValueError('missing key')
+    with pytest.raises(ValueError, match='missing key'):
+        cache.obtain(db, {'request':1}, lambda: pytest.fail('must preflight'), prepare=no_key)
+    assert cache.obtain(db, {'request':1}, lambda: (b'audio', {}))[2] is False
+    assert cache.obtain(db, {'request':1}, lambda: pytest.fail('cache must suffice'), prepare=no_key)[2] is True
+
+
+def test_error_body_and_transport_cannot_disclose_key(monkeypatch, capsys):
+    key = 'secret-api-key-should-never-appear'
+    monkeypatch.setenv('ELEVENLABS_API_KEY', key)
+    def refuse(req, **kwargs):
+        raise urllib.error.HTTPError(req.full_url, 422, key, {}, io.BytesIO(json.dumps({'detail':{'message':key,'status':key}}).encode()))
+    monkeypatch.setattr(provider, 'urlopen', refuse)
+    with pytest.raises(ValueError) as err: provider.generate(provider.request('sfx','impact',1,False))
+    assert key not in str(err.value) + capsys.readouterr().err
+    def broken(*a, **kw): raise OSError(key)
+    monkeypatch.setattr(provider, 'urlopen', broken)
+    with pytest.raises(ValueError) as err: provider.generate(provider.request('sfx','impact',1,False))
+    assert key not in str(err.value) + capsys.readouterr().err

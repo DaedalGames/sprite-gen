@@ -11,7 +11,7 @@ import shutil
 import tempfile
 
 from sprite_gen.audio import cache, processing, provider
-from sprite_gen.audio.manifest import event_name
+from sprite_gen.audio.manifest import event_name, load as load_sound
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 
@@ -32,10 +32,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
         manifest = json.loads((out_dir / 'sound.json').read_text()) if (out_dir / 'sound.json').is_file() else {}
         if manifest.get('recipe') != recipe:
             raise ValueError('output directory already exists with a different sound; use a new directory')
-        for file in manifest['files'].values():
-            path = out_dir / file['path']
-            if not path.is_file() or cache_hash(path) != file['sha256']:
-                raise ValueError('published sound is damaged; use a new output directory with the same cache')
+        load_sound(out_dir/'sound.json', 50_000_000)
         return {**manifest, 'cache_hit': True}
     processing.require_tools()
     cache_dir = Path(cache_dir).expanduser() if cache_dir else Path(os.environ.get('XDG_CACHE_HOME', Path.home()/'.cache'))/'sprite-gen'/'audio'
@@ -59,11 +56,6 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     return {**manifest, 'cache_hit': hit}
-
-
-def cache_hash(path):
-    import hashlib
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def add_arguments(parser):
