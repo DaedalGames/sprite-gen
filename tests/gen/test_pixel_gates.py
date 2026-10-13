@@ -161,7 +161,7 @@ def test_g8_passes_a_body_inside_the_safe_area():
     assert gates["ok"] and gates["warnings"] == []
     assert g8["ok"] and g8["margin"] == [3, 3] and g8["safe_area"] == [26, 26] and g8["floor_row"] == 28
     frame = g8["frames"]["f"]
-    assert frame["edge_pixels"] == 0 and frame["body_box"] == [8, 3, 23, 28] and frame["baseline"] == 28
+    assert frame["edge_pixels"] == 0 and frame["body_box"] == [8, 3, 23, 28] and frame["bbox"] == [8, 3, 23, 28]
     assert frame["overflow"] == {"left": 0, "top": 0, "right": 0, "bottom": 0}
 
 
@@ -208,6 +208,13 @@ def test_g8_warns_a_sprite_off_the_floor_row():
     assert icon["warnings"] == [] and icon["G8"]["floor_row"] is None
 
 
+def test_g8_reads_the_floor_from_the_body_not_a_tip_below_it():
+    staff = paint(figure(), 20, 29, 20, 30)  # a staff's foot 2 px into the bottom margin, the feet on the floor row
+    gates = evaluate({"f": staff}, kind="sprite", rule=FREE16, walk_cycle=False)
+    assert gates["ok"] and gates["warnings"] == []
+    assert gates["G8"]["frames"]["f"]["bbox"][3] == 30 and gates["G8"]["frames"]["f"]["body_box"][3] == 28
+
+
 def test_g8_has_no_edge_to_keep_below_a_one_pixel_margin():
     plus = paint(paint(canvas(8), 3, 0, 4, 7), 0, 3, 7, 4)  # touches every side, corners clear
     gates = evaluate({"f": plus}, kind="icon", rule=FREE16, walk_cycle=False)
@@ -225,7 +232,7 @@ def test_a_recorded_blade_reaches_into_the_margin_and_the_body_stays_inside():
     measures = gates["G8"]["frames"]
     assert gates["ok"] and gates["warnings"] == []
     assert measures["attack1"]["bbox"][0] == 2 and measures["attack3"]["bbox"][2] == 29  # the blade, 1 px past it
-    assert all(3 <= m["body_box"][0] and m["body_box"][2] <= 28 and m["baseline"] == 28 for m in measures.values())
+    assert all(3 <= m["body_box"][0] and m["body_box"][2] <= 28 and m["body_box"][3] == 28 for m in measures.values())
 
 
 def test_g6_measures_the_frames_inside_the_safe_area():
