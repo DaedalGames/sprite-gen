@@ -226,6 +226,44 @@ def test_price_of_a_call():
     cached = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 1_000_000,
               "cache_creation": {"ephemeral_5m_input_tokens": 1_000_000, "ephemeral_1h_input_tokens": 1_000_000}}
     assert api.cost_usd(cached, batch=False) == pytest.approx(0.20 + 5.00 + 8.00)
+    unsplit = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 1_000_000}
+    assert api.cost_usd(unsplit, batch=False) == 5.00  # a write the reply does not split is a five-minute one
+
+
+@pytest.mark.parametrize("usage, tokens", [
+    # The reply splits its cache writes by lifetime: each at its own price, the total beside it not read.
+    ({"input_tokens": 9, "output_tokens": 7, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 99,
+      "cache_creation": {"ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 4}},
+     {"input": 9, "cache_write_5m": 3, "cache_write_1h": 4, "cache_read": 5, "output": 7}),
+    # One lifetime given: the other is what the reply says of it, nothing.
+    ({"input_tokens": 9, "output_tokens": 7, "cache_creation": {"ephemeral_1h_input_tokens": 4}},
+     {"input": 9, "cache_write_5m": None, "cache_write_1h": 4, "cache_read": None, "output": 7}),
+    # No split: every written token is a five-minute one.
+    ({"input_tokens": 9, "output_tokens": 7, "cache_creation_input_tokens": 6},
+     {"input": 9, "cache_write_5m": 6, "cache_write_1h": 0, "cache_read": None, "output": 7}),
+    ({"input_tokens": 9, "output_tokens": 7, "cache_creation_input_tokens": 6, "cache_creation": None},
+     {"input": 9, "cache_write_5m": 6, "cache_write_1h": 0, "cache_read": None, "output": 7}),
+    # Counts are as the reply gave them: a missing or odd one is the caller's to read.
+    ({"output_tokens": "7"}, {"input": None, "cache_write_5m": None, "cache_write_1h": 0, "cache_read": None,
+                              "output": "7"}),
+])
+def test_billed_tokens_are_a_calls_tokens_by_the_price_each_is_billed_at(usage, tokens):
+    assert api.billed_tokens(usage) == tokens
+    assert list(api.billed_tokens(usage)) == list(api.PRICE_PER_MTOK[api.MODEL])
+
+
+def test_the_price_of_a_call_is_its_billed_tokens_at_the_published_prices(monkeypatch):
+    """`cost_usd` asks `billed_tokens` how a call's tokens split by price: one rule, one place."""
+    asked = []
+
+    def split(usage):
+        asked.append(usage)
+        return {"input": 0, "cache_write_5m": 0, "cache_write_1h": 1_000_000, "cache_read": 0, "output": 0}
+
+    monkeypatch.setattr(api, "billed_tokens", split)
+    usage = {"input_tokens": 1}
+    assert api.cost_usd(usage, batch=False) == 8.00
+    assert asked == [usage]
 
 
 def test_credential():

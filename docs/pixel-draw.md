@@ -239,7 +239,11 @@ zlib build. The previews, the tiling and the GIF are views for the eye.
 | `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |
 
 `cost_usd` is each call's usage at the published price (below), Message Batches at half. It is
-what the calls cost by the API's own usage counts, not a console bill.
+what the calls cost by the API's own usage counts, not a console bill. Which price each token is
+billed at is one function, `anthropic_api.billed_tokens`: input, output, cache reads, and cache
+writes by their lifetime (`usage.cache_creation`'s five-minute and one-hour counts; a reply that
+does not split them wrote for five minutes), each count as the reply gave it — a caller pricing
+the calls at rates of its own reads the same split.
 
 ## Failures
 
