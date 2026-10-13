@@ -30,4 +30,4 @@ def duration(value):
 def player():
     data = PLAYER_PATH.read_bytes()
     return {'path': PLAYER_PATH.name, 'sha256': hashlib.sha256(data).hexdigest(),
-            'export': 'prepareAudioBuffer'}, data
+            'export': 'createAudioSource'}, data

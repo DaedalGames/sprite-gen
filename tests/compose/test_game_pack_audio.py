@@ -48,7 +48,7 @@ def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
     assert audio['playback'] == original['playback']
     helper = audio['player']
     assert helper['path'] == 'sprite-gen-audio-v2.mjs'
-    assert helper['export'] == 'prepareAudioBuffer'
+    assert helper['export'] == 'createAudioSource'
     assert hashlib.sha256((tmp_path/'with'/helper['path']).read_bytes()).hexdigest() == helper['sha256']
     assert pack(path, tmp_path/'with') == result
     total = sum(p.stat().st_size for p in (tmp_path/'with').iterdir())

@@ -2,6 +2,7 @@
 // Frame contract v2. Loop preparation runs after decoding, never on each repeat.
 const prepared = new WeakMap();
 const cached = new WeakMap();
+const guarded = new WeakMap();
 
 export function prepareAudioBuffer(decoded, playback) {
   const { version, sample_rate: rate, start_frame: start, end_frame: end,
@@ -58,9 +59,22 @@ export function createAudioSource(context, decoded, audio) {
     throw new RangeError('Audio loop flag does not match playback overlap');
   }
   const source = context.createBufferSource();
-  source.buffer = prepareAudioBuffer(decoded, audio.playback);
+  const buffer = prepareAudioBuffer(decoded, audio.playback);
+  if (audio.loop && !guarded.has(buffer)) {
+    // Some renderers interpolate at the buffer end before wrapping. Supply
+    // the next cyclic sample without extending the declared loop interval.
+    const playback = new AudioBuffer({ numberOfChannels: buffer.numberOfChannels,
+      length: buffer.length + 1, sampleRate: buffer.sampleRate });
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+      const target = playback.getChannelData(channel);
+      target.set(buffer.getChannelData(channel));
+      target[buffer.length] = target[0];
+    }
+    guarded.set(buffer, playback);
+  }
+  source.buffer = audio.loop ? guarded.get(buffer) : buffer;
   source.loop = audio.loop;
   source.loopStart = 0;
-  source.loopEnd = source.buffer.duration;
+  source.loopEnd = buffer.duration;
   return source;
 }

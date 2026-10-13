@@ -39,7 +39,7 @@ Raw paid audio is stored in SQLite keyed by provider parameter digest. Tuning `-
 2. **Export Formats**: Outputs complete normalized audio in 48kHz stereo Opus in OGG (`sound.ogg`, `libopus`, 160 kbps) and AAC in M4A (`sound.m4a`, `aac`, 192 kbps). Export files remove all pre-encode crossfades, loop splices, and 5ms boundary zero-tapers; the complete normalized source is preserved intact in encoded audio.
 3. **Quality Gates**: Output formats must decode to the integrated loudness target within +/-1 LU and true peak <= -1 dBTP. Silence or unmeasurable audio fails. Numeric checks do not judge musical beat alignment.
 4. **Looping and Playback Quality**: Crossfading is deferred to runtime preparation. Because playback overlap blending can alter loudness, applications must validate prepared and rendered audio output. No claim is made that all signals are perceptually seamless or beat aligned.
-5. **Boundary Continuity Verification**: Quality checks evaluate the wrap delta by subtracting original adjacent samples across the prepared loop splice. Artificial control discontinuities must fail; there is no absolute near-zero endpoint sample criterion. Tests verify numeric waveforms rather than subjective listening.
+5. **Boundary Continuity Verification**: Computes loop boundary continuity by measuring the wrap delta and subtracting the difference between adjacent samples in the same decoded/resampled buffer at the decoded sample rate, evaluated separately for prepared buffers and rendered output. Artificial control discontinuities must fail; there is no absolute near-zero endpoint sample criterion. Tests verify numeric waveforms rather than subjective listening.
 
 ## Manifest Schema and Coordinates
 
@@ -99,11 +99,7 @@ Loop blending and buffer trimming are executed in the browser via the standalone
   - **Cache & Immutability**:
     - The input `AudioBuffer` is not modified.
     - Employs an internal `WeakMap` cache per module instance. Calling with the same input buffer and playback metadata returns the previously prepared buffer. Passing an already prepared buffer with identical metadata returns itself; passing altered metadata on an already prepared buffer throws. Applications should import the same module URL once, retain prepared buffers, and avoid copying prepared PCM back into raw inputs.
-- `createAudioSource(context, decoded, audio) => AudioBufferSourceNode`:
-  - Calls `prepareAudioBuffer(decoded, audio.playback)`.
-  - Instantiates an unstarted `AudioBufferSourceNode`. Sets `source.buffer = prepared`, `source.loop = audio.loop`, `source.loopStart = 0`, and `source.loopEnd = prepared.duration`.
-  - The decoded buffer sample rate should match the audio context rate. Decode once, prepare once, and reuse the prepared buffer for repeated playback nodes.
-  - Never play raw exported loop files with only `loop = true` or HTML `<audio loop>`; raw files are encoded audio containing full pre-overlap sources and codec padding.
+- `createAudioSource(context, decoded, audio) => AudioBufferSourceNode`: Creates and configures an audio source node. For looping playback, it internally creates and caches an L+1 frame buffer with the final sample set to the first prepared sample for cyclic boundary interpolation, setting `loopStart = 0` and `loopEnd = prepared.duration` (L / sampleRate) to exclude the guard frame. One-shots use the immutable L-frame prepared buffer without a guard frame. Consumers must use this function to configure loop playback and must not overwrite `loopEnd` with `source.buffer.duration`; context and audio sample rates should match.
 
 ## Examples
 

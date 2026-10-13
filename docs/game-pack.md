@@ -187,7 +187,7 @@ Game packs support optional bundled audio declared in pack recipes via `request.
     {
       "path": "sprite-gen-audio-v2.mjs",
       "sha256": "<actual file hash>",
-      "export": "prepareAudioBuffer"
+      "export": "createAudioSource"
     }
     ```
     The `player.sha256` value is the SHA-256 digest computed from the exact shipped bytes of the bundled module.
@@ -196,8 +196,8 @@ Game packs support optional bundled audio declared in pack recipes via `request.
 - **Pack Limits**: All output files (PNG, WebP, JSON, JS modules, OGG, and M4A) count toward `--max-bytes` (default 50,000,000 bytes). Packs containing no audio remain byte-for-byte unchanged.
 - **Web Audio Playback Contract**: Conforms to [W3C Web Audio decodeAudioData](https://www.w3.org/TR/webaudio-1.0/#dom-baseaudiocontext-decodeaudiodata) and [W3C Web Audio looping](https://www.w3.org/TR/webaudio-1.0/#looping).
   - Never play raw exported loop files with only `source.loop = true`; raw files are encoded audio containing complete pre-overlap sources and codec padding. HTML `<audio loop>` cannot guarantee gapless playback.
-  - Decode once via `AudioContext.decodeAudioData`, prepare once via `prepareAudioBuffer` or `createAudioSource`, and reuse prepared buffers.
-  - The runtime helper configures `loopStart = 0` and `loopEnd = prepared.duration` on the prepared `AudioBufferSourceNode`.
+  - `prepareAudioBuffer(decoded, playback)` returns exactly L prepared frames as an immutable, cached source buffer with unchanged frame count, floor-round, and metadata contracts.
+  - Consumers must use `createAudioSource` to configure loop playback using an internally cached L+1 guard buffer, setting `loopEnd = L / sampleRate` which must not be overwritten with `source.buffer.duration`.
 
 ### Web Audio Playback Example
 

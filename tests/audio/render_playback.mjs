@@ -78,7 +78,13 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         check(rejected, 'changed metadata reused prepared audio');
         const ctx=new OfflineAudioContext(2, length*3, rate);
         const source=createAudioSource(ctx,input,{loop:true,playback:meta});
-        check(source.buffer===out && source.loop && source.loopStart===0 && source.loopEnd===out.duration, 'source bypasses preparation');
+        check(source.buffer.length===out.length+1 && source.loop && source.loopStart===0 && source.loopEnd===out.duration, 'source bypasses preparation');
+        check(createAudioSource(ctx,out,{loop:true,playback:meta}).buffer===source.buffer, 'guarded playback buffer was rebuilt');
+        for(let c=0;c<2;c++) {
+          const data=source.buffer.getChannelData(c);
+          check(data[length]===out.getChannelData(c)[0], 'missing cyclic interpolation sample');
+          check(data.subarray(0,length).every((v,i)=>v===out.getChannelData(c)[i]), 'guard changed the prepared samples');
+        }
         source.connect(ctx.destination); source.start();
         const rendered=await ctx.startRendering();
         let maxError=0;
@@ -86,6 +92,31 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           maxError=Math.max(maxError,Math.abs(rendered.getChannelData(c)[i]-out.getChannelData(c)[i%length]));
         }
         check(maxError<1e-7, 'rendered looping differs from prepared buffer');
+        // Choose synthetic lengths on both sides of the duration round-trip.
+        const roundTrips=[];
+        for(const direction of [-1,1]) {
+          let frames=44000;
+          while(frames<45000 && Math.sign((frames/rate)*rate-frames)!==direction) frames++;
+          check(frames<45000, 'duration round-trip counterexample missing');
+          const raw=new AudioBuffer({sampleRate:rate,length:frames+128,numberOfChannels:1});
+          const data=raw.getChannelData(0);
+          for(let i=0;i<data.length;i++) data[i]=.2*Math.cos(2*Math.PI*317*i/rate)+.1;
+          const coordinates={version:2,sample_rate:rate,start_frame:0,end_frame:raw.length,overlap_frames:128};
+          const prepared=prepareAudioBuffer(raw,coordinates);
+          const renderContext=new OfflineAudioContext(1,frames*4,rate);
+          const node=createAudioSource(renderContext,raw,{loop:true,playback:coordinates});
+          node.connect(renderContext.destination);node.start();
+          const samples=(await renderContext.startRendering()).getChannelData(0);
+          const baseline=data[128]-data[127];
+          for(let lap=1;lap<4;lap++) {
+            const at=lap*frames;
+            check((samples[at]-samples[at-1])-baseline===0, 'duration round-trip changed the rendered seam');
+          }
+          let error=0;
+          for(let i=0;i<samples.length;i++) error=Math.max(error,Math.abs(samples[i]-prepared.getChannelData(0)[i%frames]));
+          check(error<1e-7, 'duration round-trip changed the loop samples');
+          roundTrips.push({frames,duration_frames:(frames/rate)*rate,render_error:error});
+        }
         const corrupted = new AudioBuffer({ sampleRate:rate, length, numberOfChannels:2 });
         for(let c=0;c<2;c++) {
           corrupted.copyToChannel(out.getChannelData(c),c);
@@ -108,7 +139,7 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           }
         }
         check(controls===4, 'rendered discontinuity control escaped detection');
-        return { length, count, added_wrap_error:0, added_join_error:0,
+        return { length, count, duration_round_trips:roundTrips, added_wrap_error:0, added_join_error:0,
           controls_detected:controls, control_added_wrap_error:controlError, render_error:maxError,
           wave_decoded_frames:waveDecoded.length, wave_complete_frames:completeFrames, wave_loop_frames:wavePrepared.length };
       }, { code: `data:text/javascript;base64,${moduleBytes.toString('base64')}`, rate });
