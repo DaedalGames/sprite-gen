@@ -24,11 +24,12 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         const check = (ok, message) => { if (!ok) throw new Error(message); };
         // Non-zero origin and a frame count whose independent rounding differs.
         const meta = { version: 2, sample_rate: 48000, start_frame: 13,
-          end_frame: 144014, overlap_frames: 12001 };
+          end_frame: 144019, overlap_frames: 12010 };
         const first = Math.round(meta.start_frame * rate / 48000);
         const n = Math.round((meta.end_frame-meta.start_frame)*rate/48000);
         const length = Math.round((meta.end_frame-meta.start_frame-meta.overlap_frames)*rate/48000);
         const count = n-length;
+        if (rate===44100) check(n-Math.round(meta.overlap_frames*rate/48000)!==length, 'rounding counterexample missing');
         const input = new AudioBuffer({ sampleRate: rate, length: first+n, numberOfChannels: 2 });
         for (let c=0;c<2;c++) {
           const x=input.getChannelData(c);
@@ -52,7 +53,7 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           check(Math.abs((control[0]-control.at(-1))-expected)>.12, 'broken negative control');
         }
         let rejected=false;
-        try { prepareAudioBuffer(out, { ...meta, overlap_frames: 12002 }); } catch { rejected=true; }
+        try { prepareAudioBuffer(out, { ...meta, overlap_frames: 12011 }); } catch { rejected=true; }
         check(rejected, 'changed metadata reused prepared audio');
         const ctx=new OfflineAudioContext(2, length*3, rate);
         const source=createAudioSource(ctx,input,{loop:true,playback:meta});
@@ -64,7 +65,30 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           maxError=Math.max(maxError,Math.abs(rendered.getChannelData(c)[i]-out.getChannelData(c)[i%length]));
         }
         check(maxError<1e-7, 'rendered looping differs from prepared buffer');
-        return { length, count, added_wrap_error:0, added_join_error:0, control_detected:true, render_error:maxError };
+        const corrupted = new AudioBuffer({ sampleRate:rate, length, numberOfChannels:2 });
+        for(let c=0;c<2;c++) {
+          corrupted.copyToChannel(out.getChannelData(c),c);
+          corrupted.getChannelData(c)[0]+=.125;
+        }
+        const controlContext=new OfflineAudioContext(2,length*3,rate);
+        const controlSource=controlContext.createBufferSource();
+        controlSource.buffer=corrupted; controlSource.loop=true;
+        controlSource.loopStart=0; controlSource.loopEnd=corrupted.duration;
+        controlSource.connect(controlContext.destination); controlSource.start();
+        const controlRender=await controlContext.startRendering();
+        let controlError=0, controls=0;
+        for(let c=0;c<2;c++) {
+          const x=input.getChannelData(c), r=controlRender.getChannelData(c);
+          const baseline=x[first+count]-x[first+count-1];
+          for(let lap=1;lap<3;lap++) {
+            const at=lap*length, error=Math.abs((r[at]-r[at-1])-baseline);
+            controlError=Math.max(controlError,error);
+            if(error>.12) controls++;
+          }
+        }
+        check(controls===4, 'rendered discontinuity control escaped detection');
+        return { length, count, added_wrap_error:0, added_join_error:0,
+          controls_detected:controls, control_added_wrap_error:controlError, render_error:maxError };
       }, { code: `data:text/javascript;base64,${moduleBytes.toString('base64')}`, rate });
       reports.push({ browser:name, browser_version:browser.version(), rate, synthetic });
       for (const item of cases) {

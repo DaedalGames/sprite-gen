@@ -13,7 +13,7 @@ sprite-gen game-pack --request game.json --out-dir game-assets
 * `--request <path>`: Path to the request JSON file. Paths within the request resolve relative to the request file directory.
 * `--out-dir <path>`: Target output directory. Must be a new directory path.
 * `--page-size <int>`: Maximum page dimension in pixels. Defaults to `4096`. Lower bound is `1`; cannot exceed `4096`.
-* `--max-bytes <int>`: Total encoded byte budget for all output files (PNG, WebP, JSON, OGG, and M4A combined). Defaults to `50000000` (50 MB). Lower bound is `1`; configurable downward only.
+* `--max-bytes <int>`: Total encoded byte budget for all output files (PNG, WebP, JSON, JS modules, OGG, and M4A combined). Defaults to `50000000` (50 MB). Lower bound is `1`; configurable downward only.
 
 Invalid arguments, missing files, frame dimension overflows, or budget violations exit with a non-zero status.
 
@@ -92,7 +92,7 @@ Source policies and row anchors are preserved by the asset adapter. Optional ent
 * Every frame receives 1-pixel edge extrusion on each side (+2 pixels to width and height). Maximum frame dimension plus 2 pixels must fit within `--page-size`.
 * Trimming and rotation are disabled (`trimmed: false`, `rotated: false`).
 * Each page has PNG and lossless WebP copies (preserving exact RGB and alpha).
-* Total byte size across all PNG, WebP, JSON, OGG, and M4A outputs must not exceed `--max-bytes`.
+* Total byte size across all PNG, WebP, JSON, JS modules, OGG, and M4A outputs must not exceed `--max-bytes`.
 * Layout packing bins assets and frames using stable keys.
 
 ## Output manifest
@@ -168,13 +168,70 @@ Game packs support optional bundled audio declared in pack recipes via `request.
 ```json
 {
   "audio": [
-    { "id": "hit", "source": "../hit/sound.json" }
+    { "id": "music", "source": "../music/sound.json" }
   ]
 }
 ```
 
 ### Integration Rules
-- **Packaging and Manifest**: Pack assembly copies format files flat into the output directory as `audio-<id>.ogg` (Opus, 160 kbps) and `audio-<id>.m4a` (AAC, 192 kbps). The pack manifest preserves audio properties and format file metadata under `manifest.audio[id]`. Refer to [`sound.md`](sound.md) for generation options and full manifest metadata schemas.
-- **Event Linkage**: String matching between audio `event` identifiers and animation `events[].name` provides runtime linkage for consumer engines to match strings. The pack does not enforce that every audio event has an associated animation (such as UI sounds or background music), and does not promise automatic runtime code.
-- **Pack Limits**: Bundled audio file sizes count against the global 50,000,000-byte pack limit. Audio-free pack builds remain byte-for-byte unchanged.
-- **Runtime Playback**: Web Audio uses `loopStart` (`0`) and `loopEnd` (`processed PCM duration`) metadata to exclude padding. HTML audio (such as `<audio loop>`) is not guaranteed gapless.
+- **Packaging and Manifest**: Pack assembly copies format files flat into the output directory as `audio-<id>.ogg` (Opus, 160 kbps) and `audio-<id>.m4a` (AAC, 192 kbps). Output `manifest.audio[id]` contains:
+  - `event`: Safe string event identifier matching animation event names.
+  - `audio_kind`: `"sfx"` or `"bgm"`.
+  - `loop`: Boolean looping flag.
+  - `duration_seconds`: Final prepared playback duration `(end_frame - start_frame - overlap_frames) / sample_rate`.
+  - `target_lufs`: Target integrated loudness.
+  - `playback`: Integer coordinate object (`version`, `sample_rate`, `start_frame`, `end_frame`, `overlap_frames`) preserved exactly from source `sound.json`.
+  - `files`: Format dictionary for `ogg` and `m4a` containing relative paths (`audio-<id>.ogg`, `audio-<id>.m4a`), `sha256`, decoded `duration_seconds`, `lufs`, and `true_peak_dbfs` (`encode_passes` and `pcm_peak_limit_dbtp` exist only in `sound.json` and are stripped on load).
+  - `player`: Runtime helper descriptor:
+    ```json
+    {
+      "path": "sprite-gen-audio-v2.mjs",
+      "sha256": "<actual file hash>",
+      "export": "prepareAudioBuffer"
+    }
+    ```
+    The `player.sha256` value is the SHA-256 digest computed from the exact shipped bytes of the bundled module.
+- **Runtime Helper**: Pack generation emits a single copy of `sprite-gen-audio-v2.mjs` into the pack root. The helper is self-contained with no external imports or dependencies. The canonical buffer preparation logic resides strictly in this helper; consumers must not duplicate blending logic.
+- **Event Linkage**: String matching between audio `event` identifiers and animation `events[].name` provides runtime linkage for consumer engines. The pack does not require an animation for every audio asset (such as background music or UI sound effects) and emits no runtime game glue code.
+- **Pack Limits**: All output files (PNG, WebP, JSON, JS modules, OGG, and M4A) count toward `--max-bytes` (default 50,000,000 bytes). Packs containing no audio remain byte-for-byte unchanged.
+- **Web Audio Playback Contract**: Conforms to [W3C Web Audio decodeAudioData](https://www.w3.org/TR/webaudio-1.0/#dom-baseaudiocontext-decodeaudiodata) and [W3C Web Audio looping](https://www.w3.org/TR/webaudio-1.0/#looping).
+  - Never play raw exported loop files with only `source.loop = true`; raw files are encoded audio containing complete pre-overlap sources and codec padding. HTML `<audio loop>` cannot guarantee gapless playback.
+  - Decode once via `AudioContext.decodeAudioData`, prepare once via `prepareAudioBuffer` or `createAudioSource`, and reuse prepared buffers.
+  - The runtime helper configures `loopStart = 0` and `loopEnd = prepared.duration` on the prepared `AudioBufferSourceNode`.
+
+### Web Audio Playback Example
+
+```javascript
+// Playback must be initiated by a user gesture
+button.addEventListener('click', async () => {
+  const audioContext = new AudioContext();
+  await audioContext.resume();
+
+  // Load pack manifest
+  const packURL = new URL('game-pack.json', import.meta.url);
+  const packResponse = await fetch(packURL);
+  const pack = await packResponse.json();
+
+  // Inspect audio asset and import bundled runtime helper
+  const audio = pack.audio.music;
+  const helperURL = new URL(audio.player.path, packURL).href;
+  const { createAudioSource } = await import(helperURL);
+
+  // Caller selects supported format (e.g. m4a or ogg)
+  const formatKey = 'm4a';
+  const audioFile = audio.files[formatKey];
+  const audioFileURL = new URL(audioFile.path, packURL);
+
+  // Fetch and decode full source encoded audio file
+  const fileResponse = await fetch(audioFileURL);
+  const arrayBuffer = await fileResponse.arrayBuffer();
+  const decoded = await audioContext.decodeAudioData(arrayBuffer);
+
+  // Create configured, unstarted AudioBufferSourceNode
+  const sourceNode = createAudioSource(audioContext, decoded, audio);
+  sourceNode.connect(audioContext.destination);
+
+  // Start playback
+  sourceNode.start();
+});
+```

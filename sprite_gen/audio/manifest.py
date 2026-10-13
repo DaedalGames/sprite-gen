@@ -32,7 +32,7 @@ def load(path, max_bytes):
         raise ValueError('invalid audio kind or loop flag')
     frames = playback.validate(value.get('playback'), value['loop'])
     duration = playback.duration(frames)
-    if value.get('duration_seconds') != duration:
+    if _number(value.get('duration_seconds'), 'duration', 0, 601) != duration:
         raise ValueError('audio duration must be derived from playback frames')
     result = {'event': event_name(value.get('event')), 'audio_kind': value['audio_kind'], 'loop': value['loop'],
               'duration_seconds': duration, 'target_lufs': _number(value.get('target_lufs'), 'target LUFS', -36, -9),
@@ -56,7 +56,7 @@ def load(path, max_bytes):
         if hashlib.sha256(data).hexdigest() != file.get('sha256'):
             raise ValueError('audio file digest does not match its manifest')
         record = {'path': name, 'sha256': file['sha256'],
-                  'duration_seconds': _number(file.get('duration_seconds'), 'file duration', frames['end_frame']/frames['sample_rate']-2/frames['sample_rate'], 602),
+                  'duration_seconds': _number(file.get('duration_seconds'), 'file duration', frames['end_frame']/frames['sample_rate'], 602),
                   'lufs': _number(file.get('lufs'), 'LUFS', -70, 0),
                   'true_peak_dbfs': _number(file.get('true_peak_dbfs'), 'true peak', -100, -1)}
         if abs(record['lufs'] - result['target_lufs']) > 1:

@@ -35,50 +35,99 @@ Raw paid audio is stored in SQLite keyed by provider parameter digest. Tuning `-
 
 ## Audio DSP, Looping, and Quality Gates
 
-1. **Cosine Looping**: Blends tail and head with complementary cosine crossfade, subtracting overlap from provider length (default `min(0.25, requested_duration/8)`, under half source duration; 20s BGM yields ~19.75s). Cosine tail/head overlap is followed by a 5ms cosine taper to zero at both outer boundaries to suppress codec priming discontinuities; duration is not shortened further.
-2. **Normalization**: Two-pass [FFmpeg Loudnorm](https://ffmpeg.org/ffmpeg-filters.html#loudnorm) targets -2 dBTP with repeating loop context. At most three per-format encode/measure passes correct codec reconstruction overshoot using measured gain and a tighter oversampled [FFmpeg Alimiter](https://ffmpeg.org/ffmpeg-filters.html#alimiter) (192kHz, auto-gain off, latency compensated); all passes are offline and never trigger provider retries.
-3. **Quality Gates**: Output formats must decode to target +/-1 LU and true peak <=-1 dBTP. Silence or unmeasurable audio fails. Numeric checks do not judge musical beat alignment.
-4. **Export Formats**: Outputs 48kHz stereo Opus in OGG (`sound.ogg`, `libopus`, 160 kbps) and AAC in M4A (`sound.m4a`, `aac`, 192 kbps).
-5. **Playback**: Web Audio uses `loopStart` (`0`) and `loopEnd` (`processed PCM duration`) on decoded `AudioBuffer` to exclude padding; HTML audio (such as `<audio loop>`) is not guaranteed gapless.
+1. **Export and Normalization**: Provider audio decodes to 48kHz stereo PCM. Normalization uses two-pass [FFmpeg Loudnorm](https://ffmpeg.org/ffmpeg-filters.html#loudnorm) targeting -2 dBTP with repeating loop context. Up to three per-format offline encode/measure passes correct codec reconstruction overshoot using measured gain and tighter oversampled [FFmpeg Alimiter](https://ffmpeg.org/ffmpeg-filters.html#alimiter) (192kHz, auto-gain off, latency compensated) without triggering provider retries.
+2. **Export Formats**: Outputs complete normalized audio in 48kHz stereo Opus in OGG (`sound.ogg`, `libopus`, 160 kbps) and AAC in M4A (`sound.m4a`, `aac`, 192 kbps). Export files remove all pre-encode crossfades, loop splices, and 5ms boundary zero-tapers; the complete normalized source is preserved intact in encoded audio.
+3. **Quality Gates**: Output formats must decode to the integrated loudness target within +/-1 LU and true peak <= -1 dBTP. Silence or unmeasurable audio fails. Numeric checks do not judge musical beat alignment.
+4. **Looping and Playback Quality**: Crossfading is deferred to runtime preparation. Because playback overlap blending can alter loudness, applications must validate prepared and rendered audio output. No claim is made that all signals are perceptually seamless or beat aligned.
+5. **Boundary Continuity Verification**: Quality checks evaluate the wrap delta by subtracting original adjacent samples across the prepared loop splice. Artificial control discontinuities must fail; there is no absolute near-zero endpoint sample criterion. Tests verify numeric waveforms rather than subjective listening.
 
-## Manifest Schema and Pack Integration
+## Manifest Schema and Coordinates
 
-Outputs `sound.json` (v1, `kind="sprite-gen-sound"`): `event`, `audio_kind`, `loop`, `duration_seconds`, `target_lufs`, `codec_taper_seconds` (0.005 for loops, 0 for nonloops), `loop_start_seconds` (0), `loop_end_seconds` (processed PCM duration), and `files` (`ogg` and `m4a` entries with `path`, decoded `duration_seconds`, `lufs`, `true_peak_dbfs` [true peak dBTP], `sha256`, `encode_passes`, `pcm_peak_limit_dbtp`).
+Outputs `sound.json` (version 2, `kind="sprite-gen-sound"`, `recipe.processing_version=2`). Existing output directories generated with prior recipe versions are rejected; specify a new `--out-dir`. Unchanged provider cache entries are reused offline without API keys or network requests. Provider APIs, caching, and retry behaviors remain unchanged.
 
-Game pack recipes reference audio via `request.audio = [{"id": "hit", "source": "../hit/sound.json"}]`:
-- Files copy flat as `audio-<id>.ogg` and `audio-<id>.m4a`; `manifest.audio[id]` preserves properties and metadata.
-- Consumers match `event` strings against animation `events[].name` (packs require no animation for UI/music and generate no runtime code).
-- Audio sizes count toward the 50,000,000-byte pack limit; audio-free packages remain unchanged.
+### Manifest Properties
+
+- `event`: Safe string identifier (1..128 characters).
+- `audio_kind`: `"sfx"` or `"bgm"`.
+- `loop`: Boolean looping flag.
+- `duration_seconds`: Final playback duration in seconds, derived as `(end_frame - start_frame - overlap_frames) / sample_rate` (for example, `(144000 - 12000) / 48000 = 2.75` s).
+- `target_lufs`: Target integrated loudness in LUFS (`-36..-9`).
+- `playback`: Integer coordinate object governing client-side preparation:
+  ```json
+  {
+    "version": 2,
+    "sample_rate": 48000,
+    "start_frame": 0,
+    "end_frame": 144000,
+    "overlap_frames": 12000
+  }
+  ```
+  - Coordinates refer to the complete exported pre-overlap PCM source at `sample_rate` (48000 Hz, independent of provider container sample rate) over the half-open interval `[start_frame, end_frame)`.
+  - Let `N = end_frame - start_frame` and `M = overlap_frames`.
+  - For non-looping audio (`loop: false`), `M = 0`.
+  - For looping audio (`loop: true`), `2 <= M < N / 2`.
+  - Manifest `duration_seconds` is `(N - M) / sample_rate`.
+  - The CLI `--crossfade` parameter (seconds) is converted to integer frame count `M`, defaulting to `min(0.25, requested_duration / 8)`.
+- `files`: Format dictionary for `ogg` and `m4a` containing `path`, decoded `duration_seconds` (full decoded file duration, which may include codec priming/tail padding), `lufs`, `true_peak_dbfs`, `sha256`, `encode_passes`, and `pcm_peak_limit_dbtp`.
+- **Removed Fields**: `codec_taper_seconds`, `loop_start_seconds`, `loop_end_seconds`, and `crossfade_seconds` are removed from output manifest metadata (the recipe still accepts `--crossfade` in seconds).
+
+## Client Playback Helper: sprite-gen-audio-v2.mjs
+
+Loop blending and buffer trimming are executed in the browser via the standalone ES module `sprite-gen-audio-v2.mjs` (owned by the engine under `sprite_gen/audio`, bundled in wheels and emitted into game packs). The helper has no external imports or dependencies. The canonical algorithm resides solely in this module and must not be duplicated into consumer application code.
+
+### Export Signatures
+
+- `prepareAudioBuffer(decoded, playback) => AudioBuffer`:
+  - Maps playback coordinates to decoded sample rate `r` (`decoded.sampleRate`):
+    - `first = Math.round(start_frame * r / sample_rate)`
+    - `N' = Math.round(N * r / sample_rate)`
+    - `L' = Math.round((N - M) * r / sample_rate)`
+    - `M' = N' - L'`
+    - `last = first + N'`
+  - Rounding uses standard JavaScript `Math.round` (positive ties round upward toward `+Infinity`). Coordinates are not clamped to `decoded.length`; truncated inputs throw an error.
+  - Constructs output of length `L'` by slicing `source[first + M' : last - M']` and blending tail `M'` with head `M'` using complementary cosine weights `0.5 - 0.5 * Math.cos(Math.PI * i / (M' - 1))`.
+  - For non-looping audio (`M = 0`), trims the buffer to `[first : last]` with length `L' = N'`.
+  - The input `AudioBuffer` is not modified.
+  - Employs an internal `WeakMap` cache per module instance. Calling with the same input buffer and playback metadata returns the previously prepared buffer. Passing an already prepared buffer with identical metadata returns itself; passing altered metadata on an already prepared buffer throws. Applications should import the same module URL once, retain prepared buffers, and avoid copying prepared PCM back into raw inputs.
+- `createAudioSource(context, decoded, audio) => AudioBufferSourceNode`:
+  - Calls `prepareAudioBuffer(decoded, audio.playback)`.
+  - Instantiates an unstarted `AudioBufferSourceNode`. Sets `source.buffer = prepared`, `source.loop = audio.loop`, `source.loopStart = 0`, and `source.loopEnd = prepared.duration`.
+  - The decoded buffer sample rate should match the audio context rate. Decode once, prepare once, and reuse the prepared buffer for repeated playback nodes.
+  - Never play raw exported loop files with only `loop = true` or HTML `<audio loop>`; raw files are encoded audio containing full pre-overlap sources and codec padding.
 
 ## Examples
 
 ```bash
-sprite-gen sound --kind sfx --prompt "laser" --duration 0.8 --event laser:shot --out-dir ./dist/laser
-sprite-gen sound --kind bgm --prompt "synth cave" --duration 20.0 --event cave:bgm --out-dir ./dist/cave
+sprite-gen sound --kind sfx --prompt "laser shot" --duration 0.8 --event laser:shot --out-dir ./dist/laser
+sprite-gen sound --kind bgm --prompt "synth cave" --duration 20.0 --event cave:bgm --crossfade 0.25 --out-dir ./dist/cave
 ```
 
-### Manifest Audio Fragment (Partial)
+### Manifest Audio Fragment (`sound.json`, Partial)
+
 ```json
 {
-  "audio": {
-    "hit": {
-      "event": "hit",
-      "audio_kind": "sfx",
-      "loop": false,
-      "duration_seconds": 1.25,
-      "target_lufs": -18.0,
-      "loop_start_seconds": 0.0,
-      "loop_end_seconds": 1.25,
-      "files": {
-        "ogg": { "path": "audio-hit.ogg" },
-        "m4a": { "path": "audio-hit.m4a" }
-      }
-    }
+  "kind": "sprite-gen-sound",
+  "version": 2,
+  "event": "cave:bgm",
+  "audio_kind": "bgm",
+  "loop": true,
+  "duration_seconds": 19.75,
+  "target_lufs": -20.0,
+  "playback": {
+    "version": 2,
+    "sample_rate": 48000,
+    "start_frame": 0,
+    "end_frame": 960000,
+    "overlap_frames": 12000
+  },
+  "files": {
+    "ogg": { "path": "sound.ogg" },
+    "m4a": { "path": "sound.m4a" }
   }
 }
 ```
 
-## References (Checked 2026-10-13)
+## References
 - [ElevenLabs SFX](https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert)
 - [ElevenLabs Music](https://elevenlabs.io/docs/api-reference/music/compose)
 - [ElevenLabs 429 Errors](https://elevenlabs.io/docs/help-center/technical/api-error-code-429)
@@ -87,3 +136,5 @@ sprite-gen sound --kind bgm --prompt "synth cave" --duration 20.0 --event cave:b
 - [ElevenLabs Subscription](https://elevenlabs.io/docs/api-reference/user/subscription/get)
 - [FFmpeg Loudnorm](https://ffmpeg.org/ffmpeg-filters.html#loudnorm)
 - [FFmpeg Alimiter](https://ffmpeg.org/ffmpeg-filters.html#alimiter)
+- [W3C Web Audio decodeAudioData](https://www.w3.org/TR/webaudio-1.0/#dom-baseaudiocontext-decodeaudiodata)
+- [W3C Web Audio looping](https://www.w3.org/TR/webaudio-1.0/#looping)

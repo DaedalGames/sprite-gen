@@ -111,7 +111,7 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
         for attempt in range(3):
             _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], encoded_samples.astype('<f4').tobytes())
             decoded = decode(path)
-            if len(decoded) < len(samples) - 2:
+            if len(decoded) < len(samples):
                 raise ValueError(f'{fmt} truncated the audio')
             interval = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
             measured = measure(np.tile(interval, (3, 1)) if loop else interval, target_lufs)

@@ -4,6 +4,8 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+- Upgraded sound generation and game-pack audio integration to version 2: removed file-level crossfades and boundary tapers in favor of complete normalized exports with integer frame `playback` coordinates, removed legacy loop seconds and taper metadata, and bundled standalone runtime helper `sprite-gen-audio-v2.mjs` for Web Audio loop preparation.
+
 - Added `sprite-gen sound` CLI and game-pack audio integration for ElevenLabs SFX/BGM generation, featuring SQLite request deduplication, cosine loop crossfading, multi-pass FFmpeg loudnorm/alimiter normalization, dual Opus/AAC encoding, and Web Audio loop boundary metadata.
 
 - Added `--cycle once` nonloop motion support with automatic selection for `death`, `fall`, `land`, `cast`, `hurt_hold`, and `transform`, rejection on cyclic states, no seam gate or wrap correction, and a terminal stability gate searching the whole clip for the first stable terminal window ($K = \max(4, \lceil\text{fps} \times 0.2\rceil)$) after action departure (ending at window end, discarding later recovery or shaking), with conservative candidate end pose geometric screening (alpha >= 8 body boxes; height <= 80% of initial for `death`/`fall`, changed geometry for other states) and retained cut edge contact validation (ignoring discarded tail).

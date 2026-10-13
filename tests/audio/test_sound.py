@@ -129,6 +129,9 @@ def test_short_effect_and_loop_encoded_playback(tmp_path, monkeypatch, kind, dur
                     'end_frame': round(duration*48000), 'overlap_frames': 12000 if loop else 0}
     assert result['duration_seconds'] == (meta['end_frame']-meta['overlap_frames'])/48000
     assert 'loop_end_seconds' not in result and 'codec_taper_seconds' not in result
+    for file in result['files'].values():
+        assert file['duration_seconds'] >= duration
+        assert len(processing.decode(tmp_path/'out'/file['path'])) >= meta['end_frame']
 
 
 def test_preflight_does_not_claim_and_cached_source_works_without_key(tmp_path, monkeypatch):
