@@ -72,3 +72,24 @@ def empty_end(canvas_path: Path, out: Path) -> Path:
         blank = Image.new("RGB", source.size, (0, 0, 0))
     blank.save(out)
     return out
+
+
+def frame_masses(files: list[Path]) -> np.ndarray:
+    """Full-resolution emitted coverage; thumbnails can erase a dim isolated spark."""
+    values = []
+    for path in files:
+        with Image.open(path) as image:
+            values.append(float(np.asarray(image.convert("RGBA").getchannel("A"), dtype=np.float64).mean() / 255))
+    return np.array(values)
+
+
+def lifetime_ending(D: np.ndarray, masses: np.ndarray, fps: float) -> tuple[int, int, dict[str, Any]]:
+    """The same single-play cutter's terminal condition: visible light followed by actual emptiness."""
+    active = np.flatnonzero(masses > 0)
+    if not len(active):
+        raise ValueError("lifetime is entirely empty; no effect appeared")
+    if masses[-1] > 0:
+        raise ValueError("lifetime has no empty end frame; regenerate with an empty black end-frame pin")
+    start, end = max(0, int(active[0]) - 1), int(active[-1]) + 1
+    return start, end, {"kind": "empty", "frames": len(masses) - end,
+                        "start": end, "peak_frame": int(np.argmax(masses)), "alpha_max": 0}
