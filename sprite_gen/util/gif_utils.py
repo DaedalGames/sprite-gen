@@ -49,7 +49,7 @@ def save_clean_gif(
     output_path: Path,
     *,
     duration_ms: int,
-    loop: int = 0,
+    loop: int | None = 0,
     alpha_threshold: int = 8,
 ) -> None:
     """Save RGBA frames as a clean transparent GIF.
@@ -67,7 +67,7 @@ def save_clean_gif(
         save_all=True,
         append_images=prepared[1:],
         duration=duration_ms,
-        loop=loop,
+        **({"loop": loop} if loop is not None else {}),
         disposal=2,
         transparency=255,
     )

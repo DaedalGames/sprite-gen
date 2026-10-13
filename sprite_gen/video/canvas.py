@@ -78,6 +78,12 @@ STATE_CANVAS: dict[str, CanvasProfile] = {
     "cheer": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "arms raised and spread leave a 1:1 frame"),
     "wave": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "a raised waving arm leaves a 1:1 frame"),
     "celebrate": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "same envelope as cheer"),
+    "death": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the death terminal pose"),
+    "fall": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the fall terminal pose"),
+    "land": CanvasProfile(SHAPE_TALL, 3 / 4, 0.34, 0.0, 0.0, "room for the land terminal pose"),
+    "cast": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the cast terminal pose"),
+    "hurt_hold": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the hurt_hold terminal pose"),
+    "transform": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the transform terminal pose"),
     "default": CanvasProfile(SHAPE_SQUARE, 1.0, 0.0, 0.0, 0.0, "in-place motion fits the still's own frame"),
 }
 # `--shape wide` is not the attack row. It is forced on a state whose own row is

@@ -14,6 +14,7 @@ item that failed is listed with its stage and error, never silently dropped.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -39,6 +40,7 @@ from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
+from sprite_gen.video import nonloop
 
 START_GAP_SECONDS = 2.0
 # Clip length the batch asks the video model for. 3 s holds two or more cycles of every
@@ -436,13 +438,17 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
     validate_facing(facing)
     view = VIEW_TEXT.get(direction, f"seen from the {direction}").format(facing=facing)
     turned = facing if direction in handed_mod.LATERAL_VIEWS else None
-    if state in ACTION_TEXT_STATES:
+    if state in nonloop.STATES:
+        template = "2D game sprite animation. The character {motion} The character is {view}. " + nonloop.COMMON_TEXT
+    elif state in ACTION_TEXT_STATES:
         template = ACTION_COMMON_TEXT
     elif (state in PINNED_LOOP_STATES or (state in GAIT_STATES and direction in PINNED_GAIT_VIEWS)) if pinned is None else pinned:
         template = PINNED_LOOP_TEXT
     else:
         template = COMMON_TEXT
     stands_on = body_mod.text(body_plan)
+    if state in nonloop.STATES and body_plan:
+        stands_on = " ".join((b.figure + ": " if b.figure else "") + nonloop.ANATOMY_TEXT.get(b.plan, "") for b in body_plan).strip()
     stands_on = f" {stands_on}" if stands_on else ""
     if direction == "back" and state in GAIT_STATES and not body_mod.biped(body_plan):
         stands_on += f" {BACK_GAIT_TEXT_ANY_BODY['scene' if body_mod.scene(body_plan) else 'one']}"
@@ -464,6 +470,7 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
         built_in = (VIEW_MOTION_TEXT[(state, direction)].format(facing=facing) if (state, direction) in VIEW_MOTION_TEXT
                     else IDLE_TEXT_ANY_BODY if state == "idle" and not body_mod.biped(body_plan)
                     else ATTACK_TEXT_ANY_BODY if state == "attack" and not body_mod.biped(body_plan)
+                    else nonloop.MOTION_TEXT[state] if state in nonloop.STATES
                     else MOTION_TEXT.get(state, f"performs the '{state}' action in place, repeating at an even rhythm."))
         text = template.format(motion=built_in + stands_on, view=view)
         text = ((text.replace("The character", character, 1) if character else text)
@@ -655,7 +662,12 @@ def run_item(
     still_provider: str | None = None,
     handed: list[Handed] | None = None,
     body_plan: list[Body] | None = None,
+    end_frame: Path | None = None,
 ) -> dict[str, Any]:
+    if end_frame is not None and state not in nonloop.STATES:
+        raise SystemExit("video-set: --end-frame requires a non-loop state")
+    if state in nonloop.STATES and (fit == "tight" or anchor != "none"):
+        raise SystemExit("video-set: non-loop states need --fit state and --anchor none to preserve the terminal pose")
     if walk_start not in WALK_START_MODES:
         raise SystemExit(f"video-set: --walk-start must be one of {', '.join(WALK_START_MODES)}")
     if anchor == "motion-auto" and not loop_mod.profile_for(state).gait:
@@ -681,6 +693,7 @@ def run_item(
                                              gait=state in GAIT_STATES)
         if needs:
             result["still_needs"] = needs
+        end_digest = hashlib.sha256(end_frame.read_bytes()).hexdigest() if end_frame is not None else None
         clip = item_dir / "clip.mp4"
         clip_report = item_dir / "clip.report.json"
         reuse_clip = clip.exists() and clip_report.exists() and not force
@@ -689,6 +702,8 @@ def run_item(
                 previous = json.loads(clip_report.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 raise SystemExit("cannot verify cached clip prompt; use --force to regenerate") from exc
+            if state in nonloop.STATES and isinstance(previous, dict) and previous.get("end_frame_sha256") != end_digest:
+                raise SystemExit("cached clip end frame differs; use --force to regenerate")
             if not isinstance(previous, dict) or previous.get("prompt") != prompt:
                 raise SystemExit("cached clip prompt differs (including facing); use --force to regenerate")
         canvas_png = item_dir / "canvas.png"
@@ -739,11 +754,20 @@ def run_item(
             # would be a second retry loop on top of the first, each of its POSTs a request.
             _staggered_start(gap)
             pin = {"last_frame": canvas_png} if pins_last_frame(state, direction) else {}
+            if end_frame is not None:
+                with Image.open(end_frame) as final, Image.open(canvas_png) as initial:
+                    if final.size != initial.size or canvas_mod.corner_key(final) != canvas_mod.corner_key(initial):
+                        raise SystemExit("video-set: end frame must match the start canvas size and background key")
+                pin = {"last_frame": end_frame}
             attempts = [video_runner(canvas_png, prompt, clip, clip_report, duration=duration, resolution=resolution,
                                      log=item_dir / "clip.log", **pin)]
-            result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": pins_last_frame(state, direction)}
+            result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": str(end_frame) if end_frame is not None else pins_last_frame(state, direction)}
             if attempts[-1] != 0 or not clip.exists():
                 raise SystemExit(f"clip generation failed after {len(attempts)} attempt(s); see {item_dir / 'clip.log'}")
+            if end_digest is not None:
+                generated = json.loads(clip_report.read_text())
+                generated["end_frame_sha256"] = end_digest
+                atomic_write_text(clip_report, json.dumps(generated, ensure_ascii=False, indent=2) + "\n")
 
         # a tight frame is clipped on purpose; leftover key background still fails. The default
         # call keeps its pre-decontam signature, so a stand-in for run_frames still fits
@@ -752,7 +776,7 @@ def run_item(
         result["frames"] = {k: fr[k] for k in ("fps", "frames", "alpha_zero_pct_min", "alpha_zero_pct_max")}
         result["frames"]["spill"] = fr.get("spill", {}).get("mode")
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
-                               cycle_mode="pinned" if state in PINNED_LOOP_STATES else "auto",
+                               cycle_mode="once" if state in nonloop.STATES else "pinned" if state in PINNED_LOOP_STATES else "auto",
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right")
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
@@ -938,7 +962,7 @@ def write_table(results: list[dict[str, Any]], path: Path, *, both: bool = False
                 status += " (jump not repaired: no RIFE)"
             # a cut whose steps are known is two of them; one the step screen suspects may be one
             cycle = f"{lp['cycle']}" + (f" ({lp['steps']} steps)" if lp.get("steps") else " (one step?)" if lp.get("step_screen") else "")
-            lines.append(f"| {_view_label(r, both)} | {r['state']} | {lp.get('kind', 'periodic')} | {cycle} | {lp['period'] if lp['period'] is not None else '-'} | {lp['seam_ratio']:.2f} | {lp['n_out']} | {status} |")
+            lines.append(f"| {_view_label(r, both)} | {r['state']} | {lp.get('kind', 'periodic')} | {cycle} | {lp['period'] if lp['period'] is not None else '-'} | {format(lp['seam_ratio'], '.2f') if lp['seam_ratio'] is not None else '-'} | {lp['n_out']} | {status} |")
         else:
             lines.append(f"| {_view_label(r, both)} | {r['state']} | - | - | - | - | - | FAIL: {r.get('error', '')[:80]} |")
     text = "\n".join(lines) + "\n"
@@ -976,6 +1000,7 @@ def run_set(
     handed: list[Handed] | None = None,
     align_feet: dict[str, str] | None = None,
     body_plan: list[Body] | None = None,
+    end_frames: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """`bases` maps a view to its still; `facing` is right, left or `right,left` (`facings_of`), and a view filmed
     both ways is keyed `view@right` and `view@left` (`resolve_bases`). `handed` (`handedness.parse`) puts each
@@ -1004,6 +1029,12 @@ def run_set(
             raise SystemExit(f"video-set: base still for '{direction}' not found: {base}")
     # (item, direction, state, facing, base); a set filmed both ways names a lateral item's facing
     items = [(f"{d}-{f}-{s}" if both and f else f"{d}-{s}", d, s, f or facings[0], b) for d, f, b in views for s in states]
+    for item, path in (end_frames or {}).items():
+        selected = [state for name, _, state, _, _ in items if name == item]
+        if not selected or selected[0] not in nonloop.STATES or not path.is_file():
+            raise SystemExit(f"video-set: --end-frame {item} needs a non-loop item and an existing image")
+    if any(s in nonloop.STATES for s in states) and (fit == "tight" or anchor != "none"):
+        raise SystemExit("video-set: non-loop states need --fit state and --anchor none")
     aligned_items = [i for i, _, s, _, _ in items if align_cycles == "auto" and loop_mod.profile_for(s).gait
                      and sum(1 for _, _, s2, _, _ in items if s2 == s) >= 2]
     for item, foot in (align_feet or {}).items():
@@ -1027,7 +1058,7 @@ def run_set(
         return prepare_side
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan): i for i, d, s, f, b in items}
+        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {})): i for i, d, s, f, b in items}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
@@ -1069,12 +1100,23 @@ def _parse_bases(values: list[str]) -> dict[str, Path]:
     return bases
 
 
+def _parse_end_frames(values: list[str]) -> dict[str, Path]:
+    result = {}
+    for value in values:
+        item, sep, path = value.partition("=")
+        if not sep or not item or not path or item in result:
+            raise SystemExit("video-set: --end-frame expects each ITEM=PATH once")
+        result[item] = Path(path).expanduser().resolve()
+    return result
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base", action="append", default=[], help="direction=still.png (repeatable: side=..., front=..., back=...); filmed facing right,left, a side or diagonal view takes one still per facing: side@right=..., side@left=...")
     parser.add_argument("--facing", default="right", help="which way the side and diagonal views face, for both prompt and canvas: right (default), left, or right,left to film each of them both ways from a still drawn each way (no mirroring); ignored for front/back")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="side inputs: record only (none, default), or opt into mirror (refused with --handed)")
     parser.add_argument("--handed", action="append", default=[], metavar="ITEM=SIDE [PART]", help="an asymmetric item on one of the character's own sides, e.g. 'the black smartwatch=left wrist' (repeatable): every clip prompt says where it is in its view and that it stays there")
     parser.add_argument("--body-plan", action="append", default=[], metavar="PLAN | FIGURE=PLAN", help="what the character stands on: biped (default), quadruped or legless; a scene of several figures names each, e.g. 'the man=biped' 'the horse=quadruped' (repeatable): no prompt names a part the body lacks")
+    parser.add_argument("--end-frame", action="append", default=[], metavar="ITEM=PATH", help="non-loop item: terminal-pose canvas with the same size and key as the starting canvas (repeatable)")
     parser.add_argument("--states", default="idle,walk,run,jump,attack", help="comma list of motion states")
     parser.add_argument("--out-dir", required=True, type=Path, help="batch root; one folder per direction-state")
     parser.add_argument("--character", help="short subject phrase used in the prompts (e.g. 'The armored knight')")
@@ -1102,6 +1144,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(**kwargs: object) -> int:
     payload = run_set(
+        end_frames=_parse_end_frames(list(kwargs.get("end_frame") or [])),
         bases=_parse_bases(list(kwargs.get("base") or [])),  # type: ignore[arg-type]
         states=[s.strip() for s in str(kwargs.get("states") or "").split(",") if s.strip()],
         root=Path(str(kwargs["out_dir"])), character=kwargs.get("character"),  # type: ignore[arg-type]
