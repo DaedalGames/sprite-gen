@@ -14,6 +14,7 @@ item that failed is listed with its stage and error, never silently dropped.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -692,6 +693,7 @@ def run_item(
                                              gait=state in GAIT_STATES)
         if needs:
             result["still_needs"] = needs
+        end_digest = hashlib.sha256(end_frame.read_bytes()).hexdigest() if end_frame is not None else None
         clip = item_dir / "clip.mp4"
         clip_report = item_dir / "clip.report.json"
         reuse_clip = clip.exists() and clip_report.exists() and not force
@@ -700,6 +702,8 @@ def run_item(
                 previous = json.loads(clip_report.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 raise SystemExit("cannot verify cached clip prompt; use --force to regenerate") from exc
+            if state in nonloop.STATES and isinstance(previous, dict) and previous.get("end_frame_sha256") != end_digest:
+                raise SystemExit("cached clip end frame differs; use --force to regenerate")
             if not isinstance(previous, dict) or previous.get("prompt") != prompt:
                 raise SystemExit("cached clip prompt differs (including facing); use --force to regenerate")
         canvas_png = item_dir / "canvas.png"
@@ -760,6 +764,10 @@ def run_item(
             result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": str(end_frame) if end_frame is not None else pins_last_frame(state, direction)}
             if attempts[-1] != 0 or not clip.exists():
                 raise SystemExit(f"clip generation failed after {len(attempts)} attempt(s); see {item_dir / 'clip.log'}")
+            if end_digest is not None:
+                generated = json.loads(clip_report.read_text())
+                generated["end_frame_sha256"] = end_digest
+                atomic_write_text(clip_report, json.dumps(generated, ensure_ascii=False, indent=2) + "\n")
 
         # a tight frame is clipped on purpose; leftover key background still fails. The default
         # call keeps its pre-decontam signature, so a stand-in for run_frames still fits

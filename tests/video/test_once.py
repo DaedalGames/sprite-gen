@@ -84,3 +84,59 @@ def test_end_pose_input_is_distinct_from_first_frame_pin():
         clip_prompt.plan_prompt(direction="side", state="death", end_frame=Path("final.png"), last_frame=False)
     with pytest.raises(SystemExit, match="non-loop"):
         clip_prompt.plan_prompt(direction="side", state="idle", end_frame=Path("final.png"))
+
+
+def test_terminal_gate_rejects_still_and_accumulated_drift():
+    import numpy as np
+    from sprite_gen.video.nonloop import select_cut
+    with pytest.raises(ValueError, match="performed action"):
+        select_cut(np.zeros((30, 30)), np.ones(30), fps=24)
+    # Every tail step is under 2.5%, but five steps slowly drift by 4%.
+    values = np.r_[np.linspace(0, 1, 25), np.linspace(1, 1.04, 5)]
+    with pytest.raises(ValueError, match="stable"):
+        select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24)
+
+
+def test_batch_sends_terminal_pin_and_does_not_reuse_a_changed_pin(tmp_path, monkeypatch):
+    seen = []
+    base = tmp_path / "base.png"
+    Image.new("RGB", (32, 32), (0, 255, 0)).save(base)
+    final = tmp_path / "final.png"
+    Image.open(base).save(final)
+
+    def canvas_stub(still, out, **kw):
+        Image.open(base).save(out)
+        report = {"fit": "state", "shape": "wide", "canvas": [32, 32], "offset": [0, 0]}
+        kw["report_path"].write_text(json.dumps(report))
+        return report
+
+    def video_stub(image, prompt, out, report, **kw):
+        seen.append(kw["last_frame"])
+        out.write_bytes(b"clip")
+        report.write_text(json.dumps({"prompt": prompt}))
+        return 0
+
+    def frames_stub(clip, out, **kw):
+        assert not kw["allow_edge_contact"] and not kw["allow_subject_edge_contact"]
+        return {"fps": 24, "frames": 24, "alpha_zero_pct_min": 0, "alpha_zero_pct_max": 0, "keyed_dir": str(out)}
+
+    def loop_stub(frames, out, **kw):
+        assert kw["cycle_mode"] == "once" and kw["anchor"] == "none"
+        return {"cycle": {"kind": "once", "length": 24, "period_global": None, "ratio": 0},
+                "resampled_seam_ratio": None, "n_out": 24, "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s"}}
+
+    monkeypatch.setattr(batch.canvas_mod, "run_canvas", canvas_stub)
+    monkeypatch.setattr(batch.frames_mod, "run_frames", frames_stub)
+    monkeypatch.setattr(batch.loop_mod, "run_loop", loop_stub)
+    args = dict(bases={"front": base}, states=["death"], root=tmp_path / "set", character=None,
+                duration=None, resolution="480p", key="green", concurrency=1, force=False, gap=0,
+                video_runner=video_stub, end_frames={"front-death": final})
+    assert batch.run_set(**args)["ok"] == 1
+    assert seen == [final]
+    assert batch.run_set(**args)["ok"] == 1
+    assert seen == [final]
+    changed = Image.open(final)
+    changed.putpixel((16, 16), (255, 0, 0))
+    changed.save(final)
+    refused = batch.run_set(**args)
+    assert refused["ok"] == 0 and "end frame differs" in refused["items"][0]["error"]
