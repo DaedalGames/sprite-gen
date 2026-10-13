@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Gates G2..G6 of `pixel-draw` on recorded answers (tests/fixtures/pixel_draw) and on grids made
-to break exactly one rule. G2, G3 and G6 fail a candidate; G4, G5 and the walk check only warn."""
+"""Gates G2..G6 and G8 of `pixel-draw` on recorded answers (tests/fixtures/pixel_draw) and on grids
+made to break exactly one rule. G2, G3, G6 and G8's canvas edge fail a candidate; G4, G5, the walk
+check and G8's body and floor checks only warn. The `*-safe-area-pass` answers were drawn under the
+safe-area prompt; the other recorded sprites when the prompt asked to fill the canvas."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,11 +34,13 @@ def blob(size: int = 8, top: int = 2, bottom: int = 5, fill=INK):
 
 
 def test_recorded_sprite_passes_every_gate():
-    gates = evaluate(frames_of("sprite-16-pass.txt", 16, ("front",)), kind="sprite", rule=FREE16, walk_cycle=False)
+    gates = evaluate(frames_of("sprite-16-safe-area-pass.txt", 16, ("sprite",)), kind="sprite", rule=FREE16,
+                     walk_cycle=False)
     assert gates["ok"] and gates["failed"] == [] and gates["warnings"] == []
     assert gates["G2"]["colors_used"] <= 16
-    assert gates["G3"]["frames"]["front"]["corners_transparent"]
+    assert gates["G3"]["frames"]["sprite"]["corners_transparent"]
     assert gates["G5"]["isolated_pixels"] == 0 and "G6" not in gates and "G4" not in gates
+    assert gates["G8"]["frames"]["sprite"]["bbox"] == [3, 1, 12, 14] and gates["G8"]["floor_row"] == 14
 
 
 def test_recorded_tile_is_opaque_and_repeats():
@@ -46,14 +50,14 @@ def test_recorded_tile_is_opaque_and_repeats():
 
 
 def test_g2_counts_colours_against_the_limit_and_the_fixed_set():
-    frames = frames_of("sprite-16-pass.txt", 16, ("front",))
+    frames = frames_of("sprite-16-safe-area-pass.txt", 16, ("sprite",))
     used = evaluate(frames, kind="sprite", rule=FREE16, walk_cycle=False)["G2"]["colors_used"]
     few = evaluate(frames, kind="sprite", rule=pg.palette_rule("free:4"), walk_cycle=False)
     assert not few["ok"] and few["failed"] == ["G2"] and few["G2"]["colors_used"] == used
     pico = evaluate(frames, kind="sprite", rule=pg.palette_rule("pico8"), walk_cycle=False)
     assert not pico["ok"] and pico["G2"]["off_palette"]
     exact = pg.palette_rule(",".join(sorted({"#{:02X}{:02X}{:02X}".format(*p[:3])
-                                             for row in frames["front"] for p in row if p[3]})))
+                                             for row in frames["sprite"] for p in row if p[3]})))
     assert evaluate(frames, kind="sprite", rule=exact, walk_cycle=False)["G2"]["ok"]
 
 
@@ -81,23 +85,25 @@ def test_g5_stray_pixels_only_warn():
     frame = blob()
     frame[7][7] = CLEAR
     frame[0][4] = INK  # a speck above the block, touching nothing
-    gates = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)
+    gates = evaluate({"f": frame}, kind="icon", rule=FREE16, walk_cycle=False)  # an icon has no floor row
     assert gates["G5"]["isolated_pixels"] == 1 and gates["ok"]
     assert gates["warnings"] == ["G5 1 stray pixel(s) with no opaque neighbour"]
 
 
 def test_recorded_four_directions_stand_on_one_line():
     gates = evaluate(frames_of("fourdir-16-pass.txt", 16, FOURDIR), kind="sprite", rule=FREE16, walk_cycle=False)
-    assert gates["ok"] and gates["G6"]["ok"] and gates["G6"]["identical_pairs"] == []
+    assert gates["G6"]["ok"] and gates["G6"]["identical_pairs"] == []
     assert len(set(gates["G6"]["baselines"].values())) == 1 and "walk" not in gates["G6"]
+    assert gates["failed"] == ["G8"]  # drawn to fill the canvas: the plumes on row 1, the boots on row 16
 
 
 def test_recorded_walk_passes_with_the_weak_leg_warning():
-    gates = evaluate(frames_of("walk-16-pass.txt", 16, WALK), kind="sprite", rule=FREE16, walk_cycle=True)
+    gates = evaluate(frames_of("walk-32-safe-area-pass.txt", 32, WALK), kind="sprite", rule=FREE16, walk_cycle=True)
     g6 = gates["G6"]
     assert gates["ok"] and g6["ok"] and g6["height_spread"] == 1  # the passing pose is a pixel higher
     assert g6["walk"]["warn"] and g6["walk"]["ratio"] < 0.4
-    assert any(w.startswith("G6 weak leg alternation") for w in gates["warnings"])
+    assert [w[:30] for w in gates["warnings"]] == ["G6 weak leg alternation: the c"]
+    assert set(g6["baselines"].values()) == {gates["G8"]["floor_row"]} == {28}  # row 29 of 32, counted from 1
 
 
 def test_g6_failures():
@@ -211,6 +217,15 @@ def test_g8_has_no_edge_to_keep_below_a_one_pixel_margin():
 def test_g8_leaves_tiles_alone():
     gates = evaluate({"tile": [[GRASS] * 32 for _ in range(32)]}, kind="tile", rule=FREE16, walk_cycle=False)
     assert gates["ok"] and "G8" not in gates
+
+
+def test_a_recorded_blade_reaches_into_the_margin_and_the_body_stays_inside():
+    frames = frames_of("attack-32-safe-area-pass.txt", 32, ("attack1", "attack2", "attack3", "attack4"))
+    gates = evaluate(frames, kind="sprite", rule=FREE16, walk_cycle=False)
+    measures = gates["G8"]["frames"]
+    assert gates["ok"] and gates["warnings"] == []
+    assert measures["attack1"]["bbox"][0] == 2 and measures["attack3"]["bbox"][2] == 29  # the blade, 1 px past it
+    assert all(3 <= m["body_box"][0] and m["body_box"][2] <= 28 and m["baseline"] == 28 for m in measures.values())
 
 
 def test_recorded_answers_from_the_full_canvas_prompt_fail_g8():

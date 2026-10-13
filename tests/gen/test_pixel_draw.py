@@ -29,13 +29,14 @@ def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-SPRITE16 = fixture("sprite-16-pass.txt")
+SPRITE16 = fixture("sprite-16-safe-area-pass.txt")  # one frame, `sprite`, inside the 14x14 safe area
+FULL16 = fixture("sprite-16-pass.txt")  # drawn when the prompt asked to fill the canvas: rows 1 and 16 used
 ICON32 = fixture("icon-32-pass.txt")
 ICON_ROW = fixture("icon-32-row-width.txt")
 ICON_ROW_FIX = fixture("icon-32-row-width.repair.txt")
 TILE_CUT = fixture("tile-32-truncated.txt")
 TILE_CUT_FIX = fixture("tile-32-truncated.repair.txt")
-WALK16 = fixture("walk-16-pass.txt")
+WALK32 = fixture("walk-32-safe-area-pass.txt")
 FOURDIR16 = fixture("fourdir-16-pass.txt")
 VERDICT = fixture("pick-verdict.json")  # best: "A"
 
@@ -120,16 +121,16 @@ def asked(fake: FakeClaude) -> list[str]:
 def test_one_candidate_is_drawn_checked_and_written(tmp_path, claude, capsys):
     fake = claude({"c1-gen1": reply(SPRITE16, output=2515, thinking=2300)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
     report = report_of(out)
     captured = capsys.readouterr()
     assert json.loads(captured.out) == report
     assert "[gen] claude: running on ANTHROPIC_API_KEY — this is a per-call API charge" in captured.err
     assert report["status"] == "ok" and report["chosen"] == "c1" and report["pick"] == {"by": "only", "best": "c1"}
     assert sorted(p.name for p in out.iterdir()) == sorted([
-        "report.json", "request.json", "calls", "candidates", "grid.txt", "palette.json", "frame-front.png",
+        "report.json", "request.json", "calls", "candidates", "grid.txt", "palette.json", "frame-sprite.png",
         "preview-x16.png"])
-    assert report["files"] == {"grid": "grid.txt", "palette": "palette.json", "frames": {"front": "frame-front.png"},
+    assert report["files"] == {"grid": "grid.txt", "palette": "palette.json", "frames": {"sprite": "frame-sprite.png"},
                                "preview": "preview-x16.png"}
     (call,) = report["calls"]
     assert {k: call[k] for k in ("id", "purpose", "candidate", "outcome", "mode", "model", "effort", "max_tokens",
@@ -143,17 +144,18 @@ def test_one_candidate_is_drawn_checked_and_written(tmp_path, claude, capsys):
     (candidate,) = report["candidates"]
     assert candidate["status"] == "passed" and candidate["G1"] == {"ok": True, "issues": [], "recovered": []}
     assert candidate["gates"]["ok"] and candidate["files"]["grid"] == "candidates/c1/grid.txt"
-    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("front",))
+    assert candidate["gates"]["G8"]["ok"] and candidate["warnings"] == []
+    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("sprite",))
     assert (out / "grid.txt").read_text(encoding="utf-8") == pg.to_text(grid)
-    assert (out / "frame-front.png").read_bytes() == pg.png_bytes(pg.frame_pixels(grid, "front"))
-    assert (out / "frame-front.png").read_bytes() == (out / "candidates" / "c1" / "frame-front.png").read_bytes()
+    assert (out / "frame-sprite.png").read_bytes() == pg.png_bytes(pg.frame_pixels(grid, "sprite"))
+    assert (out / "frame-sprite.png").read_bytes() == (out / "candidates" / "c1" / "frame-sprite.png").read_bytes()
     record = json.loads((out / "calls" / "c1-gen1.json").read_text(encoding="utf-8"))
     assert record["reply"]["text"] == SPRITE16 and record["prompt"].startswith("Draw: a knight\nCanvas: exactly 16x16")
     body = fake.asked[0][1]
     assert body["model"] == "claude-opus-5-5" and body["system"] == pixel_draw.SYSTEM
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"} and body["output_config"] == {"effort": "high"}
     request = json.loads((out / "request.json").read_text(encoding="utf-8"))
-    assert request["palette"] == {"name": "free:16", "limit": 16, "colors": []} and request["frames"] == ["front"]
+    assert request["palette"] == {"name": "free:16", "limit": 16, "colors": []} and request["frames"] == ["sprite"]
 
 
 def test_a_broken_row_is_asked_for_alone_and_spliced(tmp_path, claude):
@@ -221,8 +223,7 @@ def test_a_structural_failure_is_drawn_again_without_repair_and_a_second_one_end
 def test_no_answer_at_max_tokens_is_drawn_once_more_one_effort_lower(tmp_path, claude, capsys):
     fake = claude({"c1-gen1": reply("", stop="max_tokens", output=32000, thinking=32000), "c1-gen2": reply(SPRITE16)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1",
-                "--effort", "xhigh") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1", "--effort", "xhigh") == 0
     assert [body["output_config"]["effort"] for _, body in fake.asked] == ["xhigh", "high"]
     report = report_of(out)
     (candidate,) = report["candidates"]
@@ -233,17 +234,17 @@ def test_no_answer_at_max_tokens_is_drawn_once_more_one_effort_lower(tmp_path, c
 
 
 def test_an_answer_cut_off_at_max_tokens_keeps_its_rows_and_is_repaired(tmp_path, claude):
-    rows = SPRITE16.split("FRAME front\n")[1].split("\nEND")[0].splitlines()
-    cut = SPRITE16[:SPRITE16.index("FRAME front\n")] + "FRAME front\n" + "\n".join(rows[:10])
-    fix = "\n".join(f"ROW front {n}: {rows[n - 1]}" for n in range(11, 17))
+    rows = SPRITE16.split("FRAME sprite\n")[1].split("\nEND")[0].splitlines()
+    cut = SPRITE16[:SPRITE16.index("FRAME sprite\n")] + "FRAME sprite\n" + "\n".join(rows[:10])
+    fix = "\n".join(f"ROW sprite {n}: {rows[n - 1]}" for n in range(11, 17))
     fake = claude({"c1-gen1": reply(cut, stop="max_tokens", output=32000, thinking=31000), "c1-gen1-fix1": reply(fix)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
     assert asked(fake) == ["c1-gen1", "c1-gen1-fix1"]
     (candidate,) = report_of(out)["candidates"]
-    assert candidate["redraws"] == [] and candidate["repairs"][0]["rows_asked"] == [f"front {n}" for n in range(11, 17)]
+    assert candidate["redraws"] == [] and candidate["repairs"][0]["rows_asked"] == [f"sprite {n}" for n in range(11, 17)]
     assert [r["code"] for r in candidate["G1"]["recovered"]] == ["block_unclosed", "no_end"]
-    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("front",))
+    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("sprite",))
     assert (out / "grid.txt").read_text(encoding="utf-8") == pg.to_text(grid)
 
 
@@ -290,10 +291,10 @@ def test_a_failed_call_is_not_asked_again(tmp_path, claude):
 
 
 def test_the_vision_pick_chooses_between_two_that_passed(tmp_path, claude):
-    variant = SPRITE16.replace("r #d84040", "r #c03030")
+    variant = SPRITE16.replace("r #d03a34", "r #c03030")
     fake = claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(variant), "pick": reply(VERDICT, output=300, thinking=90)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16") == 0
     report = report_of(out)
     pick = report["pick"]
     assert pick["by"] == "vision" and sorted(pick["labels"]) == ["A", "B"] and sorted(pick["labels"].values()) == ["c1", "c2"]
@@ -307,14 +308,14 @@ def test_the_vision_pick_chooses_between_two_that_passed(tmp_path, claude):
     assert "system" not in body
     chosen = out / "candidates" / report["chosen"]
     assert (out / "grid.txt").read_bytes() == (chosen / "grid.txt").read_bytes()
-    assert (out / "frame-front.png").read_bytes() == (chosen / "frame-front.png").read_bytes()
+    assert (out / "frame-sprite.png").read_bytes() == (chosen / "frame-sprite.png").read_bytes()
     assert [c["id"] for c in report["calls"]] == ["c1-gen1", "c2-gen1", "pick"]
 
 
 def test_a_person_picks_when_asked(tmp_path, claude):
-    fake = claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(SPRITE16.replace("r #d84040", "r #c03030"))})
+    fake = claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(SPRITE16.replace("r #d03a34", "r #c03030"))})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--pick", "human") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16", "--pick", "human") == 0
     report = report_of(out)
     assert report["pick"] == {"by": "human", "best": None, "candidates": ["c1", "c2"]}
     assert report["status"] == "ok" and report["chosen"] is None and not (out / "grid.txt").exists()
@@ -324,18 +325,18 @@ def test_a_person_picks_when_asked(tmp_path, claude):
 def test_a_pick_that_names_no_candidate_fails_the_run(tmp_path, claude):
     verdict = json.loads(VERDICT)
     verdict["best"] = "Z"
-    claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(SPRITE16.replace("r #d84040", "r #c03030")),
+    claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(SPRITE16.replace("r #d03a34", "r #c03030")),
             "pick": reply(json.dumps(verdict))})
     out = tmp_path / "run"
     with pytest.raises(SystemExit, match=r"2 candidates passed but the pick failed \(the pick named 'Z', not one of A, B\)"):
-        draw(out, "--subject", "a knight", "--size", "16", "--frames", "front")
+        draw(out, "--subject", "a knight", "--size", "16")
     assert report_of(out)["status"] == "pick_failed" and not (out / "grid.txt").exists()
 
 
 def test_one_that_passed_alone_is_the_pick(tmp_path, claude):
     fake = claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(""), "c2-gen2": reply("")})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16") == 0
     report = report_of(out)
     assert report["pick"] == {"by": "only", "best": "c1"} and "pick" not in asked(fake)
     assert [c["status"] for c in report["candidates"]] == ["passed", "failed"]
@@ -364,8 +365,7 @@ def test_a_batch_cut_short_is_collected_on_resume_and_not_bought_twice(tmp_path,
     claude(script, polls={"msgbatch_1": ["in_progress"]})
     out = tmp_path / "run"
     with pytest.raises(SystemExit) as caught:
-        draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1", "--batch",
-             "--batch-wait", "0")
+        draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1", "--batch", "--batch-wait", "0")
     message = str(caught.value)
     assert "batch msgbatch_1 has not ended after 0s; nothing is asked twice" in message
     assert f"`sprite-gen pixel-draw --out-dir {out.resolve()} --resume`" in message
@@ -394,7 +394,7 @@ def test_resume_reads_answered_calls_back(tmp_path, claude):
 def test_resume_takes_the_request_from_the_run(tmp_path, claude):
     claude({"c1-gen1": reply(SPRITE16)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1") == 0
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
     with pytest.raises(SystemExit, match=r"--resume reads the request from .*request.json; drop --size"):
         pixel_draw.main(["--out-dir", str(out), "--resume", "--size", "16"])
     request = json.loads((out / "request.json").read_text(encoding="utf-8"))
@@ -467,10 +467,10 @@ def test_a_json_answer_is_kept_as_a_chargrid(tmp_path, claude):
 
 
 def test_a_walk_cycle_is_one_call_of_four_frames(tmp_path, claude):
-    fake = claude({"c1-gen1": reply(WALK16)})
+    fake = claude({"c1-gen1": reply(WALK32)})
     out = tmp_path / "run"
-    assert draw(out, "--subject", "a knight walking right", "--size", "16", "--frames", "walk1,walk2,walk3,walk4",
-                "--walk-cycle", "--candidates", "1") == 0
+    assert draw(out, "--subject", "a knight walking right", "--frames", "walk1,walk2,walk3,walk4", "--walk-cycle",
+                "--candidates", "1") == 0
     body = fake.asked[0][1]
     assert body["max_tokens"] == 64000
     assert ("The frames are one looping walk cycle: walk1 = contact pose with the front leg forward"
@@ -480,8 +480,8 @@ def test_a_walk_cycle_is_one_call_of_four_frames(tmp_path, claude):
     assert report["files"]["gif"] == "anim.gif"
     with Image.open(out / "anim.gif") as gif:
         assert gif.n_frames == 4
-    with Image.open(out / "preview-x16.png") as preview:
-        assert preview.size == (4 * 256 + 3 * 32, 256)
+    with Image.open(out / "preview-x8.png") as preview:
+        assert preview.size == (4 * 256 + 3 * 16, 256)
 
 
 def test_prompts_say_the_kind_and_the_format():
@@ -495,28 +495,30 @@ def test_prompts_say_the_kind_and_the_format():
     assert "Palette: at most 8 colors plus transparent." in tile and "Background: transparent" not in tile
     assert "```pixels\nPALETTE\n. transparent" in tile and "exactly 32 lines of exactly 32 characters" in tile
     sprite = pixel_draw.generation_prompt(request(kind="sprite", frames=("down", "up"), subject="a knight"))
-    assert "the feet stand on the same bottom row in every frame." in sprite and "Background: transparent." in sprite
+    assert "stand on row 29 in every frame, and nothing of the body goes below it." in sprite
+    assert "Background: transparent." in sprite
     assert "Frames in this order: down, up." in sprite
 
 
 def test_an_edited_grid_is_checked_and_rendered_without_a_call(tmp_path, claude, monkeypatch):
     claude({"c1-gen1": reply(SPRITE16)})
     first = tmp_path / "first"
-    assert draw(first, "--subject", "a knight", "--size", "16", "--frames", "front", "--candidates", "1") == 0
+    assert draw(first, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     edited = tmp_path / "edited.txt"
     edited.write_text((first / "grid.txt").read_text(encoding="utf-8").replace(
-        "FRAME front\n......oooo......", "FRAME front\n......oooo....o."), encoding="utf-8")
+        "FRAME sprite\n................\n......orRo......", "FRAME sprite\n................\n......orRo...o.."),
+        encoding="utf-8")  # a speck beside the plume, inside the safe area
     second = tmp_path / "second"
     assert pixel_draw.main(["--grid", str(edited), "--out-dir", str(second)]) == 0
     report = report_of(second)
     assert report["source"] == "grid" and report["calls"] == [] and report["cost_usd"] == 0.0
     assert report["status"] == "ok" and report["warnings"] == ["G5 1 stray pixel(s) with no opaque neighbour"]
     grid, issues = pg.read_grid_text(edited.read_text(encoding="utf-8"))
-    assert (second / "frame-front.png").read_bytes() == pg.png_bytes(pg.frame_pixels(grid, "front"))
+    assert (second / "frame-sprite.png").read_bytes() == pg.png_bytes(pg.frame_pixels(grid, "sprite"))
     broken = tmp_path / "broken.txt"
-    broken.write_text(edited.read_text(encoding="utf-8").replace("......oooo....o.\n", "......oooo....o\n"), encoding="utf-8")
-    with pytest.raises(SystemExit, match=r"does not parse whole: row_width front row 1"):
+    broken.write_text(edited.read_text(encoding="utf-8").replace("......orRo...o..\n", "......orRo...o.\n"), encoding="utf-8")
+    with pytest.raises(SystemExit, match=r"does not parse whole: row_width sprite row 2"):
         pixel_draw.main(["--grid", str(broken), "--out-dir", str(tmp_path / "third")])
     with pytest.raises(SystemExit, match=r"--grid checks and renders a grid as it is; drop --candidates"):
         pixel_draw.main(["--grid", str(edited), "--out-dir", str(tmp_path / "fourth"), "--candidates", "2"])
@@ -593,7 +595,7 @@ def test_the_pick_knows_the_margin_is_meant():
 
 
 def test_an_edited_grid_goes_through_the_safe_area_gate(tmp_path):
-    grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("front",))
+    grid, _ = pg.parse_answer(FULL16, "chargrid", 16, 16, ("front",))
     full = tmp_path / "full.txt"
     full.write_text(pg.to_text(grid), encoding="utf-8")  # drawn under the old prompt: rows 1 and 16 are used
     with pytest.raises(SystemExit, match=r"full.txt fails G8"):

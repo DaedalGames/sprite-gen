@@ -15,8 +15,10 @@ One run, `--candidates` K answers to the same request:
 2. G1 parse. Row issues are repaired one row at a time (`ROW <frame> <n>: …`, two rounds at most);
    an answer still broken, or broken beyond its rows, is drawn once more. A candidate is drawn at
    most twice in all.
-3. G2 palette, G3 alpha and G6 frames fail a candidate; G4 tile seam, G5 stray pixels and the walk
-   cycle's leg alternation warn.
+3. G2 palette, G3 alpha, G6 frames and G8 safe area (a pixel on the canvas edge) fail a candidate;
+   G4 tile seam, G5 stray pixels, the walk cycle's leg alternation and G8's body and floor checks
+   warn. The prompt gives a sprite or icon the engine's safe area (`safe_area_lines`) in rows and
+   columns.
 4. G7: of two or more candidates that passed, one vision call (effort low) picks, or a person
    does (`--pick human`). One that passed alone is the pick.
 
@@ -50,7 +52,7 @@ from . import anthropic_api as api
 from . import refusal
 from .anthropic_api import ApiError, Reply
 from .base import announce_api_billing
-from .pixel_gates import evaluate
+from .pixel_gates import evaluate, safe_area
 from .pixel_grid import (
     FORMATS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, palette_rule, parse_answer,
     parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text, recovered, row_issues, row_text,
@@ -232,13 +234,42 @@ def _format_spec(request: PixelRequest) -> str:
         f"- Frames: {names}.")
 
 
+def safe_area_lines(request: PixelRequest) -> list[str]:
+    """The engine's safe area of a sprite or icon (`pixel_gates.safe_area`, G8), in rows and columns
+    counted from 1: the body inside it, only a thin detail in the margin, the canvas edge clear, and a
+    sprite's feet on its bottom row."""
+    size = request.size
+    area = safe_area(size, size)
+    margin, inner, floor = area["margin"][0], area["size"][0], area["floor_row"] + 1
+    sprite = request.kind == "sprite"
+    if margin == 0:
+        lines = [f"Safe area: at {size}x{size} there is no margin; {'the subject' if sprite else 'the icon'} may use "
+                 "the whole canvas, with the four corner pixels transparent."]
+    else:
+        first, last, reach = margin + 1, size - margin, margin - 1
+        edge = f"outermost rows and columns (rows 1 and {size}, columns 1 and {size})"
+        if reach:
+            past = (f"Only a thin detail (a weapon tip, a strand of hair, an effect) may reach into the margin, at "
+                    f"most {reach} pixel{'s' if reach > 1 else ''} past the safe area; the {edge} stay transparent.")
+        else:
+            past = f"The {edge} are the margin and stay transparent: at this size nothing reaches past the safe area."
+        body = "the subject's body" if sprite else "the icon"
+        lines = [f"Safe area: keep a {margin}-pixel margin on every side and draw {body} inside the central "
+                 f"{inner}x{inner} pixels: rows {first}-{last} and columns {first}-{last}, counting rows and columns "
+                 f"from 1. {past}"]
+    if sprite:
+        every = " in every frame" if len(request.frames) > 1 else ""
+        lines.append(f"Floor: row {floor}, the bottom row of the safe area, is the ground. The feet (or the lowest point "
+                     f"the subject rests on) stand on row {floor}{every}, and nothing of the body goes below it.")
+    return lines
+
+
 def generation_prompt(request: PixelRequest) -> str:
     frames = request.frames
     lines = [f"Draw: {request.subject}", f"Canvas: exactly {request.size}x{request.size} pixels per frame."]
     if len(frames) > 1:
-        same = (f"Frames: {', '.join(frames)}. All frames share one palette and show the same subject with "
-                "the same proportions, colors and size")
-        lines.append(same + ("; the feet stand on the same bottom row in every frame." if request.kind == "sprite" else "."))
+        lines.append(f"Frames: {', '.join(frames)}. All frames share one palette and show the same subject with "
+                     "the same proportions, colors and size.")
     if request.walk_cycle:
         a, b, c, d = frames
         lines.append(f"The frames are one looping walk cycle: {a} = contact pose with the front leg forward, "
@@ -256,8 +287,8 @@ def generation_prompt(request: PixelRequest) -> str:
         lines.append("Style: clean, readable pixel art for a 2D RPG: 2-3 shades per material, light from the "
                      "top-left, no noisy single-pixel speckle.")
     else:
-        lines.append("Background: transparent. The subject should fill most of the canvas, leaving at most a "
-                     "1-2 pixel margin.")
+        lines.append("Background: transparent.")
+        lines += safe_area_lines(request)
         lines.append("Style: clean, readable pixel art for a 2D RPG: a dark (not pure black) outline around the "
                      "silhouette, 2-3 shades per material, light from the top-left, no anti-aliasing noise and "
                      "no stray single pixels.")
@@ -320,6 +351,15 @@ def repair_prompt(request: PixelRequest, grid: Grid, issues: list[Issue]) -> tup
     return prompt, wanted
 
 
+def _kept(request: PixelRequest) -> str:
+    """The safe area in the pick's words, so a margin the prompt asked for is not read as wasted canvas."""
+    area = safe_area(request.size, request.size)
+    if request.kind == "tile" or area["margin"][0] == 0:
+        return ""
+    inner = area["size"][0]
+    return f", the body kept inside the central {inner}x{inner} with a {area['margin'][0]}-pixel margin"
+
+
 def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
     multi = len(request.frames) > 1
     lines = [
@@ -333,7 +373,7 @@ def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
     if multi:
         lines.append(f"Each candidate is a row of {len(request.frames)} frames in this order: {', '.join(request.frames)}.")
     lines += [
-        f"The request was: {request.subject} Canvas {request.size}x{request.size} pixels per frame.",
+        f"The request was: {request.subject} Canvas {request.size}x{request.size} pixels per frame{_kept(request)}.",
         "Score every candidate:",
         "- subject_read 1-5: how clearly it reads as the requested subject (5 instantly, 1 unrecognisable).",
         "- craft 1-5: pixel-art craft: clean silhouette and outline, consistent shading and light, no noise, sensible "

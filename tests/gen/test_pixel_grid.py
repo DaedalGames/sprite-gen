@@ -39,6 +39,9 @@ PASSING = [
     ("walk-16-pass.txt", "chargrid", 16, WALK),
     ("fourdir-16-pass.txt", "chargrid", 16, FOURDIR),
     ("icon-16-json-pass.txt", "json", 16, ("icon",)),
+    ("sprite-16-safe-area-pass.txt", "chargrid", 16, ("sprite",)),
+    ("walk-32-safe-area-pass.txt", "chargrid", 32, WALK),
+    ("attack-32-safe-area-pass.txt", "chargrid", 32, ("attack1", "attack2", "attack3", "attack4")),
 ]
 
 
