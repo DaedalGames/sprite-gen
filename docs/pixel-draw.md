@@ -1,5 +1,9 @@
 # `sprite-gen pixel-draw` — Claude Opus draws pixel art as a pixel grid
 
+> **Experimental.** The verb, its flags and its report may change between versions, and the quality of what a model draws
+> varies from run to run: expect to compare candidates, re-draw, or touch up `grid.txt` by hand. The numbers below come from a
+> small set of measured runs, not from a benchmark.
+
 > Owns: `sprite-gen pixel-draw`: the inputs, the run folder and `report.json`, gates G1–G7, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
 
 The model does not paint an image that is then shrunk to a grid. It writes the grid itself: a
