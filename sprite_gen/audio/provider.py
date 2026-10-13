@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from sprite_gen.gen import retry
+from sprite_gen.gen.xai import error_body, NO_ANSWER
 
 BASE = 'https://api.elevenlabs.io/v1'
 FORMAT = 'mp3_44100_128'
@@ -63,9 +64,9 @@ def generate(document):
                 return response.status, response.read(), response.headers
         except HTTPError as exc:
             try:
-                body = json.loads(exc.read())
-            except (ValueError, OSError):
-                body = {}
+                body = error_body(exc)
+            except NO_ANSWER:
+                raise ValueError('ElevenLabs refusal body unavailable; request outcome unresolved; no resubmission') from None
             return exc.code, body, exc.headers
         except Exception:
             # Transport exceptions may include headers or body text. Never print them.

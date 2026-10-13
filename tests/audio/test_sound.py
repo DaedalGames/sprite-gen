@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from concurrent.futures import ThreadPoolExecutor
 import io
+import http.client
 import json
 import threading
 import urllib.error
@@ -160,3 +161,16 @@ def test_error_body_and_transport_cannot_disclose_key(monkeypatch, capsys):
     monkeypatch.setattr(provider, 'urlopen', broken)
     with pytest.raises(ValueError) as err: provider.generate(provider.request('sfx','impact',1,False))
     assert key not in str(err.value) + capsys.readouterr().err
+
+
+def test_broken_refusal_body_is_not_retried_or_printed(monkeypatch, capsys):
+    calls = []
+    class Broken:
+        def read(self, *args): raise http.client.IncompleteRead(b'secret-key', 100)
+    def send(req, **kw):
+        calls.append(req)
+        raise urllib.error.HTTPError(req.full_url, 429, 'busy', {}, Broken())
+    monkeypatch.setattr(provider, 'urlopen', send)
+    with pytest.raises(ValueError, match='unresolved') as err:
+        provider.generate(provider.request('sfx', 'impact', 1, False))
+    assert len(calls) == 1 and 'secret-key' not in str(err.value) + capsys.readouterr().err
