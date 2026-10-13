@@ -15,7 +15,7 @@ sprite-gen sound --kind sfx|bgm --prompt TEXT (or --prompt-file PATH) --duration
 - `--cache-dir`: Defaults to `$XDG_CACHE_HOME/sprite-gen/audio` or `~/.cache/sprite-gen/audio` (never inside `--out-dir`; local by default but can be copied; no cross-cache-directory or cross-machine duplicate-request guarantee).
 - `--target-lufs`: Target integrated loudness within `-36..-9` LUFS.
 - `--crossfade`: Overlap duration in seconds.
-- **Environment & PATH**: `ELEVENLABS_API_KEY` is required only for new paid requests (offline work needs none). `ffmpeg` with `libopus` and `aac` encoders is required on `PATH` and checked before paid calls (`ffprobe` is not required).
+- **Environment & PATH**: `ELEVENLABS_API_KEY` is required only for new paid requests (offline work needs none). `ffmpeg` (with `libopus` and `aac` encoders) and `ffprobe` are required on `PATH` and checked before paid calls.
 
 ## Provider APIs and Cost Accounting
 
@@ -36,14 +36,14 @@ Raw paid audio is stored in SQLite keyed by provider parameter digest. Tuning `-
 ## Audio DSP, Looping, and Quality Gates
 
 1. **Export and Normalization**: Provider audio decodes to 48kHz stereo PCM. Normalization uses two-pass [FFmpeg Loudnorm](https://ffmpeg.org/ffmpeg-filters.html#loudnorm) targeting -2 dBTP with repeating loop context. Up to three per-format offline encode/measure passes correct codec reconstruction overshoot using measured gain and tighter oversampled [FFmpeg Alimiter](https://ffmpeg.org/ffmpeg-filters.html#alimiter) (192kHz, auto-gain off, latency compensated) without triggering provider retries.
-2. **Export Formats**: Outputs complete normalized audio in 48kHz stereo Opus in OGG (`sound.ogg`, `libopus`, 160 kbps) and AAC in M4A (`sound.m4a`, `aac`, 192 kbps). Export files remove all pre-encode crossfades, loop splices, and 5ms boundary zero-tapers; the complete normalized source is preserved intact in encoded audio.
-3. **Quality Gates**: Output formats must decode to the integrated loudness target within +/-1 LU and true peak <= -1 dBTP. Silence or unmeasurable audio fails. Numeric checks do not judge musical beat alignment.
+2. **Export Formats**: Outputs complete normalized audio in 48kHz stereo Opus in OGG (`sound.ogg`, `libopus`, 160 kbps) and AAC in M4A (`sound.m4a`, `aac`, 192 kbps). The exporter exports M4A with `-movie_timescale 48000`, equal to the normalized source sample rate (setting the movie header box time scale; see [FFmpeg Formats](https://ffmpeg.org/ffmpeg-formats.html#mov_002c-mp4_002c-ismv)), preserving fractional-millisecond source lengths without introducing declared tail padding. Export files remove all pre-encode crossfades, loop splices, and 5ms boundary zero-tapers; the complete normalized source is preserved intact in encoded audio.
+3. **Quality Gates**: Output formats must decode to the integrated loudness target within +/-1 LU and true peak <= -1 dBTP. After every AAC encode, the exporter invokes `ffprobe` and requires first audio stream `time_base=1/48000` and `duration_ts=end_frame-start_frame`; mismatch or unreadable duration fails clearly before publishing. Silence or unmeasurable audio fails. Numeric checks do not judge musical beat alignment.
 4. **Looping and Playback Quality**: Crossfading is deferred to runtime preparation. Because playback overlap blending can alter loudness, applications must validate prepared and rendered audio output. No claim is made that all signals are perceptually seamless or beat aligned.
 5. **Boundary Continuity Verification**: Computes loop boundary continuity by measuring the wrap delta and subtracting the difference between adjacent samples in the same decoded/resampled buffer at the decoded sample rate, evaluated separately for prepared buffers and rendered output. Artificial control discontinuities must fail; there is no absolute near-zero endpoint sample criterion. Tests verify numeric waveforms rather than subjective listening.
 
 ## Manifest Schema and Coordinates
 
-Outputs `sound.json` (version 2, `kind="sprite-gen-sound"`, `recipe.processing_version=2`). Existing output directories generated with prior recipe versions are rejected; specify a new `--out-dir`. Unchanged provider cache entries are reused offline without API keys or network requests. Provider APIs, caching, and retry behaviors remain unchanged.
+Outputs `sound.json` (version 2, `kind="sprite-gen-sound"`, `recipe.processing_version=3`, independent of `playback` version 2). Existing output directories generated with recipe versions 1 or 2 are rejected; specify a new `--out-dir`. Original provider request cache keys and blobs remain unchanged; reprocessing cached audio needs no key or new paid request. Provider APIs, caching, and retry behaviors remain unchanged.
 
 ### Manifest Properties
 

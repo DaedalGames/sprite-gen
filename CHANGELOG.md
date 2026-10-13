@@ -4,6 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+- Bump audio processing recipe to version 3, require `ffprobe` on `PATH`, export M4A with `-movie_timescale 48000`, and validate AAC stream duration with `ffprobe`.
 - Add bounded one-frame decoded length tolerance, preserving loop duration, trimming one-shots, and rejecting shorter buffers and undersized overlaps at export.
 - Configure loop playback in `createAudioSource` using an internally cached L+1 guard frame buffer while preserving `prepareAudioBuffer` frame contracts.
 
