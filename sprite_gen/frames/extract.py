@@ -1000,21 +1000,13 @@ def key_residue_fraction_ycc(image: Image.Image, key: tuple[int, int, int]) -> f
     return count / (width * height)
 
 
-def _cleanup_alpha_ycc(image: Image.Image) -> None:
-    """Remove fully isolated opaque dots and fill nearly-enclosed pinholes.
-
-    Decisions are made on an alpha snapshot so the pass cannot cascade; soft
-    matte edges are untouched (only 0-neighbor dots and ≥7-neighbor holes).
-    """
-    width, height = image.size
-    if width < 3 or height < 3:
-        return
+def _neighbour_code(op: Image.Image) -> Image.Image:
+    """`op` (1 where opaque, 0 elsewhere) as one code per pixel: op*16 plus how many of its eight
+    neighbours are opaque (outside the image counts as clear)."""
+    width, height = op.size
     # PIL 네이티브 스텐실 — 8이웃 불투명 카운트를 시프트-합으로 벡터화한다 (핫스팟:
     # 상태당 추출의 ~17%, 1280×720 전체 순회). 정수 논리(임계 비교·이웃 카운트)라
     # 픽셀 루프와 **바이트 동일**하며, numpy 없이 pillow 만으로 된다.
-    alpha = image.getchannel("A")
-    # op: 불투명 마스크 (0/1) — before 스냅샷과 같은 기준 (> EMPTY).
-    op = alpha.point(lambda a: 1 if a > _YCC_ALPHA_EMPTY else 0)
     # 1px zero-pad 후 8방향 크롭으로 이웃을 꺼내 합산 (경계 밖 = 0, 정수 덧셈은 순서 무관).
     padded = Image.new("L", (width + 2, height + 2), 0)
     padded.paste(op, (1, 1))
@@ -1023,9 +1015,37 @@ def _cleanup_alpha_ycc(image: Image.Image) -> None:
                    (-1, -1), (1, -1), (-1, 1), (1, 1)):
         shifted = padded.crop((1 + dx, 1 + dy, 1 + dx + width, 1 + dy + height))
         neighbors = shifted if neighbors is None else ImageChops.add(neighbors, shifted)
-    # combined = op*16 + neighbors (둘 다 작아 24 이하) → 단일 LUT 로 두 마스크 분리.
-    combined = ImageChops.add(op.point(lambda v: v * 16), neighbors)
-    clear_mask = combined.point(lambda v: 255 if (v >> 4) == 1 and (v & 15) == 0 else 0)
+    # combined = op*16 + neighbors (둘 다 작아 24 이하) → 단일 LUT 로 마스크를 분리한다.
+    return ImageChops.add(op.point(lambda v: v * 16), neighbors)
+
+
+def _dots(code: Image.Image) -> Image.Image:
+    return code.point(lambda v: 255 if (v >> 4) == 1 and (v & 15) == 0 else 0)
+
+
+def isolated_dots(op: Image.Image) -> Image.Image:
+    """The lone pixels of `op` (an L mask, 1 where opaque): 255 where a pixel is opaque and none of
+    its eight neighbours is — one touching another only at a corner is joined to it. One judgment:
+    the YCbCr matte's cleanup erases a matte's dots by it (`_cleanup_alpha_ycc`), and `pixel-draw`'s
+    G5 counts a grid's stray pixels by it."""
+    return _dots(_neighbour_code(op))
+
+
+def _cleanup_alpha_ycc(image: Image.Image) -> None:
+    """Remove fully isolated opaque dots and fill nearly-enclosed pinholes.
+
+    Decisions are made on an alpha snapshot so the pass cannot cascade; soft
+    matte edges are untouched (only 0-neighbor dots — `isolated_dots` — and
+    ≥7-neighbor holes).
+    """
+    width, height = image.size
+    if width < 3 or height < 3:
+        return
+    alpha = image.getchannel("A")
+    # op: 불투명 마스크 (0/1) — before 스냅샷과 같은 기준 (> EMPTY).
+    op = alpha.point(lambda a: 1 if a > _YCC_ALPHA_EMPTY else 0)
+    combined = _neighbour_code(op)
+    clear_mask = _dots(combined)
     fill_mask = combined.point(lambda v: 255 if (v >> 4) == 0 and (v & 15) >= 7 else 0)
     # 원본은 알파만 바꾼다 (RGB 불변) — 스냅샷에서 시작해 두 disjoint 마스크만 덮어쓴다.
     new_alpha = alpha.copy()

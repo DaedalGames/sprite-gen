@@ -1,14 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gates G2..G6 and G8 of `pixel-draw`, on the pixels of a grid that passed G1 (it parsed whole).
 
-- G2 palette: the opaque colours used are at most the rule's limit; a fixed palette allows only its
-  own colours.
-- G3 alpha: a sprite or icon frame has opaque pixels, four transparent corners and a border at
-  least half transparent; a tile frame is opaque everywhere.
-- G4 tile seam (warning): the colour step across the wrap edges over the mean step between
-  neighbours inside the tile, at most 1.5. Mortar lines that meet the edge raise it on tiles that
-  repeat cleanly, so it warns and never fails until the measure is refined.
-- G5 stray pixels (warning): opaque pixels of a sprite or icon with no opaque 4-neighbour.
+G3, G4, G5 and G8 ask the judgment sprite-gen already makes of the same question elsewhere — one
+function each, called here, never a copy (docs/pixel-draw.md "Gates"):
+
+- G2 palette: the opaque colours used (`colors_used`, also `palette.json`'s) are at most the rule's
+  limit; a fixed palette allows only its own colours.
+- G3 alpha: whether a frame's background is really transparent is `gen.chroma.alpha_verdict`, the
+  judgment `gen` reads a generated raw by — `real-alpha` at least 5 % of the pixels and half the
+  one-pixel border alpha 0, `no-alpha` none. A sprite or icon frame is `real-alpha` with something
+  drawn and its four corners clear; a tile frame is `no-alpha`.
+- G4 tile seam (warning): `background.tile.inspect_tile`, the join `background-tile` measures —
+  the wrap edge against the tile's own neighbours — asked of each tile frame along x and along y.
+  An axis it says needs review warns: a local measure, never proof that a tile repeats cleanly, so
+  look at `tiled-3x3.png`.
+- G5 stray pixels (warning): the lone pixels of a sprite or icon, `frames.extract.isolated_dots` —
+  opaque, with no opaque pixel among their eight neighbours, the dots the YCbCr matte cleanup
+  erases. A pixel that touches another only at a corner, as each pixel of a diagonal stroke does,
+  is joined to it.
 - G6 frames: every frame stands on the same bottom row, heights differ by at most one pixel and
   no two frames are the same. A sprite's or icon's rows and heights are measured inside its safe
   area: a staff raised or a spark into the margin in one frame is not a taller figure (G8 notes
@@ -33,10 +42,9 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from .pixel_grid import Pixel, PaletteRule
+from .pixel_grid import Pixel, PaletteRule, image_of
 
-SEAM_RATIO_MAX = 1.5
-BORDER_TRANSPARENT_MIN = 0.5
+OPAQUE_MIN = 128  # the alpha at which a pixel is solid, as the engine reads solid pixels
 HEIGHT_SPREAD_MAX = 1
 WALK_CONTACT_RATIO_MIN = 0.4
 BODY_LINE_SHARE = 0.25
@@ -45,77 +53,78 @@ Frame = Sequence[Sequence[Pixel]]
 
 
 def _opaque(pixel: Pixel) -> bool:
-    return pixel[3] >= 128
+    return pixel[3] >= OPAQUE_MIN
 
 
 def _hex(pixel: Pixel) -> str:
     return "#{:02X}{:02X}{:02X}".format(*pixel[:3])
 
 
+def colors_used(frames: dict[str, Frame]) -> list[str]:
+    """The opaque colours of the frames, `#RRGGBB`, sorted: what G2 counts and `palette.json` lists."""
+    return sorted({_hex(p) for frame in frames.values() for row in frame for p in row if _opaque(p)})
+
+
 def g2_palette(frames: dict[str, Frame], rule: PaletteRule) -> dict[str, Any]:
-    used = sorted({_hex(p) for frame in frames.values() for row in frame for p in row if _opaque(p)})
+    used = colors_used(frames)
     off = [c for c in used if rule.fixed and c not in rule.colors]
     return {"ok": len(used) <= rule.limit and not off, "colors_used": len(used), "limit": rule.limit,
             "palette": rule.name, "off_palette": off}
 
 
 def _frame_alpha(frame: Frame) -> dict[str, Any]:
+    # Imported here: the judgment is `gen`'s, made in one place (`chroma` pulls in the matte).
+    from .chroma import alpha_verdict
+
     height, width = len(frame), len(frame[0])
     opaque = sum(1 for row in frame for p in row if _opaque(p))
-    border = [frame[y][x] for y in range(height) for x in range(width) if x in (0, width - 1) or y in (0, height - 1)]
     corners = (frame[0][0], frame[0][width - 1], frame[height - 1][0], frame[height - 1][width - 1])
     return {
         "opaque_pixels": opaque,
         "opaque_fraction": round(opaque / (width * height), 4),
         "corners_transparent": not any(_opaque(p) for p in corners),
-        "border_transparent_fraction": round(sum(1 for p in border if not _opaque(p)) / len(border), 4),
+        **alpha_verdict(image_of(frame).getchannel("A")),
     }
 
 
 def g3_alpha(frames: dict[str, Frame], kind: str) -> dict[str, Any]:
+    from .chroma import RAW_ALPHA_NONE, RAW_ALPHA_REAL
+
     per = {name: _frame_alpha(frame) for name, frame in frames.items()}
     if kind == "tile":
-        ok = all(m["opaque_fraction"] == 1.0 for m in per.values())
+        ok = all(m["verdict"] == RAW_ALPHA_NONE for m in per.values())
     else:
-        ok = all(m["opaque_pixels"] > 0 and m["corners_transparent"]
-                 and m["border_transparent_fraction"] >= BORDER_TRANSPARENT_MIN for m in per.values())
+        ok = all(m["opaque_pixels"] > 0 and m["corners_transparent"] and m["verdict"] == RAW_ALPHA_REAL
+                 for m in per.values())
     return {"ok": ok, "kind": kind, "frames": per}
 
 
-def _step(a: Pixel, b: Pixel) -> float:
-    return sum(abs(a[i] - b[i]) for i in range(3)) / 3
-
-
-def seam_ratio(frame: Frame) -> float:
-    height, width = len(frame), len(frame[0])
-    inner = [_step(frame[y][x], frame[y][x + 1]) for y in range(height) for x in range(width - 1)]
-    inner += [_step(frame[y][x], frame[y + 1][x]) for y in range(height - 1) for x in range(width)]
-    wrap = [_step(frame[y][width - 1], frame[y][0]) for y in range(height)]
-    wrap += [_step(frame[height - 1][x], frame[0][x]) for x in range(width)]
-    inner_mean = sum(inner) / max(1, len(inner))
-    wrap_mean = sum(wrap) / max(1, len(wrap))
-    if inner_mean == 0:
-        return 0.0 if wrap_mean == 0 else 99.0
-    return round(wrap_mean / inner_mean, 3)
-
-
 def g4_seam(frames: dict[str, Frame]) -> dict[str, Any]:
-    ratios = {name: seam_ratio(frame) for name, frame in frames.items()}
-    worst = max(ratios.values())
-    return {"warn": worst > SEAM_RATIO_MAX, "seam_ratio": worst, "max": SEAM_RATIO_MAX, "frames": ratios}
+    # Imported here: the measure is `background-tile`'s, made in one place.
+    from sprite_gen.background.tile import inspect_tile
+
+    per = {name: {axis: inspect_tile(image_of(frame), axis) for axis in ("x", "y")} for name, frame in frames.items()}
+    review = _needs_review(per)
+    return {"warn": bool(review), "needs_review": list(review), "frames": per}
+
+
+def _needs_review(per: dict[str, dict[str, dict[str, Any]]]) -> dict[str, list[str]]:
+    """`<frame> <axis>` of every join `inspect_tile` did not pass, with the reasons it gave."""
+    return {f"{name} {axis}": report["review_reasons"] for name, axes in per.items() for axis, report in axes.items()
+            if report["status"] != "pass"}
+
+
+def _g4_line(g4: dict[str, Any]) -> str:
+    said = "; ".join(f"{where}: {' '.join(reasons)}" for where, reasons in _needs_review(g4["frames"]).items())
+    return f"G4 tile seam (look at tiled-3x3.png): {said}"
 
 
 def isolated_pixels(frame: Frame) -> int:
-    height, width = len(frame), len(frame[0])
-    count = 0
-    for y in range(height):
-        for x in range(width):
-            if not _opaque(frame[y][x]):
-                continue
-            neighbours = ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
-            if not any(0 <= nx < width and 0 <= ny < height and _opaque(frame[ny][nx]) for nx, ny in neighbours):
-                count += 1
-    return count
+    # Imported here: the judgment is the matte cleanup's, made in one place.
+    from sprite_gen.frames.extract import isolated_dots
+
+    opaque = image_of(frame).getchannel("A").point(lambda a: 1 if a >= OPAQUE_MIN else 0)
+    return isolated_dots(opaque).histogram()[255]
 
 
 def g5_isolated(frames: dict[str, Frame]) -> dict[str, Any]:
@@ -245,8 +254,7 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
     if kind == "tile":
         gates["G4"] = g4_seam(frames)
         if gates["G4"]["warn"]:
-            warnings.append(f"G4 tile seam ratio {gates['G4']['seam_ratio']} > {SEAM_RATIO_MAX} "
-                            "(look at tiled-3x3.png: mortar lines on the edge raise it on tiles that repeat cleanly)")
+            warnings.append(_g4_line(gates["G4"]))
     else:
         gates["G5"] = g5_isolated(frames)
         if gates["G5"]["warn"]:
