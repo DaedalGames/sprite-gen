@@ -316,3 +316,47 @@ def test_frame_sequence_positional_contract_defaults_anchor_and_keeps_digests_ke
         FrameSequence((frame,), (1.0,), (1, float("nan")))
     backed = FrameSequence((frame,), (1.0,), None, (tmp_path / "x.png",), {}, source_digests=("abc",))
     assert backed.fingerprints() == {str(tmp_path / "x.png"): "abc"}
+
+
+def test_playback_metadata_is_preserved_by_the_shared_adapter(tmp_path):
+    source = descriptor(tmp_path)
+    data = json.loads(source.read_text())
+    policy = {"loop": False, "hold_last": True, "end_frame": 4,
+              "events": [{"frame": 2, "name": "impact"}], "blend": "add", "direction": "SW", "body_h": 32}
+    data.update(policy)
+    source.write_text(json.dumps(data))
+    seq = load_asset(source)
+    assert {key: seq.metadata[key] for key in policy} == policy
+
+
+def test_row_major_sheet_ignores_unused_cells_and_keeps_sidecar_policy(tmp_path):
+    sheet = Image.new("RGBA", (12, 16))
+    colors = ["red", "green", "blue"]
+    for index, color in enumerate(colors):
+        sheet.paste(Image.new("RGBA", (6, 8), color), ((index % 2)*6, (index // 2)*8))
+    sheet.save(tmp_path / "grid.png")
+    source = tmp_path / "grid.json"
+    source.write_text(json.dumps({"columns": 2, "rows": 2, "frame_width": 6, "frame_height": 8,
+        "frames": 3, "delay_ms": 100, "order": "row-major", "loop": False, "anchor": [2, 7]}))
+    seq = load_asset(source)
+    assert seq.anchor == (2, 7) and seq.metadata["loop"] is False
+    assert len(seq.frames) == 3
+    assert [f.getpixel((0, 0)) for f in seq.frames] == [Image.new("RGBA", (1, 1), c).getpixel((0, 0)) for c in colors]
+
+
+def test_all_direction_rows_share_one_snapshot_decode(tmp_path, monkeypatch):
+    source = tmp_path / "directions.json"
+    source.write_text(json.dumps({"cell": [6, 8], "frames": 2, "fps": 10, "rows": ["NE", "SW"]}))
+    image = Image.new("RGBA", (12, 16), "red")
+    image.paste(Image.new("RGBA", (12, 8), "blue"), (0, 8))
+    image.save(tmp_path / "directions.png")
+    reads, decodes = [], []
+    read, decode = assets._read_bytes, assets._decode_image
+    monkeypatch.setattr(assets, "_read_bytes", lambda p: (reads.append(p.name), read(p))[1])
+    monkeypatch.setattr(assets, "_decode_image", lambda data: (decodes.append(len(data)), decode(data))[1])
+    sequences = assets.load_asset_states(source)
+    assert list(sequences) == ["NE", "SW"]
+    assert reads == ["directions.json", "directions.png"] and len(decodes) == 1
+    assert sequences["NE"].frames[0].getpixel((0, 0)) == (255, 0, 0, 255)
+    assert sequences["SW"].frames[0].getpixel((0, 0)) == (0, 0, 255, 255)
+    assert sequences["NE"].fingerprints() == sequences["SW"].fingerprints()

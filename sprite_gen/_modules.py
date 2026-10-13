@@ -46,6 +46,7 @@ MODULE_DOMAIN = {
     'curation': 'curate',
     'anchor': 'curate',
     'compose_atlas': 'compose',
+    'game_pack': 'compose',
     'compose_cycle': 'compose',
     'compose_gif': 'compose',
     'compose_layers': 'compose',

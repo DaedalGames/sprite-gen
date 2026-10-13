@@ -11,6 +11,7 @@ from sprite_gen import _modules, gen
 from sprite_gen.background import tile
 from sprite_gen.curate import anchor
 from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compose_layers, export_aseprite, export_pngs
+from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
 from sprite_gen.frames import cutout, extract, slice_sheet, unpack_atlas
@@ -243,6 +244,7 @@ def _add_correction_loop(p: argparse.ArgumentParser) -> None:
 
 
 COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callable[..., int]]] = {
+    "game-pack": ("Resize finished assets into game atlases with playback policies.", game_pack.add_arguments, game_pack.run),
     "background-tile": ("Quilt a repeating RGBA background and measure its join.", tile.add_arguments, tile.run),
     "shadow": ("Project silhouette shadows from any supported asset.", shadow.add_arguments, shadow.run),
     "inspect-motion": ("Measure asset timing and contact evidence without changing animation.", motion.add_arguments, motion.run),
