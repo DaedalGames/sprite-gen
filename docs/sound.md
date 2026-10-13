@@ -78,17 +78,27 @@ Loop blending and buffer trimming are executed in the browser via the standalone
 ### Export Signatures
 
 - `prepareAudioBuffer(decoded, playback) => AudioBuffer`:
-  - Maps playback coordinates to decoded sample rate `r` (`decoded.sampleRate`):
-    - `first = Math.round(start_frame * r / sample_rate)`
-    - `N' = Math.round(N * r / sample_rate)`
-    - `L' = Math.round((N - M) * r / sample_rate)`
+  - Maps playback coordinates to decoded sample rate `r` (`decoded.sampleRate`) using `sr = playback.sample_rate`, `N = playback.end_frame - playback.start_frame`, and `M = playback.overlap_frames`:
+    - `first = Math.floor(playback.start_frame * r / sr)`
+    - `last = Math.floor(playback.end_frame * r / sr)`
+    - `N' = last - first`
+  - Rescaling performs multiplication before division (`frames * r / sr`). Boundary mapping discards fractional destination frames (<1 frame) via `Math.floor`. This is a declared coordinate quantization, not clamping to `decoded.length`.
+  - **Looping (`M > 0`)**:
+    - `L' = Math.round((N - M) * r / sr)` (computed once directly; positive `Math.round` ties round upward toward `+Infinity`).
     - `M' = N' - L'`
-    - `last = first + N'`
-  - Rounding uses standard JavaScript `Math.round` (positive ties round upward toward `+Infinity`). Coordinates are not clamped to `decoded.length`; truncated inputs throw an error.
-  - Constructs output of length `L'` by slicing `source[first + M' : last - M']` and blending tail `M'` with head `M'` using complementary cosine weights `0.5 - 0.5 * Math.cos(Math.PI * i / (M' - 1))`.
-  - For non-looping audio (`M = 0`), trims the buffer to `[first : last]` with length `L' = N'`.
-  - The input `AudioBuffer` is not modified.
-  - Employs an internal `WeakMap` cache per module instance. Calling with the same input buffer and playback metadata returns the previously prepared buffer. Passing an already prepared buffer with identical metadata returns itself; passing altered metadata on an already prepared buffer throws. Applications should import the same module URL once, retain prepared buffers, and avoid copying prepared PCM back into raw inputs.
+    - The final loop length `L'` stays nearest-rounded regardless of browser decoded buffer length. Do not independently round overlap or subtract independently rounded durations.
+    - Overlap validation: mapped loop overlap must satisfy `2 <= M' < N' / 2` (must contain at least 2 frames and be shorter than half the mapped interval).
+    - Constructs output of length `L'` by slicing `source[first + M' : last - M']` and blending tail `M'` with head `M'` using complementary cosine weights `0.5 - 0.5 * Math.cos(Math.PI * i / (M' - 1))`.
+  - **One-Shots (`M = 0`)**:
+    - `L' = N'` and `M' = 0`.
+    - Trims the mapped interval `[first : last]` to output length `L'`.
+  - **Decoded Length & Resampling Verification**:
+    - Requires `decoded.length >= last`. Tolerates no missing complete frames (throws if `decoded.length < last`). Any extra decoder padding frames after `last` are ignored.
+    - W3C Web Audio specifications mandate resampling when container and destination context sample rates differ, but do not mandate a uniform length rounding rule.
+    - Chromium calculates resampled buffer length as an integer truncated from `source_length / sample_rate_ratio` where `sample_rate_ratio = source_rate / destination_rate` (see [Blink `AudioBus::CreateBySampleRateConverting`](https://chromium.googlesource.com/chromium/src/+/6718b706ff100957d755554cec783840a8f1f05b/third_party/blink/renderer/platform/audio/audio_bus.cc)). For example, a synthetic 48 kHz WAVE with 144,003 frames resampled to 44.1 kHz (`144003 / (48000 / 44100) = 132302.75625`) truncates to 132,302 destination frames in Chromium.
+  - **Cache & Immutability**:
+    - The input `AudioBuffer` is not modified.
+    - Employs an internal `WeakMap` cache per module instance. Calling with the same input buffer and playback metadata returns the previously prepared buffer. Passing an already prepared buffer with identical metadata returns itself; passing altered metadata on an already prepared buffer throws. Applications should import the same module URL once, retain prepared buffers, and avoid copying prepared PCM back into raw inputs.
 - `createAudioSource(context, decoded, audio) => AudioBufferSourceNode`:
   - Calls `prepareAudioBuffer(decoded, audio.playback)`.
   - Instantiates an unstarted `AudioBufferSourceNode`. Sets `source.buffer = prepared`, `source.loop = audio.loop`, `source.loopStart = 0`, and `source.loopEnd = prepared.duration`.
