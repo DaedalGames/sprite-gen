@@ -9,6 +9,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.spec.runio import atomic_write_text
 
 
@@ -29,26 +30,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="sprite-score.report.json")
     parser.add_argument("--no-write", action="store_true")
     return parser
-
-
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 
 
 def _hint_for_row(row: dict[str, Any], *, histogram_min: float, dhash_min: float) -> list[str]:
@@ -161,7 +142,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def run(**kwargs: object) -> int:
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 
 def main() -> int:

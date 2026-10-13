@@ -11,7 +11,7 @@ from PIL import Image
 
 from sprite_gen import gen
 from sprite_gen.gen import base as gen_base
-from sprite_gen.gen import grok_provider as grok, xai
+from sprite_gen.gen import grok_provider as grok, retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access, guide
 
@@ -31,7 +31,8 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setenv("XAI_API_KEY", "synthetic-secret")
     monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("Grok Build must never be spawned"))
-    state = {"status": 200, "body": {"data": [{"b64_json": encoded_image()}]}, "calls": []}
+    state = {"status": 200, "body": {"data": [{"b64_json": encoded_image()}]}, "calls": [], "slept": []}
+    monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
     class Response:
         def __enter__(self):
@@ -46,6 +47,8 @@ def api(monkeypatch, tmp_path):
 
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
+        if state.get("script"):  # one (status, body) per request, in order
+            state["status"], state["body"] = state["script"].pop(0)
         return Response()
 
     monkeypatch.setattr(xai.urllib.request, "urlopen", open_request)
@@ -101,7 +104,7 @@ def test_direct_output_keeps_chroma_pipeline(tmp_path, api):
         assert image.getpixel((6, 4))[3] == 255
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
+@pytest.mark.parametrize("status", [400, 401, 403, 500, 503])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": "synthetic-secret https://signed.invalid/private?sig=abc"})
     out = tmp_path / "existing.png"
@@ -113,6 +116,24 @@ def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, sta
     assert '"error": "[redacted] https://signed.invalid/private?[redacted]"' in str(error.value)
     assert out.read_bytes() == b"existing"
     assert len(api["calls"]) == 1
+
+
+def test_a_rate_limit_is_sent_again_and_the_image_published_once(tmp_path, api, capsys):
+    """xAI documents 429 as a request not taken ("reached the rate limit", read 2026-10-13, gen.retry):
+    the image is asked for again after the doubling wait, as the video polls wait."""
+    api["script"] = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, {"data": [{"b64_json": encoded_image()}]})]
+    result = gen.generate_image("grok", "x", tmp_path / "out.png")
+    assert len(api["calls"]) == 2 and api["slept"] == [8.0] and result.out.is_file()
+    assert "[gen] grok refused the request (429 resource-exhausted); nothing was made — asking again in 8s (1 of 2)" \
+        in capsys.readouterr().err
+
+
+def test_a_rate_limit_still_there_after_two_more_sends_ends_the_call(tmp_path, api):
+    api.update(status=429, body={"code": "resource-exhausted", "error": "slow down"})
+    with pytest.raises(SystemExit) as error:
+        gen.generate_image("grok", "x", tmp_path / "out.png")
+    assert "(HTTP 429) code=resource-exhausted; sent 3 times, no provider fallback" in str(error.value)
+    assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
 @pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
@@ -183,7 +204,7 @@ def _subscription_login(tmp_path, monkeypatch):
         "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
 
 
-@pytest.mark.parametrize("status", [200, 403, 429])
+@pytest.mark.parametrize("status", [200, 403, 503])
 def test_images_use_subscription_even_with_api_key(tmp_path, api, monkeypatch, status):
     _subscription_login(tmp_path, monkeypatch)
     api["status"] = status

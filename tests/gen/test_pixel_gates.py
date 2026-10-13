@@ -320,3 +320,25 @@ def test_recorded_answers_from_the_full_canvas_prompt_pass_g8_with_warnings():
     assert gates["ok"] and gates["failed"] == [] and gates["info"] == []
     assert gates["warnings"] == ["G8: frames exceed the physical cap 16x15 (reroll candidates): front:14x16",
                                  "G8 the feet are not on the floor row (the safe area's bottom row): front 1 px below it"]
+
+
+def test_g8_reads_a_frames_opaque_box_off_the_image_paths_judgment(monkeypatch):
+    """The opaque box G8 sizes a frame by is `frames.extract.solid_alpha_bbox` (alpha at least 128), the
+    box the image path crops a sprite to — one measure, not a second count of opaque rows here."""
+    from sprite_gen.frames import extract
+
+    real, seen = extract.solid_alpha_bbox, []
+
+    def recording(image, threshold=128):
+        seen.append((image.getchannel("A").tobytes(), threshold))
+        return real(image, threshold)
+
+    monkeypatch.setattr(extract, "solid_alpha_bbox", recording)
+    frame = blob(size=16, top=3, bottom=12)
+    g8 = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)["G8"]
+    assert seen == [(pg.image_of(frame).getchannel("A").tobytes(), pixel_gates.OPAQUE_MIN)]
+    assert g8["frames"]["f"]["bbox"] == [2, 3, 13, 12] and g8["frames"]["f"]["size"] == [12, 10]
+    # What it answers is what G8 measures: a box it says is wider is a wider frame.
+    monkeypatch.setattr(extract, "solid_alpha_bbox", lambda image, threshold=128: (0, 3, 16, 13))
+    g8 = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)["G8"]
+    assert g8["frames"]["f"]["bbox"] == [0, 3, 15, 12] and g8["frames"]["f"]["size"] == [16, 10]

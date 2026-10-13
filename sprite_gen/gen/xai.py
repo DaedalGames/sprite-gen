@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import refusal
+from . import refusal, retry
 
 API_BASE = "https://api.x.ai/v1"
 AUTH_ENV = "XAI_API_KEY"
@@ -132,6 +132,16 @@ def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | Non
 
 HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]
 
+
+def post(call: HttpCall, url: str, token: str, body: dict, *, who: str, label: str,
+         sleep: Callable[[float], None] | None = None) -> tuple[int, Any, int]:
+    """POST `body` with `call` (as http_json), and again after a refusal `retry` sends again: (status, answer,
+    sends). xAI documents 429 alone as a request not taken, and no retry-after, so http_json keeps no headers."""
+    status, reply, _headers, sends = retry.ask(lambda: (*call("POST", url, token, body), None), provider="xai",
+                                               who=who, label=label, sleep=sleep, kind=refusal.provider_code)
+    return status, reply, sends
+
+
 TRANSPORT_FAILED = "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
 NOT_JSON = "xai: response was not valid JSON"
 
@@ -207,6 +217,17 @@ def read_whole(response: http.client.HTTPResponse, timeout: float, deadline: flo
     return data
 
 
+def error_body(refused: urllib.error.HTTPError, timeout: float = HTTP_TIMEOUT_SECONDS, deadline: float | None = None) -> Any:
+    """The body of a refusal, read whole (read_whole): its JSON, or its text as `refusal.RawBody`. A refusal's
+    status alone is not an answer read whole: a body broken on the way raises what broke it (one of NO_ANSWER),
+    which every direct provider transport (`xai`, `anthropic_api`, `openai_provider`) takes as no answer."""
+    raw = read_whole(refused.fp, timeout, deadline).decode("utf-8", "replace")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return refusal.RawBody(raw)
+
+
 def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS,
               deadline: float | None = None) -> tuple[int, Any]:
     """One request, its JSON answer read whole. `timeout` bounds each wait on the connection. A `deadline`
@@ -226,14 +247,9 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise TransportError("response was not valid JSON", NOT_JSON) from exc
     except urllib.error.HTTPError as exc:
-        # A refusal's status alone is not an answer read whole: its body broken on the way is no answer too.
         try:
-            raw = read_whole(exc.fp, timeout, deadline).decode("utf-8", "replace")
+            return exc.code, error_body(exc, timeout, deadline)
         except NO_ANSWER as cut:
             raise no_answer(cut) from cut
-        try:
-            return exc.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return exc.code, refusal.RawBody(raw)
     except NO_ANSWER as exc:
         raise no_answer(exc) from exc

@@ -42,6 +42,8 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from sprite_gen.util.hexcolor import format_hex
+
 from .pixel_grid import Pixel, PaletteRule, image_of
 
 OPAQUE_MIN = 128  # the alpha at which a pixel is solid, as the engine reads solid pixels
@@ -56,13 +58,9 @@ def _opaque(pixel: Pixel) -> bool:
     return pixel[3] >= OPAQUE_MIN
 
 
-def _hex(pixel: Pixel) -> str:
-    return "#{:02X}{:02X}{:02X}".format(*pixel[:3])
-
-
 def colors_used(frames: dict[str, Frame]) -> list[str]:
     """The opaque colours of the frames, `#RRGGBB`, sorted: what G2 counts and `palette.json` lists."""
-    return sorted({_hex(p) for frame in frames.values() for row in frame for p in row if _opaque(p)})
+    return sorted({format_hex(p) for frame in frames.values() for row in frame for p in row if _opaque(p)})
 
 
 def g2_palette(frames: dict[str, Frame], rule: PaletteRule) -> dict[str, Any]:
@@ -189,18 +187,22 @@ def _body_lines(counts: list[int]) -> list[int]:
 
 
 def _frame_boxes(frame: Frame) -> dict[str, Any]:
-    """The opaque box of a frame and its size, and its body box."""
+    """The opaque box of a frame and its size, and its body box. The opaque box is the image path's,
+    `frames.extract.solid_alpha_bbox` (alpha at least OPAQUE_MIN), its last column and row inclusive."""
+    # Imported here, as `safe_area_fit` below: the box is the image path's, measured in one place.
+    from sprite_gen.frames.extract import solid_alpha_bbox
+
+    box = solid_alpha_bbox(image_of(frame), OPAQUE_MIN)
+    if box is None:
+        return {"bbox": None, "size": [0, 0], "body_box": None}
+    left, top, right, bottom = box
     height, width = len(frame), len(frame[0])
     rows = [sum(1 for p in row if _opaque(p)) for row in frame]
     columns = [sum(1 for y in range(height) if _opaque(frame[y][x])) for x in range(width)]
-    if not any(rows):
-        return {"bbox": None, "size": [0, 0], "body_box": None}
-    used_rows = [y for y, n in enumerate(rows) if n]
-    used_columns = [x for x, n in enumerate(columns) if n]
     body_rows, body_columns = _body_lines(rows), _body_lines(columns)
     return {
-        "bbox": [used_columns[0], used_rows[0], used_columns[-1], used_rows[-1]],
-        "size": [used_columns[-1] - used_columns[0] + 1, used_rows[-1] - used_rows[0] + 1],
+        "bbox": [left, top, right - 1, bottom - 1],
+        "size": [right - left, bottom - top],
         "body_box": [body_columns[0], body_rows[0], body_columns[-1], body_rows[-1]],
     }
 

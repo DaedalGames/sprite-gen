@@ -107,17 +107,48 @@ def test_a_refused_request_is_asked_again_and_said(server, capsys):
     waits = []
     reply = api.stream_message(KEY, body(), sleep=waits.append, label="pixel-draw c1-gen1")
     assert reply.request_id == "req_2" and len(server.asked) == 3
-    assert waits == [10.0, 3.0]  # the schedule, then the server's retry-after
+    assert waits == [8.0, 3.0]  # the doubling wait (gen.retry.backoff), then the server's retry-after
     err = capsys.readouterr().err
     assert "[pixel-draw c1-gen1] claude refused the request (529 overloaded_error); nothing was made" in err
     assert "(1 of 2)" in err and "(2 of 2)" in err
 
 
 def test_refusals_past_the_retries_end_the_call(server):
-    server.script += [("json", 503, {}, {"type": "error", "error": {"type": "api_error"}})] * 3
+    server.script += [("json", 529, {}, {"type": "error", "error": {"type": "overloaded_error"}})] * 3
+    waits = []
     with pytest.raises(api.ApiError) as caught:
-        api.stream_message(KEY, body(), sleep=lambda s: None)
-    assert caught.value.status == 503 and caught.value.billed is False and len(server.asked) == 3
+        api.stream_message(KEY, body(), sleep=waits.append)
+    assert caught.value.status == 529 and caught.value.billed is False and len(server.asked) == 3
+    assert waits == [8.0, 16.0]
+
+
+@pytest.mark.parametrize(("status", "error"), [
+    (502, {}), (503, {}),
+    (504, {"type": "timeout_error"}),  # "The request timed out while processing": it was worked on
+    (429, {"type": "rate_limit_error", "details": {"error_code": "enforced_spend_limit_reached"}}),  # the spend cap
+])
+def test_a_refusal_anthropic_does_not_document_as_not_taken_is_not_asked_again(server, status, error):
+    """Only 429 (but the spend cap, which "fails until access resumes"), 500 and 529 are (gen.retry,
+    the errors and rate-limits pages read 2026-10-13)."""
+    server.script.append(("json", status, {}, {"type": "error", "error": error}))
+    with pytest.raises(api.ApiError) as caught:
+        api.stream_message(KEY, body(), sleep=lambda s: pytest.fail(f"a {status} is not asked again"))
+    assert caught.value.status == status and len(server.asked) == 1
+
+
+def test_a_retry_after_longer_than_the_run_waits_is_not_waited_out_early(server):
+    server.script.append(("json", 429, {"retry-after": "600"}, {"type": "error", "error": {"type": "rate_limit_error"}}))
+    with pytest.raises(api.ApiError, match=r"\(HTTP 429\)"):
+        api.stream_message(KEY, body(), sleep=lambda s: pytest.fail("never asked again sooner than it said"))
+    assert len(server.asked) == 1
+
+
+def test_a_batch_read_refused_on_the_providers_side_is_read_again(server):
+    """A GET buys nothing: a 502 on a batch's status is asked again, where the same answer to a POST is not."""
+    server.script += [("json", 502, {}, b"<html>bad gateway</html>"), ("json", 200, {}, {"id": "msgbatch_1"})]
+    waits = []
+    assert api.get_batch(KEY, "msgbatch_1", sleep=waits.append) == {"id": "msgbatch_1"}
+    assert waits == [8.0] and [asked["method"] for asked in server.asked] == ["GET", "GET"]
 
 
 def test_a_bad_request_is_not_asked_again_and_the_key_is_masked(server):

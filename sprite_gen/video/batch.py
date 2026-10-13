@@ -3,8 +3,9 @@
 
 For every (direction, state) pair: canvas -> `sprite-gen video` -> frames -> loop.
 Clip generation is rate-limited by the xAI team quota (2 requests/second measured
-2026-09-08: five parallel POSTs produced two HTTP 429s), so starts are staggered
-and a 429 gets a bounded, logged retry. Stages are idempotent — an item whose
+2026-09-08: five parallel POSTs produced two HTTP 429s), so starts are staggered;
+a 429 is sent again by `sprite-gen video` itself (`gen.retry`), never by the batch
+on top of it. Stages are idempotent — an item whose
 clip already exists reuses it unless `--force` — and a failure stops only that
 item, never the batch. The batch ends with `set.report.json` and `table.md`; an
 item that failed is listed with its stage and error, never silently dropped.
@@ -60,7 +61,6 @@ PINNED_LOOP_STATES = frozenset({"idle", "attack"})
 # States filmed as a fast action (`ACTION_COMMON_TEXT`): crisp frames, what they hold kept inside
 # the frame, and no "evenly paced" line.
 ACTION_TEXT_STATES = frozenset({"attack"})
-RETRY_BACKOFF_SECONDS = (15, 30)
 
 
 def duration_for(state: str, requested: int | None) -> int:
@@ -735,19 +735,12 @@ def run_item(
         if reuse_clip:
             result["clip"] = {"reused": True}
         else:
-            attempts: list[int] = []
-            for attempt in range(1 + len(RETRY_BACKOFF_SECONDS)):
-                _staggered_start(gap)
-                pin = {"last_frame": canvas_png} if pins_last_frame(state, direction) else {}
-                rc = video_runner(canvas_png, prompt, clip, clip_report, duration=duration, resolution=resolution, log=item_dir / "clip.log", **pin)
-                attempts.append(rc)
-                if rc == 0 and clip.exists():
-                    break
-                text = (item_dir / "clip.log").read_text(encoding="utf-8", errors="replace") if (item_dir / "clip.log").exists() else ""
-                if "HTTP 429" in text and attempt < len(RETRY_BACKOFF_SECONDS):
-                    time.sleep(RETRY_BACKOFF_SECONDS[attempt])
-                    continue
-                break
+            # One run of `sprite-gen video`: a 429 is sent again inside it (`gen.retry`), so a second run here
+            # would be a second retry loop on top of the first, each of its POSTs a request.
+            _staggered_start(gap)
+            pin = {"last_frame": canvas_png} if pins_last_frame(state, direction) else {}
+            attempts = [video_runner(canvas_png, prompt, clip, clip_report, duration=duration, resolution=resolution,
+                                     log=item_dir / "clip.log", **pin)]
             result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": pins_last_frame(state, direction)}
             if attempts[-1] != 0 or not clip.exists():
                 raise SystemExit(f"clip generation failed after {len(attempts)} attempt(s); see {item_dir / 'clip.log'}")

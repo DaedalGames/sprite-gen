@@ -10,6 +10,7 @@ path or a "done" string (No Silent Fallback).
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from PIL import Image, UnidentifiedImageError
 
@@ -117,6 +118,31 @@ def announce_api_billing(provider: str, env_name: str, detail: str = "") -> None
         f"not a subscription{detail}",
         file=sys.stderr,
     )
+
+
+def flags_over_spec(spec: Mapping[str, Any], flags: Mapping[str, Any], *, verb: str, source: str,
+                    spelled: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """`spec` — what a spec file or a request says — with every flag given laid over the key it sets.
+
+    A key given both ways takes the flag, and one stderr line names every such flag, so a value the
+    file holds is never replaced in silence: the one answer of every verb that reads a file of the
+    same keys as its flags (`prepare --request`, `pixel-draw --spec`). `flags` holds the flags that
+    were given, by the key each sets; a dotted key (`cell.width`) sets a key of an object in `spec`.
+    `spelled` names a key's flag where it is not `--key-with-dashes`."""
+    merged = copy.deepcopy(dict(spec))
+    both: list[str] = []
+    for key, value in flags.items():
+        *parents, leaf = key.split(".")
+        node = merged
+        for name in parents:
+            node[name] = node = dict(node.get(name) or {})
+        name = (spelled or {}).get(key, "--" + key.replace("_", "-"))
+        if leaf in node and name not in both:
+            both.append(name)
+        node[leaf] = value
+    if both:
+        print(f"[{verb}] {', '.join(both)} given both as a flag and in {source}: the flag wins", file=sys.stderr)
+    return merged
 
 
 def print_json(payload: dict) -> None:

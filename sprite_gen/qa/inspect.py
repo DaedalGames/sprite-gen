@@ -12,6 +12,7 @@ from typing import Any
 
 from PIL import Image, ImageChops
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.frames import extract
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, state_frame_total
 from sprite_gen.spec.runio import (acquire_run_dir_lock, atomic_write_text, load_request,
@@ -43,26 +44,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decontam", choices=("off", "auto", "palette"), default=None)
     parser.add_argument("--no-write", action="store_true")
     return parser
-
-
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 
 
 def _state_list(request: dict[str, Any], states: str) -> list[str]:
@@ -310,7 +291,7 @@ def inspect_run(run_dir: Path, states: str = "all", **kwargs: object) -> dict[st
 
 
 def _inspect_run_impl(run_dir: Path, states: str = "all", **kwargs: object) -> dict[str, Any]:
-    args = _namespace_from_kwargs(run_dir=run_dir, states=states, no_write=True, **kwargs)
+    args = namespace_from_kwargs(_build_parser(), dict(run_dir=run_dir, states=states, no_write=True, **kwargs))
     run_dir = args.run_dir.expanduser().resolve()
     # Fail loud on a corrupt/inconsistent generation or orphan frames (frames with no manifest) —
     # otherwise the correction loop would read stale frames as ok:true (No Silent Fallback). A run
@@ -430,7 +411,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def run(**kwargs: object) -> int:
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 
 def main() -> int:

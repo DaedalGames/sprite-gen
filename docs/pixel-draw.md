@@ -67,7 +67,7 @@ candidate's files are at the top of the run folder.
 | Flag | Values (default) | What it does |
 |---|---|---|
 | `--subject TEXT` | words | What to draw. For several frames, say what each one is (the frame names are listed for the model, their meaning comes from your words). |
-| `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette` instead of the flags. A key given both in the file and as a flag is refused. |
+| `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette` instead of the flags. A key given both in the file and as a flag takes the flag, said on one stderr line ([run contract](run-contract.md#1-pipeline-stages)). |
 | `--size N` | 8–48 (32) | Canvas side in pixels; every frame is N×N, a sprite's or icon's body about the size of the [safe area](#the-safe-area) (26×26 at 32). Measured best at 32 or less. |
 | `--kind` | `sprite`, `icon`, `tile` (`sprite`) | Sprites and icons have a transparent background, a dark outline and a margin around the body; a tile fills every pixel and repeats seamlessly. |
 | `--frames a,b,…` | 1–4 names (one frame named after `--kind`) | Frames drawn **in one call**, so they share one palette and one design. Names are letters, digits, `_` and `-`. |
@@ -181,12 +181,16 @@ answers a question the verb asks, it asks that function; a part that is its own 
 | G3 transparent background | `gen.chroma.alpha_verdict`, which `classify_raw_alpha` reads a raw by | [gen.md](gen.md#transparent-output--strategy-per-provider) |
 | G4 tile seam | `background.tile.inspect_tile`, `background-tile`'s join measure | [asset-tools.md](asset-tools.md#repeating-tiles) |
 | G5 stray pixels | `frames.extract.isolated_dots`, the YCbCr matte cleanup's lone pixels | [chroma-alpha.md](chroma-alpha.md#chromamode-ycbcr--chrominance-plane-matting-opt-in) |
-| G8 safe area | `frames.extract.safe_area_fit`, the pixel snap's judgment | [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode) |
+| G8 safe area | `frames.extract.safe_area_fit`, the pixel snap's judgment; a frame's opaque box, `frames.extract.solid_alpha_bbox` | [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode) |
+| `--spec` and a flag with the same key | `gen.base.flags_over_spec`, `prepare --request`'s answer: the flag wins, said on one line | [run-contract.md](run-contract.md#1-pipeline-stages) |
+| A call sent again, and the wait | `gen.retry`, every direct provider call's rule | [gen.md](gen.md#a-refused-request-sent-again) |
+| A palette colour read and written | `util.hexcolor` | — |
+| `run(**kwargs)` | `util.cli_kwargs.namespace_from_kwargs` | — |
 | `anim.gif` | `util.gif_utils.save_clean_gif` | — |
 | The pick sheet's checker | `qa.preview.checker`, the contact sheets' | — |
 | The billing line, the printed report | `gen.base.announce_api_billing`, `gen.base.print_json` | [gen.md](gen.md) |
 | The refusal line | `gen.refusal` (`CONTENT_POLICY`) | [gen.md](gen.md#direct-openai-calls-and-authentication) |
-| What ends a call unanswered, and its words | `gen.xai` (`NO_ANSWER`, `no_answer_reason`) | — |
+| What ends a call unanswered, and its words; a refusal's body | `gen.xai` (`NO_ANSWER`, `no_answer_reason`, `error_body`) | — |
 
 Its own, because nothing in sprite-gen does it: the grid and its parse (G1), the row repair, the palette
 rules (`--palette`), `frame-<name>.png`'s encoder (its bytes depend on the pixels alone, which Pillow's
@@ -245,10 +249,12 @@ The run ends non-zero with one line on stderr, and the report says the rest:
 - **Every candidate refused** — `pixel-draw: refused by the provider's content policy
   (stop_reason=refusal category=<category>); every candidate was refused` (the
   [refusal marker](gen.md#direct-openai-calls-and-authentication) callers already read).
-- **A call failed** — a request the API refused before answering (429, 5xx, 529 overloaded) made
-  nothing and is asked again twice, each wait said on stderr. Anything else — a 400, a rejected key,
-  a stream that broke after it began (what was written may be billed) — ends that candidate with
-  the API's line (the key masked) and is not asked again.
+- **A call failed** — a request the API refused before answering in a way Anthropic documents as a
+  request not taken (429 but its spend cap, 500, 529 overloaded) made nothing and is asked again
+  twice, each wait said on stderr ([a refused request sent again](gen.md#a-refused-request-sent-again)).
+  Anything else — a 400, a rejected key, a 502, 503 or 504, a stream that broke after it began
+  (what was written may be billed) — ends that candidate with the API's line (the key masked) and
+  is not asked again.
 - **A batch not collected** — `unfinished`, below.
 
 ## Message Batches and `--resume`

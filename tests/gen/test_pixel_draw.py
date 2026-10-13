@@ -454,8 +454,6 @@ def test_a_spec_file_holds_the_drawing(tmp_path, claude):
     spec.write_text(json.dumps({"subject": "a slime", "size": 16, "frames": ["front"], "palette": ["#112233", "#445566"]}),
                     encoding="utf-8")
     claude({})
-    with pytest.raises(SystemExit, match=r"--size given both as a flag and in --spec"):
-        draw(tmp_path / "a", "--spec", str(spec), "--size", "16")
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"subject": "x", "effort": "high"}), encoding="utf-8")
     with pytest.raises(SystemExit, match=r"unknown key\(s\) effort"):

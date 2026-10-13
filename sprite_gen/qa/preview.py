@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.frames.extract import require_frames_manifest
 from sprite_gen.spec.runio import REQUEST_FILENAME, load_request, read_guard
 from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, save_clean_gif
@@ -70,24 +71,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _run(args: argparse.Namespace):
 
     run_dir = args.run_dir.expanduser().resolve()
@@ -169,7 +152,7 @@ def _run_guarded(args, run_dir):
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
     parser = _build_parser()

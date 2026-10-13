@@ -20,8 +20,10 @@ names it and never as a default, a saved preference, a guided-flow option or a
 fallback target, and every call announces the charge on stderr before it leaves.
 Personal use belongs on a subscription provider (`codex`, `grok`).
 
-This provider never falls back to codex, to another key, or to a retry: a missing
-credential, a rejected key or a failed request is the observable outcome.
+This provider never falls back to codex or to another key: a missing credential, a
+rejected key or a failed request is the observable outcome. A refusal OpenAI documents as
+a request not taken (429 but its billing codes, 503 overloaded) is sent again, twice at
+most and each time said on stderr — `retry`, the rule every direct provider call keeps.
 """
 from __future__ import annotations
 
@@ -39,7 +41,8 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from . import refusal
+from . import refusal, retry
+from .xai import NO_ANSWER, error_body
 from .base import (
     GEN_TIMEOUT_SECONDS,
     QUALITIES,
@@ -213,11 +216,15 @@ def _multipart_request(fields: dict[str, str], refs: list[Path]) -> tuple[bytes,
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
+TRANSPORT_FAILED = "openai-gen: request failed or timed out; no automatic retry (the server may have accepted it)"
+
+
 def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout: float) -> tuple[int, Any, Any]:
     """POST an images request and return (status, parsed JSON, response headers).
 
     A transport error is terminal: the server may already have accepted and billed
-    the request, so it is never retried here.
+    the request, so it is never retried here. A refusal whose body broke on the way
+    is one too (`xai.error_body`).
     """
     request = urllib.request.Request(url, data=data, method="POST")
     request.add_header("Authorization", f"Bearer {token}")
@@ -230,15 +237,16 @@ def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SystemExit("openai-gen: response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
         try:
-            return exc.code, json.loads(raw), exc.headers
-        except json.JSONDecodeError:
-            return exc.code, refusal.RawBody(raw), exc.headers
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SystemExit(
-            "openai-gen: request failed or timed out; no automatic retry (the server may have accepted it)"
-        ) from exc
+            return exc.code, error_body(exc, timeout), exc.headers
+        except NO_ANSWER as cut:
+            raise SystemExit(TRANSPORT_FAILED) from cut
+    except NO_ANSWER as exc:
+        raise SystemExit(TRANSPORT_FAILED) from exc
+
+
+def _ask(send: retry.Send) -> tuple[int, Any, Any, int]:
+    return retry.ask(send, provider="openai", who="openai", label="gen", kind=refusal.provider_code)
 
 
 def rate_limit_headers(headers: Any) -> dict[str, str]:
@@ -277,9 +285,9 @@ class OpenAIProvider:
         from . import facing_vision as vision
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, " (facing vision check).")
-        status, reply, _headers = http_image(API_BASE + "/responses", token,
-                                             json.dumps(vision.request_body(path, vision.OPENAI_MODEL)).encode("utf-8"),
-                                             "application/json", timeout=GEN_TIMEOUT_SECONDS)
+        data = json.dumps(vision.request_body(path, vision.OPENAI_MODEL)).encode("utf-8")
+        status, reply, _headers, _asks = _ask(lambda: http_image(API_BASE + "/responses", token, data, "application/json",
+                                                                 timeout=GEN_TIMEOUT_SECONDS))
         text, metadata = vision.response_text(status, reply)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -299,7 +307,8 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply, headers = http_image(API_BASE + endpoint, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS)
+        status, reply, headers, asks = _ask(lambda: http_image(API_BASE + endpoint, token, data, content_type,
+                                                               timeout=GEN_TIMEOUT_SECONDS))
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).
@@ -312,7 +321,7 @@ class OpenAIProvider:
         if refused is not None:
             raise SystemExit(
                 f"openai-gen: {refused.reason('image request failed')} (HTTP {status}){refused.suffix()}; "
-                f"no retry or provider fallback{refusal.said(reply, token)}"
+                f"{retry.tail(asks)}{refusal.said(reply, token)}"
             )
         items = reply.get("data") if isinstance(reply, dict) else None
         if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):

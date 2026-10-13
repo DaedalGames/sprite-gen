@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 
@@ -770,13 +771,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(**kwargs: object) -> int:
-    parser = _build_parser()
-    known = {action.dest for action in parser._actions if action.dest != "help"}
-    unexpected = set(kwargs) - known
-    if unexpected:
-        raise TypeError(f"unexpected keyword argument(s): {', '.join(sorted(unexpected))}")
-    namespace = argparse.Namespace(**{dest: kwargs.get(dest, parser.get_default(dest)) for dest in known})
-    return _run(namespace)
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 
 def main(argv: list[str] | None = None) -> int:

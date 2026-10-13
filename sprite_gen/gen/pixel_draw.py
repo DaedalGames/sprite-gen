@@ -51,10 +51,11 @@ from PIL import Image, ImageDraw
 
 from sprite_gen.qa.preview import checker
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import anthropic_api as api
 from . import refusal
 from .anthropic_api import ApiError, Reply
-from .base import announce_api_billing, print_json
+from .base import announce_api_billing, flags_over_spec, print_json
 from .pixel_gates import colors_used, evaluate, safe_area
 from .pixel_grid import (
     FORMATS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, palette_rule, parse_answer,
@@ -175,11 +176,7 @@ def _load_spec(path: Path) -> dict[str, Any]:
 def resolve_request(args: argparse.Namespace) -> PixelRequest:
     spec = _load_spec(args.spec) if args.spec else {}
     given = {key: getattr(args, key) for key in SPEC_KEYS if getattr(args, key) is not None}
-    both = sorted(set(spec) & set(given))
-    if both:
-        raise _refuse(f"{', '.join('--' + k.replace('_', '-') for k in both)} given both as a flag and in --spec; "
-                      "say each once")
-    merged = {**spec, **given}
+    merged = flags_over_spec(spec, given, verb=VERB, source="--spec")
     subject = merged.get("subject")
     if not isinstance(subject, str) or not subject.strip():
         raise _refuse("nothing to draw — pass --subject TEXT or --spec FILE with a subject")
@@ -1077,11 +1074,7 @@ def _call_order(call_id: str) -> tuple:
 def run(**kwargs: Any) -> int:
     parser = argparse.ArgumentParser()
     add_arguments(parser)
-    known = {action.dest for action in parser._actions if action.dest != "help"}
-    unexpected = set(kwargs) - known
-    if unexpected:
-        raise TypeError(f"unexpected keyword argument(s): {', '.join(sorted(unexpected))}")
-    return _run(argparse.Namespace(**{dest: kwargs.get(dest, parser.get_default(dest)) for dest in known}))
+    return _run(namespace_from_kwargs(parser, kwargs))
 
 
 def main(argv: list[str] | None = None) -> int:

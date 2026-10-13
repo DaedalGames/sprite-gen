@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
-from . import refusal, xai
+from . import refusal, retry, xai
 from .base import (
     GEN_TIMEOUT_SECONDS,
     RESOLUTIONS,
@@ -141,8 +141,8 @@ class GrokProvider:
                                  f"{f' ({priced})' if priced else ''} — "
                                  f"`{xai.GROK_LOGIN_COMMAND}` signs your Grok subscription in.")
         started = time.monotonic()
-        status, reply = xai.http_json("POST", xai.API_BASE + endpoint, credential.token,
-                                      body, timeout=GEN_TIMEOUT_SECONDS)
+        status, reply, sends = xai.post(lambda *a: xai.http_json(*a, timeout=GEN_TIMEOUT_SECONDS),
+                                        xai.API_BASE + endpoint, credential.token, body, who="grok", label="gen")
         # The provider's code goes in front, format-checked; the body it sent goes
         # last, as received, with keys and URL query strings masked (refusal.said).
         # The REST image answer has no moderation field (docs.x.ai reference; a
@@ -159,7 +159,7 @@ class GrokProvider:
         if refused is not None:
             scoped = f" (sent with {priced}, documented for {DEFAULT_MODEL})" if priced and body["model"] != DEFAULT_MODEL else ""
             raise SystemExit(f"grok-gen: {refused.reason('image request failed')} (HTTP {status}){refused.suffix()}; "
-                             f"no retry or provider fallback{scoped}{refusal.said(reply, credential.token)}")
+                             f"{retry.tail(sends)}{scoped}{refusal.said(reply, credential.token)}")
         items = reply.get("data") if isinstance(reply, dict) else None
         if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
             raise SystemExit("grok-gen: expected exactly one image in the response; nothing published")

@@ -34,6 +34,7 @@ from typing import Any
 
 from PIL import Image
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.curate.curation import imported_ref_role
 from sprite_gen.spec.runio import (
     LOCK_FILENAME,
@@ -437,24 +438,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _run(args: argparse.Namespace):
 
     # default the run dir to a clearly-findable sibling next to the input.
@@ -618,7 +601,7 @@ def _run(args: argparse.Namespace):
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
     parser = _build_parser()

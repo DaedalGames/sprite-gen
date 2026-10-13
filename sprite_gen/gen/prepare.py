@@ -19,6 +19,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
+from sprite_gen.util.hexcolor import format_hex, parse_hex
 from sprite_gen.curate.anchor import anchor_ref_rel
 from sprite_gen.frames.extract import color_distance
 from sprite_gen.compose.layers import require_valid_layer_request
@@ -27,11 +29,14 @@ from sprite_gen.spec.subject import SUBJECTS
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 
+from .base import flags_over_spec
+
 
 # Default safe margin is proportional to the cell dimension (floored), not a fixed
 # pixel count — 9.4% keeps the same relative reserve at every cell size
 # (256 -> 24px, 128 -> 12px). An explicit request/CLI value stays absolute.
 DEFAULT_SAFE_MARGIN_RATIO = 0.094
+CELL_SIZE_DEFAULT = 256
 
 DEFAULT_STATES: dict[str, dict[str, Any]] = {
     "idle": {"frames": 4, "fps": 4, "loop": True, "action": "subtle breathing and blinking"},
@@ -190,13 +195,10 @@ CHROMA_CANDIDATES = [
 
 
 def parse_hex_color(value: str) -> tuple[int, int, int]:
-    if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
-        raise SystemExit(f"invalid chroma key color: {value}; expected #RRGGBB")
-    return tuple(int(value[index : index + 2], 16) for index in (1, 3, 5))
-
-
-def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
-    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    try:
+        return parse_hex(value)
+    except ValueError:
+        raise SystemExit(f"invalid chroma key color: {value}; expected #RRGGBB") from None
 
 
 # The reference is sampled with NEAREST, not LANCZOS: a resampling filter that
@@ -289,7 +291,7 @@ def detect_reference_background(image: Image.Image) -> dict[str, Any]:
         }
     return {
         "mode": "flat",
-        "hex": rgb_to_hex(background),
+        "hex": format_hex(background),
         "rgb": list(background),
         "opaque_border_fraction": round(opaque_fraction, 3),
         "border_coverage": round(coverage, 3),
@@ -407,7 +409,7 @@ def sampled_reference_pixels(path: Path | None) -> list[tuple[int, int, int]]:
 def choose_chroma_key(reference: Path | None, requested: str) -> dict[str, Any]:
     if requested.lower() != "auto":
         rgb = parse_hex_color(requested)
-        hex_value = rgb_to_hex(rgb)
+        hex_value = format_hex(rgb)
         name = next((candidate_name for candidate_name, candidate_hex in CHROMA_CANDIDATES if candidate_hex == hex_value), "manual")
         return {"name": name, "hex": hex_value, "rgb": list(rgb), "selection": "manual"}
 
@@ -447,7 +449,7 @@ def choose_chroma_key(reference: Path | None, requested: str) -> dict[str, Any]:
     score, min_distance, _preference, name, rgb = max(safe) if safe else max(scored)
     result = {
         "name": name,
-        "hex": rgb_to_hex(rgb),
+        "hex": format_hex(rgb),
         "rgb": list(rgb),
         "selection": "auto",
         "score": round(score, 2),
@@ -456,7 +458,7 @@ def choose_chroma_key(reference: Path | None, requested: str) -> dict[str, Any]:
         "candidates": [
             {
                 "name": entry[3],
-                "hex": rgb_to_hex(entry[4]),
+                "hex": format_hex(entry[4]),
                 "score": round(entry[0], 2),
                 "min_subject_distance": round(entry[1], 2),
                 "clears_erase_radius": entry[1] > MIN_SUBJECT_KEY_DISTANCE,
@@ -516,7 +518,7 @@ def normalize_states(raw: dict[str, Any] | None, bodies: list[Body] | None = Non
 # after the fact (docs/layer-tracks.md §2 B1). The lists are the one place that
 # rule is written down, and `dropped_key_notes` makes every drop observable
 # instead of silent.
-REQUEST_KEYS_CARRIED = ("cell", "states", "style",
+REQUEST_KEYS_CARRIED = ("cell", "states", "style", "subject",
                         "directions", "fit", "rig", "layers", "body_plan")
 # Written by prepare itself, from CLI flags and from measuring the base image. An
 # incoming copy is not carried either, but it is restated rather than lost, so the
@@ -590,6 +592,63 @@ def load_request(path: Path | None, inline_json: str | None) -> dict[str, Any]:
     if inline_json:
         return json.loads(inline_json)
     return {}
+
+
+# The fit flags and the `fit` key each sets.
+FIT_FLAGS = ("resample", "align_x", "align_y", "ground_frames", "pixel_unfake", "logical_height", "palette_size",
+             "detail_bias", "outline", "pitch_hint")
+
+
+def _cell_measures(cell: dict[str, Any]) -> dict[str, Any]:
+    """`cell` with each measure under one name — width, height, safe_margin_x, safe_margin_y — read as
+    `normalize_cell` reads its aliases, so a flag replaces a measure however the request spelled it."""
+    measures = {key: value for key, value in cell.items()
+                if key not in ("cell_width", "cell_height", "size", "safe_margin")}
+    for key, aliases in (("width", ("width", "cell_width", "size")), ("height", ("height", "cell_height", "size")),
+                         ("safe_margin_x", ("safe_margin_x", "safe_margin")),
+                         ("safe_margin_y", ("safe_margin_y", "safe_margin"))):
+        named = [alias for alias in aliases if alias in cell]
+        if named:
+            measures[key] = cell[named[0]]
+    return measures
+
+
+def request_with_flags(incoming: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """The incoming request with every flag given laid over the key it sets (`base.flags_over_spec`: the
+    flag wins, and one stderr line names the flags the request also set)."""
+    request = dict(incoming)
+    if isinstance(request.get("cell"), dict):
+        request["cell"] = _cell_measures(request["cell"])
+    flags: dict[str, Any] = {}
+    spelled: dict[str, str] = {"directions.set": "--directions"}
+    for key in ("style", "subject"):
+        if getattr(args, key) is not None:
+            flags[key] = getattr(args, key)
+    if args.body_plan:
+        flags["body_plan"] = list(args.body_plan)
+    if args.directions:
+        flags["directions.set"] = [d.strip() for d in args.directions.split(",") if d.strip()]
+    for pair in args.mirror.split(",") if args.mirror else ():
+        if "=" not in pair:
+            raise SystemExit(f"--mirror expects target=source pairs, got: {pair!r}")
+        target, source = (part.strip() for part in pair.split("=", 1))
+        flags[f"directions.mirror.{target}"] = source
+        spelled[f"directions.mirror.{target}"] = f"--mirror {target}"
+    for side in ("width", "height"):
+        flag = f"cell_{side}" if getattr(args, f"cell_{side}") is not None else "cell_size"
+        if getattr(args, flag) is not None:
+            flags[f"cell.{side}"] = getattr(args, flag)
+            spelled[f"cell.{side}"] = "--" + flag.replace("_", "-")
+    if args.safe_margin is not None:
+        for axis in ("x", "y"):
+            flags[f"cell.safe_margin_{axis}"] = args.safe_margin
+            spelled[f"cell.safe_margin_{axis}"] = "--safe-margin"
+    for key in FIT_FLAGS:
+        if getattr(args, f"fit_{key}") is not None:
+            flags[f"fit.{key}"] = getattr(args, f"fit_{key}")
+            spelled[f"fit.{key}"] = f"--fit-{key.replace('_', '-')}"
+    return flags_over_spec(request, flags, verb="prepare", source="--request" if args.request else "--request-json",
+                           spelled=spelled)
 
 
 # --- 방향 계약 (directions block) -------------------------------------------
@@ -911,11 +970,9 @@ BODY_PLAN_HELP = ("what the character stands on: biped (default), quadruped or l
                   "body_plan): no row prompt names a part the body lacks, as video-set --body-plan")
 
 
-def parse_body_plan(cli: list[str] | None, raw: Any) -> list[Body] | None:
-    """`--body-plan` if given, else the request's `body_plan` (specs, or `{"plan", "figure"}` as
-    `sprite-request.json` records it)."""
-    if cli:
-        return body_mod.parse_all(list(cli)) or None
+def parse_body_plan(raw: Any) -> list[Body] | None:
+    """The request's `body_plan` — `--body-plan`'s specs laid over it (`request_with_flags`), or
+    `{"plan", "figure"}` as `sprite-request.json` records it."""
     if raw is None:
         return None
     if not isinstance(raw, list):
@@ -948,11 +1005,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--character-id", required=True)
     parser.add_argument("--base-image", type=Path)
     parser.add_argument("--description", default="")
-    parser.add_argument("--style", default=STYLE_DEFAULT)
+    parser.add_argument("--style")
     parser.add_argument("--subject", choices=SUBJECTS, default=None,
                         help="what the run draws: character (default) or effect — "
                              "sets validation defaults like the sparse-frame floor")
-    parser.add_argument("--cell-size", type=int, default=256)
+    parser.add_argument("--cell-size", type=int)
     parser.add_argument("--cell-width", type=int)
     parser.add_argument("--cell-height", type=int)
     parser.add_argument("--safe-margin", type=int, default=None, help="absolute px override; default is 9.4%% of the cell dimension, floored")
@@ -979,54 +1036,21 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _run(args: argparse.Namespace):
 
     out_dir = args.out_dir.expanduser().resolve()
     if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
         raise SystemExit(f"output dir exists and is not empty: {out_dir}; pass --force")
 
-    raw_request = load_request(args.request, args.request_json)
-    bodies = parse_body_plan(args.body_plan, raw_request.get("body_plan"))
+    incoming = load_request(args.request, args.request_json)
+    raw_request = request_with_flags(incoming, args)
+    bodies = parse_body_plan(raw_request.get("body_plan"))
     states = normalize_states(raw_request.get("states"), bodies)
-    # 방향 계약: CLI 가 request JSON 을 override 한다 (fit 과 동일 규칙)
     raw_directions = dict(raw_request.get("directions") or {})
-    if args.directions:
-        raw_directions["set"] = [d.strip() for d in args.directions.split(",") if d.strip()]
-    if args.mirror:
-        mirror = dict(raw_directions.get("mirror") or {})
-        for pair in args.mirror.split(","):
-            if "=" not in pair:
-                raise SystemExit(f"--mirror expects target=source pairs, got: {pair!r}")
-            target, source = pair.split("=", 1)
-            mirror[target.strip()] = source.strip()
-        raw_directions["mirror"] = mirror
     directions = normalize_directions(raw_directions or None, states)
     if directions:
         states = ensure_direction_anchors(directions, states)
-    raw_cell = dict(raw_request.get("cell", {}))
-    if args.cell_width is not None:
-        raw_cell["width"] = args.cell_width
-    if args.cell_height is not None:
-        raw_cell["height"] = args.cell_height
-    cell = normalize_cell(raw_cell, args.cell_size, args.safe_margin)
+    cell = normalize_cell(dict(raw_request.get("cell", {})), CELL_SIZE_DEFAULT, None)
 
     # Layer keys are carried explicitly (docs/layer-tracks.md §7) and validated
     # before the run dir is touched: the layer validator is filesystem-free, so a
@@ -1035,7 +1059,7 @@ def _run(args: argparse.Namespace):
     layer_keys = {key: raw_request[key] for key in ("rig", "layers")
                   if raw_request.get(key) is not None}
     require_valid_layer_request({"cell": cell, "states": states, **layer_keys})
-    for note in dropped_key_notes(raw_request):
+    for note in dropped_key_notes(incoming):
         print(f"[prepare] {note}", file=sys.stderr)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1060,13 +1084,13 @@ def _run(args: argparse.Namespace):
         "cell": cell,
         "chroma_key": chroma_key,
         "states": states,
-        "style": raw_request.get("style", args.style),
+        "style": raw_request.get("style", STYLE_DEFAULT),
     }
-    # Subject profile: CLI wins over --request-json; absent = character. The
-    # field stays omitted for the default so the request has one canonical
-    # representation. Downstream validation derives its floor from this plus
-    # cell geometry via sprite_gen.spec.subject.
-    subject = args.subject or raw_request.get("subject")
+    # Subject profile: absent = character. The field stays omitted for the
+    # default so the request has one canonical representation. Downstream
+    # validation derives its floor from this plus cell geometry via
+    # sprite_gen.spec.subject.
+    subject = raw_request.get("subject")
     if subject is not None:
         if subject not in SUBJECTS:
             raise SystemExit(f"unknown subject kind: {subject!r} (expected one of {', '.join(SUBJECTS)})")
@@ -1080,21 +1104,6 @@ def _run(args: argparse.Namespace):
     # 가 <direction>/<pose> 로 나뉜다 (layout.py SSoT). legacy 런은 필드 없음 = flat.
     request["layout"] = TAXONOMY
     fit = dict(raw_request.get("fit", {}))
-    fit_overrides = {
-        "resample": args.fit_resample,
-        "align_x": args.fit_align_x,
-        "align_y": args.fit_align_y,
-        "ground_frames": args.fit_ground_frames,
-        "pixel_unfake": args.fit_pixel_unfake,
-        "logical_height": args.fit_logical_height,
-        "palette_size": args.fit_palette_size,
-        "detail_bias": args.fit_detail_bias,
-        "outline": args.fit_outline,
-        "pitch_hint": args.fit_pitch_hint,
-    }
-    for key, value in fit_overrides.items():
-        if value is not None:
-            fit[key] = value
     if fit:
         request["fit"] = fit
     # Optional layer declaration, validated above. Absent = a non-layer run whose
@@ -1135,7 +1144,7 @@ def _run(args: argparse.Namespace):
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 RETIRED_PP_MESSAGE = (
     "--fit-pixel-perfect is retired: the accurate name for this pipeline is **pixel unfake** "
