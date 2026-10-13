@@ -1072,7 +1072,8 @@ Outputs:
 `sprite-gen video-set --base side=side.png --base front=front.png --states idle,walk,run,jump,attack --out-dir set/`
 runs canvas → video → frames → loop for every (direction, state). The xAI team quota
 is **2 requests per second** (five parallel starts produced two HTTP 429s): starts are
-staggered (`--start-gap 2`) and a 429 gets a bounded, logged retry (15 s, 30 s). Clip length
+staggered (`--start-gap 2`); a 429 is sent again inside `sprite-gen video` (8 s, 16 s,
+[a refused request sent again](gen.md#a-refused-request-sent-again)) and each clip runs once. Clip length
 is each state's own default (3 s, attack 2 s) unless `--duration` sets one for all, and an
 attack or idle clip is pinned to end on its canvas and cut whole (`--cycle pinned`). States use differently shaped canvases (square, tall, wide),
 so the same character films at different pixel heights; `--body-height N` gives every state's loop the
