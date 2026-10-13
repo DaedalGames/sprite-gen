@@ -66,6 +66,8 @@ def test_opaque_palette_retains_a_rare_light_colour(tmp_path):
     save_clean_gif([Image.fromarray(rgb)], path, duration_ms=60, opaque=True)
 
     with Image.open(path) as preview:
-        error = np.abs(np.asarray(preview.convert("RGB"), dtype=int) - rgb)
+        decoded = preview.convert("RGB")
+        assert decoded.getpixel((0, 0)) == (0, 0, 0)
+        error = np.abs(np.asarray(decoded, dtype=int) - rgb)
     assert error[-2, -2].max() <= 16
     assert error.mean() < 4

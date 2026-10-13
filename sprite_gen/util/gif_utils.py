@@ -43,6 +43,19 @@ def _prepare_transparent_frame(frame: Image.Image, alpha_threshold: int) -> Imag
     return paletted
 
 
+def _prepare_opaque_frame(frame: Image.Image) -> Image.Image:
+    rgb = frame.convert("RGB")
+    # Refine coverage for both sparse highlights and the main glow, reserving
+    # exact black so the refinement cannot tint an empty preview background.
+    palette = rgb.quantize(colors=255, method=Image.Quantize.MAXCOVERAGE, kmeans=1)
+    colors = (palette.getpalette() or [])[:765]
+    colors.extend([0] * (768 - len(colors)))
+    palette.putpalette(colors)
+    paletted = rgb.quantize(palette=palette, dither=Image.Dither.NONE)
+    paletted.info.pop("transparency", None)
+    return paletted
+
+
 def save_clean_gif(
     frames: Iterable[Image.Image],
     output_path: Path,
@@ -60,11 +73,7 @@ def save_clean_gif(
     if duration_ms <= 0:
         raise ValueError("duration_ms must be positive")
     if opaque:
-        # Sparse highlights need palette coverage even beside a large glow body.
-        prepared = [frame.convert("RGB").quantize(colors=256, method=Image.Quantize.MAXCOVERAGE)
-                    for frame in frames]
-        for frame in prepared:
-            frame.info.pop("transparency", None)
+        prepared = [_prepare_opaque_frame(frame) for frame in frames]
         # Restore-to-background depends on palette indices that can change per
         # frame. Keep the opaque canvas and encode every changed pixel instead.
         options = {"disposal": 1, "optimize": False}
