@@ -102,6 +102,7 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 | [recolor.md](recolor.md) | Deterministic palette-swap bake, colourway pick, `variants/` and its report |
 | [layer-tracks.md](layer-tracks.md) | Rig runs: `rig` / `track` / `layers` contract and `compose-layers` |
 | [engine-export.md](engine-export.md) | Aseprite-compatible export for Phaser and Flame |
+| [`game-pack`](game-pack.md) | Compile sprite assets into deterministic multi-page texture atlases and manifests. |
 
 ## Asset tools and optional scenes
 
