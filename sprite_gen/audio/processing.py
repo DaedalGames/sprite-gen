@@ -66,6 +66,17 @@ def measure(samples, target=-18):
     return {k: float(v) for k, v in values.items() if k != 'normalization_type'}
 
 
+def limit_gain(samples, gain, ceiling, loop):
+    context = np.tile(samples, (3, 1)) if loop else samples
+    limit = 10 ** (ceiling / 20)
+    filt = (f'aresample=192000,volume={gain}dB,'
+            f'alimiter=limit={limit}:level=false:latency=true:attack=1:release=20')
+    result = _ffmpeg([*_pcm_args(), '-af', filt, '-ar', str(RATE), '-f', 'f32le', 'pipe:1'],
+                     context.astype('<f4').tobytes())
+    pcm = np.frombuffer(result.stdout, dtype='<f4').reshape(-1, 2).copy()
+    return pcm[len(samples):2*len(samples)] if loop else pcm[:len(samples)]
+
+
 def normalize(samples, target, loop):
     # Repeated context avoids loudnorm's startup/lookahead envelope at the loop boundary.
     source = np.tile(samples, (3, 1)) if loop else samples
@@ -89,12 +100,7 @@ def normalize(samples, target, loop):
         if abs(stats['input_i'] - target) <= .2 and stats['input_tp'] <= -1.8:
             break
         gain = target - stats['input_i']
-        filt = (f'aresample=192000,volume={gain}dB,'
-                'alimiter=limit=0.794328:level=false:latency=true:attack=1:release=20')
-        corrected = _ffmpeg([*_pcm_args(), '-af', filt, '-ar', str(RATE), '-f', 'f32le', 'pipe:1'],
-                            context.astype('<f4').tobytes())
-        pcm = np.frombuffer(corrected.stdout, dtype='<f4').reshape(-1, 2).copy()
-        output = pcm[len(output):2*len(output)] if loop else pcm[:len(output)]
+        output = limit_gain(output, gain, -2, loop)
         corrections += 1
     return output, corrections
 
@@ -109,17 +115,26 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
     files = {}
     for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
         path = out_dir / f'sound.{fmt}'
-        _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], samples.astype('<f4').tobytes())
-        decoded = decode(path)
-        if len(decoded) < len(samples) - 2:
-            raise ValueError(f'{fmt} truncated the audio')
-        playback = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
-        measured = measure(np.tile(playback, (3, 1)) if loop else playback, target_lufs)
-        lufs, peak = measured['input_i'], measured['input_tp']
-        if not math.isfinite(lufs) or abs(lufs - target_lufs) > 1 or peak > -1:
-            raise ValueError(f'{fmt} failed loudness/peak check ({lufs:g} LUFS, {peak:g} dBTP); cached source retained')
+        encoded_samples, ceiling = samples, -2.0
+        for attempt in range(3):
+            _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], encoded_samples.astype('<f4').tobytes())
+            decoded = decode(path)
+            if len(decoded) < len(samples) - 2:
+                raise ValueError(f'{fmt} truncated the audio')
+            playback = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
+            measured = measure(np.tile(playback, (3, 1)) if loop else playback, target_lufs)
+            lufs, peak = measured['input_i'], measured['input_tp']
+            if math.isfinite(lufs) and abs(lufs - target_lufs) <= 1 and peak <= -1:
+                break
+            if not math.isfinite(lufs) or attempt == 2:
+                raise ValueError(f'{fmt} failed loudness/peak check ({lufs:g} LUFS, {peak:g} dBTP); cached source retained')
+            # Lossy codec reconstruction can overshoot PCM peaks. Tighten the PCM limiter
+            # by the measured overshoot plus headroom, then encode and measure again.
+            ceiling -= max(0, peak + 1.5) if peak > -1 else 0
+            encoded_samples = limit_gain(encoded_samples, target_lufs - lufs, ceiling, loop)
         files[fmt] = {'path': path.name, 'duration_seconds': len(decoded)/RATE,
-                      'lufs': lufs, 'true_peak_dbfs': peak,
+                      'lufs': lufs, 'true_peak_dbfs': peak, 'encode_passes': attempt + 1,
+                      'pcm_peak_limit_dbtp': ceiling,
                       'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
         if loop:
             files[fmt]['seam_delta'] = float(np.max(np.abs(playback[-1] - playback[0])))

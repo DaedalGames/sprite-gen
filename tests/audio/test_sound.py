@@ -188,3 +188,18 @@ def test_cli_and_python_entry_publish_the_same_bundle(tmp_path, monkeypatch, cap
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert lines[1]['cache_hit'] is True
     assert lines[0]['manifest'] == lines[1]['manifest']
+
+
+def test_codec_reconstruction_keeps_a_broadband_transient_below_peak_ceiling(tmp_path, monkeypatch):
+    t = np.arange(24000)/48000
+    x = .8*np.sign(np.sin(2*np.pi*2200*t))*np.exp(-t*32)
+    stream=io.BytesIO()
+    with wave.open(stream,'wb') as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(48000)
+        f.writeframes((x*32767).astype('<i2').tobytes())
+    monkeypatch.setattr(provider,'generate',lambda _: (stream.getvalue(), {}))
+    result=sound.generate(kind='sfx',prompt='synthetic transient',duration=.5,event='hit',
+                          out_dir=tmp_path/'out',cache_dir=tmp_path/'cache')
+    for file in result['files'].values():
+        assert file['true_peak_dbfs'] <= -1
+        assert abs(file['lufs']+18) <= 1
