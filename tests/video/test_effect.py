@@ -5,6 +5,7 @@ import pytest
 
 from sprite_gen._deps import np
 from sprite_gen.video import frames, batch, clip_prompt
+from sprite_gen.video import loop, canvas
 
 
 def test_brightness_alpha_reconstructs_dark_and_saturated_emission(tmp_path):
@@ -56,3 +57,60 @@ def test_effect_prompt_uses_black_end_and_lifetime_only():
     assert "--alpha-mode brightness" in plan["commands"]["frames"]
     with pytest.raises(SystemExit, match="end.frame"):
         clip_prompt.plan_prompt(direction="front", state="effect", last_frame=False, unpinned=True)
+
+
+def test_effect_canvas_keeps_origin_and_pins_a_blank_end(tmp_path):
+    src = tmp_path / "still.png"
+    im = Image.new("RGBA", (32, 48))
+    im.putpixel((16, 24), (255, 64, 0, 128))
+    im.save(src)
+    report = canvas.run_canvas(src, tmp_path / "canvas.png", state="effect", shape=None,
+                               facing="right", headroom=None, lead=None, report_path=None)
+    assert report["offset"] == [0, 0] and report["canvas"] == [32, 48]
+    assert Image.open(tmp_path / "canvas.png").getpixel((16, 24)) == (128, 32, 0)
+    assert Image.open(report["end_frame"]).getextrema() == ((0, 0), (0, 0), (0, 0))
+
+
+def lifetime_frames(tmp_path, *, fade=True):
+    directory = tmp_path / "keyed"
+    directory.mkdir()
+    for k in range(90):
+        im = Image.new("RGBA", (40, 40))
+        if 3 <= k <= 86:
+            im.paste((255, 128, 0, min(255, (k - 2) * 7, (87 - k) * 7)), (17, 17, 23, 23))
+            im.putpixel((0, 0), (255, 255, 255, 3))
+        elif not fade and k > 86:
+            im.putpixel((0, 0), (255, 255, 255, 1))
+        im.save(directory / f"frame-{k:03d}.png")
+    return directory
+
+
+def cut(directory, output, **kwargs):
+    return loop.run_loop(directory, output, fps=24, state="effect", min_len=None, max_len=None,
+                         n_out=10, seam_max=0, name="effect", report_path=None, **kwargs)
+
+
+def test_lifetime_cut_keeps_dim_edge_spark_and_terminal_sample(tmp_path):
+    report = cut(lifetime_frames(tmp_path), tmp_path / "out")
+    assert report["cycle"]["kind"] == "lifetime"
+    assert report["cycle"]["start"] == 2 and report["cycle"]["end_frame"] == 87
+    assert report["specks_dropped"] == 0
+    meta = report["strip"]
+    assert meta["loop"] is False and meta["hold_last"] is False and meta["blend"] == "add"
+    assert meta["end_frame"] == meta["frames"] - 1
+    assert meta["source_cut"]["samples"][-1] == 87
+    assert isinstance(meta["events"][0]["frame"], int)
+    left, top, _, _ = meta["source_rect"]
+    assert meta["anchor"] == [(20 - left) * meta["scale"], (20 - top) * meta["scale"]]
+    strip = Image.open(meta["path"]).convert("RGBA")
+    assert strip.getpixel((meta["w"] - left, -top))[3] == 3
+    assert strip.crop((meta["end_frame"] * meta["w"], 0, strip.width, strip.height)).getchannel("A").getbbox() is None
+    with Image.open(tmp_path / "out" / "effect.webp") as preview:
+        assert preview.info["loop"] == 1
+        preview.seek(preview.n_frames - 1)
+        assert preview.convert("RGBA").getchannel("A").getbbox() is None
+
+
+def test_lifetime_refuses_an_end_with_even_one_dim_pixel(tmp_path):
+    with pytest.raises(SystemExit, match="empty"):
+        cut(lifetime_frames(tmp_path, fade=False), tmp_path / "out", cycle_mode="lifetime")
