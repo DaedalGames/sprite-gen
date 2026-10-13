@@ -7,19 +7,18 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import shutil
 import tempfile
 
 from sprite_gen.audio import cache, processing, provider
+from sprite_gen.audio.manifest import event_name
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 
 def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=None, target_lufs=None, crossfade=None):
     loop = kind == 'bgm' if loop is None else loop
     request = provider.request(kind, prompt, duration, loop)
-    if not isinstance(event, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', event):
-        raise ValueError('event requires 1 to 128 letters, digits, dots, colons, dashes or underscores')
+    event_name(event)
     target = (-18.0 if kind == 'sfx' else -20.0) if target_lufs is None else float(target_lufs)
     if not math.isfinite(target) or not -36 <= target <= -9:
         raise ValueError('target_lufs must be between -36 and -9')

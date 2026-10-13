@@ -16,9 +16,13 @@ RATE = 48000
 
 
 def require_tools():
-    for name in ('ffmpeg', 'ffprobe'):
+    for name in ('ffmpeg',):
         if not shutil.which(name):
             raise ValueError(f'{name} is required on PATH for sound processing')
+    encoders = _ffmpeg(['-encoders']).stdout.decode(errors='replace')
+    for codec in ('libopus', 'aac'):
+        if not re.search(r'(?m)^\s*A\S*\s+'+codec+r'\s', encoders):
+            raise ValueError(f'ffmpeg requires the {codec} encoder before a paid sound request')
 
 
 def _ffmpeg(args, data=None):
@@ -85,7 +89,7 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
     samples = normalize(samples, target_lufs, loop)
     duration = len(samples) / RATE
     files = {}
-    for fmt, codec in (('ogg', ['-c:a', 'libvorbis', '-q:a', '6']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
+    for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
         path = out_dir / f'sound.{fmt}'
         _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], samples.astype('<f4').tobytes())
         decoded = decode(path)
