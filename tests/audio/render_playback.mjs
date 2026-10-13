@@ -95,9 +95,9 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         // Choose synthetic lengths on both sides of the duration round-trip.
         const roundTrips=[];
         for(const direction of [-1,1]) {
-          let frames=44000;
-          while(frames<45000 && Math.sign((frames/rate)*rate-frames)!==direction) frames++;
-          check(frames<45000, 'duration round-trip counterexample missing');
+          let frames=rate;
+          while(frames<2*rate && Math.sign((frames/rate)*rate-frames)!==direction) frames++;
+          check(frames<2*rate, 'duration round-trip counterexample missing');
           const raw=new AudioBuffer({sampleRate:rate,length:frames+128,numberOfChannels:1});
           const data=raw.getChannelData(0);
           for(let i=0;i<data.length;i++) data[i]=.2*Math.cos(2*Math.PI*317*i/rate)+.1;
