@@ -20,7 +20,7 @@ from PIL import Image
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import xai
+from sprite_gen.gen import retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -65,7 +65,9 @@ def api(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no provider subprocess may be spawned"))
     state = {"status": 200, "body": {"data": [{"b64_json": encoded_image()}],
-                                     "usage": {"input_tokens": 12, "output_tokens": 340}}, "headers": {}, "calls": []}
+                                     "usage": {"input_tokens": 12, "output_tokens": 340}}, "headers": {}, "calls": [],
+             "slept": []}
+    monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
     class Response:
         def __enter__(self):
@@ -87,6 +89,8 @@ def api(monkeypatch):
 
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
+        if state.get("script"):  # one (status, body, headers) per request, in order
+            state["status"], state["body"], state["headers"] = state["script"].pop(0)
         if state["status"] == 200:
             return Response()
         raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"],
@@ -196,7 +200,7 @@ def test_reference_edit_posts_multipart_images_in_order(tmp_path, api):
     assert positions == sorted(positions), "reference images are read positionally; order must survive"
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
+@pytest.mark.parametrize("status", [400, 401, 403, 500, 502])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": {"message": f"{KEY} https://signed.invalid/private?sig=abc"}})
     out = tmp_path / "existing.png"
@@ -208,6 +212,39 @@ def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, sta
     assert "https://signed.invalid/private?[redacted]" in str(error.value)
     assert out.read_bytes() == b"existing"
     assert len(api["calls"]) == 1
+
+
+@pytest.mark.parametrize(("refused", "slept"), [
+    ((429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {"retry-after": "2"}), [2.0]),
+    ((429, {"error": {"type": "rate_limit_error", "code": "slow_down"}}, {}), [8.0]),
+    ((503, {"error": {"type": "service_unavailable_error", "code": "server_is_overloaded"}}, {}), [8.0]),
+], ids=["rate-limit", "slow-down", "overloaded"])
+def test_a_refusal_openai_documents_as_not_taken_is_sent_again(tmp_path, api, capsys, refused, slept):
+    """429 (a rate limit) and 503 (overloaded) are the two the error-codes guide and the SDKs retry
+    (gen.retry, read 2026-10-13): the image is asked for again after the answer's retry-after or the
+    doubling wait, and published once."""
+    api["script"] = [refused, (200, {"data": [{"b64_json": encoded_image()}]}, {"x-ratelimit-remaining-requests": "9"})]
+    result = gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert len(api["calls"]) == 2 and api["slept"] == slept and result.out.is_file()
+    assert result.extra["rate_limit"] == {"x-ratelimit-remaining-requests": "9"}
+    assert f"[gen] openai refused the request ({refused[0]} {refused[1]['error']['code']}); nothing was made" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code", ["credit_balance_exhausted", "organization_spend_limit_exceeded",
+                                  "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota"])
+def test_a_billing_429_asks_the_caller_to_act_and_is_not_sent_again(tmp_path, api, code):
+    api.update(status=429, body={"error": {"type": "insufficient_quota", "code": code}})
+    with pytest.raises(SystemExit, match=f"HTTP 429.*code={code}; no retry or provider fallback"):
+        gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert len(api["calls"]) == 1 and api["slept"] == []
+
+
+def test_a_refusal_still_there_after_two_more_sends_ends_the_call(tmp_path, api):
+    api.update(status=503, body={"error": {"code": "server_is_overloaded"}})
+    with pytest.raises(SystemExit) as error:
+        gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert "(HTTP 503) code=server_is_overloaded; sent 3 times, no provider fallback" in str(error.value)
+    assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
 @pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},

@@ -310,7 +310,7 @@ def test_uninspectable_login_never_permits_api_credit(tmp_path, monkeypatch):
         video.resolve_credential(env={"XAI_API_KEY": "console-key"}, now=NOW)
 
 
-@pytest.mark.parametrize("status", [200, 403, 429])
+@pytest.mark.parametrize("status", [200, 403, 503])
 def test_video_uses_subscription_with_api_key_present(tmp_path, monkeypatch, status):
     monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, key="subscription-token", expires_at="2100-01-01T00:00:00Z")))
     monkeypatch.setenv("XAI_API_KEY", "console-key")
@@ -623,11 +623,45 @@ def test_a_poll_refused_for_good_ends_at_once_with_its_status(tmp_path: Path, st
     assert HTTP_STATUS.search(message).group(1) == str(status)
 
 
-def test_a_refused_submission_is_never_sent_again(tmp_path: Path) -> None:
-    """The POST stays unretried (the provider may have taken it); its 429 keeps `(HTTP 429)` for the caller."""
-    api = _FakeApi(post=(429, {"error": "slow down"}))
+@pytest.mark.parametrize("status", [400, 500, 503])
+def test_a_refused_submission_is_never_sent_again(tmp_path: Path, status) -> None:
+    """A POST is sent again only on an answer xAI documents as a request not taken, 429 (gen.retry):
+    any other refusal may have been worked on, and it keeps `(HTTP n)` for the caller."""
+    api = _FakeApi(post=(status, {"error": "refused"}))
     message, _ = _refused(tmp_path, api)
     assert [call[0] for call in api.calls] == ["POST"]
+    assert HTTP_STATUS.search(message).group(1) == str(status)
+
+
+def test_a_rate_limited_submission_is_sent_again_and_the_poll_timeout_counts_from_the_send_it_answered(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """xAI's 429 ("reached the rate limit") made nothing: the POST goes again after the doubling wait the
+    polls wait by, and the poll timeout starts at the send that was accepted, not the first one."""
+    clock, slept, sleep = _clock(monkeypatch)
+    answers = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, {"request_id": "req-1"})]
+    api = _FakeApi()
+    api.post = None
+    real_call = api.call
+
+    def call(method, url, token, body, *, deadline=None):
+        if method == "POST":
+            api.calls.append((method, url, token, body))
+            return answers.pop(0)
+        assert deadline == 8.0 + 30  # the accepted send came after the 8 s wait
+        return real_call(method, url, token, body, deadline=deadline)
+
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=call, download=api.download, sleep=sleep, poll_timeout=30)
+    assert [c[0] for c in api.calls] == ["POST", "POST", "GET"] and slept == [8.0]
+    assert result.out.read_bytes() == MP4
+    assert "[video] xai refused the request (429 resource-exhausted); nothing was made — asking again in 8s (1 of 2)" \
+        in capsys.readouterr().err
+
+
+def test_a_rate_limit_still_there_after_two_more_sends_keeps_its_status_for_the_caller(tmp_path: Path) -> None:
+    api = _FakeApi(post=(429, {"error": "slow down"}))
+    message, _ = _refused(tmp_path, api)
+    assert [call[0] for call in api.calls] == ["POST"] * 3
     assert HTTP_STATUS.search(message).group(1) == "429"
 
 
