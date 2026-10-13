@@ -13,6 +13,7 @@ import subprocess
 import numpy as np
 
 RATE = 48000
+CODEC_TAPER_SECONDS = .005
 
 
 def require_tools():
@@ -49,7 +50,14 @@ def make_loop(samples, seconds):
         raise ValueError('loop crossfade must be positive and shorter than half the source')
     weight = (.5 - .5 * np.cos(np.linspace(0, np.pi, count)))[:, None]
     overlap = samples[-count:] * (1 - weight) + samples[:count] * weight
-    return np.concatenate((samples[count:-count], overlap)).astype('<f4')
+    output = np.concatenate((samples[count:-count], overlap)).astype('<f4')
+    # Lossy encoders have no preceding signal at the beginning of a standalone file.
+    # A short, smooth zero boundary prevents that priming error becoming a wrap impulse.
+    guard = min(round(CODEC_TAPER_SECONDS * RATE), len(output)//4)
+    taper = (.5 - .5*np.cos(np.linspace(0, np.pi, guard)))[:, None]
+    output[:guard] *= taper
+    output[-guard:] *= taper[::-1]
+    return output
 
 
 def _pcm_args():
@@ -141,4 +149,5 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
     return {'files': files, 'duration_seconds': duration, 'source_duration_seconds': source_seconds,
             'sample_rate': RATE, 'loop_start_seconds': 0, 'loop_end_seconds': duration,
             'crossfade_seconds': crossfade if loop else 0,
+            'codec_taper_seconds': CODEC_TAPER_SECONDS if loop else 0,
             'normalization': {'method': 'loudnorm-two-pass', 'peak_limit_dbtp': -2, 'gain_limiter_passes': corrections}}
