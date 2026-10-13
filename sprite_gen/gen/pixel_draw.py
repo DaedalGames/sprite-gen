@@ -15,10 +15,12 @@ One run, `--candidates` K answers to the same request:
 2. G1 parse. Row issues are repaired one row at a time (`ROW <frame> <n>: …`, two rounds at most);
    an answer still broken, or broken beyond its rows, is drawn once more. A candidate is drawn at
    most twice in all.
-3. G2 palette, G3 alpha, G6 frames and G8 safe area (a pixel on the canvas edge) fail a candidate;
-   G4 tile seam, G5 stray pixels, the walk cycle's leg alternation and G8's body and floor checks
-   warn. The prompt gives a sprite or icon the engine's safe area (`safe_area_lines`) in rows and
-   columns.
+3. G2 palette, G3 alpha and G6 frames fail a candidate; G4 tile seam, G5 stray pixels, the walk
+   cycle's leg alternation and G8 safe area (a frame past the physical cap, a sprite off the floor
+   row) warn, and G8 notes a frame past the safe area within the cap in an info line — the image
+   path's judgment (`frames.extract.safe_area_fit`). The prompt gives a sprite or icon the engine's
+   safe area (`safe_area_lines`) in rows and columns, as a target for the body's size that a pose
+   may go past.
 4. G7: of two or more candidates that passed, one vision call (effort low) picks, or a person
    does (`--pick human`). One that passed alone is the pick.
 
@@ -236,8 +238,8 @@ def _format_spec(request: PixelRequest) -> str:
 
 def safe_area_lines(request: PixelRequest) -> list[str]:
     """The engine's safe area of a sprite or icon (`pixel_gates.safe_area`, G8), in rows and columns
-    counted from 1: the body inside it, only a thin detail in the margin, the canvas edge clear, and a
-    sprite's feet on its bottom row."""
+    counted from 1: a target for the body's average size that a pose may go past, as far as the canvas
+    edge, and a sprite's feet on its bottom row."""
     size = request.size
     area = safe_area(size, size)
     margin, inner, floor = area["margin"][0], area["size"][0], area["floor_row"] + 1
@@ -246,21 +248,17 @@ def safe_area_lines(request: PixelRequest) -> list[str]:
         lines = [f"Safe area: at {size}x{size} there is no margin; {'the subject' if sprite else 'the icon'} may use "
                  "the whole canvas, with the four corner pixels transparent."]
     else:
-        first, last, reach = margin + 1, size - margin, margin - 1
-        edge = f"outermost rows and columns (rows 1 and {size}, columns 1 and {size})"
-        if reach:
-            past = (f"Only a thin detail (a weapon tip, a strand of hair, an effect) may reach into the margin, at "
-                    f"most {reach} pixel{'s' if reach > 1 else ''} past the safe area; the {edge} stay transparent.")
-        else:
-            past = f"The {edge} are the margin and stay transparent: at this size nothing reaches past the safe area."
+        first, last = margin + 1, size - margin
         body = "the subject's body" if sprite else "the icon"
-        lines = [f"Safe area: keep a {margin}-pixel margin on every side and draw {body} inside the central "
-                 f"{inner}x{inner} pixels: rows {first}-{last} and columns {first}-{last}, counting rows and columns "
-                 f"from 1. {past}"]
+        lines = [f"Safe area: draw {body} about the size of the central {inner}x{inner} pixels - rows {first}-{last} "
+                 f"and columns {first}-{last}, counting rows and columns from 1 - inside a {margin}-pixel margin on "
+                 "every side. That is a target for its average size, not a wall: when a pose or a detail needs the "
+                 "room (a raised weapon, a long blade, an effect, a wide stance), it may reach past the safe area into "
+                 "the margin, up to the canvas edge. Keep the four corner pixels transparent."]
     if sprite:
         every = " in every frame" if len(request.frames) > 1 else ""
-        lines.append(f"Floor: row {floor}, the bottom row of the safe area, is the ground. The feet (or the lowest point "
-                     f"the subject rests on) stand on row {floor}{every}, and nothing of the body goes below it.")
+        lines.append(f"Floor: row {floor}, the bottom row of the safe area, is the ground: the feet (or the lowest point "
+                     f"the subject rests on) stand on row {floor}{every}.")
     return lines
 
 
@@ -357,7 +355,8 @@ def _kept(request: PixelRequest) -> str:
     if request.kind == "tile" or area["margin"][0] == 0:
         return ""
     inner = area["size"][0]
-    return f", the body kept inside the central {inner}x{inner} with a {area['margin'][0]}-pixel margin"
+    return (f", the body about the size of the central {inner}x{inner}, inside a {area['margin'][0]}-pixel margin a "
+            "pose may reach into")
 
 
 def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
@@ -607,6 +606,7 @@ class Candidate:
     g1: dict[str, Any] | None = None
     gates: dict[str, Any] | None = None
     warnings: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)
     grid: Grid | None = None
     files: dict[str, Any] = field(default_factory=dict)
 
@@ -617,7 +617,7 @@ class Candidate:
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "status": self.status, "reason": self.reason, "effort": self.effort,
                 "generations": self.generations, "redraws": self.redraws, "repairs": self.repairs, "G1": self.g1,
-                "gates": self.gates, "warnings": self.warnings, "files": self.files}
+                "gates": self.gates, "warnings": self.warnings, "info": self.info, "files": self.files}
 
 
 def _g1(issues: list[Issue]) -> dict[str, Any]:
@@ -682,7 +682,7 @@ class Run:
             candidate.effort, candidate.grid = effort, grid
             pixels = {name: frame_pixels(grid, name) for name in request.frames}
             candidate.gates = evaluate(pixels, kind=request.kind, rule=request.palette, walk_cycle=request.walk_cycle)
-            candidate.warnings = candidate.gates["warnings"]
+            candidate.warnings, candidate.info = candidate.gates["warnings"], candidate.gates["info"]
             if candidate.gates["ok"]:
                 return candidate.end("passed")
             return candidate.end("failed", "failed " + ", ".join(candidate.gates["failed"]))
@@ -981,7 +981,7 @@ def _run_grid(args: argparse.Namespace) -> int:
                               "grid_source": str(Path(args.grid).expanduser().resolve()), "model": None,
                               "request": {"kind": kind, "frames": list(frames), "walk_cycle": bool(args.walk_cycle),
                                           "palette": rule.to_dict()},
-                              "G1": _g1(issues), "gates": None, "warnings": [], "files": {}, "calls": [],
+                              "G1": _g1(issues), "gates": None, "warnings": [], "info": [], "files": {}, "calls": [],
                               "cost_usd": 0.0}
     if grid is None or not report["G1"]["ok"]:
         path = _write_report(out_dir, report)
@@ -989,8 +989,8 @@ def _run_grid(args: argparse.Namespace) -> int:
     pixels = {name: frame_pixels(grid, name) for name in frames}
     gates = evaluate(pixels, kind=kind, rule=rule, walk_cycle=bool(args.walk_cycle))
     files = write_files(out_dir, grid, frames, kind, rule, _colors_used(pixels))
-    report.update(status="ok" if gates["ok"] else "failed", gates=gates, warnings=gates["warnings"], files=files,
-                  request={**report["request"], "size": [grid.width, grid.height]})
+    report.update(status="ok" if gates["ok"] else "failed", gates=gates, warnings=gates["warnings"], info=gates["info"],
+                  files=files, request={**report["request"], "size": [grid.width, grid.height]})
     path = _write_report(out_dir, report)
     if not gates["ok"]:
         raise _refuse(f"{args.grid} fails {', '.join(gates['failed'])}; files and report in {out_dir} ({path.name})")
@@ -1032,7 +1032,7 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
     run = Run(request, out_dir, calls, batch_wait=batch_wait, note=note)
     report: dict[str, Any] = {"kind": REPORT_KIND, "status": None, "out_dir": str(out_dir), "source": "model",
                               "model": api.MODEL, "request": request.to_dict(), "chosen": None, "files": {},
-                              "pick": None, "candidates": [], "warnings": []}
+                              "pick": None, "candidates": [], "warnings": [], "info": []}
     try:
         candidates = run.candidates()
     except Unfinished as unfinished:
@@ -1066,7 +1066,7 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
                for k, v in chosen.files.items()}
         for name in _flat(top):
             shutil.copyfile(source / name, out_dir / name)
-        report.update(chosen=chosen.id, files=top, warnings=chosen.warnings)
+        report.update(chosen=chosen.id, files=top, warnings=chosen.warnings, info=chosen.info)
     if pick.get("error"):
         report["status"] = "pick_failed"
         path = _finish(report, calls, started)
