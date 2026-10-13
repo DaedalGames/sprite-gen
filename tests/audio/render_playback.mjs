@@ -25,8 +25,8 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         // Non-zero origin and a frame count whose independent rounding differs.
         const meta = { version: 2, sample_rate: 48000, start_frame: 13,
           end_frame: 144019, overlap_frames: 12010 };
-        const first = Math.round(meta.start_frame * rate / 48000);
-        const n = Math.round((meta.end_frame-meta.start_frame)*rate/48000);
+        const first = Math.floor(meta.start_frame * rate / 48000);
+        const n = Math.floor(meta.end_frame*rate/48000)-first;
         const length = Math.round((meta.end_frame-meta.start_frame-meta.overlap_frames)*rate/48000);
         const count = n-length;
         if (rate===44100) check(n-Math.round(meta.overlap_frames*rate/48000)!==length, 'rounding counterexample missing');
@@ -35,6 +35,27 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
           const x=input.getChannelData(c);
           for (let i=0;i<x.length;i++) x[i]=.2*Math.cos(2*Math.PI*(c ? 73 : 1000)*i/rate)+.1*i/x.length;
         }
+        // A PCM WAVE with a fractional resampled frame count exercises the
+        // actual decoder rather than constructing an idealized AudioBuffer.
+        const waveFrames=144003, wave=new ArrayBuffer(44+waveFrames*2), view=new DataView(wave);
+        const ascii=(offset,text)=>{for(let i=0;i<text.length;i++) view.setUint8(offset+i,text.charCodeAt(i));};
+        ascii(0,'RIFF'); view.setUint32(4,36+waveFrames*2,true); ascii(8,'WAVE');
+        ascii(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
+        view.setUint16(22,1,true); view.setUint32(24,48000,true); view.setUint32(28,96000,true);
+        view.setUint16(32,2,true); view.setUint16(34,16,true); ascii(36,'data');
+        view.setUint32(40,waveFrames*2,true);
+        for(let i=0;i<waveFrames;i++) view.setInt16(44+2*i,Math.round(5000*Math.sin(2*Math.PI*317*i/48000)),true);
+        const waveDecoded=await new OfflineAudioContext(1,1,rate).decodeAudioData(wave);
+        const waveMeta={version:2,sample_rate:48000,start_frame:0,end_frame:waveFrames,overlap_frames:12000};
+        const wavePrepared=prepareAudioBuffer(waveDecoded,waveMeta);
+        check(wavePrepared.length===Math.round((waveFrames-12000)*rate/48000),'resampled loop duration changed');
+        const completeFrames=Math.floor(waveFrames*rate/48000);
+        const oneShot=prepareAudioBuffer(waveDecoded,{...waveMeta,overlap_frames:0});
+        check(oneShot.length===completeFrames,'one-shot interval or padding is wrong');
+        let truncatedRejected=false;
+        try { prepareAudioBuffer(new AudioBuffer({sampleRate:rate,length:completeFrames-1,numberOfChannels:1}),waveMeta); }
+        catch { truncatedRejected=true; }
+        check(truncatedRejected,'missing complete frame silently clamped');
         const before = input.getChannelData(0).slice();
         const out = prepareAudioBuffer(input, meta);
         check(out.length === length, 'one-frame rounding drift');
@@ -88,7 +109,8 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
         }
         check(controls===4, 'rendered discontinuity control escaped detection');
         return { length, count, added_wrap_error:0, added_join_error:0,
-          controls_detected:controls, control_added_wrap_error:controlError, render_error:maxError };
+          controls_detected:controls, control_added_wrap_error:controlError, render_error:maxError,
+          wave_decoded_frames:waveDecoded.length, wave_complete_frames:completeFrames, wave_loop_frames:wavePrepared.length };
       }, { code: `data:text/javascript;base64,${moduleBytes.toString('base64')}`, rate });
       reports.push({ browser:name, browser_version:browser.version(), rate, synthetic });
       for (const item of cases) {
@@ -107,9 +129,9 @@ for (const [name, engine] of Object.entries({ chromium, webkit })) {
             const decoder=new OfflineAudioContext(2,1,rate);
             const decoded=await decoder.decodeAudioData(data.buffer);
             const buffer=prepareAudioBuffer(decoded,record.playback);
-            const m=record.playback, scale=decoded.sampleRate/m.sample_rate;
-            const first=Math.round(m.start_frame*scale), n=Math.round((m.end_frame-m.start_frame)*scale);
-            const length=Math.round((m.end_frame-m.start_frame-m.overlap_frames)*scale), count=n-length;
+            const m=record.playback, map=f=>f*decoded.sampleRate/m.sample_rate;
+            const first=Math.floor(map(m.start_frame)), n=Math.floor(map(m.end_frame))-first;
+            const length=m.overlap_frames ? Math.round(map(m.end_frame-m.start_frame-m.overlap_frames)) : n, count=n-length;
             if (buffer.length!==length) throw new Error('wrong prepared duration');
             const context=new OfflineAudioContext(buffer.numberOfChannels,length*3,rate);
             const source=createAudioSource(context,decoded,record);

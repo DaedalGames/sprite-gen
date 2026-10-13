@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 
-import numpy as np
+from sprite_gen._deps import np
 
 from sprite_gen.audio import playback
 

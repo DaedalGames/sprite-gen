@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Frame contract v2. No processing is applied before decoding or on each repeat.
+// Frame contract v2. Loop preparation runs after decoding, never on each repeat.
 const prepared = new WeakMap();
 const cached = new WeakMap();
 
@@ -17,16 +17,18 @@ export function prepareAudioBuffer(decoded, playback) {
     return decoded;
   }
   if (cached.get(decoded)?.has(key)) return cached.get(decoded).get(key);
-  const scale = decoded.sampleRate / rate;
-  const first = Math.round(start * scale);
-  const last = first + Math.round((end - start) * scale);
+  const rescale = frames => frames * decoded.sampleRate / rate;
+  // Decode resampling can discard the fractional terminal frame. Map the
+  // declared interval to complete frames, independently of decoder padding.
+  const first = Math.floor(rescale(start));
+  const last = Math.floor(rescale(end));
   // Round the declared final duration once. Independent rounding of N and M can
   // change N-M by a frame; derive the overlap from the mapped interval instead.
-  const length = Math.round((end - start - overlap) * scale);
+  const length = overlap ? Math.round(rescale(end - start - overlap)) : last - first;
   const count = last - first - length;
   if (last > decoded.length || length < 1 || count < 0 ||
       (overlap > 0 && (count < 2 || count * 2 >= last - first))) {
-    throw new RangeError('Decoded audio does not contain the playback interval');
+    throw new RangeError(`Decoded audio does not contain the playback interval: requires [${first}, ${last}), has ${decoded.length} frames at ${decoded.sampleRate} Hz`);
   }
   const output = new AudioBuffer({ numberOfChannels: decoded.numberOfChannels,
     length, sampleRate: decoded.sampleRate });
