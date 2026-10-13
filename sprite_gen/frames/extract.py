@@ -18,6 +18,7 @@ from typing import Any
 
 from PIL import Image, ImageChops
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen._deps import np
 from sprite_gen.curate.curation import effective_logical_height, pixel_snap_scale
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, take_raw_rel
@@ -2727,24 +2728,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _load_validated(path: Path, name: str, require) -> dict:
     """Read a canonical run JSON record, FAILING LOUD on any corruption — unreadable,
     unparseable, or a broken schema — instead of silently treating it as absent/empty. EVERY
@@ -3810,7 +3793,7 @@ def _clear_progress(run_dir: Path) -> None:
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
     parser = _build_parser()

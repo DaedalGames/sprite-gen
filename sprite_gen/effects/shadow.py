@@ -17,6 +17,7 @@ from sprite_gen.spec.runio import (
     atomic_write_set,
     release_run_dir_lock,
 )
+from sprite_gen.util.hexcolor import parse_hex
 
 
 _MAX_FRAME_PIXELS = 16_777_216
@@ -138,8 +139,8 @@ def project_shadow(
 
 def _parse_color(value: str) -> tuple[int, int, int]:
     try:
-        if value.startswith("#") and len(value) == 7:
-            return _rgb(tuple(int(value[i:i + 2], 16) for i in (1, 3, 5)))
+        if value.startswith("#"):
+            return _rgb(parse_hex(value))
         return _rgb(tuple(int(part.strip()) for part in value.split(",")))
     except ValueError as exc:
         raise argparse.ArgumentTypeError("color must be R,G,B or #RRGGBB") from exc

@@ -38,6 +38,7 @@ from pathlib import Path
 from PIL import Image
 
 from sprite_gen.frames.extract import remove_chroma_background
+from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen.util.resample import resize_cell
 
 CHROMA_KEYS = {
@@ -57,10 +58,10 @@ def parse_chroma_key(value: str) -> tuple[int, int, int]:
     name = value.strip().lower()
     if name in CHROMA_KEYS:
         return CHROMA_KEYS[name]
-    text = name.lstrip("#")
-    if len(text) == 6:
-        return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
-    raise ValueError(f"unsupported chroma key {value!r}; use magenta, green, or #RRGGBB")
+    try:
+        return parse_hex(name)
+    except ValueError:
+        raise ValueError(f"unsupported chroma key {value!r}; use magenta, green, or #RRGGBB") from None
 
 
 def _components(alpha: bytearray, width: int, height: int) -> list[list[int]]:

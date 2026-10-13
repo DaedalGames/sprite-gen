@@ -38,6 +38,7 @@ from typing import Sequence
 from PIL import Image
 
 from sprite_gen.util.gif_utils import save_clean_gif
+from sprite_gen.util.hexcolor import parse_hex
 
 FORMATS = ("chargrid", "json")
 KEYS = string.ascii_lowercase + string.ascii_uppercase + string.digits
@@ -480,8 +481,7 @@ def to_text(grid: Grid) -> str:
 def hex_pixel(color: str | None) -> Pixel:
     if color is None:
         return TRANSPARENT
-    value = color.lstrip("#")
-    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), 255)
+    return (*parse_hex(color), 255)
 
 
 def frame_pixels(grid: Grid, name: str) -> list[list[Pixel]]:
