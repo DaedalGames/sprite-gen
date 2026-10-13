@@ -18,7 +18,10 @@ def test_opaque_sequence_keeps_black_canvas_and_empty_endpoint(tmp_path, loop, s
                         (12 - radius, 12 - radius, 12 + radius, 12 + radius))
         frames.append(frame)
     path = tmp_path / "opaque.gif"
-    save_clean_gif(frames, path, duration_ms=60, loop=loop)
+    sources = [frame.convert("RGB") for frame in frames]
+    for frame in sources:
+        frame.info["transparency"] = (0, 0, 0)
+    save_clean_gif(sources, path, duration_ms=60, loop=loop, opaque=True)
 
     data = path.read_bytes()
     assert data.count(b"GIF89a") + data.count(b"GIF87a") == 1

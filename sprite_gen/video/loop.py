@@ -1610,7 +1610,8 @@ def run_loop(
     # background instead of turning its faint partial-alpha glow into opaque dark pixels.
     gif_background = "#000000" if cycle["kind"] == "lifetime" else None
     gif_pick = [effect.on_black(im) for im in pick] if gif_background is not None else pick
-    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0, alpha_threshold=128)
+    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
+                   alpha_threshold=128, opaque=gif_background is not None)
     write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
     shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
     # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
