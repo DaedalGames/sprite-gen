@@ -62,7 +62,7 @@ def grok_inspect(path: Path, *, credential=None, call=None) -> tuple[str, dict]:
     credential = credential or xai.resolve_credential()
     if credential.source == xai.AUTH_SOURCE_API_KEY:
         announce_api_billing("grok", xai.AUTH_ENV, " (facing vision check).")
-    status, reply = (call or xai.http_json)("POST", xai.API_BASE + "/responses", credential.token,
-                                          request_body(path, GROK_MODEL))
+    status, reply, _sends = xai.post(call or xai.http_json, xai.API_BASE + "/responses", credential.token,
+                                     request_body(path, GROK_MODEL), who="grok", label="facing-vision")
     text, metadata = response_text(status, reply)
     return text, {**metadata, "auth_source": credential.source, "transport": "xai-api"}

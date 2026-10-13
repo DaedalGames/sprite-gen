@@ -59,14 +59,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sprite_gen.spec.runio import atomic_write_text
-from . import prompt_parts, refusal
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
+from . import prompt_parts, refusal, retry
 from .base import announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
 from .xai import (
     API_BASE, AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
     HTTP_TIMEOUT_SECONDS, GROK_REFRESH_COMMAND, GROK_REFRESH_WHERE, GROK_LOGIN_COMMAND,
-    NO_ANSWER, Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json, no_answer,
+    NO_ANSWER, Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json, no_answer, post,
     read_whole, time_left,
 )
 
@@ -108,16 +109,14 @@ POLL_INTERVAL_SECONDS = 4.0
 # limit gets the id back when it sets the timeout under that limit. The POST is not cut by it — its
 # answer is the one way to the id; an answer that comes after the whole timeout ends the run at once.
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
-# A poll xAI throttles (429) or fails on its own side (5xx), or one that gets no answer it can read (the
-# connection failed or timed out, the answer broke on the way or was not JSON — xai.TransportError), is
-# asked again, on the same request: the POST was accepted, so a
-# new submission would buy the clip twice, and a GET buys nothing. The wait doubles from
-# POLL_INTERVAL_SECONDS while the polls fail, up to the ceiling.
-POLL_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-POLL_BACKOFF_MAX_SECONDS = 60.0
+# A poll xAI throttles (429) or fails on its own side (5xx, `retry.GET_AGAIN`), or one that gets no answer
+# it can read (the connection failed or timed out, the answer broke on the way or was not JSON —
+# xai.TransportError), is asked again, on the same request: the POST was accepted, so a new submission
+# would buy the clip twice, and a GET buys nothing. The wait doubles while the polls fail
+# (`retry.backoff`, the wait every direct provider call asks again after: 8 s, 16 s, … up to a minute).
 # A clip the poll says is done is made, and may be billed: its request_id is the one way back to it. A
 # download that gets no answer it can read, or that the clip's host refuses with one of
-# POLL_RETRY_STATUSES, is downloaded again after the polls' doubling wait (8 s, then 16 s), up to
+# `retry.GET_AGAIN`, is downloaded again after the same doubling wait (8 s, then 16 s), up to
 # DOWNLOAD_ATTEMPTS downloads in all, within the poll timeout. One still failing, one refused with
 # another status, bytes that are not an mp4, or a done poll that names no URL to download, end the run
 # unfinished on that request_id: `video-resume` polls it again for a fresh URL, where a new submission
@@ -519,8 +518,17 @@ def _submit_poll_publish(
         announce_api_billing(verb, AUTH_ENV,
                              f"{f' ({priced})' if priced else ''} — "
                              f"`{GROK_LOGIN_COMMAND}` signs your Grok subscription in.")
-    started = time.monotonic()
-    status, reply = call("POST", f"{API_BASE}/videos/{endpoint}", credential.token, body)
+    sent: list[float] = []
+
+    def send(*args: Any) -> tuple[int, Any]:
+        sent.append(time.monotonic())
+        return call(*args)
+
+    # A refusal xAI documents as a request not taken (429) is sent again (`retry`); the poll timeout counts
+    # from the send it answered.
+    status, reply, _sends = post(send, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
+                                 sleep=sleep)
+    started = sent[-1]
     if status in (401, 403):
         raise SystemExit(
             f"{verb}: xAI rejected the credential ({credential.source}) with HTTP {status}: {_error_detail(reply, credential.token)}\n"
@@ -615,7 +623,7 @@ def _poll_publish(
         if lost is not None:
             polls_unanswered += 1
             failed_in_a_row += 1
-        elif http in POLL_RETRY_STATUSES:
+        elif http in retry.GET_AGAIN:
             polls_refused += 1
             failed_in_a_row += 1
         elif http in (401, 403):
@@ -637,8 +645,7 @@ def _poll_publish(
             )
         else:
             failed_in_a_row = 0
-        wait = (min(POLL_INTERVAL_SECONDS * 2 ** failed_in_a_row, POLL_BACKOFF_MAX_SECONDS) if failed_in_a_row
-                else POLL_INTERVAL_SECONDS)
+        wait = retry.backoff(failed_in_a_row) if failed_in_a_row else POLL_INTERVAL_SECONDS
         if time.monotonic() + wait >= deadline:
             # The next poll would leave no time to read its answer: the run ends here, not at the deadline.
             if failed_in_a_row:
@@ -681,8 +688,8 @@ def _poll_publish(
             raise unfinished(f"is done, but its download brought {len(data)} bytes that are not an mp4 (no ftyp box); "
                              f"the clip is made and may be billed — {_ask_again(request_id, out)}", http, poll_status, None,
                              {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": len(data)})
-        again = said is not None or refused in POLL_RETRY_STATUSES
-        wait = POLL_INTERVAL_SECONDS * 2 ** downloads
+        again = said is not None or refused in retry.GET_AGAIN
+        wait = retry.backoff(downloads)
         out_of_time = time.monotonic() + wait >= deadline  # the next download would leave no time to read it
         if not again or downloads == DOWNLOAD_ATTEMPTS or out_of_time:
             if said is not None:
@@ -1101,29 +1108,20 @@ def _build_resume_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_kwargs(parser: argparse.ArgumentParser, runner: Callable[[argparse.Namespace], int], kwargs: dict[str, object]) -> int:
-    known = {action.dest for action in parser._actions if action.dest != "help"}
-    unexpected = set(kwargs) - known
-    if unexpected:
-        raise TypeError(f"unexpected keyword argument(s): {', '.join(sorted(unexpected))}")
-    namespace = argparse.Namespace(**{dest: kwargs.get(dest, parser.get_default(dest)) for dest in known})
-    return runner(namespace)
-
-
 def run(**kwargs: object) -> int:
-    return _run_kwargs(_build_parser(), _run, kwargs)
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 
 def run_extend(**kwargs: object) -> int:
-    return _run_kwargs(_build_extend_parser(), _run_extend, kwargs)
+    return _run_extend(namespace_from_kwargs(_build_extend_parser(), kwargs))
 
 
 def run_edit(**kwargs: object) -> int:
-    return _run_kwargs(_build_edit_parser(), _run_edit, kwargs)
+    return _run_edit(namespace_from_kwargs(_build_edit_parser(), kwargs))
 
 
 def run_resume(**kwargs: object) -> int:
-    return _run_kwargs(_build_resume_parser(), _run_resume, kwargs)
+    return _run_resume(namespace_from_kwargs(_build_resume_parser(), kwargs))
 
 
 def main(argv: list[str] | None = None) -> int:

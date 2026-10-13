@@ -4,8 +4,8 @@ Message Batches, and what a call cost.
 
 Raw HTTP over urllib, like `openai_provider` and `xai`: the runtime dependency surface is Pillow
 and NumPy (SECURITY.md), and one more SDK with its own HTTP stack would be a second transport for
-the same job. What ends an exchange unanswered (`NO_ANSWER`) and the words for it
-(`no_answer_reason`) are `xai`'s. Field names and behaviour are the documented Messages API surface
+the same job. What ends an exchange unanswered (`NO_ANSWER`), the words for it
+(`no_answer_reason`) and the reading of a refusal's body (`error_body`) are `xai`'s. Field names and behaviour are the documented Messages API surface
 (platform.claude.com, 2026-10-12 확인):
 
 - `POST /v1/messages` with `stream: true` answers Server-Sent Events: `message_start` (a message
@@ -24,9 +24,11 @@ the same job. What ends an exchange unanswered (`NO_ANSWER`) and the words for i
   `{custom_id, result: {type: succeeded|errored|canceled|expired, ...}}`. Only `succeeded` is
   billed, at half the price of the same call made directly.
 
-A refusal of the request itself — 429, 500, 502, 503, 504, 529 before any answer began — made
-nothing, so it is asked again, twice at most, each time said on stderr. Anything after the answer
-began (a broken stream, an `error` event) may have been billed and is never asked again here.
+A refusal of the request before any answer began is asked again when Anthropic documents it as
+one (429 but its spend cap, 500, 529), twice at most, each time said on stderr — `retry`, the rule
+every direct provider call keeps, with the provider's words and the date they were read. Anything
+after the answer began (a broken stream, an `error` event) may have been billed and is never asked
+again here.
 There is no refusal fallback to another model: `pixel-draw` reports a refusal as it came.
 """
 from __future__ import annotations
@@ -34,15 +36,14 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import refusal
-from .xai import NO_ANSWER, no_answer_reason
+from . import refusal, retry
+from .xai import NO_ANSWER, error_body, no_answer_reason
 
 API_BASE = "https://api.anthropic.com/v1"
 API_VERSION = "2023-06-01"
@@ -58,9 +59,6 @@ PRICE_PER_MTOK = {
 }
 BATCH_DISCOUNT = 0.5
 
-RETRY_STATUSES = (429, 500, 502, 503, 504, 529)
-RETRY_WAITS = (10.0, 30.0)  # before the second and the third ask
-RETRY_AFTER_MAX = 120.0
 # One socket read may wait this long. Thinking streams its summary (`display: summarized`) and the
 # API sends `ping`s, so a stream that says nothing for minutes is stalled, not thinking.
 READ_TIMEOUT_SECONDS = float(os.environ.get("SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS", "300"))
@@ -165,17 +163,6 @@ def _request(method: str, url: str, token: str, data: bytes | None, *, accept: s
     return request
 
 
-def _error_body(exc: urllib.error.HTTPError) -> Any:
-    try:
-        raw = exc.read().decode("utf-8", "replace")
-    except NO_ANSWER:
-        return refusal.RawBody("")
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return refusal.RawBody(raw)
-
-
 def _error_type(body: Any) -> str | None:
     """`error.type` of an Anthropic error body (`{"type": "error", "error": {"type", "message"}}`)."""
     error = body.get("error") if isinstance(body, dict) else None
@@ -191,38 +178,32 @@ def refused_line(status: int, body: Any, token: str | None) -> str:
     return f"pixel-draw: claude request failed (HTTP {status}){suffix}; not asked again{refusal.said(body, token)}"
 
 
-def _retry_after(headers: Any) -> float | None:
-    value = headers.get("retry-after") if headers is not None else None
-    try:
-        seconds = float(value) if value is not None else None
-    except ValueError:
-        return None
-    return min(seconds, RETRY_AFTER_MAX) if seconds is not None and seconds >= 0 else None
+def _no_answer(exc: BaseException) -> ApiError:
+    return ApiError(f"pixel-draw: claude request got no answer ({no_answer_reason(exc)}); not asked again "
+                    "(the API may have accepted it)")
 
 
 def _open(request_for: Callable[[], urllib.request.Request], token: str, *, timeout: float, sleep: Sleep,
-          label: str) -> http.client.HTTPResponse:
-    """Send a request; a refusal that made nothing is asked again (RETRY_STATUSES), anything else raises."""
-    for attempt in range(len(RETRY_WAITS) + 1):
+          label: str, method: str = "POST") -> http.client.HTTPResponse:
+    """Send a request, and again after a refusal `retry` sends again; any other refusal raises ApiError."""
+    def send() -> tuple[int, Any, Any]:
         try:
-            return urllib.request.urlopen(request_for(), timeout=timeout)
+            response = urllib.request.urlopen(request_for(), timeout=timeout)
         except urllib.error.HTTPError as exc:
-            body = _error_body(exc)
-            if exc.code in RETRY_STATUSES and attempt < len(RETRY_WAITS):
-                wait = _retry_after(exc.headers)
-                wait = RETRY_WAITS[attempt] if wait is None else wait
-                kind = _error_type(body)
-                print(f"[{label}] claude refused the request ({exc.code}{' ' + kind if kind else ''}); "
-                      f"nothing was made — asking again in {wait:g}s ({attempt + 1} of {len(RETRY_WAITS)})",
-                      file=sys.stderr)
-                sleep(wait)
-                continue
-            raise ApiError(refused_line(exc.code, body, token), status=exc.code,
-                           request_id=exc.headers.get("request-id") if exc.headers else None, billed=False) from exc
+            try:
+                return exc.code, error_body(exc, timeout), exc.headers
+            except NO_ANSWER as cut:
+                raise _no_answer(cut) from cut
         except NO_ANSWER as exc:
-            raise ApiError(f"pixel-draw: claude request got no answer ({no_answer_reason(exc)}); not asked again "
-                           "(the API may have accepted it)") from exc
-    raise AssertionError("unreachable")
+            raise _no_answer(exc) from exc
+        return response.status, response, response.headers
+
+    status, answer, headers, _asks = retry.ask(send, provider="anthropic", who="claude", label=label, method=method,
+                                               sleep=sleep, kind=_error_type)
+    if 200 <= status < 300:
+        return answer
+    raise ApiError(refused_line(status, answer, token), status=status,
+                   request_id=headers.get("request-id") if headers else None, billed=False)
 
 
 class _Stream:
@@ -333,7 +314,7 @@ def _json_call(method: str, url: str, token: str, body: dict[str, Any] | None, *
                label: str, timeout: float = 120.0) -> Any:
     data = None if body is None else json.dumps(body).encode("utf-8")
     response = _open(lambda: _request(method, url, token, data, accept="application/json"),
-                     token, timeout=timeout, sleep=sleep, label=label)
+                     token, timeout=timeout, sleep=sleep, label=label, method=method)
     try:
         with response:
             raw = response.read().decode("utf-8")
@@ -385,7 +366,7 @@ def batch_results(token: str, batch: dict[str, Any], *, sleep: Sleep = time.slee
     if not isinstance(url, str) or not url:
         raise ApiError(f"pixel-draw: batch {batch.get('id')} has ended but names no results_url")
     response = _open(lambda: _request("GET", url, token, None, accept="application/binary"),
-                     token, timeout=120.0, sleep=sleep, label=label)
+                     token, timeout=120.0, sleep=sleep, label=label, method="GET")
     try:
         with response:
             lines = response.read().decode("utf-8").splitlines()
