@@ -4,6 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+- Add bounded one-frame decoded length tolerance, preserving loop duration, trimming one-shots, and rejecting shorter buffers and undersized overlaps at export.
 - Configure loop playback in `createAudioSource` using an internally cached L+1 guard frame buffer while preserving `prepareAudioBuffer` frame contracts.
 
 - Upgraded sound generation and game-pack audio integration to version 2: removed file-level crossfades and boundary tapers in favor of complete normalized exports with integer frame `playback` coordinates, removed legacy loop seconds and taper metadata, and bundled standalone runtime helper `sprite-gen-audio-v2.mjs` for Web Audio loop preparation.

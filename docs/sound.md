@@ -65,7 +65,7 @@ Outputs `sound.json` (version 2, `kind="sprite-gen-sound"`, `recipe.processing_v
   - Coordinates refer to the complete exported pre-overlap PCM source at `sample_rate` (48000 Hz, independent of provider container sample rate) over the half-open interval `[start_frame, end_frame)`.
   - Let `N = end_frame - start_frame` and `M = overlap_frames`.
   - For non-looping audio (`loop: false`), `M = 0`.
-  - For looping audio (`loop: true`), `2 <= M < N / 2`.
+  - For looping audio (`loop: true`), `2 <= M < N / 2` (see [helper mapping](#export-signatures) for the export minimum).
   - Manifest `duration_seconds` is `(N - M) / sample_rate`.
   - The CLI `--crossfade` parameter (seconds) is converted to integer frame count `M`, defaulting to `min(0.25, requested_duration / 8)`.
 - `files`: Format dictionary for `ogg` and `m4a` containing `path`, decoded `duration_seconds` (full decoded file duration, which may include codec priming/tail padding), `lufs`, `true_peak_dbfs`, `sha256`, `encode_passes`, and `pcm_peak_limit_dbtp`.
@@ -78,24 +78,16 @@ Loop blending and buffer trimming are executed in the browser via the standalone
 ### Export Signatures
 
 - `prepareAudioBuffer(decoded, playback) => AudioBuffer`:
-  - Maps playback coordinates to decoded sample rate `r` (`decoded.sampleRate`) using `sr = playback.sample_rate`, `N = playback.end_frame - playback.start_frame`, and `M = playback.overlap_frames`:
-    - `first = Math.floor(playback.start_frame * r / sr)`
-    - `last = Math.floor(playback.end_frame * r / sr)`
-    - `N' = last - first`
-  - Rescaling performs multiplication before division (`frames * r / sr`). Boundary mapping discards fractional destination frames (<1 frame) via `Math.floor`. This is a declared coordinate quantization, not clamping to `decoded.length`.
-  - **Looping (`M > 0`)**:
-    - `L' = Math.round((N - M) * r / sr)` (computed once directly; positive `Math.round` ties round upward toward `+Infinity`).
-    - `M' = N' - L'`
-    - The final loop length `L'` stays nearest-rounded regardless of browser decoded buffer length. Do not independently round overlap or subtract independently rounded durations.
-    - Overlap validation: mapped loop overlap must satisfy `2 <= M' < N' / 2` (must contain at least 2 frames and be shorter than half the mapped interval).
-    - Constructs output of length `L'` by slicing `source[first + M' : last - M']` and blending tail `M'` with head `M'` using complementary cosine weights `0.5 - 0.5 * Math.cos(Math.PI * i / (M' - 1))`.
-  - **One-Shots (`M = 0`)**:
-    - `L' = N'` and `M' = 0`.
-    - Trims the mapped interval `[first : last]` to output length `L'`.
-  - **Decoded Length & Resampling Verification**:
-    - Requires `decoded.length >= last`. Tolerates no missing complete frames (throws if `decoded.length < last`). Any extra decoder padding frames after `last` are ignored.
-    - W3C Web Audio specifications mandate resampling when container and destination context sample rates differ, but do not mandate a uniform length rounding rule.
-    - Chromium calculates resampled buffer length as an integer truncated from `source_length / sample_rate_ratio` where `sample_rate_ratio = source_rate / destination_rate` (see [Blink `AudioBus::CreateBySampleRateConverting`](https://chromium.googlesource.com/chromium/src/+/6718b706ff100957d755554cec783840a8f1f05b/third_party/blink/renderer/platform/audio/audio_bus.cc)). For example, a synthetic 48 kHz WAVE with 144,003 frames resampled to 44.1 kHz (`144003 / (48000 / 44100) = 132302.75625`) truncates to 132,302 destination frames in Chromium.
+  - Coordinates:
+    - Input `playback` v2 provides integer fields `sample_rate=sr`, `start_frame=start`, `end_frame=end`, and `overlap_frames=M`.
+    - Coordinate dimensions are `N=end-start` and destination sample rate `r=decoded.sampleRate`. Rescaling is `rescale(f)=f*r/sr`, evaluating multiplication before division.
+    - Frame boundaries map to `first=floor(start*r/sr)` and `mappedEnd=floor(end*r/sr)`.
+    - Buffer length requires `decoded.length >= mappedEnd-1`, providing exactly one frame of tolerance universally, not per decoder; two or more missing frames cause a `RangeError`.
+    - Destination bounds evaluate to `last=min(mappedEnd,decoded.length)` and `N'=last-first`. All excess decoded padding is ignored.
+  - One-shots (`M=0`): `L'=N'` and `M'=0`, copying `source[first:last]` unchanged; a one-frame shortfall reduces one-shot length by making the output one frame shorter, with no synthesis or padding.
+  - Loops (`M>0`): `L'=Math.round((N-M)*r/sr)` is computed exactly once, rounding positive ties toward `+Infinity`, with `M'=N'-L'`. Thus, one missing decoded frame decreases `M'` by one without changing declared loop length `L'` (a one-frame shortfall reduces loop overlap, never declared loop length). The contract requires `2<=M'<N'/2` and `L'>0`; an overlap count `count<2` on a one-frame shortfall throws a `RangeError` containing the exact text `overlap too short after decoder one-frame shortfall`. Do not round overlap independently. The output copies `source[first+M':last-M']`, then blends the tail `M'` frames with the head `M'` frames using complementary cosine weights `0.5 - 0.5 * Math.cos(Math.PI * i / (M' - 1))`.
+  - Supported minimum decoded rate is `r_min=8000 Hz`; the shared frame-contract validator rejects exports (before normalization and encoding) and manifest imports unless `M*r_min/sr>=3.5` for loops, with the exact integer check `2*M*8000>=7*sr`. This guarantees at least two destination blend frames after interval quantization (`<1` frame), final length rounding (`<=0.5` frame), and the single decoder shortfall (`1` frame). The runtime minimum remains `M'>=2`; when `M'` is 0 or 1 after shortfall, it throws the explicit `RangeError` above. For a 48kHz export, `M=20` is rejected and `M=21` is the minimum allowed. This conservative bound protects arbitrary interval origin and duration for supported rates.
+  - Decoded-length rationale: Web Audio mandates resampling when context rates differ, but specifies no uniform length rounding. Chromium's official source uses `source_length/(source_rate/destination_rate)` truncated to an integer. Floating-point double arithmetic `48000/(48000/44100)` evaluates just below `44100` and truncates to `44099`. In a fractional example, `144003/(48000/44100)=132302.75625` truncates to `132302`. See [Blink AudioBus sample-rate conversion](https://chromium.googlesource.com/chromium/src/+/6718b706ff100957d755554cec783840a8f1f05b/third_party/blink/renderer/platform/audio/audio_bus.cc). This tolerance is an explicit contract allowance, not a universal specification guarantee.
   - **Cache & Immutability**:
     - The input `AudioBuffer` is not modified.
     - Employs an internal `WeakMap` cache per module instance. Calling with the same input buffer and playback metadata returns the previously prepared buffer. Passing an already prepared buffer with identical metadata returns itself; passing altered metadata on an already prepared buffer throws. Applications should import the same module URL once, retain prepared buffers, and avoid copying prepared PCM back into raw inputs.
