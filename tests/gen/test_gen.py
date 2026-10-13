@@ -142,7 +142,7 @@ def test_json_report_writes_utf8_bytes_without_reconfiguring_stdout(monkeypatch)
     raw = io.BytesIO()
     cp949_stream = io.TextIOWrapper(raw, encoding="cp949")
     monkeypatch.setattr(sys, "stdout", cp949_stream)
-    gen._print_json({"prompt": "도구 — 완료"})
+    gen_base.print_json({"prompt": "도구 — 완료"})
     cp949_stream.detach()
     assert json.loads(raw.getvalue().decode("utf-8")) == {"prompt": "도구 — 완료"}
 

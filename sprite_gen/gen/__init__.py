@@ -61,6 +61,7 @@ from .base import (
     GenRequest,
     GenResult,
     GenTimeoutError,
+    print_json,
     provider_binary,
     provider_subprocess_env,
     verify_png,
@@ -666,26 +667,8 @@ def _run(args: argparse.Namespace) -> int:
         report_path = Path(args.report).expanduser().resolve()
         atomic_write_text(report_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         payload["report"] = str(report_path)
-    _print_json(payload)
+    print_json(payload)
     return 0
-
-
-def _print_json(payload: dict) -> None:
-    """Emit the machine-readable report as UTF-8 on every host locale.
-
-    A generated prompt may contain Korean or an em dash. On a Windows cp949
-    redirected stream, writing that through ``TextIOWrapper`` can fail after
-    the image already exists. The binary buffer is the CLI byte contract and
-    avoids mutating process-global stdout configuration. Captured/in-memory
-    streams without a buffer already accept Unicode and use the text path.
-    """
-    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    buffer = getattr(sys.stdout, "buffer", None)
-    if buffer is not None:
-        buffer.write(text.encode("utf-8"))
-        buffer.flush()
-    else:
-        sys.stdout.write(text)
 
 
 def _build_parser() -> argparse.ArgumentParser:

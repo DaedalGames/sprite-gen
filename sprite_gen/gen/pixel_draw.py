@@ -17,10 +17,10 @@ One run, `--candidates` K answers to the same request:
    most twice in all.
 3. G2 palette, G3 alpha and G6 frames fail a candidate; G4 tile seam, G5 stray pixels, the walk
    cycle's leg alternation and G8 safe area (a frame past the physical cap, a sprite off the floor
-   row) warn, and G8 notes a frame past the safe area within the cap in an info line — the image
-   path's judgment (`frames.extract.safe_area_fit`). The prompt gives a sprite or icon the engine's
-   safe area (`safe_area_lines`) in rows and columns, as a target for the body's size that a pose
-   may go past.
+   row) warn, and G8 notes a frame past the safe area within the cap in an info line. G3, G4, G5
+   and G8 are judgments sprite-gen already makes elsewhere, called rather than copied
+   (`pixel_gates`). The prompt gives a sprite or icon the engine's safe area (`safe_area_lines`) in
+   rows and columns, as a target for the body's size that a pose may go past.
 4. G7: of two or more candidates that passed, one vision call (effort low) picks, or a person
    does (`--pick human`). One that passed alone is the pick.
 
@@ -49,12 +49,13 @@ from typing import Any, Callable, Generator
 
 from PIL import Image, ImageDraw
 
+from sprite_gen.qa.preview import checker
 from sprite_gen.spec.runio import atomic_write_text
 from . import anthropic_api as api
 from . import refusal
 from .anthropic_api import ApiError, Reply
-from .base import announce_api_billing
-from .pixel_gates import evaluate, safe_area
+from .base import announce_api_billing, print_json
+from .pixel_gates import colors_used, evaluate, safe_area
 from .pixel_grid import (
     FORMATS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, palette_rule, parse_answer,
     parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text, recovered, row_issues, row_text,
@@ -797,18 +798,12 @@ def _issue_list(issues: list[Issue]) -> str:
     return ", ".join(shown) + (f" and {len(failing) - 6} more" if len(failing) > 6 else "")
 
 
-def _checker(width: int, height: int, cell: int = 8) -> Image.Image:
-    board = Image.new("RGBA", (width, height), (236, 236, 236, 255))
-    draw = ImageDraw.Draw(board)
-    for y in range(0, height, cell):
-        for x in range(0, width, cell):
-            if (x // cell + y // cell) % 2:
-                draw.rectangle([x, y, x + cell - 1, y + cell - 1], fill=(206, 206, 206, 255))
-    return board
+PICK_CHECKER_SQUARE = 8  # sheet pixels a square of the checker under a preview
 
 
 def pick_sheet(run_dir: Path, by_label: dict[str, Candidate], *, tile: bool) -> bytes:
-    """One sheet of the candidates' previews (and 3x3 tilings), each row labelled."""
+    """One sheet of the candidates' previews (and 3x3 tilings), each row labelled, a preview's
+    transparency on the engine's preview checker (`qa.preview.checker`)."""
     rows = []
     for label, candidate in by_label.items():
         preview = Image.open(run_dir / candidate.files["preview"]).convert("RGBA")
@@ -823,7 +818,7 @@ def pick_sheet(run_dir: Path, by_label: dict[str, Candidate], *, tile: bool) -> 
     for label, preview, tiled in rows:
         draw.text((pad, y + 4), label, fill=(0, 0, 0, 255), font_size=36)
         x = pad + label_width
-        sheet.alpha_composite(Image.alpha_composite(_checker(preview.width, preview.height), preview), (x, y))
+        sheet.alpha_composite(Image.alpha_composite(checker(preview.size, PICK_CHECKER_SQUARE), preview), (x, y))
         if tiled is not None:
             sheet.alpha_composite(tiled, (x + preview.width + pad, y))
         y += max(preview.height, tiled.height if tiled is not None else 0) + pad
@@ -886,16 +881,6 @@ def _write_report(run_dir: Path, report: dict[str, Any]) -> Path:
     path = run_dir / "report.json"
     atomic_write_text(path, json.dumps(report, ensure_ascii=False, indent=1) + "\n")
     return path
-
-
-def _print_json(payload: dict[str, Any]) -> None:
-    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    buffer = getattr(sys.stdout, "buffer", None)
-    if buffer is not None:
-        buffer.write(text.encode("utf-8"))
-        buffer.flush()
-    else:
-        sys.stdout.write(text)
 
 
 # ----------------------------------------------------------------------------- the verb
@@ -988,18 +973,14 @@ def _run_grid(args: argparse.Namespace) -> int:
         raise _refuse(f"{args.grid} does not parse whole: {_issue_list(issues)}; report {path}")
     pixels = {name: frame_pixels(grid, name) for name in frames}
     gates = evaluate(pixels, kind=kind, rule=rule, walk_cycle=bool(args.walk_cycle))
-    files = write_files(out_dir, grid, frames, kind, rule, _colors_used(pixels))
+    files = write_files(out_dir, grid, frames, kind, rule, colors_used(pixels))
     report.update(status="ok" if gates["ok"] else "failed", gates=gates, warnings=gates["warnings"], info=gates["info"],
                   files=files, request={**report["request"], "size": [grid.width, grid.height]})
     path = _write_report(out_dir, report)
     if not gates["ok"]:
         raise _refuse(f"{args.grid} fails {', '.join(gates['failed'])}; files and report in {out_dir} ({path.name})")
-    _print_json(report)
+    print_json(report)
     return 0
-
-
-def _colors_used(pixels: dict[str, Any]) -> list[str]:
-    return sorted({"#{:02X}{:02X}{:02X}".format(*p[:3]) for f in pixels.values() for row in f for p in row if p[3] >= 128})
 
 
 def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.sleep) -> int:
@@ -1045,7 +1026,7 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
         if candidate.grid is not None:
             pixels = {name: frame_pixels(candidate.grid, name) for name in request.frames}
             files = write_files(out_dir / "candidates" / candidate.id, candidate.grid, request.frames, request.kind,
-                                request.palette, _colors_used(pixels))
+                                request.palette, colors_used(pixels))
             candidate.files = _prefixed(files, f"candidates/{candidate.id}")
     passed = [c for c in candidates if c.status == "passed"]
     report["candidates"] = [c.to_dict() for c in candidates]
@@ -1074,7 +1055,7 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
                       f"{out_dir / 'candidates'}; report {path}")
     report["status"] = "ok"
     _finish(report, calls, started)
-    _print_json(report)
+    print_json(report)
     return 0
 
 

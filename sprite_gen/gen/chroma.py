@@ -83,15 +83,24 @@ def classify_raw_alpha(path: Path) -> dict[str, Any]:
     when it has no alpha band or no alpha-0 pixel (a checkerboard, a key background,
     an opaque RGBA); `ambiguous` for alpha-0 pixels that miss either bar. The alpha
     band is the one `verify_native_alpha` reads, so a `real-alpha` raw is one it accepts.
+    The judgment of the band is `alpha_verdict`.
     """
     with Image.open(path) as source:
         mode = source.mode
         has_alpha = "A" in source.getbands()
         alpha = source.getchannel("A") if has_alpha else None
-        width, height = source.size
     stats: dict[str, Any] = {"mode": mode, "has_alpha_band": has_alpha}
     if alpha is None:
         return {**stats, "verdict": RAW_ALPHA_NONE, "alpha_zero_pct": 0.0, "border_alpha_zero_pct": 0.0}
+    return {**stats, **alpha_verdict(alpha)}
+
+
+def alpha_verdict(alpha: Image.Image) -> dict[str, Any]:
+    """Whether an alpha band is a real transparent background: `verdict` `real-alpha`,
+    `no-alpha` or `ambiguous` by the bars `classify_raw_alpha` names, with the two
+    shares it judged by. One judgment: `classify_raw_alpha` asks it of a generated raw,
+    and `pixel-draw`'s G3 of each frame it drew (docs/gen.md)."""
+    width, height = alpha.size
     total = width * height
     alpha_zero = alpha.histogram()[0]
     edges = [(0, 0, width, 1), (0, height - 1, width, height),
@@ -108,7 +117,7 @@ def classify_raw_alpha(path: Path) -> dict[str, Any]:
         verdict = RAW_ALPHA_REAL
     else:
         verdict = RAW_ALPHA_AMBIGUOUS
-    return {**stats, "verdict": verdict, "alpha_zero_pct": round(alpha_zero_pct, 2),
+    return {"verdict": verdict, "alpha_zero_pct": round(alpha_zero_pct, 2),
             "border_alpha_zero_pct": round(border_alpha_zero_pct, 2)}
 
 

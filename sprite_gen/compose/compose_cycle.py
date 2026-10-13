@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 from sprite_gen.curate.curation import apply_pixel_edits, apply_transform, frame_variant, load_curation, pixel_snap_scale, source_frame_index, state_pixel_ops, state_plan
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
 from sprite_gen.frames.extract import require_frames_manifest
+from sprite_gen.qa.preview import flatten
 from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, save_clean_gif
 from sprite_gen.spec.runio import read_guard, relative_posix, load_request
 
@@ -29,23 +30,6 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def checker(size: tuple[int, int], square: int = 16) -> Image.Image:
-    width, height = size
-    image = Image.new("RGBA", size, (210, 210, 210, 255))
-    pixels = image.load()
-    for y in range(height):
-        for x in range(width):
-            if ((x // square) + (y // square)) % 2 == 0:
-                pixels[x, y] = (235, 235, 235, 255)
-    return image
-
-
-def flatten(frame: Image.Image) -> Image.Image:
-    base = checker(frame.size)
-    base.alpha_composite(frame)
-    return base.convert("RGB")
 
 
 def parse_frames(value: str) -> list[int]:

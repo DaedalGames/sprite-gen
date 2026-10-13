@@ -313,6 +313,21 @@ def test_the_vision_pick_chooses_between_two_that_passed(tmp_path, claude):
     assert [c["id"] for c in report["calls"]] == ["c1-gen1", "c2-gen1", "pick"]
 
 
+def test_the_pick_sheet_shows_transparency_on_the_engines_preview_checker(tmp_path):
+    """The candidates' transparent pixels show the checker the engine's contact sheets and GIF
+    previews show (`qa.preview.checker`), eight sheet pixels a square."""
+    from sprite_gen.qa.preview import checker
+
+    by_label = {}
+    for label, cid in (("A", "c1"), ("B", "c2")):
+        (tmp_path / cid).mkdir()
+        Image.new("RGBA", (64, 48), (0, 0, 0, 0)).save(tmp_path / cid / "preview.png")
+        by_label[label] = pixel_draw.Candidate(cid, files={"preview": f"{cid}/preview.png"})
+    sheet = Image.open(io.BytesIO(pixel_draw.pick_sheet(tmp_path, by_label, tile=False))).convert("RGB")
+    left, top = 16 + 56, 16  # past the margin and the label column
+    assert sheet.crop((left, top, left + 64, top + 48)).tobytes() == checker((64, 48), square=8).convert("RGB").tobytes()
+
+
 def test_a_person_picks_when_asked(tmp_path, claude):
     fake = claude({"c1-gen1": reply(SPRITE16), "c2-gen1": reply(SPRITE16.replace("r #d03a34", "r #c03030"))})
     out = tmp_path / "run"

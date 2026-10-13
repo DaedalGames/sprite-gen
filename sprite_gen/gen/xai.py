@@ -155,12 +155,18 @@ NO_ANSWER = (OSError, http.client.HTTPException)
 
 
 def no_answer(exc: BaseException) -> TransportError:
+    return TransportError(no_answer_reason(exc))
+
+
+def no_answer_reason(exc: BaseException) -> str:
+    """What the transport said when a request got no answer it could read: the words every direct
+    provider call (xAI here, Anthropic in `anthropic_api`) puts in its line."""
     said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
     # An http.client exception carries what the server sent (BadStatusLine its line, CRLF included);
     # its repr names the kind and keeps that on one line. RemoteDisconnected is a reset too: its words.
     if isinstance(said, http.client.HTTPException) and not isinstance(said, OSError):
-        return TransportError(repr(said)[:200])
-    return TransportError((str(said) or type(said).__name__)[:200])
+        return repr(said)[:200]
+    return (str(said) or type(said).__name__)[:200]
 
 
 ANSWER_CHUNK = 1 << 16  # what one read of an answer bounded by a deadline asks for
