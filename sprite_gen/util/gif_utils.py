@@ -45,13 +45,17 @@ def _prepare_transparent_frame(frame: Image.Image, alpha_threshold: int) -> Imag
 
 def _prepare_opaque_frame(frame: Image.Image) -> Image.Image:
     rgb = frame.convert("RGB")
-    # Refine coverage for both sparse highlights and the main glow, reserving
-    # exact black so the refinement cannot tint an empty preview background.
-    palette = rgb.quantize(colors=255, method=Image.Quantize.MAXCOVERAGE, kmeans=1)
-    colors = (palette.getpalette() or [])[:765]
-    colors.extend([0] * (768 - len(colors)))
-    palette.putpalette(colors)
-    paletted = rgb.quantize(palette=palette, dither=Image.Dither.NONE)
+    if rgb.getcolors(maxcolors=256) is not None:
+        # Palette-sized inputs can retain every colour, including very dim light.
+        paletted = rgb.quantize(colors=256)
+    else:
+        # Refine coverage for both sparse highlights and the main glow, reserving
+        # exact black so the refinement cannot tint an empty preview background.
+        palette = rgb.quantize(colors=255, method=Image.Quantize.MAXCOVERAGE, kmeans=1)
+        colors = (palette.getpalette() or [])[:765]
+        colors.extend([0] * (768 - len(colors)))
+        palette.putpalette(colors)
+        paletted = rgb.quantize(palette=palette, dither=Image.Dither.NONE)
     paletted.info.pop("transparency", None)
     return paletted
 
