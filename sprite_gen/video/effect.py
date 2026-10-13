@@ -2,8 +2,8 @@
 """Emissive effects on black: straight-alpha conversion and generation framing.
 
 RGB on black is already multiplied by its coverage. The maximum channel is the
-smallest alpha that can reconstruct every channel without clipping. No threshold
-is applied: a dim wisp and a detached spark both carry intentional light.
+smallest alpha that can reconstruct every channel without clipping. The shared
+black noise floor removes near-zero values; surviving light is not rescaled.
 """
 from pathlib import Path
 from typing import Any
@@ -14,11 +14,13 @@ from sprite_gen._deps import np
 
 STATE = "effect"
 ALPHA_MODES = ("chroma", "brightness")
+BRIGHTNESS_NOISE_FLOOR = 2
 
 
 def brightness_alpha(image: Image.Image) -> Image.Image:
     rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
     alpha = rgb.max(axis=2)
+    alpha[alpha <= BRIGHTNESS_NOISE_FLOOR] = 0
     color = np.zeros_like(rgb)
     np.divide(rgb * 255, alpha[:, :, None], out=color, where=alpha[:, :, None] > 0)
     return Image.fromarray(np.dstack((np.rint(color), alpha)).astype(np.uint8), "RGBA")
@@ -36,7 +38,8 @@ def key_frames(files: list[Path], directory: Path) -> dict[str, Any]:
         zero = image.getchannel("A").histogram()[0]
         rows.append({"frame": src.name, "alpha_zero_pct": round(100 * zero / (image.width * image.height), 2),
                      "route": "brightness", "specks": 0})
-    return {"alpha_mode": "brightness", "blend": "add", "frames": len(rows), "rows": rows,
+    return {"alpha_mode": "brightness", "brightness_noise_floor": BRIGHTNESS_NOISE_FLOOR,
+            "blend": "add", "frames": len(rows), "rows": rows,
             "alpha_zero_pct_min": min(r["alpha_zero_pct"] for r in rows),
             "alpha_zero_pct_max": max(r["alpha_zero_pct"] for r in rows),
             "specks": {"dropped": 0, "frames": 0, "policy": "off"},
