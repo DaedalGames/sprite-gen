@@ -126,6 +126,16 @@ def test_once_refuses_an_action_that_returns_to_its_start_pose(tmp_path):
         cut(tmp_path)
 
 
+def test_a_recolored_upright_endpoint_is_not_a_collapse(tmp_path):
+    files = keyed(tmp_path / "keyed")
+    upright = Image.new("RGBA", (128, 96))
+    ImageDraw.Draw(upright).rectangle((34, 20, 50, 85), fill=(30, 80, 200, 255))
+    for k in range(75, 90):
+        upright.save(files / f"{k:04d}.png")
+    with pytest.raises(SystemExit, match="lowered"):
+        cut(tmp_path)
+
+
 def test_batch_sends_terminal_pin_and_does_not_reuse_a_changed_pin(tmp_path, monkeypatch):
     seen = []
     base = tmp_path / "base.png"
