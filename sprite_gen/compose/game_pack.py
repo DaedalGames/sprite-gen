@@ -14,6 +14,7 @@ import tempfile
 from PIL import Image
 
 from sprite_gen.spec.assets import finite, load_asset_states
+from sprite_gen.util.resample import resize_cell
 
 MAX_PAGE_SIZE = 4096
 MAX_BYTES = 50_000_000
@@ -76,7 +77,7 @@ def _display(sequence, entry):
     sampling = entry.get("resample", "nearest" if sequence.metadata.get("frame_variant") == "pixel" else "lanczos")
     if sampling not in ("nearest", "lanczos"):
         raise ValueError("resample must be nearest or lanczos")
-    return size, anchor, Image.Resampling.NEAREST if sampling == "nearest" else Image.Resampling.LANCZOS
+    return size, anchor, sampling
 
 
 def _prepare(request, base, page_size):
@@ -96,6 +97,8 @@ def _prepare(request, base, page_size):
         if not isinstance(entry.get("source"), str) or not entry["source"]:
             raise ValueError("each asset requires a source path")
         sequences = load_asset_states(base / entry["source"], state=entry.get("state"), fps=entry.get("fps"), anchor=entry.get("anchor"))
+        if len(sequences) > 1 and "direction" in entry:
+            raise ValueError("direction override requires one animation; select a source state")
         for state, sequence in sequences.items():
             key = asset_id if state is None else f"{asset_id}/{_name(state)}"
             size, anchor, sampling = _display(sequence, entry)
@@ -107,7 +110,8 @@ def _prepare(request, base, page_size):
             for index, image in enumerate(sequence.frames):
                 name = f"{key}/{index:06d}"
                 animation["frames"].append(name)
-                frames.append((name, image.resize(size, sampling), anchor))
+                cell = image.resize(size, Image.Resampling.NEAREST) if sampling == "nearest" else resize_cell(image, size)
+                frames.append((name, cell, anchor))
             animations[key] = animation
             sources.update(sequence.source_files)
     return dict(sorted(animations.items())), sorted(frames, key=lambda f: f[0]), sources

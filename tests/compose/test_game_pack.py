@@ -7,7 +7,9 @@ import sys
 import pytest
 from PIL import Image
 
+from keyed_figure import colour_outside, figure
 from sprite_gen.compose import game_pack
+from sprite_gen.util.resample import resize_cell
 
 
 def write_json(path, data):
@@ -41,6 +43,37 @@ def pixels(out, result, animation):
         with Image.open(out / page["image"]) as im:
             found.append(im.crop((rect["x"], rect["y"], rect["x"]+rect["w"], rect["y"]+rect["h"])))
     return found
+
+
+@pytest.mark.parametrize("scale,resample", [(0.16, None), (0.5, "lanczos"), (0.75, None)])
+def test_scaled_cutout_carries_no_colour_its_source_did_not_have(tmp_path, scale, resample):
+    src = figure()
+    src.save(tmp_path / "hero.png")
+    entry = {"id": "hero", "source": "hero.png", "display": {"height": round(src.height * scale)}}
+    if resample is not None:
+        entry["resample"] = resample
+    result = game_pack.pack(request(tmp_path, [entry]), tmp_path / "out")
+    (cell,) = pixels(tmp_path / "out", result, "hero")
+    assert colour_outside(src, cell) == 0
+    assert cell.tobytes() == resize_cell(src, cell.size).tobytes()
+    assert colour_outside(src, src.resize(cell.size, Image.Resampling.LANCZOS)) > 100
+
+
+@pytest.mark.parametrize("pixel_metadata", [False, True])
+def test_pixel_resampling_keeps_nearest_samples(tmp_path, pixel_metadata):
+    src = figure()
+    src.save(tmp_path / "hero.png")
+    entry = {"id": "hero", "source": "hero.png", "display": {"height": 90}}
+    if pixel_metadata:
+        write_json(tmp_path / "hero.json", {
+            "frames": 1, "w": src.width, "h": src.height, "delay_ms": 100, "frame_variant": "pixel",
+        })
+        entry["source"] = "hero.json"
+    else:
+        entry["resample"] = "nearest"
+    result = game_pack.pack(request(tmp_path, [entry]), tmp_path / "out")
+    (cell,) = pixels(tmp_path / "out", result, "hero")
+    assert cell.tobytes() == src.resize(cell.size, Image.Resampling.NEAREST).tobytes()
 
 
 def test_mixed_export_preserves_timing_order_policy_pivot_and_pixel_colors(tmp_path):
@@ -104,6 +137,17 @@ def test_direction_sheet_uses_declared_row_positions_and_lengths(tmp_path):
         assert anim["anchor"] == [1, 3.5]
         expected = [Image.new("RGBA", (1, 1), c).getpixel((0, 0)) for c in colors[code]]
         assert [f.getpixel((1, 1)) for f in pixels(out, result, f"walk/{code}")] == expected
+
+    for direction in ("E", None):
+        entry = {"id": "walk", "source": "set.json", "display": {"body_height": 3}, "direction": direction}
+        overridden = request(tmp_path, [entry])
+        with pytest.raises(ValueError, match="direction.*state"):
+            game_pack.pack(overridden, tmp_path / "ambiguous")
+        assert not (tmp_path / "ambiguous").exists()
+        entry["state"] = "N"
+        selected = game_pack.pack(request(tmp_path, [entry]), tmp_path / f"selected-{direction}")
+        assert list(selected["animations"]) == ["walk/N"]
+        assert selected["animations"]["walk/N"]["direction"] == direction
 
 
 def test_runtime_atlas_repeated_rectangles_and_variable_durations(tmp_path):

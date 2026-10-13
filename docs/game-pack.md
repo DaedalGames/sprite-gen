@@ -73,7 +73,7 @@ The `display` object requires exactly one positive integer dimension:
 * `height`: Canvas height in pixels; width preserves aspect ratio to the nearest whole pixel.
 * `body_height`: Character body height in pixels. Scales using source metadata `body_h`. When `body_h` is absent, provide `source_body_height` on the asset entry root.
 
-Frame alpha is not auto-trimmed. Resampling defaults to `nearest` when source metadata contains `frame_variant=pixel`, and `lanczos` otherwise. For plain pixel-art PNGs lacking metadata, set `"resample": "nearest"`.
+Frame alpha is not auto-trimmed. Accepted request `resample` values remain `nearest` and `lanczos`, defaulting to `nearest` when source metadata contains `frame_variant=pixel`, and `lanczos` otherwise. `nearest` uses Pillow nearest-neighbour directly, preserving pixel-art samples. The `lanczos` request mode now delegates to the engine's shared `sprite_gen.util.resample.resize_cell`, the same cutout scaler used by video-loop, extract, slice-sheet, and scene. It scales coverage separately from colour (LANCZOS coverage and Hamming colour), avoiding the colour ringing of plain RGBA LANCZOS (refer to the Cells item in [video-pipeline.md](video-pipeline.md)). For plain pixel-art PNGs lacking metadata, set `"resample": "nearest"`.
 
 ### Playback overrides and defaults
 
@@ -84,7 +84,7 @@ Source policies and row anchors are preserved by the asset adapter. Optional ent
 * `hold_last`: Hold final frame on completion (defaults to `false`).
 * `end_frame`: Zero-based output playback termination index (defaults to final frame; validated within frame count).
 * `blend`: `"normal"` (default) or `"add"`.
-* `direction`: Direction override code or `null` (defaults to `null`).
+* `direction`: Direction override code or `null` (defaults to `null`). Allowed only if the entry resolves to one animation; the user can select one source `state` to override one animation. An entry expanding multiple states or directions must reject any `direction` field, including `null`, before publishing output.
 * `events`: Array of `{"frame": <int>, "name": "<string>"}` triggers where `frame` is a zero-based playback position validated within frame count (defaults to `[]`).
 
 ## Packing and layout
