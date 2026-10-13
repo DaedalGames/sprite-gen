@@ -4,6 +4,8 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+- Added `sprite-gen sound` CLI and game-pack audio integration for ElevenLabs SFX/BGM generation, featuring SQLite request deduplication, cosine loop crossfading, multi-pass FFmpeg loudnorm/alimiter normalization, dual Opus/AAC encoding, and Web Audio loop boundary metadata.
+
 - Added `--cycle once` nonloop motion support with automatic selection for `death`, `fall`, `land`, `cast`, `hurt_hold`, and `transform`, rejection on cyclic states, no seam gate or wrap correction, and a terminal stability gate searching the whole clip for the first stable terminal window ($K = \max(4, \lceil\text{fps} \times 0.2\rceil)$) after action departure (ending at window end, discarding later recovery or shaking), with conservative candidate end pose geometric screening (alpha >= 8 body boxes; height <= 80% of initial for `death`/`fall`, changed geometry for other states) and retained cut edge contact validation (ignoring discarded tail).
 - Added nonloop-only flags `video-prompt --end-frame final.png` (refuses `--no-last-frame`, prints instructions without image validation) and `video-set --end-frame ITEM=PATH` (checks final canvas dimensions and corner key match initial canvas), with clip cache tracking end-image SHA256 where changed end pins reject until user explicitly `--force` regenerates.
 - Added endpoint-preserving strip downsampling with candidate events (`events:[{"frame": n, "name":"motion_peak"}]` using zero-based output cell indices mapped to keyed source frames via `source_cut.samples`) and `once` preview handling, with nonloop cycles insisting on existing `--anchor none` and `--fit state` while rejecting non-none anchor and tight fit.

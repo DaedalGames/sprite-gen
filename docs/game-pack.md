@@ -13,7 +13,7 @@ sprite-gen game-pack --request game.json --out-dir game-assets
 * `--request <path>`: Path to the request JSON file. Paths within the request resolve relative to the request file directory.
 * `--out-dir <path>`: Target output directory. Must be a new directory path.
 * `--page-size <int>`: Maximum page dimension in pixels. Defaults to `4096`. Lower bound is `1`; cannot exceed `4096`.
-* `--max-bytes <int>`: Total encoded byte budget for all output files (PNG, WebP, and JSON combined). Defaults to `50000000` (50 MB). Lower bound is `1`; configurable downward only.
+* `--max-bytes <int>`: Total encoded byte budget for all output files (PNG, WebP, JSON, OGG, and M4A combined). Defaults to `50000000` (50 MB). Lower bound is `1`; configurable downward only.
 
 Invalid arguments, missing files, frame dimension overflows, or budget violations exit with a non-zero status.
 
@@ -92,7 +92,7 @@ Source policies and row anchors are preserved by the asset adapter. Optional ent
 * Every frame receives 1-pixel edge extrusion on each side (+2 pixels to width and height). Maximum frame dimension plus 2 pixels must fit within `--page-size`.
 * Trimming and rotation are disabled (`trimmed: false`, `rotated: false`).
 * Each page has PNG and lossless WebP copies (preserving exact RGB and alpha).
-* Total byte size across all PNG, WebP, and JSON outputs must not exceed `--max-bytes`.
+* Total byte size across all PNG, WebP, JSON, OGG, and M4A outputs must not exceed `--max-bytes`.
 * Layout packing bins assets and frames using stable keys.
 
 ## Output manifest
@@ -160,3 +160,21 @@ function registerGamePack(scene, imagesInPageOrder, pack) {
 ```
 
 `addAtlasJSONHash` assigns `sourceIndex` offsets to frames across pages. The game runtime is responsible for reading `durations_ms` and applying animation playback policies (`repeat = anim.loop ? -1 : 0`, `hold_last`, `blend`, and `events`).
+
+## Audio Assets and Playback
+
+Game packs support optional bundled audio declared in pack recipes via `request.audio`:
+
+```json
+{
+  "audio": [
+    { "id": "hit", "source": "../hit/sound.json" }
+  ]
+}
+```
+
+### Integration Rules
+- **Packaging and Manifest**: Pack assembly copies format files flat into the output directory as `audio-<id>.ogg` (Opus, 160 kbps) and `audio-<id>.m4a` (AAC, 192 kbps). The pack manifest preserves audio properties and format file metadata under `manifest.audio[id]`. Refer to [`sound.md`](sound.md) for generation options and full manifest metadata schemas.
+- **Event Linkage**: String matching between audio `event` identifiers and animation `events[].name` provides runtime linkage for consumer engines to match strings. The pack does not enforce that every audio event has an associated animation (such as UI sounds or background music), and does not promise automatic runtime code.
+- **Pack Limits**: Bundled audio file sizes count against the global 50,000,000-byte pack limit. Audio-free pack builds remain byte-for-byte unchanged.
+- **Runtime Playback**: Web Audio uses `loopStart` (`0`) and `loopEnd` (`processed PCM duration`) metadata to exclude padding. HTML audio (such as `<audio loop>`) is not guaranteed gapless.
