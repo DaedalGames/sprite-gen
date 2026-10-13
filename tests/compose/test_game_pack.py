@@ -175,3 +175,23 @@ def test_cli_dispatch_and_real_files(tmp_path):
     assert call.returncode == 0, call.stderr
     assert json.loads(call.stdout)["ok"] is True
     assert (tmp_path / "out" / "game-pack.json").is_file()
+
+
+def test_staging_write_error_cannot_publish_half_a_pack(tmp_path, monkeypatch):
+    strip(tmp_path)
+    src = request(tmp_path, [{"id": "walk", "source": "walk.strip.json", "display": {"height": 10}}])
+    import os
+    fsync = os.fsync
+    writes = []
+
+    def full_disk(fd):
+        writes.append(fd)
+        if len(writes) == 2:
+            raise OSError("disk full")
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", full_disk)
+    with pytest.raises(OSError, match="disk full"):
+        game_pack.pack(src, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+    assert not list(tmp_path.glob(".out-*"))
