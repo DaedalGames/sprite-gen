@@ -27,7 +27,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
         raise ValueError('crossfade must be positive and shorter than half the duration')
     out_dir = Path(out_dir).expanduser().resolve()
     recipe = {'request': cache.digest(request), 'event': event, 'loop': loop,
-              'target_lufs': target, 'crossfade_seconds': crossfade, 'processing_version': playback.VERSION}
+              'target_lufs': target, 'crossfade_seconds': crossfade, 'processing_version': processing.PROCESSING_VERSION}
     if out_dir.exists():
         manifest = json.loads((out_dir / 'sound.json').read_text()) if (out_dir / 'sound.json').is_file() else {}
         if manifest.get('recipe') != recipe:

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import io
 import http.client
 import json
+import subprocess
 import threading
 import urllib.error
 import wave
@@ -230,14 +231,50 @@ def test_export_reserves_overlap_for_minimum_playback_rate(tmp_path, monkeypatch
             processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=overlap/48000)
 
 
-def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch):
+@pytest.mark.parametrize('millisecond_timescale', [False, True])
+def test_m4a_container_preserves_declared_frames(tmp_path, monkeypatch, millisecond_timescale):
+    frames = 144003
+    source = tmp_path/'source.wav'
+    source.write_bytes(wav_bytes(frames/48000))
+    if millisecond_timescale:
+        encode = processing._ffmpeg
+        def old_timescale(args, data=None):
+            if str(args[-1]).endswith('.m4a'):
+                args = [*args[:-1], '-movie_timescale', '1000', args[-1]]
+            return encode(args, data)
+        monkeypatch.setattr(processing, '_ffmpeg', old_timescale)
+        with pytest.raises(ValueError, match='m4a container duration'):
+            processing.export(source, tmp_path, target_lufs=-20, loop=True, crossfade=.25)
+        return
+    result = processing.export(source, tmp_path, target_lufs=-20, loop=True, crossfade=.25)
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                            '-show_entries', 'stream=duration_ts,time_base', '-of', 'json',
+                            str(tmp_path/result['files']['m4a']['path'])],
+                           capture_output=True, check=True)
+    stream = json.loads(probe.stdout)['streams'][0]
+    assert stream == {'time_base': '1/48000', 'duration_ts': frames}
+    assert result['playback']['end_frame'] == frames
+
+
+def test_missing_ffprobe_preflights_before_generation(tmp_path, monkeypatch):
+    which = processing.shutil.which
+    monkeypatch.setattr(processing.shutil, 'which', lambda name: None if name == 'ffprobe' else which(name))
+    monkeypatch.setattr(provider, 'generate', lambda _: pytest.fail('generation before tool preflight'))
+    with pytest.raises(ValueError, match='ffprobe is required'):
+        sound.generate(kind='sfx', prompt='synthetic', duration=3, event='hit',
+                       cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
+
+
+@pytest.mark.parametrize('old_version', [1, 2])
+def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch, old_version):
     calls = []
     monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))
     kw = dict(kind='bgm', prompt='synthetic', duration=3, event='music',
               cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
     result = sound.generate(**kw)
-    assert result['version'] == result['recipe']['processing_version'] == 2
-    old = {**result, 'version': 1, 'recipe': {**result['recipe'], 'processing_version': 1}}
+    assert result['version'] == 2
+    assert result['recipe']['processing_version'] == 3
+    old = {**result, 'version': old_version, 'recipe': {**result['recipe'], 'processing_version': old_version}}
     (kw['out_dir']/'sound.json').write_text(json.dumps(old))
     with pytest.raises(ValueError, match='different sound'):
         sound.generate(**kw)

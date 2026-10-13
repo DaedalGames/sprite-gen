@@ -15,10 +15,11 @@ from sprite_gen._deps import np
 from sprite_gen.audio import playback
 
 RATE = 48000
+PROCESSING_VERSION = 3
 
 
 def require_tools():
-    for name in ('ffmpeg',):
+    for name in ('ffmpeg', 'ffprobe'):
         if not shutil.which(name):
             raise ValueError(f'{name} is required on PATH for sound processing')
     encoders = _ffmpeg(['-encoders']).stdout.decode(errors='replace')
@@ -47,6 +48,19 @@ def decode(path):
 
 def _pcm_args():
     return ['-f', 'f32le', '-ar', str(RATE), '-ac', '2', '-i', 'pipe:0']
+
+
+def _check_m4a_duration(path, frames):
+    result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                             '-show_entries', 'stream=duration_ts,time_base', '-of', 'json', str(path)],
+                            capture_output=True, timeout=180)
+    try:
+        stream, = json.loads(result.stdout)['streams']
+    except (ValueError, KeyError, TypeError):
+        stream = None
+    if (result.returncode or not isinstance(stream, dict) or
+            (stream.get('time_base'), stream.get('duration_ts')) != (f'1/{RATE}', frames)):
+        raise ValueError(f'm4a container duration must match the declared {frames} frames at {RATE} Hz')
 
 
 def measure(samples, target=-18):
@@ -105,11 +119,15 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
                                 'overlap_frames': round(crossfade*RATE) if loop else 0}, loop)
     samples, corrections = normalize(samples, target_lufs, loop)
     files = {}
-    for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']), ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'])):
+    for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']),
+                       ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+                                '-movie_timescale', str(RATE)])):
         path = out_dir / f'sound.{fmt}'
         encoded_samples, ceiling = samples, -2.0
         for attempt in range(3):
             _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], encoded_samples.astype('<f4').tobytes())
+            if fmt == 'm4a':
+                _check_m4a_duration(path, frames['end_frame']-frames['start_frame'])
             decoded = decode(path)
             if len(decoded) < len(samples):
                 raise ValueError(f'{fmt} truncated the audio')
