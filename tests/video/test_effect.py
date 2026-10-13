@@ -125,6 +125,40 @@ def test_lifetime_cut_keeps_dim_edge_spark_and_terminal_sample(tmp_path):
         assert preview.convert("RGBA").getchannel("A").getbbox() is None
 
 
+@pytest.mark.parametrize("extension", ["gif", "webp"])
+def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_path, extension):
+    report = cut(lifetime_frames(tmp_path), tmp_path / "out")
+    meta = report["strip"]
+    strip = Image.open(meta["path"]).convert("RGBA")
+    cells = []
+    for k in report["playback_indices"]:
+        cell = strip.crop((k * meta["w"], 0, (k + 1) * meta["w"], meta["h"]))
+        if not cells or cell.tobytes() != cells[-1].tobytes():
+            cells.append(cell)
+    white = Image.new("RGBA", cells[0].size, "white")
+    black = Image.new("RGBA", cells[0].size, "black")
+    background = report[extension].get("background")
+    with Image.open(tmp_path / "out" / f"effect.{extension}") as preview:
+        assert preview.n_frames == len(cells)
+        for k, cell in enumerate(cells):
+            preview.seek(k)
+            decoded = preview.convert("RGBA")
+            expected = Image.alpha_composite(black if background == "#000000" else white, cell)
+            actual = Image.alpha_composite(white, decoded)
+            # Ordinary alpha compositing catches black matte pixels on white;
+            # additive compositing on white would make this comparison vacuous.
+            delta = np.array(expected, dtype=int) - np.array(actual, dtype=int)
+            assert np.abs(delta).max() <= 2, f"{extension} frame {k} has an unreported matte"
+            if extension == "gif":
+                assert decoded.getchannel("A").getextrema() == (255, 255)
+        if extension == "gif":
+            assert background == "#000000"
+            assert decoded.getextrema() == ((0, 0), (0, 0), (0, 0), (255, 255))
+        else:
+            assert background is None
+            assert decoded.getchannel("A").getbbox() is None
+
+
 def test_lifetime_refuses_an_end_with_even_one_dim_pixel(tmp_path):
     with pytest.raises(SystemExit, match="empty"):
         cut(lifetime_frames(tmp_path, fade=False), tmp_path / "out", cycle_mode="lifetime")
