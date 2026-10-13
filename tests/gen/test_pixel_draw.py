@@ -144,7 +144,8 @@ def test_one_candidate_is_drawn_checked_and_written(tmp_path, claude, capsys):
     (candidate,) = report["candidates"]
     assert candidate["status"] == "passed" and candidate["G1"] == {"ok": True, "issues": [], "recovered": []}
     assert candidate["gates"]["ok"] and candidate["files"]["grid"] == "candidates/c1/grid.txt"
-    assert candidate["gates"]["G8"]["ok"] and candidate["warnings"] == []
+    assert not candidate["gates"]["G8"]["warn"] and candidate["warnings"] == [] and candidate["info"] == []
+    assert report["warnings"] == [] and report["info"] == []
     grid, _ = pg.parse_answer(SPRITE16, "chargrid", 16, 16, ("sprite",))
     assert (out / "grid.txt").read_text(encoding="utf-8") == pg.to_text(grid)
     assert (out / "frame-sprite.png").read_bytes() == pg.png_bytes(pg.frame_pixels(grid, "sprite"))
@@ -495,7 +496,7 @@ def test_prompts_say_the_kind_and_the_format():
     assert "Palette: at most 8 colors plus transparent." in tile and "Background: transparent" not in tile
     assert "```pixels\nPALETTE\n. transparent" in tile and "exactly 32 lines of exactly 32 characters" in tile
     sprite = pixel_draw.generation_prompt(request(kind="sprite", frames=("down", "up"), subject="a knight"))
-    assert "stand on row 29 in every frame, and nothing of the body goes below it." in sprite
+    assert "stand on row 29 in every frame." in sprite and "goes below it" not in sprite
     assert "Background: transparent." in sprite
     assert "Frames in this order: down, up." in sprite
 
@@ -548,64 +549,100 @@ def pixel_request(**changes) -> pixel_draw.PixelRequest:
 @pytest.mark.parametrize("size,margin,inner,first,last", [(16, 1, 14, 2, 15), (24, 2, 20, 3, 22), (32, 3, 26, 4, 29),
                                                           (48, 4, 40, 5, 44)])
 def test_the_prompt_says_the_safe_area_in_pixels(size, margin, inner, first, last):
-    """The engine's safe area (prepare's 9.4% margin, floored), in numbers the model can count."""
+    """The engine's safe area (prepare's 9.4% margin, floored), in numbers the model can count - a
+    target for the body's size that a pose may go past, as the image path keeps it (frames/extract.py)."""
     sprite = pixel_draw.generation_prompt(pixel_request(size=size))
     assert "fill most of the canvas" not in sprite and "1-2 pixel margin" not in sprite
-    assert (f"Safe area: keep a {margin}-pixel margin on every side and draw the subject's body inside the central "
-            f"{inner}x{inner} pixels: rows {first}-{last} and columns {first}-{last}, counting rows and columns "
-            "from 1.") in sprite
-    assert f"the outermost rows and columns (rows 1 and {size}, columns 1 and {size})" in sprite.lower()
-    assert (f"Floor: row {last}, the bottom row of the safe area, is the ground. The feet (or the lowest point the "
-            f"subject rests on) stand on row {last}, and nothing of the body goes below it.") in sprite
-    if margin > 1:
-        assert (f"Only a thin detail (a weapon tip, a strand of hair, an effect) may reach into the margin, at most "
-                f"{margin - 1} pixel{'s' if margin > 2 else ''} past the safe area;") in sprite
-    else:
-        assert "at this size nothing reaches past the safe area." in sprite
+    assert (f"Safe area: draw the subject's body about the size of the central {inner}x{inner} pixels - rows "
+            f"{first}-{last} and columns {first}-{last}, counting rows and columns from 1 - inside a {margin}-pixel "
+            "margin on every side. That is a target for its average size, not a wall: when a pose or a detail needs "
+            "the room (a raised weapon, a long blade, an effect, a wide stance), it may reach past the safe area "
+            "into the margin, up to the canvas edge. Keep the four corner pixels transparent.") in sprite
+    assert (f"Floor: row {last}, the bottom row of the safe area, is the ground: the feet (or the lowest point the "
+            f"subject rests on) stand on row {last}.") in sprite
+    for absolute in ("outermost rows and columns", "stay transparent", "Only a thin detail", "nothing reaches past",
+                     "goes below it", "keep a"):
+        assert absolute not in sprite, absolute
 
 
 def test_the_prompt_keeps_every_frame_on_the_floor_row_and_icons_off_it():
     walk = pixel_draw.generation_prompt(pixel_request(frames=("walk1", "walk2", "walk3", "walk4"), walk_cycle=True))
-    assert "stand on row 29 in every frame, and nothing of the body goes below it." in walk
+    assert "stand on row 29 in every frame." in walk
     assert "the same bottom row" not in walk
     icon = pixel_draw.generation_prompt(pixel_request(kind="icon", frames=("icon",)))
-    assert "draw the icon inside the central 26x26 pixels: rows 4-29 and columns 4-29" in icon
+    assert "draw the icon about the size of the central 26x26 pixels - rows 4-29 and columns 4-29" in icon
     assert "Floor:" not in icon
     tile = pixel_draw.generation_prompt(pixel_request(kind="tile", frames=("tile",)))
     assert "Safe area" not in tile and "Floor:" not in tile
     tiny = pixel_draw.generation_prompt(pixel_request(size=8))
     assert ("Safe area: at 8x8 there is no margin; the subject may use the whole canvas, with the four corner pixels "
             "transparent.") in tiny
-    assert "Floor: row 8, the bottom row of the safe area, is the ground." in tiny
+    assert "Floor: row 8, the bottom row of the safe area, is the ground: the feet" in tiny
 
 
 def test_the_prompt_takes_the_margin_from_prepare(monkeypatch):
     from sprite_gen.gen import prepare
     monkeypatch.setattr(prepare, "DEFAULT_SAFE_MARGIN_RATIO", 0.125)
     prompt = pixel_draw.generation_prompt(pixel_request())
-    assert "keep a 4-pixel margin on every side" in prompt and "the central 24x24 pixels: rows 5-28" in prompt
+    assert "inside a 4-pixel margin on every side" in prompt and "the central 24x24 pixels - rows 5-28" in prompt
 
 
 def test_the_pick_knows_the_margin_is_meant():
     pick = pixel_draw.pick_prompt(pixel_request(), ["A", "B"])
-    assert ("The request was: a knight Canvas 32x32 pixels per frame, the body kept inside the central 26x26 with a "
-            "3-pixel margin.") in pick
+    assert ("The request was: a knight Canvas 32x32 pixels per frame, the body about the size of the central 26x26, "
+            "inside a 3-pixel margin a pose may reach into.") in pick
     tile = pixel_draw.pick_prompt(pixel_request(kind="tile", frames=("tile",), subject="grass"), ["A", "B"])
     assert "The request was: grass Canvas 32x32 pixels per frame." in tile
 
 
-def test_an_edited_grid_goes_through_the_safe_area_gate(tmp_path):
+def test_an_edited_grid_goes_through_the_safe_area_check(tmp_path, capsys):
     grid, _ = pg.parse_answer(FULL16, "chargrid", 16, 16, ("front",))
     full = tmp_path / "full.txt"
     full.write_text(pg.to_text(grid), encoding="utf-8")  # drawn under the old prompt: rows 1 and 16 are used
-    with pytest.raises(SystemExit, match=r"full.txt fails G8"):
-        pixel_draw.main(["--grid", str(full), "--out-dir", str(tmp_path / "full")])
+    assert pixel_draw.main(["--grid", str(full), "--out-dir", str(tmp_path / "full")]) == 0
     report = report_of(tmp_path / "full")
-    assert report["status"] == "failed" and report["gates"]["G8"]["frames"]["front"]["edge_pixels"] == 14
+    assert json.loads(capsys.readouterr().out) == report
+    assert report["status"] == "ok" and report["gates"]["G8"]["over_cap"] == ["front"] and report["info"] == []
+    assert report["warnings"] == ["G8: frames exceed the physical cap 16x15 (reroll candidates): front:14x16",
+                                  "G8 the feet are not on the floor row (the safe area's bottom row): front 1 px below it"]
     inside = tmp_path / "inside.txt"
     rows = ["." * 16] + ["...." + "a" * 8 + "...."] * 14 + ["." * 16]
     inside.write_text("PALETTE\n. transparent\na #2a1f2e\nFRAME front\n" + "\n".join(rows) + "\nEND\n", encoding="utf-8")
     assert pixel_draw.main(["--grid", str(inside), "--out-dir", str(tmp_path / "inside")]) == 0
     report = report_of(tmp_path / "inside")
-    assert report["status"] == "ok" and report["warnings"] == []
+    assert report["status"] == "ok" and report["warnings"] == [] and report["info"] == []
     assert report["gates"]["G8"]["floor_row"] == 14 and report["gates"]["G8"]["safe_area"] == [14, 14]
+
+
+def staff_answer() -> str:
+    """A 32 px sprite whose staff reaches the canvas's top edge: 17x29, past the 26x26 safe area and within
+    the 32x29 cap, the feet on the floor row."""
+    rows = []
+    for y in range(32):
+        row = ["."] * 32
+        if 3 <= y <= 28:
+            row[8:24] = ["a"] * 16
+        if y <= 28:
+            row[24] = "b"
+        rows.append("".join(row))
+    return "```pixels\nPALETTE\n. transparent\na #2a1f2e\nb #8a5a30\nFRAME sprite\n" + "\n".join(rows) + "\nEND\n```"
+
+
+@pytest.mark.parametrize("answer,size,frame,warnings,info", [
+    (staff_answer(), "32", "sprite", [],
+     ["G8: frames exceed the safe area 26x26 but fit within the margin zone (informational, no action): sprite:17x29"]),
+    (FULL16, "16", "front", ["G8: frames exceed the physical cap 16x15 (reroll candidates): front:14x16",
+                             "G8 the feet are not on the floor row (the safe area's bottom row): front 1 px below it"], []),
+], ids=["staff-to-the-edge", "knight-on-the-edge-rows"])
+def test_one_candidate_past_the_safe_area_is_the_pick(tmp_path, claude, answer, size, frame, warnings, info):
+    """One candidate, as a caller that buys one drawing asks: a staff on the canvas edge, or a knight
+    from helmet to boots on its edge rows, passes - its info lines and warnings in the report."""
+    claude({"c1-gen1": reply(answer)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a figure", "--size", size, "--frames", frame, "--candidates", "1") == 0
+    report = report_of(out)
+    (candidate,) = report["candidates"]
+    assert report["status"] == "ok" and report["chosen"] == "c1" and candidate["status"] == "passed"
+    assert report["pick"]["by"] == "only" and (out / f"frame-{frame}.png").is_file()
+    assert report["warnings"] == candidate["warnings"] == warnings
+    assert report["info"] == candidate["info"] == info

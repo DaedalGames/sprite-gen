@@ -68,7 +68,7 @@ candidate's files are at the top of the run folder.
 |---|---|---|
 | `--subject TEXT` | words | What to draw. For several frames, say what each one is (the frame names are listed for the model, their meaning comes from your words). |
 | `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette` instead of the flags. A key given both in the file and as a flag is refused. |
-| `--size N` | 8–48 (32) | Canvas side in pixels; every frame is N×N, a sprite's or icon's body inside the [safe area](#the-safe-area) (26×26 at 32). Measured best at 32 or less. |
+| `--size N` | 8–48 (32) | Canvas side in pixels; every frame is N×N, a sprite's or icon's body about the size of the [safe area](#the-safe-area) (26×26 at 32). Measured best at 32 or less. |
 | `--kind` | `sprite`, `icon`, `tile` (`sprite`) | Sprites and icons have a transparent background, a dark outline and a margin around the body; a tile fills every pixel and repeats seamlessly. |
 | `--frames a,b,…` | 1–4 names (one frame named after `--kind`) | Frames drawn **in one call**, so they share one palette and one design. Names are letters, digits, `_` and `-`. |
 | `--walk-cycle` | flag | The four frames are contact, passing, contact, passing: the prompt says so and G6 checks the legs change sides. |
@@ -100,8 +100,9 @@ For each candidate, independently (in parallel, or in one batch):
    a broken palette, a frame missing, too many rows), is drawn again at the same effort. An answer
    that spent all `--max-tokens` thinking and wrote nothing is drawn again **one effort lower**
    (xhigh → high → medium → low). A candidate is drawn at most twice in all.
-4. **G2–G6 and G8** on the pixels. G2, G3, G6 and G8 fail the candidate; G4, G5, the walk check and
-   G8's body and floor checks warn.
+4. **G2–G6 and G8** on the pixels. G2, G3 and G6 fail the candidate; G4, G5, the walk check and G8
+   (a frame past the physical cap, feet off the floor row) warn; G8 also notes a frame past the safe
+   area within the cap in an info line, which asks for nothing.
 5. **G7 pick.** Of two or more candidates that passed, one vision call (`claude-opus-5-5`, effort
    low, structured output) looks at all of them on one sheet, shuffled under letters, scores each and
    names the best; with `--pick human` nobody picks and the candidates wait for a person. One that
@@ -113,33 +114,37 @@ another model, provider or effort beyond the one lowered redraw.
 ## The safe area
 
 A pixel artist drawing a 32×32 sprite does not fill the cell: the body sits in about 26×26, and a
-sword tip or a strand of hair may stray past it. sprite-gen keeps the same reserve around every cell it
+raised sword, a cast or an effect may go past it. sprite-gen keeps the same reserve around every cell it
 lays out — [`prepare`](run-contract.md)'s safe margin, 9.4% of the side, floored — and `pixel-draw` takes
 its numbers from there instead of keeping its own:
 
-| Canvas | Margin | Safe area | Floor row (counted from 1) | A thin detail may reach past it |
+| Canvas | Margin | Safe area | Floor row (counted from 1) | Physical cap |
 |---|---|---|---|---|
-| 8–10 | 0 | the whole canvas | the last row | — |
-| 16 | 1 | 14×14 | 15 | not at all: the margin is the canvas edge |
-| 24 | 2 | 20×20 | 22 | 1 px |
-| 32 | 3 | 26×26 | 29 | 2 px |
-| 48 | 4 | 40×40 | 44 | 3 px |
+| 8–10 | 0 | the whole canvas | the last row | the canvas |
+| 16 | 1 | 14×14 | 15 | 16×15 |
+| 24 | 2 | 20×20 | 22 | 24×22 |
+| 32 | 3 | 26×26 | 29 | 32×29 |
+| 48 | 4 | 40×40 | 44 | 48×44 |
 
-The prompt of a sprite or an icon says these in rows and columns the model can count: the body inside
-the safe area; only a thin detail — a weapon tip, a strand of hair, an effect — in the margin; the
-canvas's outermost rows and columns transparent; and for a sprite, the feet on the floor row, the safe
-area's bottom row, in every frame. That is the row `prepare`'s fit grounds a frame on, so a sprite
-drawn here stands where sprite-gen's other sprites of the same cell size stand. (`gen --layout-guide`
-draws its floor line one margin further in: that is room for an image model's still to bob into once
-a video moves it, and a grid drawn here is the frame itself.)
+The safe area is a target for the body's average size, not a wall. The prompt of a sprite or an icon
+says it in rows and columns the model can count: the body about the size of the safe area; a pose or a
+detail that needs the room — a raised weapon, a long blade, an effect, a wide stance — may reach past it
+into the margin, up to the canvas edge, the four corner pixels kept transparent; and for a sprite, the
+feet on the floor row, the safe area's bottom row, in every frame. That is the row `prepare`'s fit
+grounds a frame on, so a sprite drawn here stands where sprite-gen's other sprites of the same cell size
+stand. (`gen --layout-guide` draws its floor line one margin further in: that is room for an image
+model's still to bob into once a video moves it, and a grid drawn here is the frame itself.)
 
-G8 checks it ([below](#gates)). A pixel on the canvas edge fails. The body box — the rows and columns
-holding at least a quarter as many opaque pixels as the fullest one, which a blade, a strand or a
-spark does not — more than a pixel past the safe area warns, and so do feet off the floor row (a
-sprite that flies or floats is told the same floor and gets the same warning). G6 compares the frames
-inside the safe area for the same reason: a weapon raised or an effect thrown into the margin in one
-frame leaves the figure's height and floor as they were. `--grid` measures a grid by its own size,
-each side on its own when it is not square. A tile has no margin: it fills every pixel and repeats.
+G8 checks it ([below](#gates)) with the judgment sprite-gen already makes when it snaps a picture to
+pixels — one function, `safe_area_fit` in [`frames/extract.py`](../sprite_gen/frames/extract.py), whose
+rule is written once, in [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode): G8 hands it each frame's
+opaque box, the canvas as the cell. It never fails a candidate. G8 also warns when a sprite's feet are off
+the floor row: the body box — the rows and columns holding at least a quarter as many opaque pixels as
+the fullest one, which a blade, a strand or a spark does not — ending above or below it (a sprite that
+flies or floats is told the same floor and gets the same warning). G6 compares the frames inside the
+safe area: a weapon raised or an effect thrown into the margin in one frame leaves the figure's height
+and floor as they were. `--grid` measures a grid by its own size, each side on its own when it is not
+square. A tile has no margin: it fills every pixel and repeats.
 
 Measured on `claude-opus-5-5` at effort high, one candidate, on 2026-10-13 — seven drawings: a knight
 and a wizard standing, walking and attacking at 32 px, the knight standing at 16 px. Every one kept its
@@ -147,7 +152,9 @@ body inside the safe area, stood on the floor row in every frame and left the ca
 blade, a staff and a spark reached one or two pixels into the margin. Under the earlier prompt, which
 asked to fill the canvas, the same knight (2026-10-12) stood 29–31 px tall with its boots two rows
 below the floor row, and one of its walks put the plume on the canvas edge. One wizard walk drew its
-two passing frames alike and failed G6, as walk drafts do.
+two passing frames alike and failed G6, as walk drafts do. Those seven were drawn when the prompt still
+asked for only a thin detail in the margin and the canvas edge clear; the wording that lets a pose go
+past the safe area has not been measured yet.
 
 ## Gates
 
@@ -159,7 +166,7 @@ two passing frames alike and failed G6, as walk drafts do.
 | G4 tile seam | Colour step across the wrap edges ÷ the mean step inside the tile ≤ 1.5 | warns — mortar lines that meet the edge raise it on tiles that repeat cleanly; look at `tiled-3x3.png` |
 | G5 stray pixels | Opaque pixels of a sprite/icon with no opaque 4-neighbour | warns |
 | G6 frames | Same bottom row in every frame, heights within one pixel, no two frames the same; a sprite's or icon's rows are measured inside the [safe area](#the-safe-area), so a staff raised or a spark into the margin in one frame is not a taller figure (the margin is G8's). With `--walk-cycle`: the contact frames differ by at least 40% of the mean contact↔passing difference | fails; the walk check warns ("weak leg alternation — touch up the legs") |
-| G8 safe area | Sprite/icon: no opaque pixel on the canvas's outermost row or column; the body box no more than 1 px past the [safe area](#the-safe-area); a sprite's body box ending on the floor row | a pixel on the edge fails; the body past the safe area, and feet off the floor row, warn. Below 11 px the margin is 0 and there is no edge to keep |
+| G8 safe area | Sprite/icon: each frame's opaque box against the [safe area](#the-safe-area) and the physical cap, by the pixel snap's own judgment (`safe_area_fit`, [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode)); a sprite's body box ending on the floor row | never fails: past the physical cap, and feet off the floor row, warn; past the safe area within the cap is an info line (`info`), which asks for nothing. Below 11 px the margin is 0: the safe area and the cap are the canvas |
 | G7 pick | Two or more passed: the vision pick (or a person) | a pick that fails ends the run `pick_failed`, candidates kept |
 
 ## The run folder
@@ -193,9 +200,9 @@ zlib build. The previews, the tiling and the GIF are views for the eye.
 |---|---|
 | `status` | `ok`, `failed` (no candidate passed), `refused` (every candidate refused), `pick_failed`, `unfinished` (a batch not collected yet) |
 | `request` | the resolved inputs (`palette` with its rule and colours) |
-| `chosen`, `files`, `warnings` | the picked candidate, its top-level files, its warnings |
+| `chosen`, `files`, `warnings`, `info` | the picked candidate, its top-level files, its warnings (worth a look, maybe a redraw) and its info lines (nothing to do) |
 | `pick` | `by` (`vision` / `only` / `human`), `best`, and for the vision pick its `labels`, `sheet` and `verdict` |
-| `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `files` |
+| `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `info`, `files` |
 | `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `pick`), `purpose`, `mode` (`realtime` / `batch`), `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
 | `batches[]` | per batch: `id`, `custom_ids`, `submitted_at`, `collected`, `ended_at`, `waited_seconds` |
 | `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |

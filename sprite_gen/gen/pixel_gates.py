@@ -11,19 +11,23 @@
 - G5 stray pixels (warning): opaque pixels of a sprite or icon with no opaque 4-neighbour.
 - G6 frames: every frame stands on the same bottom row, heights differ by at most one pixel and
   no two frames are the same. A sprite's or icon's rows and heights are measured inside its safe
-  area: a staff raised or a spark into the margin in one frame is not a taller figure (G8 judges
+  area: a staff raised or a spark into the margin in one frame is not a taller figure (G8 notes
   the margin). A walk cycle (contact, passing, contact, passing) also warns when
   its two contact frames differ by less than 40% of the mean contact↔passing difference: the legs
   barely change sides.
 - G8 safe area, on a sprite or icon: the engine's safe area (`safe_area`, the margin `prepare`
-  keeps around every cell). A pixel on the canvas's outermost row or column fails — the margin
-  is room for a weapon tip, a strand of hair or an effect, never the canvas edge. It warns when
-  the body box — the rows and columns holding at least a quarter as many opaque pixels as the
-  fullest one, so a thin tip drops out of it — reaches more than a pixel past the safe area, and
-  when a sprite's body box does not end on the floor row, the safe area's own bottom row, where
-  `prepare`'s fit grounds a frame. Below 11 px the margin is 0 and there is no edge to keep.
+  keeps around every cell), a target for the body's average size and not a wall. G8 never fails.
+  Its judgment is the one the image path makes when it snaps a sprite to pixels,
+  `frames.extract.safe_area_fit`, called on each frame's opaque box: past the physical cap (the
+  canvas's width, its height less the margin under the floor row) warns, a reroll candidate; past
+  the safe area but within the cap is an info line; nothing fails. G8 also warns when a sprite's
+  body box — the rows and columns holding at least a quarter as many opaque pixels as the fullest
+  one, so a thin tip drops out of it — does not end on the floor row, the safe area's own bottom
+  row, where `prepare`'s fit grounds a frame. Below 11 px the margin is 0: the safe area and the
+  cap are the canvas.
 
-A failed gate fails the candidate; a warning is reported and passes.
+A failed gate fails the candidate; a warning is reported and passes; an info line is reported and
+asks for nothing.
 """
 from __future__ import annotations
 
@@ -36,7 +40,6 @@ BORDER_TRANSPARENT_MIN = 0.5
 HEIGHT_SPREAD_MAX = 1
 WALK_CONTACT_RATIO_MIN = 0.4
 BODY_LINE_SHARE = 0.25
-SAFE_OVERFLOW_MAX = 1
 
 Frame = Sequence[Sequence[Pixel]]
 
@@ -176,65 +179,67 @@ def _body_lines(counts: list[int]) -> list[int]:
     return [i for i, n in enumerate(counts) if n and n >= BODY_LINE_SHARE * fullest]
 
 
-def _frame_safe(frame: Frame, area: dict[str, Any]) -> dict[str, Any]:
+def _frame_boxes(frame: Frame) -> dict[str, Any]:
+    """The opaque box of a frame and its size, and its body box."""
     height, width = len(frame), len(frame[0])
-    mx, my = area["margin"]
-    left, top, right, bottom = area["box"]
     rows = [sum(1 for p in row if _opaque(p)) for row in frame]
     columns = [sum(1 for y in range(height) if _opaque(frame[y][x])) for x in range(width)]
-    edge = {(x, y) for y in range(height) for x in range(width) if _opaque(frame[y][x])
-            and ((mx and x in (0, width - 1)) or (my and y in (0, height - 1)))}
     if not any(rows):
-        return {"edge_pixels": 0, "bbox": None, "body_box": None, "overflow": None}
+        return {"bbox": None, "size": [0, 0], "body_box": None}
     used_rows = [y for y, n in enumerate(rows) if n]
     used_columns = [x for x, n in enumerate(columns) if n]
     body_rows, body_columns = _body_lines(rows), _body_lines(columns)
-    body = [body_columns[0], body_rows[0], body_columns[-1], body_rows[-1]]
     return {
-        "edge_pixels": len(edge),
         "bbox": [used_columns[0], used_rows[0], used_columns[-1], used_rows[-1]],
-        "body_box": body,
-        "overflow": {"left": max(0, left - body[0]), "top": max(0, top - body[1]),
-                     "right": max(0, body[2] - right), "bottom": max(0, body[3] - bottom)},
+        "size": [used_columns[-1] - used_columns[0] + 1, used_rows[-1] - used_rows[0] + 1],
+        "body_box": [body_columns[0], body_rows[0], body_columns[-1], body_rows[-1]],
     }
 
 
 def g8_safe_area(frames: dict[str, Frame], kind: str, area: dict[str, Any]) -> dict[str, Any]:
-    per = {name: _frame_safe(frame, area) for name, frame in frames.items()}
-    edge = sum(m["edge_pixels"] for m in per.values())
-    body_overflow = {}
-    for name, m in per.items():
-        sides = {side: px for side, px in (m["overflow"] or {}).items() if px > SAFE_OVERFLOW_MAX}
-        if sides:
-            body_overflow[name] = sides
+    # Imported here, as `prepare` above: the judgment is the image path's, made in one place.
+    from sprite_gen.frames.extract import safe_area_fit
+
+    names = list(frames)
+    per = {name: _frame_boxes(frames[name]) for name in names}
+    first = frames[names[0]]
+    mx, my = area["margin"]
+    fit = safe_area_fit([tuple(per[name]["size"]) for name in names], len(first[0]), len(first), mx, my)
     floor = area["floor_row"] if kind == "sprite" else None
     off_floor = {name: m["body_box"][3] - floor for name, m in per.items()
                  if floor is not None and m["body_box"] and m["body_box"][3] != floor}
-    return {"ok": edge == 0, "margin": area["margin"], "safe_area": area["size"], "safe_box": area["box"],
-            "floor_row": floor, "edge_pixels": edge, "overflow_max": SAFE_OVERFLOW_MAX,
-            "body_overflow": body_overflow, "off_floor": off_floor, "frames": per}
+    return {"warn": bool(fit["over"] or off_floor), "margin": area["margin"], "safe_area": fit["safe"],
+            "physical_cap": fit["cap"], "safe_box": area["box"], "floor_row": floor,
+            "over_cap": [names[i] for i in fit["over"]], "past_safe_area": [names[i] for i in fit["soft"]],
+            "off_floor": off_floor, "frames": per}
 
 
-def _g8_warnings(g8: dict[str, Any]) -> list[str]:
-    lines = []
-    if g8["body_overflow"]:
-        (width, height), (mx, my) = g8["safe_area"], g8["margin"]
-        where = "; ".join(f"{name}: " + ", ".join(f"{px} px {side}" for side, px in sides.items())
-                          for name, sides in g8["body_overflow"].items())
-        margin = f"{mx}" if mx == my else f"{mx}x{my}"
-        lines.append(f"G8 the body reaches past the {width}x{height} safe area by more than {SAFE_OVERFLOW_MAX} px "
-                     f"({where}) — only a thin detail may go into the {margin} px margin")
+def _g8_lines(g8: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """G8's warnings (a reroll candidate) and its info lines (nothing is asked), in the image path's words."""
+    def sizes(names: list[str]) -> str:
+        return ", ".join(f"{name}:{g8['frames'][name]['size'][0]}x{g8['frames'][name]['size'][1]}" for name in names)
+
+    warnings, info = [], []
+    if g8["over_cap"]:
+        width, height = g8["physical_cap"]
+        warnings.append(f"G8: frames exceed the physical cap {width}x{height} (reroll candidates): {sizes(g8['over_cap'])}")
     if g8["off_floor"]:
         where = ", ".join(f"{name} {abs(d)} px {'below' if d > 0 else 'above'} it" for name, d in g8["off_floor"].items())
-        lines.append(f"G8 the feet are not on the floor row (the safe area's bottom row): {where}")
-    return lines
+        warnings.append(f"G8 the feet are not on the floor row (the safe area's bottom row): {where}")
+    if g8["past_safe_area"]:
+        width, height = g8["safe_area"]
+        info.append(f"G8: frames exceed the safe area {width}x{height} but fit within the margin zone (informational, "
+                    f"no action): {sizes(g8['past_safe_area'])}")
+    return warnings, info
 
 
 def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cycle: bool) -> dict[str, Any]:
-    """Every gate of one candidate. `ok` is G2, G3, G6 and G8 together; `warnings` say what G4, G5,
-    the walk check and G8 found, one line each."""
+    """Every gate of one candidate. `ok` is G2, G3 and G6 together; `warnings` say what G4, G5, the
+    walk check and G8 found that may want a redraw, `info` what G8 found that asks for nothing, one
+    line each."""
     gates: dict[str, Any] = {"G2": g2_palette(frames, rule), "G3": g3_alpha(frames, kind)}
     warnings: list[str] = []
+    info: list[str] = []
     first = next(iter(frames.values()))
     area = None if kind == "tile" else safe_area(len(first[0]), len(first))
     if kind == "tile":
@@ -255,6 +260,7 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
                             f"{WALK_CONTACT_RATIO_MIN:.0%}) — touch up the legs")
     if area is not None:
         gates["G8"] = g8_safe_area(frames, kind, area)
-        warnings += _g8_warnings(gates["G8"])
-    failed = [name for name in ("G2", "G3", "G6", "G8") if name in gates and not gates[name]["ok"]]
-    return {"ok": not failed, "failed": failed, "warnings": warnings, **gates}
+        g8_warnings, info = _g8_lines(gates["G8"])
+        warnings += g8_warnings
+    failed = [name for name in ("G2", "G3", "G6") if name in gates and not gates[name]["ok"]]
+    return {"ok": not failed, "failed": failed, "warnings": warnings, "info": info, **gates}
