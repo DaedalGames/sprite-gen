@@ -20,7 +20,7 @@
   is room for a weapon tip, a strand of hair or an effect, never the canvas edge. It warns when
   the body box — the rows and columns holding at least a quarter as many opaque pixels as the
   fullest one, so a thin tip drops out of it — reaches more than a pixel past the safe area, and
-  when a sprite's bottom row (G6's) is not the floor row, the safe area's own bottom row, where
+  when a sprite's body box does not end on the floor row, the safe area's own bottom row, where
   `prepare`'s fit grounds a frame. Below 11 px the margin is 0 and there is no edge to keep.
 
 A failed gate fails the candidate; a warning is reported and passes.
@@ -185,7 +185,7 @@ def _frame_safe(frame: Frame, area: dict[str, Any]) -> dict[str, Any]:
     edge = {(x, y) for y in range(height) for x in range(width) if _opaque(frame[y][x])
             and ((mx and x in (0, width - 1)) or (my and y in (0, height - 1)))}
     if not any(rows):
-        return {"edge_pixels": 0, "bbox": None, "body_box": None, "overflow": None, "baseline": None}
+        return {"edge_pixels": 0, "bbox": None, "body_box": None, "overflow": None}
     used_rows = [y for y, n in enumerate(rows) if n]
     used_columns = [x for x, n in enumerate(columns) if n]
     body_rows, body_columns = _body_lines(rows), _body_lines(columns)
@@ -196,7 +196,6 @@ def _frame_safe(frame: Frame, area: dict[str, Any]) -> dict[str, Any]:
         "body_box": body,
         "overflow": {"left": max(0, left - body[0]), "top": max(0, top - body[1]),
                      "right": max(0, body[2] - right), "bottom": max(0, body[3] - bottom)},
-        "baseline": used_rows[-1],
     }
 
 
@@ -209,8 +208,8 @@ def g8_safe_area(frames: dict[str, Frame], kind: str, area: dict[str, Any]) -> d
         if sides:
             body_overflow[name] = sides
     floor = area["floor_row"] if kind == "sprite" else None
-    off_floor = {name: m["baseline"] - floor for name, m in per.items()
-                 if floor is not None and m["baseline"] is not None and m["baseline"] != floor}
+    off_floor = {name: m["body_box"][3] - floor for name, m in per.items()
+                 if floor is not None and m["body_box"] and m["body_box"][3] != floor}
     return {"ok": edge == 0, "margin": area["margin"], "safe_area": area["size"], "safe_box": area["box"],
             "floor_row": floor, "edge_pixels": edge, "overflow_max": SAFE_OVERFLOW_MAX,
             "body_overflow": body_overflow, "off_floor": off_floor, "frames": per}
