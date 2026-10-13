@@ -4,7 +4,8 @@ Message Batches, and what a call cost.
 
 Raw HTTP over urllib, like `openai_provider` and `xai`: the runtime dependency surface is Pillow
 and NumPy (SECURITY.md), and one more SDK with its own HTTP stack would be a second transport for
-the same job. Field names and behaviour are the documented Messages API surface
+the same job. What ends an exchange unanswered (`NO_ANSWER`) and the words for it
+(`no_answer_reason`) are `xai`'s. Field names and behaviour are the documented Messages API surface
 (platform.claude.com, 2026-10-12 확인):
 
 - `POST /v1/messages` with `stream: true` answers Server-Sent Events: `message_start` (a message
@@ -41,6 +42,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import refusal
+from .xai import NO_ANSWER, no_answer_reason
 
 API_BASE = "https://api.anthropic.com/v1"
 API_VERSION = "2023-06-01"
@@ -62,9 +64,6 @@ RETRY_AFTER_MAX = 120.0
 # One socket read may wait this long. Thinking streams its summary (`display: summarized`) and the
 # API sends `ping`s, so a stream that says nothing for minutes is stalled, not thinking.
 READ_TIMEOUT_SECONDS = float(os.environ.get("SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS", "300"))
-
-# Everything that ends an exchange before its answer is read whole (as in `xai.NO_ANSWER`).
-NO_ANSWER = (OSError, http.client.HTTPException)
 
 Sleep = Callable[[float], None]
 
@@ -192,13 +191,6 @@ def refused_line(status: int, body: Any, token: str | None) -> str:
     return f"pixel-draw: claude request failed (HTTP {status}){suffix}; not asked again{refusal.said(body, token)}"
 
 
-def _no_answer(exc: BaseException) -> str:
-    said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-    if isinstance(said, http.client.HTTPException) and not isinstance(said, OSError):
-        return repr(said)[:200]
-    return (str(said) or type(said).__name__)[:200]
-
-
 def _retry_after(headers: Any) -> float | None:
     value = headers.get("retry-after") if headers is not None else None
     try:
@@ -228,7 +220,7 @@ def _open(request_for: Callable[[], urllib.request.Request], token: str, *, time
             raise ApiError(refused_line(exc.code, body, token), status=exc.code,
                            request_id=exc.headers.get("request-id") if exc.headers else None, billed=False) from exc
         except NO_ANSWER as exc:
-            raise ApiError(f"pixel-draw: claude request got no answer ({_no_answer(exc)}); not asked again "
+            raise ApiError(f"pixel-draw: claude request got no answer ({no_answer_reason(exc)}); not asked again "
                            "(the API may have accepted it)") from exc
     raise AssertionError("unreachable")
 
@@ -318,7 +310,7 @@ def stream_message(token: str, body: dict[str, Any], *, sleep: Sleep = time.slee
                 state.feed(json.loads("\n".join(event_data)))
     except NO_ANSWER as exc:
         partial = state.reply(request_id=request_id, seconds=time.monotonic() - started)
-        raise ApiError(f"pixel-draw: the answer stream broke ({_no_answer(exc)}); not asked again "
+        raise ApiError(f"pixel-draw: the answer stream broke ({no_answer_reason(exc)}); not asked again "
                        "(what was written may be billed)", request_id=request_id, partial=partial) from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         partial = state.reply(request_id=request_id, seconds=time.monotonic() - started)
@@ -346,7 +338,7 @@ def _json_call(method: str, url: str, token: str, body: dict[str, Any] | None, *
         with response:
             raw = response.read().decode("utf-8")
     except NO_ANSWER as exc:
-        raise ApiError(f"pixel-draw: claude answer broke ({_no_answer(exc)})") from exc
+        raise ApiError(f"pixel-draw: claude answer broke ({no_answer_reason(exc)})") from exc
     try:
         return json.loads(raw) if raw else {}
     except json.JSONDecodeError as exc:
@@ -398,7 +390,7 @@ def batch_results(token: str, batch: dict[str, Any], *, sleep: Sleep = time.slee
         with response:
             lines = response.read().decode("utf-8").splitlines()
     except NO_ANSWER as exc:
-        raise ApiError(f"pixel-draw: batch results broke ({_no_answer(exc)})") from exc
+        raise ApiError(f"pixel-draw: batch results broke ({no_answer_reason(exc)})") from exc
     results: dict[str, Reply | ApiError] = {}
     for line in lines:
         if not line.strip():

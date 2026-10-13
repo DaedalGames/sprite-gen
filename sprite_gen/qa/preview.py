@@ -24,7 +24,9 @@ from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, save_clean_gif
 
 
 def checker(size: tuple[int, int], square: int = 16) -> Image.Image:
-    """Neutral checker so transparent pixels and stray fringe are both visible."""
+    """Neutral checker so transparent pixels and stray fringe are both visible. The one checker of
+    sprite-gen's previews: these contact sheets, `compose-gif`'s and `compose-cycle`'s, and
+    `pixel-draw`'s pick sheet."""
     w, h = size
     bg = Image.new("RGBA", size, (210, 210, 210, 255))
     px = bg.load()
@@ -37,7 +39,7 @@ def checker(size: tuple[int, int], square: int = 16) -> Image.Image:
 
 def flatten(frame: Image.Image) -> Image.Image:
     base = checker(frame.size)
-    base.alpha_composite(frame)
+    base.alpha_composite(frame.convert("RGBA"))
     return base.convert("RGB")
 
 

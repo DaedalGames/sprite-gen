@@ -18,6 +18,7 @@ from sprite_gen.effects.breathe import anatomy_report, bake_breathe_sequence
 from sprite_gen.curate.curation import apply_pixel_edits, apply_transform, edit_index, frame_variant, load_curation, pixel_snap_scale, source_frame_index, state_breathe, state_pixel_ops, state_plan
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
 from sprite_gen.frames.extract import require_frames_manifest
+from sprite_gen.qa.preview import flatten
 from sprite_gen.spec.runio import read_guard, load_request
 from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, gif_report, save_clean_gif
 
@@ -29,23 +30,6 @@ def parse_frame_order(value: str) -> list[int]:
     if any(frame <= 0 for frame in frames):
         raise argparse.ArgumentTypeError("frame order is 1-based and must be positive")
     return frames
-
-
-def checker(size: tuple[int, int], square: int = 16) -> Image.Image:
-    width, height = size
-    image = Image.new("RGBA", size, (210, 210, 210, 255))
-    pixels = image.load()
-    for y in range(height):
-        for x in range(width):
-            if ((x // square) + (y // square)) % 2 == 0:
-                pixels[x, y] = (235, 235, 235, 255)
-    return image
-
-
-def flatten(frame: Image.Image) -> Image.Image:
-    base = checker(frame.size)
-    base.alpha_composite(frame.convert("RGBA"))
-    return base.convert("RGB")
 
 
 def load_frames(args: argparse.Namespace) -> list[tuple[int, Path, Image.Image]]:

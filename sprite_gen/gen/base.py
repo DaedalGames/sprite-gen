@@ -11,6 +11,7 @@ path or a "done" string (No Silent Fallback).
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import sys
@@ -116,6 +117,25 @@ def announce_api_billing(provider: str, env_name: str, detail: str = "") -> None
         f"not a subscription{detail}",
         file=sys.stderr,
     )
+
+
+def print_json(payload: dict) -> None:
+    """Emit the machine-readable report as UTF-8 on every host locale.
+
+    A generated prompt may contain Korean or an em dash. On a Windows cp949
+    redirected stream, writing that through ``TextIOWrapper`` can fail after
+    the image already exists. The binary buffer is the CLI byte contract and
+    avoids mutating process-global stdout configuration. Captured/in-memory
+    streams without a buffer already accept Unicode and use the text path.
+    One writer for every report `gen`, the video verbs and `pixel-draw` print.
+    """
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode("utf-8"))
+        buffer.flush()
+    else:
+        sys.stdout.write(text)
 
 
 def verify_png(path: Path) -> int:

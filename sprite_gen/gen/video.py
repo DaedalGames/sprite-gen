@@ -60,7 +60,7 @@ from typing import Any, Callable
 
 from sprite_gen.spec.runio import atomic_write_text
 from . import prompt_parts, refusal
-from .base import announce_api_billing
+from .base import announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
 from .xai import (
@@ -970,16 +970,6 @@ def resume_video(
     )
 
 
-def _print_json(payload: dict) -> None:
-    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    buffer = getattr(sys.stdout, "buffer", None)
-    if buffer is not None:
-        buffer.write(text.encode("utf-8"))
-        buffer.flush()
-    else:
-        sys.stdout.write(text)
-
-
 def _add_prompt_and_report(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file", type=Path)
@@ -1051,7 +1041,7 @@ def _publish_report(args: argparse.Namespace, make: Callable[[], VideoResult]) -
     if report_path is not None:
         atomic_write_text(report_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         payload["report"] = str(report_path)
-    _print_json(payload)
+    print_json(payload)
     return 0
 
 
