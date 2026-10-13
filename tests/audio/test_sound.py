@@ -203,3 +203,20 @@ def test_codec_reconstruction_keeps_a_broadband_transient_below_peak_ceiling(tmp
     for file in result['files'].values():
         assert file['true_peak_dbfs'] <= -1
         assert abs(file['lufs']+18) <= 1
+
+
+def test_loop_codec_boundary_at_nonzero_stereo_phase(tmp_path, monkeypatch):
+    t = np.arange(48000*3)/48000
+    x = np.stack([.1*np.sin(2*np.pi*121*t+.5), .4*np.cos(2*np.pi*73*t)], axis=1)
+    stream = io.BytesIO()
+    with wave.open(stream, 'wb') as f:
+        f.setnchannels(2); f.setsampwidth(2); f.setframerate(48000)
+        f.writeframes((x*32767).astype('<i2').tobytes())
+    monkeypatch.setattr(provider, 'generate', lambda _: (stream.getvalue(), {}))
+    result = sound.generate(kind='bgm', prompt='synthetic stereo loop', duration=3, event='music',
+                            out_dir=tmp_path/'out', cache_dir=tmp_path/'cache')
+    for file in result['files'].values():
+        decoded = processing.decode(tmp_path/'out'/file['path'])[:round(result['duration_seconds']*48000)]
+        # Codec priming must not turn a large nonzero start into a wrap impulse.
+        assert np.max(np.abs(decoded[-1]-decoded[0])) < .003
+        assert np.max(np.abs(decoded[[0,-1]])) < .003
