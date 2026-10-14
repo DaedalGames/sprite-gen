@@ -441,15 +441,16 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
     document = json.loads(request.read_text(encoding="utf-8"))
     version = _version(document)
     animations, frames, sources = _prepare(document, request.parent, page_size, version)
-    sections = files = None
+    # `files` is the audio loop's name below; the version 2 tile files must not share it.
+    sections = tile_files = None
     if version == 2:
-        sections, scene_frames, files, scene_sources = _prepare_scene(document, request.parent, page_size)
+        sections, scene_frames, tile_files, scene_sources = _prepare_scene(document, request.parent, page_size)
         frames = sorted(frames + scene_frames, key=lambda f: f[0])
         sources |= scene_sources
         names = [name for name, _image, _anchor in frames]
         if len(set(names)) != len(names):
             raise ValueError("two atlas frames share a name; rename an asset or scene entry")
-        if not frames and not files:
+        if not frames and not tile_files:
             raise ValueError("game pack request declares nothing to pack")
     audio_entries = document.get("audio", [])
     if not isinstance(audio_entries, list):
@@ -473,7 +474,7 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
         sources.update(paths)
     if any(path == out_dir or out_dir in path.parents for path in sources | {request}):
         raise ValueError("output directory must not contain any source file")
-    result, payloads = _encode(_layout(frames, page_size) if frames else [], animations, max_bytes, sections, files)
+    result, payloads = _encode(_layout(frames, page_size) if frames else [], animations, max_bytes, sections, tile_files)
     if audio:
         helper, module = audio_player()
         audio_payloads[helper["path"]] = module
