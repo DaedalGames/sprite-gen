@@ -119,7 +119,7 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 |---|---|
 | [directional-anchor-workflow.md](directional-anchor-workflow.md) | Directional / 45° rows: base → direction anchors → rows, the left-right gate |
 | [sheet-slicing.md](sheet-slicing.md) | Multi-figure grid sheets to per-cell standing cuts; the `cutout` routes |
-| [ui-kit.md](ui-kit.md) | The UI kit layout guide, splitting a transparent UI kit sheet into nine-slice elements with measured insets and padding, and the shared alpha haze cleanup |
+| [ui-kit.md](ui-kit.md) | The UI kit layout guide (square for the frames, 2:3 for the whole kit), splitting a transparent UI kit sheet into nine-slice elements with measured insets and padding, fills fitted to their bar frames, and the shared alpha haze cleanup |
 
 ## QA
 
