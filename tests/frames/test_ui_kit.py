@@ -13,11 +13,34 @@ plate with corner ornaments, two pips and a joystick base and knob drawn as disc
 its bar frame's content area exactly, in the report and in the pack; round parts never stretch.
 A square sheet's report, element pixels and packs are frozen from the splitter before the tall
 sheet existed.
+
+The seven frames are the kit: an empty frame box refuses the sheet. The band's elements are
+optional: an empty band box leaves that element out of the report and the pack and names it under
+`missing`. A sheet drawn a few percent shorter than the guide, so that the lower elements'
+centres lie in the boxes above theirs, is fitted to the drawing before its parts are assigned.
+
+A kit is written whole into a new or empty directory: one that holds anything is refused and left as
+it was. The kit is published at one step, the rename that gives it the out-dir's name or, with the
+report outside, the link that gives the report its name. A failure, an interrupt or a kill just
+before or just after any filesystem step of the publish leaves nothing before that step and the whole
+kit from it on; an interrupt of any kind at any line or instruction of the publish leaves nothing or
+the whole kit; and a run that another run's kit or report reaches first takes its own back out.
 """
 
+import contextlib
+import copy
+import errno
 import hashlib
+import io
 import json
 import math
+import os
+import re
+import shutil
+import signal
+import sys
+from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -102,12 +125,17 @@ PLAN = {"panel": dict(k=18, flourish=60), "button": dict(k=12), "button_pressed"
         "joystick_knob": dict(color=KNOB)}
 
 
-def synthetic_sheet(*, size=(SIZE, SIZE), haze=True, noise=True, stray=False, missing=None, crest=False):
+def synthetic_sheet(*, size=(SIZE, SIZE), haze=True, noise=True, stray=False, missing=(), crest=False,
+                    squeeze=1.0):
+    """The sheet, and where each element was drawn. `missing` names the boxes left empty; `squeeze` draws
+    the layout that much shorter, from the top edge down, as image models draw it."""
+    missing = {missing} if isinstance(missing, str) else set(missing)
     pixels = np.zeros((size[1], size[0], 4), dtype=np.uint8)
     drawn = {}
     for name, (bx, by, bw, bh) in ui_kit.boxes(size).items():
-        if name == missing:
+        if name in missing:
             continue
+        by, bh = round(by * squeeze), round(bh * squeeze)
         x, y, w, h = bx + 4, by + 4, bw - 8, bh - 8
         params = PLAN[name]
         if name.endswith("bar_frame"):
@@ -281,7 +309,7 @@ def test_a_large_part_outside_every_box_is_reported():
 
 def test_an_empty_box_fails():
     image, _ = synthetic_sheet(missing="button_pressed")
-    with pytest.raises(ValueError, match="button_pressed"):
+    with pytest.raises(ValueError, match="^button_pressed: its box holds no element; generate the sheet again$"):
         ui_kit.split_ui_kit(image)
 
 
@@ -303,6 +331,8 @@ def test_cli_writes_element_pngs_and_a_report_the_pack_reads(tmp_path):
     assert report["kind"] == "sprite-gen-ui-kit" and report["version"] == 1
     assert report["sheet"] == str(sheet.resolve()) and report["sheet_size"] == [SIZE, SIZE]
     assert list(report["elements"]) == FRAMES
+    # every element of a square sheet is required, so its report has no `missing`, as before the 2:3 sheet
+    assert "missing" not in report and "layout_fit" not in report
     assert sorted(p.name for p in out.iterdir()) == sorted([f"{name}.png" for name in FRAMES] + ["ui-kit.json"])
     cleaned, _ = ui_kit.clear_haze(image.convert("RGBA"), floor=64, edge=2)
     for name, entry in report["elements"].items():
@@ -453,6 +483,8 @@ def test_tall_sheet_cuts_every_element_of_the_whole_kit():
     assert report["sheet_size"] == list(TALL)
     assert list(report["elements"]) == list(elements) == FRAMES + BAND
     assert report["unassigned"] == [] and report["dropped_parts"] == 0
+    # nothing is missing, and every box held its element, so the layout was not fitted
+    assert report["missing"] == [] and "layout_fit" not in report
     for name in FRAMES + BAND:
         entry = report["elements"][name]
         assert entry["file"] == f"{name}.png" and entry["parts"] == 1
@@ -519,10 +551,568 @@ def test_slot_and_badge_insets_cover_their_corner_ornaments_and_padding_keeps_co
             assert edge + k <= entry["padding"][side] <= edge + k + 4, (name, side, entry["padding"])
 
 
-def test_an_empty_box_of_the_band_fails():
-    image, _ = synthetic_sheet(size=TALL, missing="joystick_knob")
-    with pytest.raises(ValueError, match="joystick_knob"):
+def test_the_frames_are_required_and_the_band_is_optional():
+    assert [slot.name for slot in ui_kit.LAYOUT if not slot.optional] == FRAMES
+    assert [slot.name for slot in ui_kit.LAYOUT if slot.optional] == BAND
+
+
+@pytest.mark.parametrize("missing", ["joystick_knob", "pip_off", "xp_bar_fill", ("slot", "badge"), tuple(BAND)])
+def test_an_empty_box_of_the_band_leaves_that_element_out_of_the_kit(missing):
+    gone = [missing] if isinstance(missing, str) else list(missing)
+    image, drawn = synthetic_sheet(size=TALL, missing=missing)
+    elements, report = ui_kit.split_ui_kit(image)
+    kept = [name for name in FRAMES + BAND if name not in gone]
+    assert report["missing"] == gone
+    assert list(report["elements"]) == list(elements) == kept
+    # a missing element is not a measurement to review: the elements that are there are measured as ever
+    assert report["status"] == "pass", report["review_reasons"]
+    assert "layout_fit" not in report
+    for name in kept:
+        assert all(0 <= value <= 2 for value in offset(report, drawn, name)), name
+
+
+@pytest.mark.parametrize("name", FRAMES)
+def test_an_empty_frame_box_of_the_tall_sheet_still_refuses_the_sheet(name):
+    image, _ = synthetic_sheet(size=TALL, missing=name)
+    with pytest.raises(ValueError, match=f"^{name}: its box holds no element; generate the sheet again$"):
         ui_kit.split_ui_kit(image)
+
+
+def test_every_empty_frame_box_is_named_and_an_empty_band_box_is_not():
+    image, _ = synthetic_sheet(size=TALL, missing=("panel", "card", "pip_on"))
+    with pytest.raises(ValueError, match="^panel, card: their boxes hold no element; generate the sheet again$"):
+        ui_kit.split_ui_kit(image)
+
+
+SQUEEZE = 0.93
+
+
+def test_a_sheet_drawn_shorter_than_the_guide_is_fitted_before_its_parts_are_assigned():
+    # Drawn 7 % shorter from the top edge down, the lower pip's and the lower fill's centres lie in the
+    # widened boxes above theirs (half the gap, 12 px here): assigned by the layout's own boxes, three boxes
+    # would be empty (badge, pip_off, joystick_knob), two would hold two elements each, and the upper fill
+    # would lie in no box.
+    image, drawn = synthetic_sheet(size=TALL, squeeze=SQUEEZE)
+    boxes, reach = ui_kit.boxes(TALL), 12
+    for name, above in (("pip_off", "pip_on"), ("xp_bar_fill", "hp_bar_fill")):
+        _, y, _, h = drawn[name]
+        _, ay, _, ah = boxes[above]
+        assert ay - reach <= y + h / 2 < ay + ah + reach, name
+    elements, report = ui_kit.split_ui_kit(image)
+    assert report["missing"] == [] and report["unassigned"] == []
+    assert list(elements) == FRAMES + BAND
+    for name in FRAMES + BAND:
+        entry = report["elements"][name]
+        assert entry["parts"] == 1, name
+        assert all(0 <= value <= 2 for value in offset(report, drawn, name)), name
+        # each element's box is its layout box moved onto the drawing, and the drawn element lies inside it
+        x, y, w, h = drawn[name]
+        box = entry["box"]
+        assert box["x"] - 2 <= x and x + w <= box["x"] + box["w"] + 2, name
+        assert box["y"] - 2 <= y and y + h <= box["y"] + box["h"] + 2, name
+    fit = report["layout_fit"]
+    assert set(fit) == {"scale", "offset"}
+    assert abs(fit["scale"]["x"] - 1) < 0.005 and abs(fit["offset"]["x"]) < 2
+    assert abs(fit["scale"]["y"] - SQUEEZE) < 0.005 and abs(fit["offset"]["y"]) < 3
+
+
+def test_a_squeezed_sheet_with_an_empty_band_box_is_fitted_and_names_it():
+    image, drawn = synthetic_sheet(size=TALL, squeeze=SQUEEZE, missing="joystick_knob")
+    elements, report = ui_kit.split_ui_kit(image)
+    assert report["missing"] == ["joystick_knob"] and "layout_fit" in report
+    assert list(elements) == [name for name in FRAMES + BAND if name != "joystick_knob"]
+    assert all(report["elements"][name]["parts"] == 1 for name in elements)
+
+
+@pytest.mark.parametrize("name", FRAMES)
+def test_a_squeezed_sheet_with_an_empty_frame_box_still_refuses_it(name):
+    # fitting the layout to the drawing never fills an empty frame's box with a neighbour: the sheet is refused
+    # by that frame's own name
+    image, _ = synthetic_sheet(size=TALL, squeeze=SQUEEZE, missing=name)
+    with pytest.raises(ValueError, match=f"^{name}: its box holds no element; generate the sheet again$"):
+        ui_kit.split_ui_kit(image)
+
+
+def test_the_cli_names_the_missing_elements_and_writes_no_png_for_them(tmp_path, capsys):
+    image, _ = synthetic_sheet(size=TALL, missing=("pip_off", "joystick_knob"))
+    sheet = tmp_path / "uikit.png"
+    image.save(sheet)
+    out = tmp_path / "ui"
+    assert ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out)]) == 0
+    report = json.loads((out / "ui-kit.json").read_text())
+    assert report["missing"] == ["pip_off", "joystick_knob"]
+    kept = [name for name in FRAMES + BAND if name not in report["missing"]]
+    assert sorted(p.name for p in out.iterdir()) == sorted([f"{name}.png" for name in kept] + ["ui-kit.json"])
+    assert capsys.readouterr().out.rstrip().endswith("; missing, left out of the kit: pip_off, joystick_knob")
+
+
+def tree(root):
+    """The visible files (by their bytes) and directories (None) under ``root``, and the hidden entries apart:
+    each by its path, not what it holds."""
+    visible, hidden = {}, []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            if not any(part.startswith(".") for part in rel.parts[:-1]):
+                hidden.append(rel.as_posix())
+            continue
+        visible[rel.as_posix()] = path.read_bytes() if path.is_file() else None
+    return visible, hidden
+
+
+def test_a_kit_is_written_into_a_new_or_empty_out_dir_and_one_that_holds_anything_is_refused(tmp_path):
+    # A rerun into the directory an earlier kit filled, with another sheet, is refused by the directory's name and
+    # leaves it byte for byte as it was, as does any other file in it, a hidden one too, or a file at its path. An
+    # empty directory takes a kit, a refused sheet writes nothing, and a --report outside --out-dir must be new.
+    sheet, out = tmp_path / "uikit.png", tmp_path / "ui"
+
+    def run(out_dir, size=TALL, missing=(), report=None):
+        synthetic_sheet(size=size, missing=missing)[0].save(sheet)
+        return ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out_dir)]
+                           + (["--report", str(report)] if report else []))
+
+    def refused(out_dir, held):
+        return (rf"^ui-kit: --out-dir {re.escape(str(out_dir.resolve()))} {held}; "
+                "a kit is written whole into a new or empty directory$")
+
+    assert run(out) == 0
+    kit = tree(out)
+    for size, missing in ((TALL, "pip_off"), ((SIZE, SIZE), ())):
+        with pytest.raises(SystemExit, match=refused(out, "holds badge.png and 15 more")):
+            run(out, size, missing)
+        assert tree(out) == kit
+    for name in ("logo.png", ".hidden"):
+        other = tmp_path / f"other{name}"
+        other.mkdir()
+        (other / name).write_bytes(b"not a kit")
+        with pytest.raises(SystemExit, match=refused(other, f"holds {re.escape(name)}")):
+            run(other)
+        assert tree(other) == (({}, [name]) if name.startswith(".") else ({name: b"not a kit"}, []))
+    (tmp_path / "taken").write_bytes(b"a file")
+    with pytest.raises(SystemExit, match=refused(tmp_path / "taken", "is a file")):
+        run(tmp_path / "taken")
+    assert (tmp_path / "taken").read_bytes() == b"a file"
+    (tmp_path / "empty").mkdir()
+    assert run(tmp_path / "empty", missing="pip_off") == 0
+    kept = [name for name in FRAMES + BAND if name != "pip_off"]
+    assert sorted(tree(tmp_path / "empty")[0]) == sorted([f"{name}.png" for name in kept] + ["ui-kit.json"])
+    with pytest.raises(SystemExit, match="^ui-kit: panel: its box holds no element; generate the sheet again$"):
+        run(tmp_path / "new", missing="panel")
+    assert not (tmp_path / "new").exists()
+    report = tmp_path / "kit.json"
+    report.write_text("{}\n")
+    with pytest.raises(SystemExit, match=rf"^ui-kit: --report {re.escape(str(report.resolve()))} already exists; "
+                                         "a report outside --out-dir is written to a new path$"):
+        run(tmp_path / "elements", report=report)
+    assert report.read_text() == "{}\n" and not (tmp_path / "elements").exists()
+    # no hidden directory or temp file of a run is left anywhere
+    assert [path.name for path in tmp_path.rglob(".*") if path.name != ".hidden"] == []
+
+
+# the out-dir and the report (None: in the out-dir) of each placement; the outside one's directories are made by
+# the run, so a run that fails must remove them again
+PUBLISH_PLACES = {"inside": ("ui", None), "outside": ("kit/elements", "reports/kit.json")}
+FS_CALLS = ("open", "fsync", "rename", "replace", "link", "unlink", "rmdir", "mkdir")
+KILLED = 97
+
+
+class Faults:
+    """Every filesystem call the publish makes once the sheet is cut, counted. The k-th one fails once, just before it
+    runs or just after it returned: by an OSError (EIO), by a real SIGINT, which Python's own handler raises as
+    KeyboardInterrupt, or by ending the process there, as a kill would."""
+
+    def __init__(self, monkeypatch, cut):
+        self.armed, self.calls, self.fail_at, self.when, self.mode, self.fired = False, [], None, None, None, False
+        for name in FS_CALLS:
+            monkeypatch.setattr(os, name, self.wrap(name, getattr(os, name)))
+
+        def split_then_arm(image, **kwargs):
+            self.armed = True
+            return cut[0], copy.deepcopy(cut[1])
+
+        monkeypatch.setattr(ui_kit, "split_ui_kit", split_then_arm)
+
+    def fail(self, name):
+        self.fired = True
+        if self.mode == "kill":
+            os._exit(KILLED)
+        if self.mode == "interrupt":
+            signal.raise_signal(signal.SIGINT)
+        raise OSError(errno.EIO, f"injected {name} failure")
+
+    def wrap(self, name, call):
+        def faulty(*args, **kwargs):
+            if not self.armed:
+                return call(*args, **kwargs)
+            paths = [Path(str(arg)).name for arg in args[:2] if isinstance(arg, (str, os.PathLike))]
+            self.calls.append(f"{name}({', '.join(paths)})")
+            here = len(self.calls) == self.fail_at
+            if here and self.when == "before":
+                self.fail(name)
+            result = call(*args, **kwargs)
+            if here and self.when == "after":
+                if name == "open":
+                    os.close(result)  # the run never gets it, so it would stay open in this process
+                self.fail(name)
+            return result
+        return faulty
+
+    def run(self, args, fail_at=None, when=None, mode=None):
+        """The command's exit code, its refusal or "KeyboardInterrupt"; a kill runs it in a child process and gives
+        the child's code."""
+        self.calls, self.fail_at, self.when, self.mode, self.fired = [], fail_at, when, mode, False
+        if mode != "kill":
+            interrupt = signal.signal(signal.SIGINT, signal.default_int_handler)
+            try:
+                return ui_kit.main(args)
+            except SystemExit as exc:
+                return str(exc)
+            except KeyboardInterrupt:
+                return "KeyboardInterrupt"
+            finally:
+                self.armed = False
+                signal.signal(signal.SIGINT, interrupt)
+        pid = os.fork()
+        if pid == 0:
+            code = 1
+            try:
+                sys.stdout = sys.stderr = io.StringIO()
+                code = ui_kit.main(args)
+            finally:
+                os._exit(code)
+        self.armed = False
+        return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+
+
+def files_of(state):
+    return {path: data for path, data in state.items() if data is not None}
+
+
+# A kill forks the test process, which pytest-xdist runs with threads of its own: the child makes only the publish's
+# filesystem calls and leaves by os._exit, and one that hung would end the test by its timeout.
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded, use of fork:DeprecationWarning")
+@pytest.mark.parametrize("mode", ["raise", "interrupt", pytest.param("kill", marks=pytest.mark.skipif(
+    not hasattr(os, "fork"), reason="a kill is a child process ended at the fault"))])
+@pytest.mark.parametrize("when", ["before", "after"])
+@pytest.mark.parametrize("start", ["absent", "empty", "empty, removed first"])
+@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+def test_a_failure_an_interrupt_or_a_kill_at_any_step_of_the_publish_leaves_nothing_or_the_whole_kit(
+        tmp_path, monkeypatch, placement, start, when, mode):
+    # Each filesystem call of the publish fails once, just before it runs or just after it returned, in a copy of the
+    # same start. One of those calls publishes the kit: the rename that gives it --out-dir's name or, with the report
+    # outside, the link that gives the report its name. An error or an interrupt before that leaves the start exactly,
+    # with nothing hidden; from it on, the whole kit, and an interrupt still ends the run. A kill leaves what the run
+    # had made: the start, the whole kit or, killed between the rename and the link, the whole --out-dir and no
+    # report yet; never part of a kit under the out-dir's name, and nothing hidden but the run's own staging
+    # directory or report temp beside them. "removed first" is the Windows rename, which takes no existing
+    # directory's name, so an empty --out-dir is removed just before it.
+    out_rel, report_rel = PUBLISH_PLACES[placement]
+    sheet = tmp_path / "uikit.png"
+    image, _ = synthetic_sheet(size=TALL, missing="pip_off")
+    image.save(sheet)
+    faults = Faults(monkeypatch, ui_kit.split_ui_kit(image))
+    if start == "empty, removed first":
+        monkeypatch.setattr(ui_kit, "RENAME_ONTO_EMPTY_DIR", False)
+    template = tmp_path / "start"
+    template.mkdir()
+    if start != "absent":
+        (template / out_rel).mkdir(parents=True)
+
+    def copy_of_start(name):
+        return Path(shutil.copytree(template, tmp_path / name))
+
+    def args(root):
+        return (["--sheet", str(sheet), "--out-dir", str(root / out_rel)]
+                + (["--report", str(root / report_rel)] if report_rel else []))
+
+    before, _ = tree(template)
+    reference = copy_of_start("reference")
+    assert faults.run(args(reference)) == 0
+    calls = faults.calls
+    complete, litter = tree(reference)
+    assert litter == []
+    report = report_rel or f"{out_rel}/ui-kit.json"
+    kit_files = [path for path in files_of(complete) if path != report]
+    assert len(kit_files) == 14 and report in complete
+    # the sweep reaches each file of the kit, the rename of the out-dir and the report's own commit
+    reached = {name for call in calls for name in call[call.index("(") + 1:-1].split(", ")}
+    assert {Path(path).name for path in kit_files} | {Path(out_rel).name, Path(report).name} <= reached, calls
+
+    def naming(op, target):
+        """The number of the call ``op(…, target)``, which gives ``target`` its name."""
+        return next(k for k, call in enumerate(calls, 1) if call.startswith(f"{op}(") and call.endswith(f", {target})"))
+
+    renamed = naming("rename", Path(out_rel).name)
+    published = naming("link", Path(report_rel).name) if report_rel else renamed
+    without_report = {path: data for path, data in files_of(complete).items() if path != report}
+    beside = [f"{Path(out_rel).parent / f'.{Path(out_rel).name}.ui-kit-'}".removeprefix("./")]
+    if report_rel:
+        beside.append(f"{Path(report_rel).parent / f'.{Path(report_rel).name}.'}".removeprefix("./"))
+    for k, call in enumerate(calls, 1):
+        root = copy_of_start(f"k{k}")
+        outcome = faults.run(args(root), fail_at=k, when=when, mode=mode)
+        after, hidden = tree(root)
+        where = (k, when, call, outcome, sorted(after), hidden)
+
+        def ran(step):
+            return step < k or (step == k and when == "after")
+
+        assert all(any(entry.startswith(prefix) for prefix in beside) for entry in hidden), where
+        if mode == "kill":
+            assert outcome == KILLED, where
+            left = complete if ran(published) else without_report if ran(renamed) else before
+            assert files_of(after) == files_of(left), where
+            directories = {path for path, data in after.items() if data is None}
+            kept = {path for path, data in before.items() if data is None}
+            if start == "empty, removed first":
+                kept.discard(out_rel)
+            assert kept <= directories <= kept | {path for path, data in complete.items() if data is None}, where
+            continue
+        assert faults.fired, where
+        if mode == "interrupt":
+            assert outcome == "KeyboardInterrupt", where
+        else:
+            assert outcome in (0, f"ui-kit: [Errno {errno.EIO}] injected {call[:call.index('(')]} failure"), where
+        if ran(published):
+            # hidden: only the report's temp, when removing it after the kit was published is what failed
+            assert after == complete and (hidden == [] or (
+                report_rel and mode == "raise" and all(entry.startswith(beside[-1]) for entry in hidden))), where
+        else:
+            assert outcome != 0 and after == before and hidden == [], where
+
+
+class Halt(BaseException):
+    """An exception of no standard kind."""
+
+
+# How each kind of interrupt arrives and what it ends the run with: a real signal through its handler (Python's own
+# for SIGINT; for SIGTERM, one that exits, as a service installs), or an exception of no standard kind.
+INTERRUPTS = {
+    "SIGINT": (signal.SIGINT, signal.default_int_handler, KeyboardInterrupt),
+    "SIGTERM": (signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum), SystemExit),
+    "BaseException": (None, None, Halt),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(INTERRUPTS))
+@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+def test_any_interrupt_from_the_rename_on_leaves_nothing_before_the_kit_is_published_and_the_whole_kit_after(
+        tmp_path, placement, kind):
+    # Nothing is replaced: a profile hook sees the real filesystem calls of a run on a whole sheet, and the interrupt
+    # arrives just before each one from the rename that gives the kit --out-dir's name on, or just after it returned.
+    # Before the step that publishes the kit (that rename, or with the report outside, the link that gives the report
+    # its name) the run leaves nothing; from it on, the whole kit, its report naming only files that are there.
+    out_rel, report_rel = PUBLISH_PLACES[placement]
+    sheet = tmp_path / "uikit.png"
+    synthetic_sheet(size=TALL)[0].save(sheet)
+    signum, handler, ends = INTERRUPTS[kind]
+    watched = {id(getattr(os, name)): name for name in FS_CALLS}
+
+    def publish(root, point=None):
+        """Run the command into ``root``, interrupted at ``point``: the k-th call and "c_call", just before it, or
+        "c_return", just after it returned. Answers the calls the run made, by name, and what ended it."""
+        root.mkdir()
+        names = []
+
+        def hook(frame, event, arg):
+            if event not in ("c_call", "c_return") or id(arg) not in watched:
+                return
+            if event == "c_call":
+                names.append(watched[id(arg)])
+            if (len(names), event) == point:
+                sys.setprofile(None)
+                if signum is None:
+                    raise Halt
+                signal.raise_signal(signum)
+
+        previous = signal.signal(signum, handler) if signum is not None else None
+        sys.setprofile(hook)
+        try:
+            ended = ui_kit.main(["--sheet", str(sheet), "--out-dir", str(root / out_rel)]
+                                + (["--report", str(root / report_rel)] if report_rel else []))
+        except BaseException as exc:
+            ended = exc
+        finally:
+            sys.setprofile(None)
+            if signum is not None:
+                signal.signal(signum, previous)
+        return names, ended
+
+    names, ended = publish(tmp_path / "reference")
+    assert ended == 0
+    complete = tree(tmp_path / "reference")
+    report = tmp_path / "reference" / (report_rel or f"{out_rel}/ui-kit.json")
+    elements = json.loads(report.read_text())["elements"]
+    out = (tmp_path / "reference" / out_rel).resolve()
+    assert len(elements) == 15 and {ui_kit.element_path(report, entry["file"]).resolve()
+                                    for entry in elements.values()} == {out / f"{name}.png" for name in elements}
+    assert sorted(path.name for path in out.iterdir()) == sorted(
+        [f"{name}.png" for name in elements] + ([] if report_rel else ["ui-kit.json"]))
+    renamed = names.index("rename") + 1
+    published = names.index("link") + 1 if report_rel else renamed
+    for k in range(renamed, len(names) + 1):
+        for event in ("c_call", "c_return"):
+            root = tmp_path / f"{k}-{event}"
+            _, ended = publish(root, (k, event))
+            where = (k, names[k - 1], event, repr(ended), tree(root))
+            assert isinstance(ended, ends) and (signum != signal.SIGTERM or ended.code == 128 + signum), where
+            assert tree(root) == (complete if k > published or (k == published and event == "c_return")
+                                  else ({}, [])), where
+
+
+# Interrupted after a file is opened and before its with statement holds it, or as that statement closes it, a run
+# leaves the file object to be closed when the run's frames go, which Python reports as an unclosed file.
+@pytest.mark.filterwarnings("ignore:unclosed file:ResourceWarning")
+@pytest.mark.parametrize("kind", sorted(INTERRUPTS))
+@pytest.mark.parametrize("granularity", ["line", "instruction"])
+@pytest.mark.parametrize("start", ["absent", "empty", "empty, removed first"])
+@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+def test_an_interrupt_at_any_line_or_instruction_of_the_publish_leaves_nothing_or_the_whole_kit(
+        tmp_path, monkeypatch, placement, start, granularity, kind):
+    # Python may raise an interrupt at any instruction: a signal's handler runs between instructions, and so does a
+    # tracer's or a debugger's callback, which can receive the signal or raise its own exception there. A tracer on the
+    # publish's own functions raises the interrupt once per run, at one line, or one instruction, of the publish, each
+    # in turn. Every run ends with that interrupt and leaves the start exactly, with nothing hidden, or the whole kit.
+    # The publish is given a small kit directly (one run per instruction); with the report inside --out-dir, it is in
+    # a directory of its own there. What ended a run is kept without its traceback, so the run's frames, and a file
+    # object only they hold, go when the run ends; a run interrupted between opening a file and wrapping the descriptor
+    # cannot close it, so each descriptor the run opened and left open is closed after it.
+    out_rel, report_rel = PUBLISH_PLACES[placement]
+    signum, handler, ends = INTERRUPTS[kind]
+    if start == "empty, removed first":
+        monkeypatch.setattr(ui_kit, "RENAME_ONTO_EMPTY_DIR", False)
+    event = "line" if granularity == "line" else "opcode"
+    data = b'{"kind": "sprite-gen-ui-kit"}\n'
+    opened, open_fd = [], os.open
+
+    def recorded_open(*args, **kwargs):
+        fd = open_fd(*args, **kwargs)
+        opened.append((fd, os.fstat(fd)))
+        return fd
+
+    monkeypatch.setattr(os, "open", recorded_open)
+
+    def publish(root, target=None):
+        """Publish the kit into ``root``, interrupted at ``target``, one event of the run: (function, instruction
+        offset, occurrence). Answers the tree before and after, the run's events as such targets with where each
+        was, whether the interrupt was raised, and what ended the run (0 when nothing did)."""
+        root.mkdir()
+        if start != "absent":
+            (root / out_rel).mkdir(parents=True)
+        report = root / report_rel if report_rel else None
+        files = {"one.png": b"one", "two.png": b"two"} | ({} if report else {"reports/kit.json": data})
+        given = tree(root)
+        seen, events, raised = Counter(), [], []
+        opened.clear()
+
+        def each(frame, what, arg):
+            if what == event:
+                key = (id(frame.f_code), frame.f_lasti)
+                seen[key] += 1
+                events.append((*key, seen[key], f"{frame.f_code.co_name}:{frame.f_lineno}@{frame.f_lasti}"))
+                if events[-1][:3] == target and not raised:
+                    raised.append(True)
+                    sys.settrace(None)
+                    if signum is None:
+                        raise Halt
+                    signal.raise_signal(signum)
+            return each
+
+        def calls(frame, what, arg):
+            if frame.f_code.co_filename != ui_kit.__file__:
+                return None
+            if event == "opcode":
+                frame.f_trace_opcodes, frame.f_trace_lines = True, False
+            return each
+
+        previous = signal.signal(signum, handler) if signum is not None else None
+        tracer = sys.gettrace()
+        sys.settrace(calls)
+        try:
+            ui_kit._write_kit(root / out_rel, files, report, data)
+            ended = 0
+        except BaseException as exc:
+            ended = exc.with_traceback(None)
+        finally:
+            sys.settrace(tracer)
+            if signum is not None:
+                signal.signal(signum, previous)
+            for fd, stat in opened:
+                with contextlib.suppress(OSError):  # closed by the run: gone, or another file's number now
+                    if os.path.samestat(os.fstat(fd), stat):
+                        os.close(fd)
+        return given, tree(root), events, bool(raised), ended
+
+    # the first opcode-traced run of a function reports none of its instructions on Python 3.12, and some from 3.13
+    publish(tmp_path / "warm-up")
+    before, complete, events, _, ended = publish(tmp_path / "reference")
+    assert ended == 0 and complete[1] == [] and complete != before
+    assert {Path(path).name for path in files_of(complete[0])} == {"one.png", "two.png", "kit.json"}
+    missed, bad = [], []
+    for n, (*target, at) in enumerate(events):
+        given, after, _, raised, ended = publish(tmp_path / f"{n}", tuple(target))
+        if not raised:  # the run never reached that event (see below)
+            missed.append(at)
+            continue
+        assert given == before
+        if not (isinstance(ended, ends) and (signum != signal.SIGTERM or ended.code == 128 + signum)
+                and after in (before, complete)):
+            bad.append((f"{at}#{target[2]}", repr(ended), sorted(after[0]), after[1]))
+    assert bad == []
+    # Every line event of the reference run recurs in a faulted one. A tracer's instruction events can differ a little
+    # between runs on Python 3.13 and later, so one a faulted run never reaches gets no interrupt; most do.
+    assert (missed == [] if granularity == "line" else len(missed) < len(events) / 2), missed
+
+
+@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+def test_a_kit_that_reaches_the_out_dir_first_refuses_this_run_and_stays_whole(tmp_path, monkeypatch, placement):
+    # Two runs into one new --out-dir: the other run's kit lands there just before this run renames its own in.
+    # This run is refused, removes what it made (its staging directory, the report's directory) and leaves the
+    # other kit as it was.
+    out_rel, report_rel = PUBLISH_PLACES[placement]
+    sheet, other = tmp_path / "uikit.png", tmp_path / "other"
+    synthetic_sheet(size=TALL)[0].save(sheet)
+    assert ui_kit.main(["--sheet", str(sheet), "--out-dir", str(other)]) == 0
+    synthetic_sheet(size=TALL, missing="pip_off", noise=False)[0].save(sheet)
+    out = (tmp_path / out_rel).resolve()
+    rename = os.rename
+
+    def the_other_kit_first(src, dst, *args, **kwargs):
+        if Path(dst) == out and not out.exists():
+            shutil.copytree(other, out)
+        return rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", the_other_kit_first)
+    with pytest.raises(SystemExit, match=rf"^ui-kit: --out-dir {re.escape(str(out))} was filled while this kit "
+                                         r"was cut: it holds badge\.png and 15 more; nothing was written$"):
+        ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out)]
+                    + (["--report", str(tmp_path / report_rel)] if report_rel else []))
+    assert tree(out) == tree(other)
+    assert [path.name for path in tmp_path.rglob(".*")] == []
+    assert not (tmp_path / "reports").exists()
+
+
+def test_a_report_that_appears_first_refuses_this_run_and_is_kept(tmp_path, monkeypatch):
+    # Two runs with their own --out-dir and one --report outside them: the other run's report lands just before
+    # this run's own. This run is refused, takes its kit back out, and the other report stays as it was.
+    sheet, out, report = tmp_path / "uikit.png", tmp_path / "elements", tmp_path / "reports" / "kit.json"
+    synthetic_sheet(size=TALL)[0].save(sheet)
+    theirs = b'{"kind": "sprite-gen-ui-kit", "the other run": true}\n'
+    link = os.link
+
+    def the_other_report_first(src, dst, *args, **kwargs):
+        if Path(dst) == report.resolve() and not report.exists():
+            report.write_bytes(theirs)
+        return link(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", the_other_report_first)
+    with pytest.raises(SystemExit, match=rf"^ui-kit: --report {re.escape(str(report.resolve()))} appeared while "
+                                         "this kit was cut; nothing was written$"):
+        ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out), "--report", str(report)])
+    assert report.read_bytes() == theirs
+    assert not out.exists()
+    assert sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")) == [
+        "reports", "reports/kit.json", "uikit.png"]
 
 
 def test_a_fill_whose_ends_do_not_fit_its_bar_frame_is_flagged():
@@ -597,6 +1187,17 @@ def test_a_packed_fill_is_stored_as_its_bar_frames_content_area(tmp_path, scale)
         ends = np.asarray(resized)
         assert np.array_equal(cells[:, :left], ends[:, :left])
         assert np.array_equal(cells[:, rect["w"] - right:], ends[:, resized.width - right:])
+
+
+@pytest.mark.parametrize("missing", ["pip_off", "xp_bar_fill", ("joystick_base", "joystick_knob"), tuple(BAND)])
+def test_a_partial_kit_packs_only_the_elements_it_holds(tmp_path, missing):
+    gone = {missing} if isinstance(missing, str) else set(missing)
+    result, out = pack_tall_kit(tmp_path, 0.5, missing=missing)
+    nine = result["ui"]["nine_slice"]
+    assert set(nine) == set(FRAMES + BAND) - gone
+    # the manifest names only frames the atlas holds, and the written manifest is the one returned
+    assert {name for page in result["textures"] for name in page["frames"]} == {f"ui/{name}" for name in nine}
+    assert json.loads((out / "game-pack.json").read_text())["ui"]["nine_slice"] == nine
 
 
 @pytest.mark.parametrize("scale", [1, 0.5, 0.37])

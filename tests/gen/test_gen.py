@@ -703,9 +703,8 @@ def test_ref_run_publishes_a_real_alpha_raw_without_keying_its_outline(
     assert "publishing its own alpha" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("raw", [_checkerboard_raw, _key_background_raw], ids=["checkerboard", "key-background"])
-def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch, raw) -> None:
-    fake, rc, out, report = _ref_run(tmp_path, monkeypatch, raw())
+def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch) -> None:
+    fake, rc, out, report = _ref_run(tmp_path, monkeypatch, _key_background_raw())
 
     assert rc == 0
     payload = json.loads(report.read_text(encoding="utf-8"))
@@ -718,6 +717,14 @@ def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch, raw
     }
     assert payload["chroma"]["key"] == "magenta"
     assert Image.open(out).getpixel((0, 0)) == (0, 0, 0, 0)  # the background was keyed out
+
+
+def test_ref_run_refuses_a_drawn_checkerboard_instead_of_keying_it(tmp_path: Path, monkeypatch) -> None:
+    # a drawn checkerboard is no alpha either, so it is not published on its own alpha; and it is not the key
+    # the run asked for, so it is refused before keying (tests/gen/test_painted_checkerboard.py)
+    with pytest.raises(SystemExit, match=r"^chroma: the background is a painted transparency checkerboard \(8 px"):
+        _ref_run(tmp_path, monkeypatch, _checkerboard_raw())
+    assert not (tmp_path / "asset.png").exists() and not (tmp_path / "report.json").exists()
 
 
 def test_key_background_ref_run_keeps_its_outline(tmp_path: Path, monkeypatch) -> None:
