@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import io
 import http.client
 import json
+import re
 import subprocess
 import threading
 import urllib.error
@@ -12,6 +13,7 @@ import numpy as np
 import pytest
 
 from sprite_gen.audio import cache, provider, processing, sound
+from sprite_gen.audio.manifest import load as load_sound
 from sprite_gen.gen import retry
 
 
@@ -31,6 +33,171 @@ def wav_bytes(seconds=3):
         f.setframerate(48000)
         f.writeframes((x * 32767).astype('<i2').tobytes())
     return data.getvalue()
+
+
+def stereo_wav(x, rate=48000):
+    data = io.BytesIO()
+    with wave.open(data, 'wb') as f:
+        f.setnchannels(2)
+        f.setsampwidth(2)
+        f.setframerate(rate)
+        f.writeframes((np.clip(x, -1, 1) * 32767).astype('<i2').tobytes())
+    return data.getvalue()
+
+
+def hit(seconds, body_hz, body_tau, sweep, knock_hz, knock_tau, knock_gain, noise_tau, noise_gain, smooth, stereo, seed):
+    """A synthetic hit: a pitch-dropping body, a knock and a noise burst decaying from one onset."""
+    t = np.arange(round(seconds * 48000)) / 48000
+    body = np.sin(2*np.pi*np.cumsum(body_hz*(1 + sweep*np.exp(-t/.03)))/48000) * np.exp(-t/body_tau)
+    knock = knock_gain * np.sin(2*np.pi*knock_hz*t) * np.exp(-t/knock_tau)
+    noise = np.random.default_rng(seed).standard_normal((len(t), 2))
+    noise[:, 1] = (1-stereo)*noise[:, 0] + stereo*noise[:, 1]
+    if smooth > 1:
+        noise = np.stack([np.convolve(n, np.ones(smooth)/smooth, 'same') for n in noise.T], axis=1) * np.sqrt(smooth)
+    x = .25 * ((body + knock)[:, None] + noise*(noise_gain*np.exp(-t/noise_tau))[:, None])
+    x[:16] *= np.linspace(0, 1, 16)[:, None]
+    return stereo_wav(x)
+
+
+HITS = {
+    # A thud whose AAC reconstruction overshoots the limited PCM peak by several dB.
+    'thud': dict(seconds=.6, body_hz=77.19, body_tau=.1322, sweep=.3641, knock_hz=704.9, knock_tau=.03642,
+                 knock_gain=.8461, noise_tau=.04146, noise_gain=.881, smooth=2, stereo=.7, seed=634996),
+    # A few milliseconds of energy: at the -2 dBTP limiter ceiling it cannot reach -18 LUFS.
+    'click': dict(seconds=.5, body_hz=900, body_tau=.003, sweep=0, knock_hz=2500, knock_tau=.002,
+                  knock_gain=.5, noise_tau=.002, noise_gain=1, smooth=1, stereo=0, seed=7),
+    # FFmpeg 5.1's loudnorm first pass measures its output for this hit at -inf LUFS (7.1's does not).
+    'unanalysable': dict(seconds=.6, body_hz=55.03, body_tau=.09572, sweep=2.822, knock_hz=692.4, knock_tau=.01984,
+                         knock_gain=.2113, noise_tau=.01464, noise_gain=.8967, smooth=1, stereo=.3, seed=212970),
+}
+
+
+def bundle(tmp_path, monkeypatch, name, seconds):
+    monkeypatch.setattr(provider, 'generate', lambda req: (hit(**HITS[name]), {}))
+    return sound.generate(kind='sfx', prompt='synthetic hit', duration=seconds, event='hit',
+                          cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
+
+
+@pytest.mark.parametrize('name', HITS)
+def test_short_hits_pass_the_one_loudness_rule(tmp_path, monkeypatch, name):
+    result = bundle(tmp_path, monkeypatch, name, HITS[name]['seconds'])
+    level = result['normalization']
+    goal = processing.loudness_goal(-18, level['pcm_lufs'], level['pcm_true_peak_dbtp'])
+    if name == 'click':
+        assert level['pcm_true_peak_dbtp'] >= -2.2 and goal == level['pcm_lufs'] < -19
+    else:
+        assert goal == -18
+    for file in result['files'].values():
+        assert processing.meets(file['lufs'], file['true_peak_dbfs'], goal)
+        assert file['true_peak_dbfs'] <= -1
+    load_sound(tmp_path/'out'/'sound.json', 50_000_000)
+
+
+def test_a_clip_loudnorm_cannot_analyse_is_normalized_by_the_limiter(tmp_path, monkeypatch):
+    analyse = processing._loudnorm
+    monkeypatch.setattr(processing, '_loudnorm', lambda *a: {**analyse(*a), 'target_offset': float('inf')})
+    source = tmp_path/'source.wav'
+    source.write_bytes(hit(**HITS['unanalysable']))
+    _, level, _ = processing.normalize(processing.decode(source), -18, False)
+    assert level['method'] == 'limiter' and abs(level['pcm_lufs'] + 18) <= .2
+
+
+def test_a_bundle_is_refused_when_its_files_miss_the_rule(tmp_path, monkeypatch):
+    bundle(tmp_path, monkeypatch, 'click', .5)
+    path = tmp_path/'out'/'sound.json'
+    original = json.loads(path.read_text())
+    headroom = json.loads(path.read_text())
+    headroom['normalization']['pcm_true_peak_dbtp'] = -8  # quiet with headroom: the goal is the target
+    hot = json.loads(path.read_text())
+    hot['files']['m4a']['true_peak_dbfs'] = -.5
+    old = json.loads(path.read_text())
+    del old['normalization']
+    relabeled = json.loads(path.read_text())
+    relabeled['recipe']['processing_version'] = 3  # version 3 had no peak-limited goal; its files measure against -18
+    recipe2 = json.loads(path.read_text())
+    recipe2['recipe']['processing_version'] = 2
+    for manifest, refusal in ((headroom, 'does not match'), (hot, 'invalid audio true peak'), (old, 'version 4'),
+                              (relabeled, 'does not match'), (recipe2, 'version 3 or 4')):
+        path.write_text(json.dumps(manifest))
+        with pytest.raises(ValueError, match=refusal):
+            load_sound(path, 50_000_000)
+    path.write_text(json.dumps(original))
+    load_sound(path, 50_000_000)
+
+
+def test_the_rule_needs_a_peak_reason_and_never_relaxes_the_peak():
+    assert processing.loudness_goal(-18, -24, -8) == -18  # quiet with headroom
+    assert processing.loudness_goal(-18, -18.1, -2) == -18  # normalized to the target
+    assert processing.loudness_goal(-18, -24, -2.1) == -24  # peak-limited
+    assert processing.meets(-24.3, -1.9, -24) and not processing.meets(-25.2, -1.9, -24)
+    assert not processing.meets(-24, -.5, -24) and not processing.meets(-18, -.9, -18)
+    assert not processing.meets(float('-inf'), -50, -18)
+
+
+@pytest.mark.parametrize('case', ['headroom', 'hot'])
+def test_export_refuses_a_quiet_file_with_headroom_and_a_hot_peak(tmp_path, monkeypatch, case):
+    t = np.arange(48000) / 48000
+    pcm = np.stack([np.sin(2*np.pi*440*t)]*2, axis=1) * (.01 if case == 'headroom' else .1365)
+    if case == 'hot':
+        pcm[24000:24048] = .94  # about -18 LUFS with a -0.5 dBTP spike
+    stats = processing.measure(pcm)
+    record = {'pcm_lufs': stats['lufs'], 'pcm_true_peak_dbtp': stats['true_peak']}
+    decode = processing.decode
+    monkeypatch.setattr(processing, 'decode', lambda path: pcm.copy() if path.name == 'source' else decode(path))
+    monkeypatch.setattr(processing, 'normalize', lambda samples, target, loop: (samples, record, stats))
+    monkeypatch.setattr(processing, 'limit_gain', lambda samples, *a: samples)  # no correction can rescue it
+    with pytest.raises(ValueError, match='ogg failed loudness/peak check') as refusal:
+        processing.export(tmp_path/'source', tmp_path, target_lufs=-18, loop=False, crossfade=0)
+    lufs, peak = map(float, re.search(r'\(([-\d.]+) LUFS, ([-\d.]+) dBTP', str(refusal.value)).groups())
+    if case == 'headroom':
+        assert lufs < -30 and peak < -30
+    else:
+        assert abs(lufs + 18) <= 1 and peak > -1
+
+
+@pytest.mark.parametrize('seconds', [0, .3])
+def test_silent_or_unmeasurable_audio_is_refused(tmp_path, seconds):
+    source = tmp_path/'source.wav'
+    t = np.arange(round(seconds*48000) or 48000) / 48000
+    source.write_bytes(stereo_wav(np.stack([np.sin(2*np.pi*440*t)*(seconds > 0)*.5]*2, axis=1)))
+    with pytest.raises(ValueError, match='silent or unmeasurable'):  # 0.3 s is shorter than one 400 ms block
+        processing.export(source, tmp_path, target_lufs=-18, loop=False, crossfade=0)
+
+
+def test_formats_are_measured_over_their_pcm_frames_and_blocks(tmp_path, monkeypatch):
+    frames, at = 28800, (6000, 17000)
+    x = np.zeros((frames, 2))
+    k = np.arange(-64, 65)
+    for frame in at:
+        x[frame-64:frame+65] += (.5*np.sinc(k/2.5)*np.hanning(len(k)))[:, None]
+    source = tmp_path/'source.wav'
+    source.write_bytes(stereo_wav(x))
+    measure, seen, pcm = processing.measure, [], {}
+    def spy(samples, gate=None):
+        seen.append((samples.copy(), gate))
+        return measure(samples, gate)
+    def settled(samples, target, loop):
+        pcm.update(measure(samples))
+        return samples, {'pcm_lufs': pcm['lufs'], 'pcm_true_peak_dbtp': pcm['true_peak']}, pcm
+    monkeypatch.setattr(processing, 'measure', spy)
+    monkeypatch.setattr(processing, 'normalize', settled)
+    target = measure(processing.decode(source))['lufs']  # two clicks; their own loudness is the goal
+    result = processing.export(source, tmp_path, target_lufs=target, loop=False, crossfade=0)
+    assert {file['encode_passes'] for file in result['files'].values()} == {1} and len(seen) == 2
+    for samples, gate in seen:
+        assert gate is pcm['gate'] and len(samples) == frames
+        peaks = [int(np.argmax(np.abs(samples[f-1000:f+1000, 0]))) + f - 1000 for f in at]
+        assert all(abs(p - f) <= 2 for p, f in zip(peaks, at)), peaks
+
+
+def test_a_block_at_the_relative_gate_cannot_move_a_file_by_whole_lu():
+    t = np.arange(28800) / 48000
+    level = np.where(t < .1, 1, np.where(t < .5, .107, .0333))  # the last block sits 0.2 dB under the gate
+    pcm = np.stack([np.sin(2*np.pi*1000*t)*level*.3]*2, axis=1)
+    codec = pcm * np.where(t < .5, 1, 2.5)[:, None]  # a change in the last 100 ms lifts it over the gate
+    reference = processing.measure(pcm)
+    assert abs(processing.measure(codec)['lufs'] - reference['lufs']) > 1
+    assert abs(processing.measure(codec, reference['gate'])['lufs'] - reference['lufs']) < .05
 
 
 def test_provider_contract_and_safe_retry(monkeypatch, capsys):
@@ -207,9 +374,9 @@ def test_export_keeps_source_frames_until_browser_preparation(tmp_path, monkeypa
     seen = []
     def normalize(samples, target, loop):
         seen.append(samples.copy())
-        return samples, 0
+        return samples, {}, {'lufs': -20, 'true_peak': -2, 'gate': None}
     monkeypatch.setattr(processing, 'normalize', normalize)
-    monkeypatch.setattr(processing, 'measure', lambda *a: {'input_i': -20, 'input_tp': -2})
+    monkeypatch.setattr(processing, 'measure', lambda *a: {'lufs': -20, 'true_peak': -2, 'gate': None})
     processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=.25)
     np.testing.assert_array_equal(seen[0], x)
 
@@ -265,7 +432,7 @@ def test_missing_ffprobe_preflights_before_generation(tmp_path, monkeypatch):
                        cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
 
 
-@pytest.mark.parametrize('old_version', [1, 2])
+@pytest.mark.parametrize('old_version', [1, 2, 3])
 def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch, old_version):
     calls = []
     monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))
@@ -273,7 +440,7 @@ def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monke
               cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
     result = sound.generate(**kw)
     assert result['version'] == 2
-    assert result['recipe']['processing_version'] == 3
+    assert result['recipe']['processing_version'] == 4
     old = {**result, 'version': old_version, 'recipe': {**result['recipe'], 'processing_version': old_version}}
     (kw['out_dir']/'sound.json').write_text(json.dumps(old))
     with pytest.raises(ValueError, match='different sound'):

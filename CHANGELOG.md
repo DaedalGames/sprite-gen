@@ -4,6 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+- Bump audio processing recipe to version 4, measure BS.1770-4 loudness over normalized PCM frames and gated blocks, support a peak-limited loudness goal, normalize loudnorm-unanalysable short clips via limiter passes instead of refusing them, encode AAC using `-aac_coder fast`, record `normalization.pcm_lufs` and `pcm_true_peak_dbtp` required to load version 4 bundles, keep recipe version 3 bundles loadable in game packs by their own rule (target loudness, decoded files re-measured with loudnorm), reject recipe version 1-2 bundles, and reject recipe version 1-3 output directories in `sprite-gen sound` while reusing cached provider audio.
 - Bump audio processing recipe to version 3, require `ffprobe` on `PATH`, export M4A with `-movie_timescale 48000`, and validate AAC stream duration with `ffprobe`.
 - Add bounded one-frame decoded length tolerance, preserving loop duration, trimming one-shots, and rejecting shorter buffers and undersized overlaps at export.
 - Configure loop playback in `createAudioSource` using an internally cached L+1 guard frame buffer while preserving `prepareAudioBuffer` frame contracts.

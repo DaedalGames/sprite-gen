@@ -181,7 +181,7 @@ Game packs support optional bundled audio declared in pack recipes via `request.
   - `duration_seconds`: Final prepared playback duration `(end_frame - start_frame - overlap_frames) / sample_rate`.
   - `target_lufs`: Target integrated loudness.
   - `playback`: Integer coordinate object (`version`, `sample_rate`, `start_frame`, `end_frame`, `overlap_frames`) preserved exactly from source `sound.json`.
-  - `files`: Format dictionary for `ogg` and `m4a` containing relative paths (`audio-<id>.ogg`, `audio-<id>.m4a`), `sha256`, decoded `duration_seconds`, `lufs`, and `true_peak_dbfs` (`encode_passes` and `pcm_peak_limit_dbtp` exist only in `sound.json` and are stripped on load).
+  - `files`: Format dictionary for `ogg` and `m4a` containing relative paths (`audio-<id>.ogg`, `audio-<id>.m4a`), `sha256`, decoded `duration_seconds`, `lufs`, and `true_peak_dbfs` (`encode_passes` and `pcm_peak_limit_dbtp` exist only in `sound.json` and are stripped on load). Source `sound.json` manifests must specify `recipe.processing_version` 3 or 4 (version 4 manifests require the `normalization` record, while version 3 manifests are decoded and re-measured under the version 3 [loudness rule](sound.md#loudness-rule)). For a peak-limited sound in version 4, `lufs` sits below `target_lufs` (version 3 has no peak-limited goal).
   - `player`: Runtime helper descriptor:
     ```json
     {
