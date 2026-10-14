@@ -156,8 +156,9 @@ def test_ui_kit_guide_at_2_3_is_the_whole_kit(tmp_path, monkeypatch):
     assert guide.size == (683, 1024)
     boxes = ui_kit.boxes((683, 1024))
     assert list(boxes) == [slot.name for slot in ui_kit.LAYOUT]
-    for x, y, w, h in boxes.values():
-        assert guide.getpixel((x + w // 2, y)) == ui_kit.GUIDE_BOX
+    for name, (x, y, w, h) in boxes.items():
+        # a box's top edge, or a round part's circle, passes the top centre of its place
+        assert ui_kit.GUIDE_BOX in [guide.getpixel((x + w // 2, y + i)) for i in range(3)], name
         assert guide.getpixel((x + w // 2, y + h // 2)) == ui_kit.GUIDE_BACKGROUND
     request = fake.requests[0]
     assert request.aspect_ratio == "2:3"

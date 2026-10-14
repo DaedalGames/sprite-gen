@@ -399,13 +399,15 @@ def test_guide_draws_every_box_and_the_text_names_every_element(tmp_path):
 def test_tall_guide_draws_the_square_boxes_and_the_band_and_names_every_element(tmp_path):
     path = tmp_path / "guide.png"
     cell = ui_kit.draw_guide(path, (683, 1024))
+    assert {slot.name for slot in ui_kit.LAYOUT if slot.round} == set(ROUND)
     with Image.open(path) as guide:
         guide = guide.convert("RGB")
         assert guide.size == (683, 1024)
-        for x, y, w, h in ui_kit.boxes((683, 1024)).values():
-            assert guide.getpixel((x + w // 2, y)) == ui_kit.GUIDE_BOX
-            assert guide.getpixel((x, y + h // 2)) == ui_kit.GUIDE_BOX
+        for name, (x, y, w, h) in ui_kit.boxes((683, 1024)).items():
+            assert on_guide_line(guide, (x + w // 2, y), (0, 1)) and on_guide_line(guide, (x, y + h // 2), (1, 0))
             assert guide.getpixel((x + w // 2, y + h // 2)) == ui_kit.GUIDE_BACKGROUND
+            # a round part's place is a circle, so the corners of its box are the guide's grey
+            assert (guide.getpixel((x + 2, y + 2)) == ui_kit.GUIDE_BACKGROUND) == (name in ROUND), name
     assert cell == {"kind": "ui-kit", "width": 683, "height": 1024,
                     "boxes": {name: dict(zip("xywh", box)) for name, box in ui_kit.boxes((683, 1024)).items()}}
     assert list(cell["boxes"]) == FRAMES + BAND
@@ -413,8 +415,32 @@ def test_tall_guide_draws_the_square_boxes_and_the_band_and_names_every_element(
     assert text == ui_kit.guide_text((1024, 1536))
     positions = [text.index(entry.what) for entry in ui_kit.LAYOUT]
     assert positions == sorted(positions)
-    assert "15 blue boxes" in text and "last attached image is a layout guide" in text
-    assert "no text" in text and "round" in text
+    assert "15 blue boxes and circles" in text and "last attached image is a layout guide" in text
+    assert "no text" in text and "no plate, tile or backing" in text and "no frame, rim or end pieces" in text
+
+
+ROUND = ("pip_on", "pip_off", "joystick_base", "joystick_knob")
+
+
+def on_guide_line(guide, point, step):
+    """The guide's outline passes ``point`` or one of the two pixels inward from it along ``step``."""
+    return any(guide.getpixel((point[0] + i * step[0], point[1] + i * step[1])) == ui_kit.GUIDE_BOX for i in range(3))
+
+
+def test_a_round_part_drawn_on_a_square_plate_is_flagged():
+    image, drawn = synthetic_sheet(size=TALL, noise=False, haze=False)
+    pixels = np.asarray(image).copy()
+    # a square plate behind the lit dot: the box's corners around the disc are painted too
+    x, y, w, h = drawn["pip_on"]
+    plate = pixels[y:y + h, x:x + w]
+    plate[plate[..., 3] == 0] = BORDER
+    _, report = ui_kit.split_ui_kit(Image.fromarray(pixels))
+    assert report["status"] == "needs-review"
+    note = "its corners are filled: it was drawn on a square plate or backing, not as a circle; regenerate it"
+    assert [reason for reason in report["review_reasons"] if reason.startswith(ROUND)] == [f"pip_on: {note}"]
+    plated = Image.fromarray(np.ascontiguousarray(pixels[y:y + h, x:x + w]))
+    assert ui_kit.measure_round(plated) == [note]
+    assert ui_kit.measure_round(Image.fromarray(np.ascontiguousarray(np.asarray(image)[y:y + h, x:x + w]))) == []
 
 
 def tall_split(**kwargs):
