@@ -161,6 +161,108 @@ function registerGamePack(scene, imagesInPageOrder, pack) {
 
 `addAtlasJSONHash` assigns `sourceIndex` offsets to frames across pages. The game runtime is responsible for reading `durations_ms` and applying animation playback policies (`repeat = anim.loop ? -1 : 0`, `hold_last`, `blend`, and `events`).
 
+## Version 2: images, tiles and UI
+
+Version 2 adds three sections for painted scene art: single images such as props (`images`), repeating ground tiles (`tiles`) and a UI kit with nine-slice frames and icons (`ui`). A request opts in with `"version": 2`; the manifest it produces says `"version": 2`. A version 1 request is packed exactly as before: the same files with the same bytes, and a version 1 manifest that has none of the new keys. A version 1 request that names `images`, `tiles` or `ui` is refused instead of being packed without them.
+
+### Version 2 request
+
+```json
+{
+  "version": 2,
+  "assets": [
+    { "id": "hero", "source": "hero.strip.json", "display": { "height": 96 } }
+  ],
+  "images": [
+    { "id": "fountain", "source": "props/fountain.png", "display": { "height": 120 },
+      "anchor": [256, 725], "footprint": "base" },
+    { "id": "lantern", "source": "props/lantern.png", "display": { "height": 96 },
+      "footprint": { "x": 180, "y": 640, "w": 150, "h": 80 } }
+  ],
+  "tiles": [
+    { "id": "ground", "source": "ground-tile.png", "display": { "width": 480 } }
+  ],
+  "ui": {
+    "kit": "ui/ui-kit.json",
+    "scale": 0.5,
+    "icons": [
+      { "id": "sword", "source": "icons/sword.png", "display": { "height": 48 } }
+    ]
+  }
+}
+```
+
+* `assets` and `audio` keep their version 1 meaning. In version 2, `assets` may be empty or absent; the request must still declare at least one asset, image, tile, UI kit or icon.
+* Every `id` uses the asset name characters (`[A-Za-z0-9_.-]`) and is unique within its section.
+* `images[]`: one PNG each (a static image or a one-frame descriptor; more frames are refused). `display` takes exactly one of `width` or `height` (no `body_height`), and `resample` works as for assets. `anchor` is `[x, y]` in source pixels and defaults to the bottom centre of the image. `footprint` is optional: an explicit `{x, y, w, h}` rectangle in source pixels, or `"base"` for the measured base described below.
+* `tiles[]`: one PNG each, ideally a seamless tile from [`background-tile --axis xy`](asset-tools.md#repeating-tiles). `display` takes exactly one of `width` or `height`: the size of one tile on screen. The tile's pixels are never resampled: the pack stores the source pixels and states both sizes.
+* `ui.kit`: the JSON report a [`ui-kit`](ui-kit.md) run wrote. Every element it lists becomes a nine-slice entry, with the element PNGs it names (paths relative to the report). `ui.scale` (default `1`, positive) resizes every kit element by the same factor, so the kit stays one consistent set.
+* `ui.icons[]`: fixed images such as upgrade or weapon icons, with `id`, `source` and `display` as for `images` (no anchor or footprint).
+* The `"base"` footprint is measured on the source image: take the bounding box of pixels with alpha at least 128, keep its lowest fifth (rounded up, at least one row), and the footprint is the bounding box of the pixels with alpha at least 128 inside that band. It is where a prop meets the ground in a top-down or three-quarter view. It is a measurement, not a collision shape the art guarantees.
+
+### Version 2 manifest
+
+```json
+{
+  "kind": "sprite-gen-game-pack",
+  "version": 2,
+  "textures": [ "...as in version 1; image, ui and icon frames are atlas frames here..." ],
+  "animations": { "...as in version 1..." },
+  "images": {
+    "fountain": {
+      "frame": "image/fountain",
+      "size": { "w": 104, "h": 120 },
+      "anchor": [52, 120],
+      "footprint": { "x": 10, "y": 96, "w": 84, "h": 24 }
+    }
+  },
+  "tiles": {
+    "ground": {
+      "image": "tile-ground.png",
+      "webp": "tile-ground.webp",
+      "size": { "w": 960, "h": 960 },
+      "display_size": { "w": 480, "h": 480 }
+    }
+  },
+  "ui": {
+    "nine_slice": {
+      "panel": {
+        "frame": "ui/panel",
+        "size": { "w": 288, "h": 200 },
+        "stretch": "xy",
+        "insets": { "left": 56, "right": 56, "top": 46, "bottom": 46 },
+        "padding": { "left": 24, "right": 24, "top": 22, "bottom": 22 }
+      },
+      "hp_bar_frame": {
+        "frame": "ui/hp_bar_frame",
+        "size": { "w": 304, "h": 56 },
+        "stretch": "x",
+        "insets": { "left": 66, "right": 30, "top": 0, "bottom": 0 },
+        "padding": { "left": 70, "right": 34, "top": 18, "bottom": 18 }
+      }
+    },
+    "icons": {
+      "sword": { "frame": "icon/sword", "size": { "w": 48, "h": 48 } }
+    }
+  }
+}
+```
+
+A version 2 manifest always has `images`, `tiles` and `ui`, and `ui` always has `nine_slice` and `icons`; each may be empty (`{}`). Keys are the request ids and are sorted.
+
+What each field means, with no reading left to the consumer:
+
+* **Where the pixels are.** `images[*].frame`, `ui.nine_slice[*].frame` and `ui.icons[*].frame` are atlas frame names in `textures[].frames`, so they load with the atlas like animation frames. Their names are `image/<id>`, `ui/<id>` and `icon/<id>`. A tile is not in the atlas: `tiles[*].image` is its own PNG file in the pack (with a lossless WebP copy in `webp`), because a repeating texture needs its own image to wrap.
+* **Units.** Every size, anchor, footprint, inset and padding is in pixels of the image as stored in the pack, after the display resize: the frame's own pixels for atlas frames, the PNG's pixels for tiles. Nothing is in source pixels.
+* `images[*].size` is the stored frame size. `anchor` is `[x, y]` from the frame's top-left corner (a fraction where the scaled point falls between pixels, as for animation anchors), and the atlas frame's `pivot` is the same point normalised. `footprint` is `{x, y, w, h}` from the frame's top-left corner, or `null` when the request declared none. A source footprint is scaled outward to whole pixels (left and top rounded down, right and bottom rounded up) and kept inside the frame.
+* `tiles[*].size` is the stored PNG size. `display_size` is the on-screen size of one tile: draw the repeating texture with a tile scale of `display_size.w / size.w` horizontally and `display_size.h / size.h` vertically.
+* `ui.nine_slice[*].size` is the stored frame size. `stretch` says how the element may be resized: `"xy"` both ways (a nine-slice), `"x"` in width only (a three-slice whose height stays `size.h`; `top` and `bottom` are `0`), `"none"` not at all (draw it at `size`; every inset is `0`). `insets` are the widths of the fixed border slices: in Phaser, `scene.add.nineslice(x, y, texture, frame, width, height, insets.left, insets.right, insets.top, insets.bottom)`. The stretched middle lies between the insets, and every corner ornament the [`ui-kit`](ui-kit.md) run found lies inside them. When the pack resizes the kit by `ui.scale`, insets are scaled and rounded up, so an ornament never slides into the stretched middle. A scale so small that the insets leave no stretchable middle, or the padding no content area, is refused.
+* `padding` places the element's content: the inner area where a panel's text, a card's contents, a badge's digits or a bar's fill goes. For an element drawn at width `W` and height `H` (its stored size or any size its `stretch` allows), the content rectangle is `x = padding.left`, `y = padding.top`, `w = W - padding.left - padding.right`, `h = H - padding.top - padding.bottom`, from the element's top-left corner. For `hp_bar_frame` and `xp_bar_frame` this is the track: fill it from its left edge to show a fraction. Paddings are scaled with `ui.scale` and rounded up, so the content area only shrinks.
+* `ui.icons[*].size` is the stored frame size; icons are drawn as they are.
+* The atlas frames of images, UI elements and icons have `trimmed: false`, `rotated: false` and the same one-pixel extrusion as animation frames. UI element and icon frames have the pivot `{x: 0.5, y: 0.5}`.
+
+The UI kit element names are fixed by the [`ui-kit` layout](ui-kit.md#layout): `panel`, `button`, `button_pressed`, `card`, `hp_bar_frame`, `xp_bar_frame` and `timer_badge`. Their `stretch` is part of the layout: the four frames and buttons are `"xy"`, the two bar frames `"x"`, the timer badge `"none"`.
+
 ## Audio Assets and Playback
 
 Game packs support optional bundled audio declared in pack recipes via `request.audio`:
