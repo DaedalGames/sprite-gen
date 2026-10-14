@@ -2,10 +2,13 @@
 """Split a transparent UI kit sheet drawn on the fixed layout into nine-slice elements.
 
 docs/ui-kit.md is the contract. One table (`LAYOUT`) is the layout: `gen --layout-guide ui-kit`
-draws it (`draw_guide`) and says it (`guide_text`), and the splitter cuts along it. The sheet's
+draws it (`draw_guide`) and says it (`guide_text`), and the splitter cuts along it. A sheet's shape
+says which part of the table it holds (`SHEETS`): a square sheet the seven frames, a 2:3 sheet the
+same frames at the same places and the fills, slot, badge, pips and joystick below them. The sheet's
 alpha haze is cleared first (`alpha_floor.clear_haze`), parts are assigned to boxes by centroid,
-and each element's insets and content padding are measured on its own pixels. The report names each
-element PNG by its path from the report's own directory (`report_file`, `element_path`).
+and each element's insets and content padding are measured on its own pixels; a fill is fitted to its
+bar frame's content area. The report names each element PNG by its path from the report's own
+directory (`report_file`, `element_path`).
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ PADDING_SPAN = 96
 GUIDE_BACKGROUND = (0xF6, 0xF6, 0xF6)
 GUIDE_BOX = (0x2F, 0x80, 0xED)
 STRETCHES = ("xy", "x", "none")
+SIDES = ("left", "right", "top", "bottom")
 REPORT_KIND = "sprite-gen-ui-kit"
 
 
@@ -45,6 +49,11 @@ class Slot:
     stretch: str
     where: str
     what: str
+    # Padding is measured only for an element that holds content (text, digits, an icon, a bar's fill);
+    # the others get 0 on every side, as insets are 0 along an axis the element keeps.
+    content: bool = True
+    # A fill: the bar frame whose content area it fills (docs/ui-kit.md "Fills").
+    inside: str | None = None
 
 
 LAYOUT = (
@@ -62,33 +71,90 @@ LAYOUT = (
          "an empty horizontal experience bar frame"),
     Slot("timer_badge", (48, 816, 160, 160), "none", "the small square box at the bottom left",
          "a small round badge with an empty centre"),
+    # The band below the square, on the 2:3 sheet only.
+    Slot("hp_bar_fill", (48, 1024, 608, 64), "x", "the long thin box at the top left of the band",
+         "the health bar's fill, a solid horizontal strip", content=False, inside="hp_bar_frame"),
+    Slot("xp_bar_fill", (48, 1136, 608, 64), "x", "the long thin box below it",
+         "the experience bar's fill, the same kind of strip in its own colour", content=False,
+         inside="xp_bar_frame"),
+    Slot("slot", (48, 1248, 192, 192), "xy", "the square box below them at the left",
+         "a square item slot frame with an empty centre"),
+    Slot("badge", (288, 1248, 176, 112), "xy", "the small wide box to its right",
+         "a small counter plate with an empty centre"),
+    Slot("pip_on", (512, 1248, 96, 96), "none", "the small square box to the right of that",
+         "a small round indicator dot, lit", content=False),
+    Slot("pip_off", (512, 1392, 96, 96), "none", "the small square box below it",
+         "the same dot unlit", content=False),
+    Slot("joystick_base", (704, 1024, 272, 272), "none", "the large square box at the right of the band",
+         "a round touch joystick base", content=False),
+    Slot("joystick_knob", (768, 1344, 144, 144), "none", "the smaller square box below it",
+         "the joystick's round knob", content=False),
 )
+FRAME_COUNT = 7
+# Sheet shape -> (the size the layout's boxes are given at, the slots it holds). The 2:3 sheet keeps the
+# square's seven boxes where they are and adds the band below them, so a square sheet cuts as it always has.
+SHEETS = {
+    "square": ((REFERENCE, REFERENCE), LAYOUT[:FRAME_COUNT]),
+    "tall": ((REFERENCE, REFERENCE * 3 // 2), LAYOUT),
+}
+
+
+def sheet_layout(size: tuple[int, int]) -> tuple[tuple[int, int], tuple[Slot, ...]]:
+    """The reference size and the slots of a sheet of ``size``: square, or 2:3, each within 1 %."""
+    width, height = size
+    for (ref_w, ref_h), slots in SHEETS.values():
+        if abs(width * ref_h - height * ref_w) <= 0.01 * max(width * ref_h, height * ref_w):
+            return (ref_w, ref_h), slots
+    raise ValueError(f"a UI kit sheet must be square (1:1, the frames) or 2:3 (the whole kit); "
+                     f"this one is {width}x{height}")
 
 
 def boxes(size: tuple[int, int]) -> dict[str, tuple[int, int, int, int]]:
-    """The layout's boxes as (x, y, w, h) in pixels of a sheet of ``size``, in layout order."""
+    """The boxes a sheet of ``size`` holds, as (x, y, w, h) in its pixels, in layout order."""
+    (ref_w, ref_h), slots = sheet_layout(size)
     width, height = size
-    sx, sy = width / REFERENCE, height / REFERENCE
+    sx, sy = width / ref_w, height / ref_h
     return {slot.name: (round(slot.box[0] * sx), round(slot.box[1] * sy),
-                        round(slot.box[2] * sx), round(slot.box[3] * sy)) for slot in LAYOUT}
+                        round(slot.box[2] * sx), round(slot.box[3] * sy)) for slot in slots}
 
 
 def _rect(x: int, y: int, w: int, h: int) -> dict[str, int]:
     return {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
 
 
-def guide_text() -> str:
-    """The prompt's half of the guide: what to draw in each box and how, in layout order."""
-    places = "; ".join(f"in {slot.where}, {slot.what}" for slot in LAYOUT)
+def _places(slots: tuple[Slot, ...]) -> str:
+    return "; ".join(f"in {slot.where}, {slot.what}" for slot in slots)
+
+
+def guide_text(size: tuple[int, int] = (REFERENCE, REFERENCE)) -> str:
+    """The prompt's half of the guide for a sheet of ``size``: what to draw in each box and how, in layout order."""
+    _, slots = sheet_layout(size)
+    if len(slots) == FRAME_COUNT:
+        return (
+            "Layout: the last attached image is a layout guide, not part of the artwork. It shows "
+            f"{len(slots)} blue boxes on a grey sheet. Draw exactly one user interface element inside each box, "
+            "filling most of its box without touching the box's edges, and leave everything outside the boxes "
+            f"empty and transparent: {_places(slots)}. Every frame, button and bar has straight, even edges "
+            "between its corners, so it can be stretched along them: put ornaments only in the corners, and on "
+            "the bars only at their two ends. Leave every centre empty: no text, no letters, no numbers, no icons "
+            "and no fill inside the bars. Do not reproduce the layout guide itself: no boxes, guide lines, guide "
+            "colors or the guide's grey background may appear in the output."
+        )
+    frames, band = slots[:FRAME_COUNT], slots[FRAME_COUNT:]
     return (
         "Layout: the last attached image is a layout guide, not part of the artwork. It shows "
-        f"{len(LAYOUT)} blue boxes on a grey sheet. Draw exactly one user interface element inside each box, "
-        "filling most of its box without touching the box's edges, and leave everything outside the boxes "
-        f"empty and transparent: {places}. Every frame, button and bar has straight, even edges between its "
-        "corners, so it can be stretched along them: put ornaments only in the corners, and on the bars only "
-        "at their two ends. Leave every centre empty: no text, no letters, no numbers, no icons and no fill "
-        "inside the bars. Do not reproduce the layout guide itself: no boxes, guide lines, guide colors or the "
-        "guide's grey background may appear in the output."
+        f"{len(slots)} blue boxes on a grey sheet: {len(frames)} in the square at the top and {len(band)} in the "
+        "band below it. Draw exactly one user interface element inside each box, filling most of its box without "
+        "touching the box's edges, and leave everything outside the boxes empty and transparent. In the square "
+        f"at the top: {_places(frames)}. In the band below it: {_places(band)}. Every frame, button, bar, fill, "
+        "slot and plate has straight, even edges between its corners, so it can be stretched along them: put "
+        "ornaments only in the corners, and on the bars and the fills only at their two ends. Each fill is one "
+        "solid strip, the same colour all along its length (it may shade from its top edge to its bottom edge), "
+        "with no marks, segments or highlights along it. Leave the centre of every frame, button, bar frame, slot "
+        "and plate empty: no text, no letters, no numbers, no icons and no fill inside the bar frames. The two "
+        "dots, the joystick base and the knob are round and seen straight from the front; the two dots are the "
+        "same size. Do not reproduce the layout guide itself: no boxes, guide lines, guide colors or the guide's "
+        "grey background may appear in the output."
     )
 
 
@@ -257,8 +323,7 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
     place, ``<out-dir>/ui-kit.json`` (each ``file`` is ``<element>.png``), without the sheet path."""
     rgba = image.convert("RGBA")
     width, height = rgba.size
-    if abs(width - height) > 0.01 * max(width, height):
-        raise ValueError(f"a UI kit sheet must be square (1:1); this one is {width}x{height}")
+    _, slots = sheet_layout((width, height))
     cleanup = None
     if alpha_floor:
         rgba, cleanup = clear_haze(rgba, floor=alpha_floor, edge=alpha_edge)
@@ -282,7 +347,7 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
         assigned[owner].append(part)
     elements: dict[str, Image.Image] = {}
     records: dict[str, Any] = {}
-    for slot in LAYOUT:
+    for slot in slots:
         parts = assigned[slot.name]
         if not parts:
             raise ValueError(f"{slot.name}: its box holds no element; generate the sheet again")
@@ -296,7 +361,7 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
                 cut[y - y0, a - x0:b - x0] = pixels[y, a:b]
         element = Image.fromarray(cut)
         insets, inset_notes = measure_insets(element, slot.stretch)
-        padding, padding_notes = measure_padding(element)
+        padding, padding_notes = measure_padding(element) if slot.content else (dict.fromkeys(SIDES, 0), [])
         reasons += [f"{slot.name}: {note}" for note in inset_notes + padding_notes]
         elements[slot.name] = element
         records[slot.name] = {
@@ -309,6 +374,10 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
             "padding": padding,
             "parts": len(parts),
         }
+    for slot in slots:
+        if slot.inside is not None:
+            records[slot.name]["inside"], note = fit_inside(records[slot.name], records[slot.inside], slot.inside)
+            reasons += [f"{slot.name}: {note}"] if note else []
     report = {
         "kind": REPORT_KIND,
         "version": 1,
@@ -321,6 +390,25 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
         "elements": records,
     }
     return elements, report
+
+
+def content_rect(record: dict[str, Any]) -> dict[str, int]:
+    """The content rectangle of an element record (its size less its padding), from its top-left corner."""
+    pad, size = record["padding"], record["size"]
+    return _rect(pad["left"], pad["top"], size["w"] - pad["left"] - pad["right"],
+                 size["h"] - pad["top"] - pad["bottom"])
+
+
+def fit_inside(fill: dict[str, Any], frame: dict[str, Any], name: str) -> tuple[dict[str, Any], str | None]:
+    """A fill's ``inside``: the frame it fills, that frame's content rectangle and the factor that makes the
+    fill exactly as tall as it (docs/ui-kit.md "Fills"), and a review note when its fixed ends would not fit."""
+    rect = content_rect(frame)
+    scale = rect["h"] / fill["size"]["h"]
+    note = None
+    if (fill["insets"]["left"] + fill["insets"]["right"]) * scale >= rect["w"]:
+        note = (f"scaled to the height of {name}'s content area, its fixed ends are wider than that area; "
+                "a full bar would overflow it")
+    return {"element": name, "rect": rect, "scale": round(scale, 6)}, note
 
 
 def report_file(report: Path, png: Path) -> str:
