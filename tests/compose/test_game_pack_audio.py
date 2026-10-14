@@ -2,9 +2,11 @@
 import hashlib
 import json
 
+import numpy as np
 import pytest
 from PIL import Image
 
+from sprite_gen.audio import processing
 from sprite_gen.compose.game_pack import pack
 
 
@@ -22,6 +24,8 @@ def inputs(tmp_path):
                       'true_peak_dbfs':-2, 'sha256':hashlib.sha256(data).hexdigest()}
     manifest = {'kind':'sprite-gen-sound','version':2,'event':'combat.hit', 'audio_kind':'sfx',
                 'loop':False,'duration_seconds':1,'target_lufs':-18,'files':files,
+                'recipe': {'processing_version':4},
+                'normalization': {'pcm_lufs':-18, 'pcm_true_peak_dbtp':-2},
                 'playback': {'version':2, 'sample_rate':48000, 'start_frame':0,
                              'end_frame':48000, 'overlap_frames':0}}
     (source/'sound.json').write_text(json.dumps(manifest))
@@ -57,7 +61,8 @@ def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
     assert not (tmp_path/'small').exists()
 
 
-@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop', 'old', 'fraction', 'overlap'])
+@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop', 'old', 'fraction', 'overlap',
+                                    'prerule', 'quiet', 'norecipe', 'recipe2'])
 def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     path, request, manifest = inputs(tmp_path)
     request['audio'] = [{'id':'hit','source':'audio/sound.json'}]
@@ -69,6 +74,10 @@ def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     if defect == 'old': manifest['version'] = 1
     if defect == 'fraction': manifest['playback']['end_frame'] = 48000.5
     if defect == 'overlap': manifest['playback']['overlap_frames'] = 24000
+    if defect == 'prerule': del manifest['normalization']
+    if defect == 'quiet': manifest['files']['m4a']['lufs'] = -19.5  # under the target, its PCM not peak-limited
+    if defect == 'norecipe': del manifest['recipe']
+    if defect == 'recipe2': manifest['recipe']['processing_version'] = 2
     path.write_text(json.dumps(request))
     (tmp_path/'audio'/'sound.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError): pack(path, tmp_path/'bad')
@@ -120,3 +129,57 @@ def test_version_2_pack_with_sound_adds_only_the_tile_files(tmp_path):
         assert v2[name] == v1[name], name
     assert result['version'] == 2 and list(result['audio']) == ['hit']
     assert result['tiles']['ground']['image'] == 'tile-ground.png'
+
+
+def version_3_bundle(tmp_path, lufs=-18., spike=None, timescale=48000, **changes):
+    """A sound made by processing version 3: real encodes of a synthetic tone, the file numbers that
+    version's loudnorm check recorded, and no PCM loudness record. 48003 frames are no whole
+    millisecond, so a millisecond AAC timescale cannot store them."""
+    t = np.arange(48003) / 48000
+    pcm = np.stack([np.sin(2*np.pi*440*t), np.sin(2*np.pi*440*t + .3)], axis=1)
+    pcm *= 10 ** ((lufs - processing.measure(pcm)['lufs']) / 20)
+    if spike:
+        pcm[24000:24048] = spike
+    path, request, manifest = inputs(tmp_path)
+    files = {}
+    for fmt, codec in (('ogg', ['-c:a', 'libopus', '-b:a', '160k']),
+                       ('m4a', ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+                                '-movie_timescale', str(timescale)])):
+        file = tmp_path/'audio'/f'sound.{fmt}'
+        processing._ffmpeg(['-f', 'f32le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0', *codec, str(file)],
+                           pcm.astype('<f4').tobytes())
+        files[fmt] = {'path':file.name, 'duration_seconds':1.02, 'lufs':-18.6, 'true_peak_dbfs':-2,
+                      'encode_passes':1, 'pcm_peak_limit_dbtp':-2,
+                      'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
+    manifest['playback']['end_frame'], manifest['duration_seconds'] = 48003, 48003/48000
+    manifest.update(files=files, recipe={'processing_version':3},
+                    normalization={'method':'loudnorm-two-pass', 'peak_limit_dbtp':-2, 'gain_limiter_passes':0})
+    for key, value in changes.items():
+        manifest[key] = {**manifest[key], **value} if isinstance(value, dict) else value
+    request['audio'] = [{'id':'hit','source':'audio/sound.json'}]
+    path.write_text(json.dumps(request))
+    (tmp_path/'audio'/'sound.json').write_text(json.dumps(manifest))
+    return path
+
+
+def test_a_version_3_sound_is_packed_by_the_target_it_was_made_for(tmp_path):
+    result = pack(version_3_bundle(tmp_path), tmp_path/'pack')
+    for file in result['audio']['hit']['files'].values():
+        # its files are measured again over their frames, not taken from its loudnorm-era numbers
+        assert abs(file['lufs'] + 18) <= .3 and file['lufs'] != -18.6
+        assert -20 < file['true_peak_dbfs'] <= -1
+
+
+@pytest.mark.parametrize('defect', ['quiet', 'peak-limited', 'hot', 'timescale', 'recipe2', 'recipe1'])
+def test_a_version_3_sound_that_misses_its_rule_is_refused(tmp_path, defect):
+    path = version_3_bundle(
+        tmp_path, lufs=-21.5 if defect in ('quiet', 'peak-limited') else -18.,
+        spike=.94 if defect == 'hot' else None,  # -0.5 dBTP while its manifest says -2
+        timescale=1000 if defect == 'timescale' else 48000,  # the millisecond AAC duration of version 2
+        **({'normalization':{'pcm_lufs':-21.5, 'pcm_true_peak_dbtp':-2}} if defect == 'peak-limited' else {}),
+        **({'recipe':{'processing_version':int(defect[-1])}} if defect.startswith('recipe') else {}))
+    with pytest.raises(ValueError, match={'quiet':'does not match', 'peak-limited':'does not match',
+                                          'hot':'does not match', 'timescale':'container duration',
+                                          'recipe2':'version 3 or 4', 'recipe1':'version 3 or 4'}[defect]):
+        pack(path, tmp_path/'bad')
+    assert not (tmp_path/'bad').exists()

@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 
-from sprite_gen.audio import playback
+from sprite_gen.audio import playback, processing
 
 
 def event_name(value):
@@ -40,6 +40,22 @@ def load(path, max_bytes):
     files = value.get('files')
     if not isinstance(files, dict) or set(files) != {'ogg', 'm4a'}:
         raise ValueError('audio source requires ogg and m4a files')
+    recipe = value.get('recipe')
+    version = recipe.get('processing_version') if isinstance(recipe, dict) else None
+    if type(version) is not int or version not in (3, processing.PROCESSING_VERSION):
+        raise ValueError('audio source must come from sound processing version 3 or 4; make it again with sprite-gen '
+                         'sound into a new --out-dir (its cached provider audio is reused)')
+    if version == 3:
+        # Version 3 had no peak-limited goal. Its files are measured again here, the way it measured
+        # them, and must meet their target.
+        processing.require_programs()
+        goal = result['target_lufs']
+    else:
+        level = value.get('normalization')
+        if not isinstance(level, dict) or not {'pcm_lufs', 'pcm_true_peak_dbtp'} <= set(level):
+            raise ValueError('a sound processing version 4 source requires normalization.pcm_lufs and pcm_true_peak_dbtp')
+        goal = processing.loudness_goal(result['target_lufs'], _number(level['pcm_lufs'], 'PCM LUFS', -70, 0),
+                                        _number(level['pcm_true_peak_dbtp'], 'PCM true peak', -100, 0))
     payloads, sources, size = {}, {path}, 0
     for fmt in ('ogg', 'm4a'):
         file = files[fmt]
@@ -59,8 +75,11 @@ def load(path, max_bytes):
                   'duration_seconds': _number(file.get('duration_seconds'), 'file duration', frames['end_frame']/frames['sample_rate'], 602),
                   'lufs': _number(file.get('lufs'), 'LUFS', -70, 0),
                   'true_peak_dbfs': _number(file.get('true_peak_dbfs'), 'true peak', -100, -1)}
-        if abs(record['lufs'] - result['target_lufs']) > 1:
-            raise ValueError('audio loudness does not match target')
+        if version == 3:
+            measured = processing.measure_version_3(processing.file_frames(source, frames, value['loop'])[1], goal)
+            record.update(lufs=measured['lufs'], true_peak_dbfs=measured['true_peak'])
+        if not processing.meets(record['lufs'], record['true_peak_dbfs'], goal):
+            raise ValueError('audio loudness does not match its target or its peak-limited PCM')
         result['files'][fmt] = record
         payloads[fmt] = data
         sources.add(source)
