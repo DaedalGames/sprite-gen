@@ -15,7 +15,7 @@ from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compos
 from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
-from sprite_gen.frames import cutout, extract, slice_sheet, unpack_atlas
+from sprite_gen.frames import cutout, extract, slice_sheet, ui_kit, unpack_atlas
 from sprite_gen.gen import gen_set, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
@@ -177,7 +177,7 @@ def _add_export_pngs(p: argparse.ArgumentParser) -> None:
 def _add_slice_sheet(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sheet", required=True, type=Path)
     p.add_argument("--out-dir", required=True, type=Path)
-    p.add_argument("--chroma-key", required=True, help="magenta, green, or #RRGGBB")
+    p.add_argument("--chroma-key", required=True, help=slice_sheet.CHROMA_KEY_HELP)
     p.add_argument("--grid", type=_parse_grid, default=(3, 2), help="COLSxROWS, default 3x2")
     p.add_argument("--names", help="comma-separated output names, one per cell in reading order")
     p.add_argument("--prefix", default="")
@@ -192,6 +192,8 @@ def _add_slice_sheet(p: argparse.ArgumentParser) -> None:
     p.add_argument("--spill-max-fraction", type=float, default=0.005)
     p.add_argument("--noise-min", type=int, default=slice_sheet.DEFAULT_NOISE_MIN)
     p.add_argument("--debris-fraction", type=float, default=slice_sheet.DEFAULT_DEBRIS_FRACTION)
+    p.add_argument("--alpha-floor", type=int, default=0, help=slice_sheet.ALPHA_FLOOR_HELP)
+    p.add_argument("--alpha-edge", type=int, default=2, help=slice_sheet.ALPHA_EDGE_HELP)
 
 
 def _add_inspect(p: argparse.ArgumentParser) -> None:
@@ -308,6 +310,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Slice a multi-figure grid sheet into per-cell standing cuts (tachi-e).",
         _add_slice_sheet,
         slice_sheet.run,
+    ),
+    "ui-kit": (
+        "Split a UI kit sheet drawn on the fixed layout into nine-slice elements with measured insets.",
+        ui_kit.add_arguments,
+        ui_kit.run,
     ),
     "gen": (
         "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login, or openai Images API for servers/SaaS, billed per call) into a verified PNG.",

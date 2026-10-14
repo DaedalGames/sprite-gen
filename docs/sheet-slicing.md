@@ -53,6 +53,26 @@ $SPRITE_GEN_ROOT/.venv/bin/python $SPRITE_GEN_ROOT/scripts/slice_sheet_cells.py 
   painted a darker green/magenta than asked still keys cleanly
   ([chroma-alpha.md](chroma-alpha.md)).
 
+## Transparent sheets
+
+A sheet a provider returned with real alpha (`gen --transparent` on a native-alpha route)
+has no key to remove: pass `--chroma-key none` and the sheet keeps its own alpha.
+
+Transparent sheets often carry a faint alpha haze around and between the drawn objects. It
+joins neighbouring parts and enlarges a figure's measured height. `--alpha-floor N` (1..255;
+`64` suits most generated sheets) clears it before parts are measured, with the shared
+[alpha cleanup](ui-kit.md#alpha-cleanup): pixels at or above the floor and the faint pixels
+within `--alpha-edge` pixels (default 2) of them are kept as they are, every other faint pixel
+becomes fully transparent. The run writes the cleanup's report to
+`<out-dir>/<prefix>alpha-cleanup.json` (haze share before and after, pixels cleared, and the
+count of solid and edge pixels that changed, which is `0`). Without the flag nothing changes:
+the default `0` leaves the alpha exactly as extraction made it.
+
+```bash
+sprite-gen slice-sheet --sheet props.png --out-dir props/ --chroma-key none --alpha-floor 64 \
+  --grid 3x2 --names pillar,statue,shrub,lantern,gravestone,fountain --prefix prop_
+```
+
 ## Geometry rules (and the field failures they encode)
 
 Each rule below exists because the naive version shipped a visible defect

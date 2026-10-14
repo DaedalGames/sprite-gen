@@ -236,7 +236,7 @@ sprite-gen gen \
   [--quality low|medium|high|xhigh|max|auto] # billed effort; openai takes the range, grok takes auto/low/medium
   [--resolution 1k|1.5k|2k]  # grok output-size tier, priced with --quality
   [--model ID] \
-  [--layout-guide]        # attach a one-slot layout guide (safe box, crown and floor lines); see below
+  [--layout-guide [figure|ui-kit]]  # attach a layout guide: the one-slot figure guide (bare flag) or the UI kit layout; see below
   [--direction side|front|back|front_diagonal|back_diagonal [--facing right|left]] # add the engine's view sentence
   [--handed "the black smartwatch=left wrist" ...]  # with --direction: where an item on one side is in that view
   [--body-plan quadruped | --body-plan "the horse=quadruped" ...]  # with --direction: the view for that body
@@ -484,6 +484,13 @@ rather than artwork, and nothing of the guide itself in the output. The guide is
 for `--aspect-ratio` (square without one) and the report records the cell it used in
 `extra.layout_guide` (size, safe margins, `crown_y`, `floor_y`); the report's `refs` are
 still the caller's own.
+
+`--layout-guide ui-kit` attaches the UI kit layout instead: one box per element of a game
+UI kit (panel, button, pressed button, card frame, two bar frames, timer badge), and a
+paragraph naming what to draw in each box, with straight edges between corner ornaments
+and empty centres. [`ui-kit`](ui-kit.md) cuts the sheet along the same boxes. It is square
+only (`--aspect-ratio 1:1`, or none); `extra.layout_guide` is then `{"kind": "ui-kit",
+"width", "height", "boxes"}`.
 
 The guide is an attached image, so it changes the call: openai sends it to
 `/images/edits` and bills it as image input, grok sends it as a reference, and

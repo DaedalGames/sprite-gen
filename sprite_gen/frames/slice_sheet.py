@@ -8,7 +8,10 @@ baseline and a normalized subject height.
 
 Alpha truth is `sprite_gen.frames.extract.remove_chroma_background` (the 4-pass
 chain: hard key cut -> key-depth in-band unmix -> soft-alpha unmix ->
-trapped-spill despill). This module owns only cell geometry:
+trapped-spill despill); a sheet that is already transparent (chroma key
+``none``) keeps its own alpha. ``alpha_floor`` then clears faint alpha haze
+(`sprite_gen.frames.alpha_floor.clear_haze`) before parts are measured. This
+module owns only cell geometry:
 
 - whole-sheet connected components assigned to grid cells by centroid, so a
   figure's own cape/prop keeps its overflow past the cell border while a
@@ -32,12 +35,15 @@ the in-cell re-label leaves a neighbour's hair fused to the figure.
 from __future__ import annotations
 
 import argparse
+import json
 from collections import deque
 from pathlib import Path
 
 from PIL import Image
 
+from sprite_gen.frames.alpha_floor import clear_haze
 from sprite_gen.frames.extract import remove_chroma_background
+from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen.util.resample import resize_cell
 
@@ -52,16 +58,23 @@ DEFAULT_FRINGE_DELTA = 18.0
 DEFAULT_NOISE_MIN = 60
 DEFAULT_DEBRIS_FRACTION = 0.30
 MERGED_SPAN_FACTOR = 1.5
+CHROMA_KEY_HELP = "magenta, green, #RRGGBB, or none for a sheet that is already transparent"
+ALPHA_FLOOR_HELP = ("clear faint alpha haze below this alpha (1..255) before cutting, and write "
+                    "<prefix>alpha-cleanup.json; 0 (default) leaves the alpha as it is")
+ALPHA_EDGE_HELP = "with --alpha-floor: faint pixels this close to a solid pixel are its edge and are kept"
 
 
-def parse_chroma_key(value: str) -> tuple[int, int, int]:
+def parse_chroma_key(value: str) -> tuple[int, int, int] | None:
+    """A key colour, or None for ``none``: the sheet is already transparent and keeps its own alpha."""
     name = value.strip().lower()
+    if name == "none":
+        return None
     if name in CHROMA_KEYS:
         return CHROMA_KEYS[name]
     try:
         return parse_hex(name)
     except ValueError:
-        raise ValueError(f"unsupported chroma key {value!r}; use magenta, green, or #RRGGBB") from None
+        raise ValueError(f"unsupported chroma key {value!r}; use magenta, green, #RRGGBB or none") from None
 
 
 def _components(alpha: bytearray, width: int, height: int) -> list[list[int]]:
@@ -120,7 +133,7 @@ def _relabel_within_cell(part: list[int], width: int) -> list[list[int]]:
 def slice_sheet(
     sheet: Path,
     out_dir: Path,
-    chroma_key: tuple[int, int, int],
+    chroma_key: tuple[int, int, int] | None,
     *,
     grid: tuple[int, int] = (3, 2),
     names: list[str] | None = None,
@@ -135,6 +148,8 @@ def slice_sheet(
     spill_max_fraction: float = 0.005,
     noise_min: int = DEFAULT_NOISE_MIN,
     debris_fraction: float = DEFAULT_DEBRIS_FRACTION,
+    alpha_floor: int = 0,
+    alpha_edge: int = 2,
 ) -> list[Path]:
     cols, rows = grid
     cell_count = cols * rows
@@ -143,15 +158,20 @@ def slice_sheet(
     if target_height > baseline_y:
         raise ValueError("target height must fit above the feet baseline")
 
-    rgba = remove_chroma_background(
-        Image.open(sheet).convert("RGBA"),
-        chroma_key,
-        key_threshold,
-        fringe_key_threshold,
-        fringe_delta,
-        unmix_reach=unmix_reach,
-        spill_max_fraction=spill_max_fraction,
-    )
+    rgba = Image.open(sheet).convert("RGBA")
+    if chroma_key is not None:
+        rgba = remove_chroma_background(
+            rgba,
+            chroma_key,
+            key_threshold,
+            fringe_key_threshold,
+            fringe_delta,
+            unmix_reach=unmix_reach,
+            spill_max_fraction=spill_max_fraction,
+        )
+    cleanup = None
+    if alpha_floor:
+        rgba, cleanup = clear_haze(rgba, floor=alpha_floor, edge=alpha_edge)
     width, height = rgba.size
     pixels = rgba.load()
     cell_w, cell_h = width / cols, height / rows
@@ -212,6 +232,10 @@ def slice_sheet(
         buckets[cell] = kept
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    if cleanup is not None:
+        atomic_write_text(out_dir / f"{prefix}alpha-cleanup.json", json.dumps(cleanup, indent=2) + "\n")
+        print(f"{sheet.name} alpha haze {cleanup['haze_fraction_before']:.2%} -> "
+              f"{cleanup['haze_fraction_after']:.2%} (floor {alpha_floor}, cleared {cleanup['cleared_pixels']} px)")
     written: list[Path] = []
     for cell in range(cell_count):
         comps_in = buckets[cell]
@@ -272,6 +296,8 @@ def run(
     spill_max_fraction: float = 0.005,
     noise_min: int = DEFAULT_NOISE_MIN,
     debris_fraction: float = DEFAULT_DEBRIS_FRACTION,
+    alpha_floor: int = 0,
+    alpha_edge: int = 2,
 ) -> int:
     name_list = [part.strip() for part in names.split(",") if part.strip()] if names else None
     slice_sheet(
@@ -291,6 +317,8 @@ def run(
         spill_max_fraction=spill_max_fraction,
         noise_min=noise_min,
         debris_fraction=debris_fraction,
+        alpha_floor=alpha_floor,
+        alpha_edge=alpha_edge,
     )
     return 0
 
@@ -304,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sheet", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
-    parser.add_argument("--chroma-key", required=True, help="magenta, green, or #RRGGBB")
+    parser.add_argument("--chroma-key", required=True, help=CHROMA_KEY_HELP)
     parser.add_argument("--grid", type=_parse_grid, default=(3, 2), help="COLSxROWS, default 3x2")
     parser.add_argument("--names", help="comma-separated output names, one per cell in reading order")
     parser.add_argument("--prefix", default="")
@@ -319,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spill-max-fraction", type=float, default=0.005)
     parser.add_argument("--noise-min", type=int, default=DEFAULT_NOISE_MIN)
     parser.add_argument("--debris-fraction", type=float, default=DEFAULT_DEBRIS_FRACTION)
+    parser.add_argument("--alpha-floor", type=int, default=0, help=ALPHA_FLOOR_HELP)
+    parser.add_argument("--alpha-edge", type=int, default=2, help=ALPHA_EDGE_HELP)
     args = parser.parse_args(argv)
     return run(**vars(args))
 
