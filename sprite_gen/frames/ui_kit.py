@@ -33,6 +33,7 @@ PADDING_SPAN = 96
 GUIDE_BACKGROUND = (0xF6, 0xF6, 0xF6)
 GUIDE_BOX = (0x2F, 0x80, 0xED)
 STRETCHES = ("xy", "x", "none")
+REPORT_KIND = "sprite-gen-ui-kit"
 
 
 @dataclass(frozen=True)
@@ -306,7 +307,7 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
             "parts": len(parts),
         }
     report = {
-        "kind": "sprite-gen-ui-kit",
+        "kind": REPORT_KIND,
         "version": 1,
         "sheet_size": [width, height],
         "status": "needs-review" if reasons else "pass",
