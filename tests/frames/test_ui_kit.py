@@ -310,3 +310,19 @@ def test_packed_kit_keeps_ornament_fringes_out_of_the_stretched_middle(tmp_path,
         if entry["stretch"] == "xy":
             band = stored[insets["top"]:h - insets["bottom"]]
             assert np.abs(band - np.median(band, axis=0)[None]).max() <= 8, (name, scale, "y")
+
+
+def test_padding_follows_a_smooth_gradient_face_to_its_border():
+    # a button face that darkens smoothly from top to bottom (70 units over its height), inside a sharp
+    # 4 px silver border: the content area is the whole face, not a band around its centre
+    w, h = 160, 64
+    pixels = np.zeros((h, w, 4), dtype=np.uint8)
+    pixels[:, :] = BORDER
+    face = np.linspace(110, 40, h - 8).round().astype(np.uint8)
+    pixels[4:h - 4, 4:w - 4, 0] = 20
+    pixels[4:h - 4, 4:w - 4, 1] = face[:, None] // 2
+    pixels[4:h - 4, 4:w - 4, 2] = face[:, None]
+    pixels[4:h - 4, 4:w - 4, 3] = 255
+    padding, notes = ui_kit.measure_padding(Image.fromarray(pixels))
+    assert padding == {"left": 6, "right": 6, "top": 6, "bottom": 6}
+    assert notes == []

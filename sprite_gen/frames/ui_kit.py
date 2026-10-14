@@ -26,7 +26,10 @@ REFERENCE = 1024
 GAP = 48
 MIN_PART = 16
 MARGIN = 2
-PADDING_TOLERANCE = 32
+# Padding: the interior runs on while each step to the next pixel stays small and the pixel stays near
+# the centre, so a smooth gradient face is interior and a border's sharp edge ends it.
+PADDING_STEP = 16
+PADDING_SPAN = 96
 GUIDE_BACKGROUND = (0xF6, 0xF6, 0xF6)
 GUIDE_BOX = (0x2F, 0x80, 0xED)
 STRETCHES = ("xy", "x", "none")
@@ -150,13 +153,14 @@ def measure_insets(image: Image.Image, stretch: str) -> tuple[dict[str, int], li
 
 
 def _interior_run(line: Any, centre: Any, middle: int) -> tuple[int, int]:
-    close = np.abs(line - centre).max(axis=-1) <= PADDING_TOLERANCE
-    if not close[middle]:
+    near = np.abs(line - centre).max(axis=-1) <= PADDING_SPAN
+    smooth = np.abs(np.diff(line, axis=0)).max(axis=-1) <= PADDING_STEP
+    if not near[middle]:
         return middle, middle + 1
     start, end = middle, middle + 1
-    while start > 0 and close[start - 1]:
+    while start > 0 and near[start - 1] and smooth[start - 1]:
         start -= 1
-    while end < len(close) and close[end]:
+    while end < len(near) and near[end] and smooth[end - 1]:
         end += 1
     return start, end
 
@@ -168,11 +172,14 @@ def measure_padding(image: Image.Image) -> tuple[dict[str, int], list[str]]:
     cy, cx = height // 2, width // 2
     rows, cols = slice(max(0, cy - 2), cy + 3), slice(max(0, cx - 2), cx + 3)
     centre = np.median(pixels[rows, cols].reshape(-1, 4), axis=0)
-    x0, x1 = _interior_run(np.median(pixels[rows], axis=0), centre, cx)
-    y0, y1 = _interior_run(np.median(pixels[:, cols], axis=1), centre, cy)
+    across, down = np.median(pixels[rows], axis=0), np.median(pixels[:, cols], axis=1)
+    x0, x1 = _interior_run(across, centre, cx)
+    y0, y1 = _interior_run(down, centre, cy)
+    interior_values = np.concatenate((across[x0:x1], down[y0:y1]))
+    low, high = interior_values.min(axis=0) - PADDING_STEP, interior_values.max(axis=0) + PADDING_STEP
 
     def interior(x: int, y: int) -> bool:
-        return bool(np.abs(pixels[y, x] - centre).max() <= PADDING_TOLERANCE)
+        return bool(((pixels[y, x] >= low) & (pixels[y, x] <= high)).all())
 
     shrink = 0
     while True:
