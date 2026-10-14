@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from sprite_gen import cli
 from sprite_gen.compose import game_pack
 from sprite_gen.frames import ui_kit
 
@@ -263,6 +264,51 @@ def test_cli_refuses_to_write_into_the_sheets_directory_over_the_sheet(tmp_path)
     image.save(sheet)
     with pytest.raises(SystemExit, match="sheet"):
         ui_kit.main(["--sheet", str(sheet), "--out-dir", str(tmp_path)])
+
+
+# --out-dir, --report (None: the default <out-dir>/ui-kit.json) and the `file` the report gives the
+# panel: the PNG's path from the report's own directory, with "/" separators
+REPORT_PLACES = [
+    ("ui", None, "panel.png"),
+    ("elements", "reports/kit.json", "../elements/panel.png"),
+    ("ui", "ui/reports/kit.json", "../panel.png"),
+    ("reports/elements", "reports/kit.json", "elements/panel.png"),
+]
+
+
+def test_a_report_anywhere_names_the_written_pngs_and_packs_the_same(tmp_path):
+    image, _ = synthetic_sheet()
+    sheet = tmp_path / "uikit.png"
+    image.save(sheet)
+    packs = []
+    for index, (out_dir, report, panel) in enumerate(REPORT_PLACES):
+        root = tmp_path / f"place-{index}"
+        args = ["ui-kit", "--sheet", str(sheet), "--out-dir", str(root / out_dir)]
+        if report is not None:
+            args += ["--report", str(root / report)]
+        assert cli.main(args) == 0
+        report_path = root / (report or f"{out_dir}/ui-kit.json")
+        written = json.loads(report_path.read_text())
+        assert written["elements"]["panel"]["file"] == panel
+        for name, entry in written["elements"].items():
+            assert (report_path.parent / entry["file"]).resolve() == (root / out_dir / f"{name}.png").resolve()
+        request = root / "game.json"
+        request.write_text(json.dumps({"version": 2, "ui": {"kit": report_path.relative_to(root).as_posix()}}))
+        assert cli.main(["game-pack", "--request", str(request), "--out-dir", str(root / "pack")]) == 0
+        packs.append({path.name: path.read_bytes() for path in (root / "pack").iterdir()})
+    assert len(json.loads(packs[0]["game-pack.json"])["ui"]["nine_slice"]) == len(ui_kit.LAYOUT)
+    assert packs == [packs[0]] * len(REPORT_PLACES)
+
+
+def test_a_report_path_that_is_not_json_is_refused_before_anything_is_written(tmp_path):
+    image, _ = synthetic_sheet()
+    sheet = tmp_path / "uikit.png"
+    image.save(sheet)
+    out = tmp_path / "ui"
+    # the report would replace an element PNG of the same name
+    with pytest.raises(SystemExit, match=r"--report must be a \.json path"):
+        ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out), "--report", str(out / "panel.png")])
+    assert not out.exists()
 
 
 def test_guide_draws_every_box_and_the_text_names_every_element(tmp_path):

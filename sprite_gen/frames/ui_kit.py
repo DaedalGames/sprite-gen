@@ -4,7 +4,8 @@
 docs/ui-kit.md is the contract. One table (`LAYOUT`) is the layout: `gen --layout-guide ui-kit`
 draws it (`draw_guide`) and says it (`guide_text`), and the splitter cuts along it. The sheet's
 alpha haze is cleared first (`alpha_floor.clear_haze`), parts are assigned to boxes by centroid,
-and each element's insets and content padding are measured on its own pixels.
+and each element's insets and content padding are measured on its own pixels. The report names each
+element PNG by its path from the report's own directory (`report_file`, `element_path`).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -251,7 +253,8 @@ def _parts(mask: Any) -> list[dict[str, Any]]:
 
 def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
                  alpha_edge: int = 2) -> tuple[dict[str, Image.Image], dict[str, Any]]:
-    """Cut ``image`` along the layout: element images by name, and the report (without the sheet path)."""
+    """Cut ``image`` along the layout: element images by name, and the report as written to its default
+    place, ``<out-dir>/ui-kit.json`` (each ``file`` is ``<element>.png``), without the sheet path."""
     rgba = image.convert("RGBA")
     width, height = rgba.size
     if abs(width - height) > 0.01 * max(width, height):
@@ -320,6 +323,16 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
     return elements, report
 
 
+def report_file(report: Path, png: Path) -> str:
+    """The ``file`` a report at ``report`` gives ``png``: its path from the report's directory, ``/``-separated."""
+    return Path(os.path.relpath(png, Path(report).parent)).as_posix()
+
+
+def element_path(report: Path, file: str) -> Path:
+    """The element PNG that the ``file`` of a report at ``report`` names."""
+    return Path(report).parent / file
+
+
 def _publish(*, sheet: Path, out_dir: Path, alpha_floor: int = 64, alpha_edge: int = 2,
              report: Path | None = None) -> int:
     sheet = Path(sheet).expanduser().resolve()
@@ -329,12 +342,17 @@ def _publish(*, sheet: Path, out_dir: Path, alpha_floor: int = 64, alpha_edge: i
         raise ValueError(f"sheet is not a file: {sheet}")
     if out_dir == sheet.parent or out_dir in sheet.parents or report_path == sheet:
         raise ValueError("the output directory must not hold the sheet; choose a new directory")
+    if report_path.suffix.lower() != ".json":
+        raise ValueError("--report must be a .json path")
     with Image.open(sheet) as image:
         if image.format != "PNG" or getattr(image, "n_frames", 1) != 1:
             raise ValueError("--sheet must be a single-frame PNG")
         elements, measured = split_ui_kit(image, alpha_floor=alpha_floor, alpha_edge=alpha_edge)
     written = {"kind": measured["kind"], "version": measured["version"], "sheet": str(sheet)}
     written.update((key, value) for key, value in measured.items() if key not in written)
+    # wherever --report puts the report, each `file` leads from it to the PNG written in out_dir
+    written["elements"] = {name: {**record, "file": report_file(report_path, out_dir / record["file"])}
+                           for name, record in measured["elements"].items()}
     payloads: dict[Path, bytes | str] = {}
     for name, element in elements.items():
         png = io.BytesIO()
@@ -364,7 +382,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="alpha haze cleanup floor, 1..255 (0 turns the cleanup off)")
     parser.add_argument("--alpha-edge", type=int, default=2,
                         help="faint pixels this close to a solid pixel are its edge and are kept")
-    parser.add_argument("--report", type=Path, help="JSON report (default: <out-dir>/ui-kit.json)")
+    parser.add_argument("--report", type=Path,
+                        help="JSON report (default: <out-dir>/ui-kit.json); its element paths are relative to it")
 
 
 def run(**kwargs: Any) -> int:

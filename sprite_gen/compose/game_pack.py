@@ -21,7 +21,7 @@ from PIL import Image
 
 from sprite_gen.audio.manifest import load as load_sound
 from sprite_gen.audio.playback import player as audio_player
-from sprite_gen.frames.ui_kit import REPORT_KIND as UI_KIT_KIND, STRETCHES, measure_insets
+from sprite_gen.frames.ui_kit import REPORT_KIND as UI_KIT_KIND, STRETCHES, element_path, measure_insets
 from sprite_gen._deps import np
 from sprite_gen.spec.assets import finite, load_asset, load_asset_states
 from sprite_gen.util.resample import resize_cell
@@ -241,7 +241,7 @@ def _ui_kit(path, scale, page_size):
             raise ValueError(f"{key}: stretch {stretch} needs {', '.join(fixed)} insets of 0")
         if not isinstance(record.get("file"), str) or not record["file"]:
             raise ValueError(f"{key}: the report names no file")
-        sequence = _still(path.parent / record["file"], key)
+        sequence = _still(element_path(path, record["file"]), key)
         image = sequence.frames[0]
         if record.get("size") != {"w": image.width, "h": image.height}:
             raise ValueError(f"{key}: the report's size does not match {record['file']}")

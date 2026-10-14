@@ -38,7 +38,7 @@ sprite-gen ui-kit --sheet uikit.png --out-dir ui/
 The command writes `ui/<element>.png` for every element of the layout and `ui/ui-kit.json`. It never changes the sheet and refuses an output directory that holds the sheet. Options:
 
 * `--alpha-floor N` (default `64`, `0` turns it off) and `--alpha-edge N` (default `2`): the [alpha cleanup](#alpha-cleanup) that runs before anything is cut.
-* `--report PATH`: write the JSON report elsewhere (default `<out-dir>/ui-kit.json`).
+* `--report PATH`: write the JSON report elsewhere (default `<out-dir>/ui-kit.json`); it must end in `.json`. Each element's `file` in it then leads from the report's directory to the PNG in `--out-dir`.
 
 1. **Alpha cleanup.** Faint haze between elements would join them, so it is cleared first (below).
 2. **Parts.** Pixels with alpha above zero form 8-connected parts. A part smaller than 16 pixels is dropped and counted.
@@ -111,13 +111,14 @@ Solid pixels and edge pixels are never changed, so a stroke stays whole as long 
 }
 ```
 
-`box` is the layout box scaled to this sheet and `rect` the element's bounding box, both in sheet pixels. `file` is relative to the report. `size`, `insets` and `padding` are in pixels of the element PNG. Elements appear in layout order. `status` is `needs-review` when any `review_reasons` apply; the PNGs are written either way, so the elements can be inspected.
+`box` is the layout box scaled to this sheet and `rect` the element's bounding box, both in sheet pixels. `file` is the element PNG's path from the report's own directory, with `/` separators: `panel.png` when the report is in `--out-dir` (the default), `../elements/panel.png` for `--out-dir elements --report reports/kit.json`. A reader joins it to the report's directory, as [`game-pack`](game-pack.md#version-2-request) does, so a report and its elements move together. `size`, `insets` and `padding` are in pixels of the element PNG. Elements appear in layout order. `status` is `needs-review` when any `review_reasons` apply; the PNGs are written either way, so the elements can be inspected.
 
 Like every measurement here, `pass` means the numbers found nothing to flag. Look at the elements stretched to a few sizes before shipping them.
 
 ## Python API
 
-* `sprite_gen.frames.ui_kit.split_ui_kit(image, *, alpha_floor=64, alpha_edge=2) -> (elements, report)`: the elements as images by name, and the report as written without `sheet`.
+* `sprite_gen.frames.ui_kit.split_ui_kit(image, *, alpha_floor=64, alpha_edge=2) -> (elements, report)`: the elements as images by name, and the report as written to its default place, `<out-dir>/ui-kit.json` (each `file` is `<element>.png`), without `sheet`.
+* `sprite_gen.frames.ui_kit.report_file(report, png) -> str` and `element_path(report, file) -> Path`: the `file` a report at `report` gives an element PNG, and the PNG a report's `file` names.
 * `sprite_gen.frames.ui_kit.measure_insets(image, stretch) -> (insets, notes)` and `measure_padding(image) -> (padding, notes)`: the measures above on one element image, with the review notes they raise.
 * `sprite_gen.frames.ui_kit.boxes(size)`, `draw_guide(path, size)` and `guide_text()`: the layout, the guide image and its prompt paragraph.
 * `sprite_gen.frames.alpha_floor.clear_haze(image, *, floor=64, edge=2) -> (image, report)`.
