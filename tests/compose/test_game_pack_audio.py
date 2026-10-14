@@ -22,6 +22,7 @@ def inputs(tmp_path):
                       'true_peak_dbfs':-2, 'sha256':hashlib.sha256(data).hexdigest()}
     manifest = {'kind':'sprite-gen-sound','version':2,'event':'combat.hit', 'audio_kind':'sfx',
                 'loop':False,'duration_seconds':1,'target_lufs':-18,'files':files,
+                'normalization': {'pcm_lufs':-18, 'pcm_true_peak_dbtp':-2},
                 'playback': {'version':2, 'sample_rate':48000, 'start_frame':0,
                              'end_frame':48000, 'overlap_frames':0}}
     (source/'sound.json').write_text(json.dumps(manifest))
@@ -57,7 +58,8 @@ def test_optional_audio_preserves_image_only_bytes_and_packs_events(tmp_path):
     assert not (tmp_path/'small').exists()
 
 
-@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop', 'old', 'fraction', 'overlap'])
+@pytest.mark.parametrize('defect', ['duplicate', 'traversal', 'digest', 'nonfinite', 'badloop', 'old', 'fraction', 'overlap',
+                                    'prerule', 'quiet'])
 def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     path, request, manifest = inputs(tmp_path)
     request['audio'] = [{'id':'hit','source':'audio/sound.json'}]
@@ -69,6 +71,8 @@ def test_broken_audio_cannot_publish_a_partial_pack(tmp_path, defect):
     if defect == 'old': manifest['version'] = 1
     if defect == 'fraction': manifest['playback']['end_frame'] = 48000.5
     if defect == 'overlap': manifest['playback']['overlap_frames'] = 24000
+    if defect == 'prerule': del manifest['normalization']
+    if defect == 'quiet': manifest['files']['m4a']['lufs'] = -19.5  # under the target, its PCM not peak-limited
     path.write_text(json.dumps(request))
     (tmp_path/'audio'/'sound.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError): pack(path, tmp_path/'bad')
