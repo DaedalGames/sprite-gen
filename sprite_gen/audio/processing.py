@@ -29,10 +29,14 @@ K_WEIGHTING = ('aformat=sample_fmts=dblp,'
                'aformat=sample_fmts=flt')
 
 
-def require_tools():
+def require_programs():
     for name in ('ffmpeg', 'ffprobe'):
         if not shutil.which(name):
             raise ValueError(f'{name} is required on PATH for sound processing')
+
+
+def require_tools():
+    require_programs()
     encoders = _ffmpeg(['-encoders']).stdout.decode(errors='replace')
     for codec in ('libopus', 'aac'):
         if not re.search(r'(?m)^\s*A\S*\s+'+codec+r'\s', encoders):
@@ -124,6 +128,30 @@ def measure(samples, gate=None):
             'true_peak': _true_peak(samples), 'gate': gate}
 
 
+def file_frames(path, frames, loop):
+    """The decoded length of an encoded file, and the frames its loudness is measured over: its
+    playback frames, three times over for a loop."""
+    if frames['sample_rate'] != RATE:
+        raise ValueError(f'sound files are measured at {RATE} Hz frames')
+    if path.suffix == '.m4a':
+        _check_m4a_duration(path, frames['end_frame']-frames['start_frame'])
+    decoded = decode(path)
+    if len(decoded) < frames['end_frame']:
+        raise ValueError(f'{path.suffix[1:]} truncated the audio')
+    interval = decoded[frames['start_frame']:frames['end_frame']]  # AAC may retain a final partial codec frame.
+    return len(decoded), np.tile(interval, (3, 1)) if loop else interval
+
+
+def measure_version_3(samples, target):
+    """Loudness and true peak as processing version 3 measured its files: loudnorm's first pass.
+
+    A version 3 bundle keeps no PCM, so its files have no PCM gate to be measured over, and a
+    block at the relative gate can move this engine's measure across the tolerance where
+    loudnorm's accepted the file (docs/sound.md)."""
+    values = _loudnorm(samples, target)
+    return {'lufs': values['input_i'], 'true_peak': values['input_tp']}
+
+
 def loudness_goal(target, pcm_lufs, pcm_peak):
     """The integrated loudness every encoded file of a sound must reach, within TOLERANCE_LU.
 
@@ -202,13 +230,8 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
         encoded_samples, ceiling = samples, PCM_PEAK_DBTP
         for attempt in range(3):
             _ffmpeg([*_pcm_args(), '-map_metadata', '-1', *codec, str(path)], encoded_samples.astype('<f4').tobytes())
-            if fmt == 'm4a':
-                _check_m4a_duration(path, frames['end_frame']-frames['start_frame'])
-            decoded = decode(path)
-            if len(decoded) < len(samples):
-                raise ValueError(f'{fmt} truncated the audio')
-            interval = decoded[:len(samples)]  # AAC may retain a final partial codec frame.
-            measured = measure(np.tile(interval, (3, 1)) if loop else interval, pcm['gate'])
+            length, played = file_frames(path, frames, loop)
+            measured = measure(played, pcm['gate'])
             lufs, peak = measured['lufs'], measured['true_peak']
             if meets(lufs, peak, goal):
                 break
@@ -219,7 +242,7 @@ def export(source: Path, out_dir: Path, *, target_lufs, loop, crossfade):
             # by the measured overshoot plus headroom, then encode and measure again.
             ceiling -= max(0, peak + 1.5) if peak > FILE_PEAK_DBTP else 0
             encoded_samples = limit_gain(encoded_samples, goal - lufs, ceiling, loop)
-        files[fmt] = {'path': path.name, 'duration_seconds': len(decoded)/RATE,
+        files[fmt] = {'path': path.name, 'duration_seconds': length/RATE,
                       'lufs': lufs, 'true_peak_dbfs': peak, 'encode_passes': attempt + 1,
                       'pcm_peak_limit_dbtp': ceiling,
                       'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}

@@ -112,7 +112,12 @@ def test_a_bundle_is_refused_when_its_files_miss_the_rule(tmp_path, monkeypatch)
     hot['files']['m4a']['true_peak_dbfs'] = -.5
     old = json.loads(path.read_text())
     del old['normalization']
-    for manifest, refusal in ((headroom, 'does not match'), (hot, 'invalid audio true peak'), (old, 'version 4')):
+    relabeled = json.loads(path.read_text())
+    relabeled['recipe']['processing_version'] = 3  # version 3 had no peak-limited goal; its files measure against -18
+    recipe2 = json.loads(path.read_text())
+    recipe2['recipe']['processing_version'] = 2
+    for manifest, refusal in ((headroom, 'does not match'), (hot, 'invalid audio true peak'), (old, 'version 4'),
+                              (relabeled, 'does not match'), (recipe2, 'version 3 or 4')):
         path.write_text(json.dumps(manifest))
         with pytest.raises(ValueError, match=refusal):
             load_sound(path, 50_000_000)
