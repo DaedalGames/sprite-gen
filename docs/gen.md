@@ -486,11 +486,14 @@ for `--aspect-ratio` (square without one) and the report records the cell it use
 still the caller's own.
 
 `--layout-guide ui-kit` attaches the UI kit layout instead: one box per element of a game
-UI kit (panel, button, pressed button, card frame, two bar frames, timer badge), and a
-paragraph naming what to draw in each box, with straight edges between corner ornaments
-and empty centres. [`ui-kit`](ui-kit.md) cuts the sheet along the same boxes. It is square
-only (`--aspect-ratio 1:1`, or none); `extra.layout_guide` is then `{"kind": "ui-kit",
-"width", "height", "boxes"}`.
+UI kit, and a paragraph naming what to draw in each box, with straight edges between
+corner ornaments and empty centres. [`ui-kit`](ui-kit.md) cuts the sheet along the same
+boxes. The ratio chooses the layout: `--aspect-ratio 1:1` (or none) draws the square
+layout's seven frames (panel, button, pressed button, card frame, two bar frames, timer
+badge); `--aspect-ratio 2:3` draws the whole kit, those seven at the same places and, below
+them, the two bar fills, an item slot, a counter plate, a lit and an unlit dot and a
+joystick base and knob. Any other ratio is refused. `extra.layout_guide` is then
+`{"kind": "ui-kit", "width", "height", "boxes"}`.
 
 The guide is an attached image, so it changes the call: openai sends it to
 `/images/edits` and bills it as image input, grok sends it as a reference, and

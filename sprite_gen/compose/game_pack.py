@@ -21,7 +21,8 @@ from PIL import Image
 
 from sprite_gen.audio.manifest import load as load_sound
 from sprite_gen.audio.playback import player as audio_player
-from sprite_gen.frames.ui_kit import REPORT_KIND as UI_KIT_KIND, STRETCHES, element_path, measure_insets
+from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, STRETCHES, content_rect, element_path,
+                                     measure_insets)
 from sprite_gen._deps import np
 from sprite_gen.spec.assets import finite, load_asset, load_asset_states
 from sprite_gen.util.resample import resize_cell
@@ -221,6 +222,43 @@ def _sides(record, field, key):
     return sides
 
 
+def _ends_kept(cell, insets, width):
+    """``cell`` as a three-slice drawn ``width`` wide: its two end slices as they are, its middle columns
+    repeated or dropped (nearest), never blended."""
+    if cell.width == width:
+        return cell
+    left, right = insets["left"], insets["right"]
+    stored = Image.new("RGBA", (width, cell.height), (0, 0, 0, 0))
+    stored.paste(cell.crop((0, 0, left, cell.height)), (0, 0))
+    middle = cell.crop((left, 0, cell.width - right, cell.height))
+    stored.paste(middle.resize((width - left - right, cell.height), Image.Resampling.NEAREST), (left, 0))
+    stored.paste(cell.crop((cell.width - right, 0, cell.width, cell.height)), (width - right, 0))
+    return stored
+
+
+def _fill(name, record, image, frame, page_size):
+    """A fill stored at its frame's content rectangle (docs/game-pack.md "Version 2 manifest"): resized by the
+    one factor that makes it as tall as the rectangle, then drawn as wide as it with its ends kept."""
+    key = f"ui/{_name(name)}"
+    rect = content_rect(frame)
+    factor = rect["h"] / image.height
+    cell = resize_cell(image, (max(1, round(image.width * factor)), rect["h"]))
+    insets = {side: _scaled_up(record["insets"][side], factor) for side in SIDES}
+    measured, _notes = measure_insets(cell, "x")
+    insets = {side: max(insets[side], measured[side]) for side in SIDES}
+    if insets["left"] + insets["right"] >= min(cell.width, rect["w"]):
+        raise ValueError(f"{key}: scaled to the height of {record['inside']['element']}'s content area, its fixed "
+                         "ends are wider than that area")
+    padding = {side: _scaled_up(record["padding"][side], factor) for side in SIDES}
+    if padding["left"] + padding["right"] >= rect["w"] or padding["top"] + padding["bottom"] >= rect["h"]:
+        raise ValueError(f"{key}: in its frame's content area the padding leaves no content area")
+    size = (rect["w"], rect["h"])
+    _fits(key, size, page_size)
+    entry = {"frame": key, "size": {"w": size[0], "h": size[1]}, "stretch": "x", "insets": insets,
+             "padding": padding, "inside": {"element": record["inside"]["element"], "rect": rect}}
+    return entry, (key, _ends_kept(cell, insets, size[0]), (size[0] / 2, size[1] / 2))
+
+
 def _ui_kit(path, scale, page_size):
     """Nine-slice entries and atlas frames from a `ui-kit` report (docs/ui-kit.md "Report")."""
     report = json.loads(path.read_text(encoding="utf-8"))
@@ -229,7 +267,7 @@ def _ui_kit(path, scale, page_size):
     elements = report.get("elements")
     if not isinstance(elements, dict) or not elements:
         raise ValueError("ui-kit report lists no elements")
-    entries, frames, sources = {}, [], {path}
+    entries, frames, sources, fills = {}, [], {path}, []
     for name, record in elements.items():
         key = f"ui/{_name(name)}"
         if not isinstance(record, dict) or record.get("stretch") not in STRETCHES:
@@ -245,6 +283,16 @@ def _ui_kit(path, scale, page_size):
         image = sequence.frames[0]
         if record.get("size") != {"w": image.width, "h": image.height}:
             raise ValueError(f"{key}: the report's size does not match {record['file']}")
+        sources.update(sequence.source_files)
+        if "inside" in record:
+            # a fill takes its size from its frame's stored content area, so it is packed after every frame
+            inside = record["inside"]
+            if not isinstance(inside, dict) or not isinstance(inside.get("element"), str):
+                raise ValueError(f"{key}: inside must name the element the fill goes in")
+            if stretch != "x":
+                raise ValueError(f"{key}: a fill stretches in width only (stretch x), not {stretch}")
+            fills.append((name, record, image))
+            continue
         size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
         _fits(key, size, page_size)
         cell = image if size == image.size else resize_cell(image, size)
@@ -263,7 +311,13 @@ def _ui_kit(path, scale, page_size):
         frames.append((key, cell, (size[0] / 2, size[1] / 2)))
         entries[name] = {"frame": key, "size": {"w": size[0], "h": size[1]}, "stretch": stretch,
                          "insets": insets, "padding": padding}
-        sources.update(sequence.source_files)
+    frame_names = set(entries)
+    for name, record, image in fills:
+        target = record["inside"]["element"]
+        if target not in frame_names:
+            raise ValueError(f"ui/{_name(name)}: inside names {target}, which is not a frame of this report")
+        entries[name], frame = _fill(name, record, image, entries[target], page_size)
+        frames.append(frame)
     return entries, frames, sources
 
 

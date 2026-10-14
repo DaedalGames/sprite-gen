@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -270,6 +271,98 @@ def test_a_ui_kit_report_must_be_a_ui_kit_report(tmp_path):
     report["kind"] = "sprite-gen-game-pack"
     write_json(tmp_path / "ui" / "ui-kit.json", report)
     with pytest.raises(ValueError, match="ui-kit"):
+        game_pack.pack(request, tmp_path / "out")
+
+
+def fill_strip(path, size, cap):
+    """A bar fill: a green strip with a lighter end cap at each end."""
+    image = Image.new("RGBA", size, (40, 180, 90, 255))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, cap - 1, size[1] - 1), fill=(200, 250, 210, 255))
+    draw.rectangle((size[0] - cap, 0, size[0] - 1, size[1] - 1), fill=(200, 250, 210, 255))
+    image.save(path)
+    return image
+
+
+def fill_kit(tmp_path, *, scale=1, inside="hp_bar_frame", stretch="x", cap=3, size=(40, 8)):
+    """A report with a bar frame (content area 32 x 6 at scale 1) and a fill drawn inside it."""
+    ui_kit_report(tmp_path / "ui")
+    report = json.loads((tmp_path / "ui" / "ui-kit.json").read_text())
+    fill_strip(tmp_path / "ui" / "hp_bar_fill.png", size, cap)
+    record = {"file": "hp_bar_fill.png", "box": {"x": 0, "y": 0, "w": 64, "h": 16},
+              "rect": {"x": 1, "y": 1, "w": size[0], "h": size[1]}, "size": {"w": size[0], "h": size[1]},
+              "stretch": stretch, "insets": {"left": cap + 2, "right": cap + 2, "top": 0, "bottom": 0},
+              "padding": {"left": 0, "right": 0, "top": 0, "bottom": 0}, "parts": 1}
+    if inside is not None:
+        record["inside"] = {"element": inside, "rect": {"x": 10, "y": 3, "w": 32, "h": 6}, "scale": 0.75}
+    report["elements"]["hp_bar_fill"] = record
+    write_json(tmp_path / "ui" / "ui-kit.json", report)
+    return write_json(tmp_path / "game.json", {"version": 2, "ui": {"kit": "ui/ui-kit.json", "scale": scale}})
+
+
+@pytest.mark.parametrize("scale", [1, 0.5, 2])
+def test_a_fill_is_stored_at_its_frames_content_area(tmp_path, scale):
+    out = tmp_path / "out"
+    result = game_pack.pack(fill_kit(tmp_path, scale=scale), out)
+    nine = result["ui"]["nine_slice"]
+    frame, fill = nine["hp_bar_frame"], nine["hp_bar_fill"]
+    # the frame is packed as before; the fill's content rectangle is the frame's, in the frame's stored pixels
+    assert set(frame) == {"frame", "size", "stretch", "insets", "padding"}
+    pad = frame["padding"]
+    rect = {"x": pad["left"], "y": pad["top"], "w": frame["size"]["w"] - pad["left"] - pad["right"],
+            "h": frame["size"]["h"] - pad["top"] - pad["bottom"]}
+    assert set(fill) == {"frame", "size", "stretch", "insets", "padding", "inside"}
+    assert fill["frame"] == "ui/hp_bar_fill" and fill["stretch"] == "x"
+    assert fill["inside"] == {"element": "hp_bar_frame", "rect": rect}
+    assert fill["size"] == {"w": rect["w"], "h": rect["h"]}
+    assert fill["padding"] == {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    # its ends are the fill's own, resized by the one factor that makes it as tall as the content area
+    factor = rect["h"] / 8
+    resized = resize_cell(Image.open(tmp_path / "ui" / "hp_bar_fill.png").convert("RGBA"),
+                          (round(40 * factor), rect["h"]))
+    measured, _ = measure_insets(resized, "x")
+    insets = {side: max(math.ceil(value * factor), measured[side])
+              for side, value in {"left": 5, "right": 5, "top": 0, "bottom": 0}.items()}
+    assert fill["insets"] == insets
+    image, record = crop(out, result, "ui/hp_bar_fill")
+    assert image.size == (rect["w"], rect["h"]) and record["pivot"] == {"x": 0.5, "y": 0.5}
+    left, right = insets["left"], insets["right"]
+    stored, source = np.asarray(image), np.asarray(resized)
+    assert np.array_equal(stored[:, :left], source[:, :left])
+    assert np.array_equal(stored[:, rect["w"] - right:], source[:, resized.width - right:])
+    # the middle is the fill's own middle columns, repeated or dropped, never blended
+    middle = {tuple(map(tuple, source[:, x])) for x in range(left, resized.width - right)}
+    assert all(tuple(map(tuple, stored[:, x])) in middle for x in range(left, rect["w"] - right))
+
+
+def test_a_report_without_fills_packs_as_before(tmp_path):
+    ui_kit_report(tmp_path / "ui")
+    request = write_json(tmp_path / "game.json", {"version": 2, "ui": {"kit": "ui/ui-kit.json", "scale": 0.5}})
+    result = game_pack.pack(request, tmp_path / "out")
+    assert all(set(entry) == {"frame", "size", "stretch", "insets", "padding"}
+               for entry in result["ui"]["nine_slice"].values())
+
+
+@pytest.mark.parametrize("change,message", [
+    ({"inside": "mana_bar_frame"}, "hp_bar_fill: inside names mana_bar_frame, which is not a frame of this report"),
+    ({"inside": "hp_bar_fill"}, "hp_bar_fill: inside names hp_bar_fill, which is not a frame of this report"),
+    ({"stretch": "xy"}, "hp_bar_fill: a fill stretches in width only"),
+    # 4 px tall: scaled 1.5x to the 6 px content area, its 11 px ends are 17 px each, 34 of the 32 px it has
+    ({"cap": 9, "size": (40, 4)}, "hp_bar_fill: scaled to the height of hp_bar_frame's content area, its fixed ends"),
+])
+def test_bad_fills_are_refused(tmp_path, change, message):
+    request = fill_kit(tmp_path, **change)
+    with pytest.raises(ValueError, match=message):
+        game_pack.pack(request, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_fill_must_name_its_frame(tmp_path):
+    request = fill_kit(tmp_path)
+    report = json.loads((tmp_path / "ui" / "ui-kit.json").read_text())
+    report["elements"]["hp_bar_fill"]["inside"] = {"rect": {"x": 10, "y": 3, "w": 32, "h": 6}}
+    write_json(tmp_path / "ui" / "ui-kit.json", report)
+    with pytest.raises(ValueError, match="hp_bar_fill: inside must name the element"):
         game_pack.pack(request, tmp_path / "out")
 
 
