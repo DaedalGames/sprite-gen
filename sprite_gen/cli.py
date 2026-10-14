@@ -194,6 +194,8 @@ def _add_slice_sheet(p: argparse.ArgumentParser) -> None:
     p.add_argument("--debris-fraction", type=float, default=slice_sheet.DEFAULT_DEBRIS_FRACTION)
     p.add_argument("--alpha-floor", type=int, default=0, help=slice_sheet.ALPHA_FLOOR_HELP)
     p.add_argument("--alpha-edge", type=int, default=2, help=slice_sheet.ALPHA_EDGE_HELP)
+    p.add_argument("--scale", choices=slice_sheet.SCALES, default="cell", help=slice_sheet.SCALE_HELP)
+    p.add_argument("--fit", choices=slice_sheet.FITS, default="none", help=slice_sheet.FIT_HELP)
 
 
 def _add_inspect(p: argparse.ArgumentParser) -> None:
