@@ -42,6 +42,8 @@ MODULE_DOMAIN = {
     'cutout': 'frames',
     'segment': 'frames',
     'slice_sheet': 'frames',
+    'ui_kit': 'frames',
+    'alpha_floor': 'frames',
     'check_visible_magenta': 'frames',
     'unpack_atlas': 'frames',
     'curation': 'curate',
@@ -105,8 +107,8 @@ PIPELINES: list[dict[str, object]] = [
 ]
 
 TOOL_GROUPS: list[dict[str, object]] = [
-    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "unpack-atlas"],
-     "chain": "cutout · slice-sheet · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
+    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "ui-kit", "unpack-atlas"],
+     "chain": "cutout · slice-sheet · ui-kit · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
     {"key": "D", "name": "post-processing", "verbs": ["recolor", "recolor-palette", "compose-layers", "export-pngs", "export-aseprite"],
      "chain": "recolor · compose-layers · export-pngs · export-aseprite", "doc": "docs/recolor.md"},
     {"key": "E", "name": "asset tools", "verbs": ["background-tile", "shadow", "inspect-motion"],

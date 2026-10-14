@@ -13,6 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from sprite_gen.compose import game_pack
+from sprite_gen.frames.ui_kit import measure_insets
 from sprite_gen.util.resample import resize_cell
 
 
@@ -181,13 +182,16 @@ def test_ui_nine_slice_insets_and_padding_are_in_stored_frame_pixels(tmp_path):
         stored = (round(size[0] * 0.5), round(size[1] * 0.5))
         assert entry["size"] == {"w": stored[0], "h": stored[1]}
         assert entry["stretch"] == stretch
-        # scaled and rounded up: an ornament inside an inset stays inside it, content only shrinks
-        assert entry["insets"] == {side: math.ceil(value * 0.5) for side, value in insets.items()}
-        assert entry["padding"] == {side: math.ceil(value * 0.5) for side, value in padding.items()}
-        assert set(entry["insets"]) == set(entry["padding"]) == {"left", "right", "top", "bottom"}
         image, record = crop(out, result, entry["frame"])
         with Image.open(tmp_path / "ui" / f"{name}.png") as source:
             assert image.tobytes() == resize_cell(source.convert("RGBA"), stored).tobytes()
+        # scaled and rounded up, or what the ui-kit measure finds on the stored pixels if that is larger:
+        # an ornament and its resampled fringe stay inside the fixed slices; content only shrinks
+        measured, _ = measure_insets(image, stretch)
+        assert entry["insets"] == {side: max(math.ceil(value * 0.5), measured[side]) for side, value in insets.items()}
+        assert all(entry["insets"][side] >= math.ceil(value * 0.5) for side, value in insets.items())
+        assert entry["padding"] == {side: math.ceil(value * 0.5) for side, value in padding.items()}
+        assert set(entry["insets"]) == set(entry["padding"]) == {"left", "right", "top", "bottom"}
         assert record["pivot"] == {"x": 0.5, "y": 0.5}
     assert nine["hp_bar_frame"]["insets"]["top"] == nine["hp_bar_frame"]["insets"]["bottom"] == 0
     assert set(nine["timer_badge"]["insets"].values()) == {0}
@@ -226,7 +230,7 @@ def test_version_2_output_is_deterministic(tmp_path):
 
 @pytest.mark.parametrize("change,message", [
     ({"version": 1}, "version 2"),
-    ({"version": 3}, "version"),
+    ({"version": 3}, "version must be 1 or 2"),
     ({"images": [{"id": "pillar", "source": "pillar.png", "display": {"body_height": 30}}]}, "width or height"),
     ({"images": [{"id": "a", "source": "pillar.png", "display": {"height": 9}},
                  {"id": "a", "source": "stone.png", "display": {"height": 9}}]}, "duplicate"),
@@ -235,7 +239,7 @@ def test_version_2_output_is_deterministic(tmp_path):
                   "footprint": {"x": 0, "y": 0, "w": 0, "h": 4}}]}, "footprint"),
     ({"tiles": [{"id": "ground", "source": "ground.png", "display": {"width": 12, "height": 8}}]}, "width or height"),
     ({"ui": {"kit": "ui/ui-kit.json", "scale": 0}}, "scale"),
-    ({"ui": {"kit": "ui/ui-kit.json", "scale": 0.5, "extra": 1}}, "ui"),
+    ({"ui": {"kit": "ui/ui-kit.json", "scale": 0.5, "extra": 1}}, "unknown ui key"),
     ({"ui": {"kit": "ui/ui-kit.json", "scale": 0.05}}, "inset"),
 ])
 def test_bad_version_2_requests_are_refused(tmp_path, change, message):

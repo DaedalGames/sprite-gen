@@ -54,9 +54,9 @@ Insets are measured only along the axes the layout lets the element stretch; the
 2. The reference band is the middle fifth of the columns (from 40 % to 60 % of the width). The reference column is the per-row median over that band.
 3. A pixel deviates when its largest channel difference from the reference column, in its row, exceeds twice the largest difference found in the reference band in that row, plus 8.
 4. A column with no deviating pixel is plain. The stretch band is the run of plain columns that contains the reference band.
-5. `left` is the band's first column plus a 2 px margin, and `right` is the distance from the band's end to the right edge plus 2 px; a side with no deviating column at all gets `0`.
+5. `left` is the band's first column plus a 2 px margin, and `right` is the distance from the band's end to the right edge plus 2 px; a side with no deviating column at all gets `0`. An inset never reaches into the reference band.
 
-So every column with an ornament, a cap or a border line lies inside a fixed slice, and the stretched middle holds only columns that look like the middle of the element. When an ornament reaches the reference band itself, the band cannot grow on that side and the report says so (`needs-review`). A frame with an ornament in the middle of an edge cannot be nine-sliced; regenerate it.
+So every column with an ornament, a cap, a border line or their anti-aliased edge lies inside a fixed slice, and the stretched middle holds only columns that look like the middle of the element. Two cases make the report `needs-review`, naming the element and the axis: an ornament that reaches the reference band (the band could not grow on that side), and a reference band that is not uniform itself, so an ornament probably sits in the middle of an edge (in some row its largest difference exceeds both 64 and four times the median over the rows). A frame with an ornament in the middle of an edge cannot be nine-sliced; regenerate it.
 
 ## Padding
 
@@ -68,7 +68,7 @@ Transparent sheets from image models often carry a faint alpha haze: barely visi
 
 * A pixel at or above the floor (`--alpha-floor`) is solid. A pixel above zero and below the floor is faint.
 * A faint pixel within `--alpha-edge` pixels (8-connected, so diagonals count) of a solid pixel is part of an object's anti-aliased edge and is kept unchanged.
-* Every other faint pixel is haze and becomes fully transparent (`0, 0, 0, 0`).
+* Every other faint pixel is haze and becomes fully transparent (`0, 0, 0, 0`). A pixel that was already fully transparent is left as it was.
 
 Solid pixels and edge pixels are never changed, so a stroke stays whole as long as some of its pixels reach the floor. A stroke drawn entirely below the floor is indistinguishable from haze and is removed: lower the floor for very faint art. The report measures instead of asserting: it counts what actually changed.
 
@@ -117,6 +117,7 @@ Like every measurement here, `pass` means the numbers found nothing to flag. Loo
 
 ## Python API
 
-* `sprite_gen.frames.ui_kit.split_ui_kit(image, *, alpha_floor=64, alpha_edge=2) -> (elements, report)`: the elements as images by name, and the report without file names.
-* `sprite_gen.frames.ui_kit.measure_insets(image, stretch) -> dict` and `measure_padding(image) -> dict`.
+* `sprite_gen.frames.ui_kit.split_ui_kit(image, *, alpha_floor=64, alpha_edge=2) -> (elements, report)`: the elements as images by name, and the report as written without `sheet`.
+* `sprite_gen.frames.ui_kit.measure_insets(image, stretch) -> (insets, notes)` and `measure_padding(image) -> (padding, notes)`: the measures above on one element image, with the review notes they raise.
+* `sprite_gen.frames.ui_kit.boxes(size)`, `draw_guide(path, size)` and `guide_text()`: the layout, the guide image and its prompt paragraph.
 * `sprite_gen.frames.alpha_floor.clear_haze(image, *, floor=64, edge=2) -> (image, report)`.
