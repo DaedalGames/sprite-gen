@@ -339,7 +339,7 @@ def inspect_tile_xy(image: Image.Image) -> dict[str, Any]:
     axes = {axis: inspect_tile(image, axis) for axis in ("x", "y")}
     reasons = [f"{axis}: {reason}" for axis in ("x", "y") for reason in axes[axis]["review_reasons"]]
     return {
-        "schema_version": 1, "axis": "xy", "size": list(image.size), "period": image.size[0],
+        "schema_version": 1, "axis": "xy", "size": list(image.size),
         "status": "needs-review" if reasons else "pass",
         "requires_visual_review": True, "assessment": _ASSESSMENT,
         "review_reasons": reasons, "axes": axes,
