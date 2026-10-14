@@ -13,6 +13,8 @@ import tempfile
 
 from PIL import Image
 
+from sprite_gen.audio.manifest import load as load_sound
+from sprite_gen.audio.playback import player as audio_player
 from sprite_gen.spec.assets import finite, load_asset_states
 from sprite_gen.util.resample import resize_cell
 
@@ -214,9 +216,39 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
     request, out_dir = Path(request).expanduser().resolve(), Path(out_dir).expanduser().resolve()
     document = json.loads(request.read_text(encoding="utf-8"))
     animations, frames, sources = _prepare(document, request.parent, page_size)
+    audio_entries = document.get("audio", [])
+    if not isinstance(audio_entries, list):
+        raise ValueError("audio must be a list")
+    audio, audio_payloads = {}, {}
+    for entry in audio_entries:
+        if not isinstance(entry, dict):
+            raise ValueError("each audio entry must be an object")
+        asset_id = _name(entry.get("id"))
+        if asset_id in audio:
+            raise ValueError(f"duplicate audio id: {asset_id}")
+        if not isinstance(entry.get("source"), str) or not entry["source"]:
+            raise ValueError("each audio entry requires a source path")
+        remaining = max_bytes - sum(map(len, audio_payloads.values()))
+        record, files, paths = load_sound(request.parent / entry["source"], remaining)
+        for fmt, data in files.items():
+            name = f"audio-{asset_id}.{fmt}"
+            record["files"][fmt]["path"] = name
+            audio_payloads[name] = data
+        audio[asset_id] = record
+        sources.update(paths)
     if any(path == out_dir or out_dir in path.parents for path in sources | {request}):
         raise ValueError("output directory must not contain any source file")
     result, payloads = _encode(_layout(frames, page_size), animations, max_bytes)
+    if audio:
+        helper, module = audio_player()
+        audio_payloads[helper["path"]] = module
+        for record in audio.values():
+            record["player"] = helper
+        result["audio"] = dict(sorted(audio.items()))
+        payloads.update(audio_payloads)
+        payloads["game-pack.json"] = (json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
+        if sum(map(len, payloads.values())) > max_bytes:
+            raise ValueError(f"game pack exceeds {max_bytes} bytes (including audio)")
     _publish(out_dir, payloads)
     return result
 

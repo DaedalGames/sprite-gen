@@ -6,6 +6,7 @@ the reorg tooling. Keep in sync with the physical folder layout.
 """
 
 MODULE_DOMAIN = {
+    'sound': 'audio',
     'guide': 'workflow',
     'preferences': 'workflow',
     'runio': 'spec',
@@ -76,6 +77,7 @@ MODULE_DOMAIN = {
 DOMAINS: list[tuple[str, str]] = [
     ("workflow", "Start here — image or sprite choices, access checks, saved defaults"),
     ("gen", "Generation — prepare a run, generate stills / rows / clips"),
+    ("audio", "Audio — named effects, music, loop processing and browser exports"),
     ("video", "Video → loop — canvas, keyed frames, seamless cycle, batch"),
     ("frames", "Frames — chroma/white removal, row extraction, sheet slicing, atlas unpacking"),
     ("curate", "Curation — direction anchors and the curation sidecar"),
