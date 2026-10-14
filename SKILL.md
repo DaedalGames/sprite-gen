@@ -119,6 +119,10 @@ hold the arms still, and check the loop with `handed-check --state walk`.
 | Idle breathing | curation choice, baked by compose | [breathing](docs/breathing.md) |
 | Engine exports | `export-aseprite`, `export-pngs` | [engine-export](docs/engine-export.md) |
 | Background recipe or repeating tile | existing `gen` / `cutout`, then optional `background-tile` | [asset-tools](docs/asset-tools.md#background-recipe) |
+| Ground tile that repeats both ways | `gen` (opaque), then `background-tile --axis xy` | [asset-tools](docs/asset-tools.md#both-axes-a-ground-tile) |
+| Game UI kit: panel, buttons, card, HP/XP bar frames, timer badge as nine-slice elements | `gen --transparent --aspect-ratio 1:1 --layout-guide ui-kit`, then `ui-kit` | [ui-kit](docs/ui-kit.md) |
+| Props or icons on a transparent sheet | `slice-sheet --chroma-key none --alpha-floor 64` | [sheet-slicing](docs/sheet-slicing.md#transparent-sheets) |
+| Painted props, a ground tile and a UI kit in a game pack | `game-pack` request version 2 (`images`, `tiles`, `ui`) | [game-pack](docs/game-pack.md#version-2-images-tiles-and-ui) |
 | Standalone projected shadow | `shadow` | [asset-tools](docs/asset-tools.md#projected-shadows) |
 | Duplicate poses, foot contact and stride measurement | `inspect-motion` | [asset-tools](docs/asset-tools.md#motion-and-contact-evidence) |
 | Optional scene placement, lighting, camera and render | `scene-render`, `scene-inspect` | [scene](docs/scene.md) |
