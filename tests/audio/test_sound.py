@@ -66,7 +66,7 @@ HITS = {
     # A few milliseconds of energy: at the -2 dBTP limiter ceiling it cannot reach -18 LUFS.
     'click': dict(seconds=.5, body_hz=900, body_tau=.003, sweep=0, knock_hz=2500, knock_tau=.002,
                   knock_gain=.5, noise_tau=.002, noise_gain=1, smooth=1, stereo=0, seed=7),
-    # loudnorm's dynamic analysis of this short hit reports no output loudness.
+    # FFmpeg 5.1's loudnorm first pass measures its output for this hit at -inf LUFS (7.1's does not).
     'unanalysable': dict(seconds=.6, body_hz=55.03, body_tau=.09572, sweep=2.822, knock_hz=692.4, knock_tau=.01984,
                          knock_gain=.2113, noise_tau=.01464, noise_gain=.8967, smooth=1, stereo=.3, seed=212970),
 }
@@ -87,12 +87,19 @@ def test_short_hits_pass_the_one_loudness_rule(tmp_path, monkeypatch, name):
         assert level['pcm_true_peak_dbtp'] >= -2.2 and goal == level['pcm_lufs'] < -19
     else:
         assert goal == -18
-    if name == 'unanalysable':
-        assert level['method'] == 'limiter'
     for file in result['files'].values():
         assert processing.meets(file['lufs'], file['true_peak_dbfs'], goal)
         assert file['true_peak_dbfs'] <= -1
     load_sound(tmp_path/'out'/'sound.json', 50_000_000)
+
+
+def test_a_clip_loudnorm_cannot_analyse_is_normalized_by_the_limiter(tmp_path, monkeypatch):
+    analyse = processing._loudnorm
+    monkeypatch.setattr(processing, '_loudnorm', lambda *a: {**analyse(*a), 'target_offset': float('inf')})
+    source = tmp_path/'source.wav'
+    source.write_bytes(hit(**HITS['unanalysable']))
+    _, level, _ = processing.normalize(processing.decode(source), -18, False)
+    assert level['method'] == 'limiter' and abs(level['pcm_lufs'] + 18) <= .2
 
 
 def test_a_bundle_is_refused_when_its_files_miss_the_rule(tmp_path, monkeypatch):
