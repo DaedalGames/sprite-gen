@@ -149,12 +149,12 @@ def guide_text(size: tuple[int, int] = (REFERENCE, REFERENCE)) -> str:
         f"at the top: {_places(frames)}. In the band below it: {_places(band)}. Every frame, button, bar, fill, "
         "slot and plate has straight, even edges between its corners, so it can be stretched along them: put "
         "ornaments only in the corners, and on the bars and the fills only at their two ends. Each fill is one "
-        "solid strip, the same colour all along its length (it may shade from its top edge to its bottom edge), "
-        "with no marks, segments or highlights along it. Leave the centre of every frame, button, bar frame, slot "
-        "and plate empty: no text, no letters, no numbers, no icons and no fill inside the bar frames. The two "
-        "dots, the joystick base and the knob are round and seen straight from the front; the two dots are the "
-        "same size. Do not reproduce the layout guide itself: no boxes, guide lines, guide colors or the guide's "
-        "grey background may appear in the output."
+        "solid strip with no frame of its own, the same colour all along its length (it may shade from its top "
+        "edge to its bottom edge), with no marks, segments or highlights along it. Leave the centre of every "
+        "frame, button, bar frame, slot and plate empty: no text, no letters, no numbers, no icons and no fill "
+        "inside the bar frames. The two dots, the joystick base and the knob are round and seen straight from "
+        "the front; the two dots are the same size. Do not reproduce the layout guide itself: no boxes, guide "
+        "lines, guide colors or the guide's grey background may appear in the output."
     )
 
 
