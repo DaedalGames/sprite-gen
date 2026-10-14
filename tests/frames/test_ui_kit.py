@@ -406,8 +406,8 @@ def test_tall_guide_draws_the_square_boxes_and_the_band_and_names_every_element(
         for name, (x, y, w, h) in ui_kit.boxes((683, 1024)).items():
             assert on_guide_line(guide, (x + w // 2, y), (0, 1)) and on_guide_line(guide, (x, y + h // 2), (1, 0))
             assert guide.getpixel((x + w // 2, y + h // 2)) == ui_kit.GUIDE_BACKGROUND
-            # a round part's place is a circle, so the corners of its box are the guide's grey
-            assert (guide.getpixel((x + 2, y + 2)) == ui_kit.GUIDE_BACKGROUND) == (name in ROUND), name
+            # a round part's place is a circle, so the corner of its box is the guide's grey, not its outline
+            assert (guide.getpixel((x, y)) == ui_kit.GUIDE_BACKGROUND) == (name in ROUND), name
     assert cell == {"kind": "ui-kit", "width": 683, "height": 1024,
                     "boxes": {name: dict(zip("xywh", box)) for name, box in ui_kit.boxes((683, 1024)).items()}}
     assert list(cell["boxes"]) == FRAMES + BAND
