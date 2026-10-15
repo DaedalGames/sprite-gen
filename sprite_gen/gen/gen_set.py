@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from sprite_gen import gen as gen_mod
 from sprite_gen.curate import anchor as anchor_mod
+from sprite_gen.gen.base import run_logged
 from sprite_gen.spec import layout
 from sprite_gen.spec.runio import atomic_write_text
 
@@ -100,9 +101,13 @@ def read_report(report: Path) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
-def run_gen_cli(prompt_file: Path, out: Path, refs: list[Path], report: Path, *, provider: str | None, model: str | None, log: Path) -> int:
-    import subprocess
+def _auth_source(report: dict[str, Any]) -> str | None:
+    """What a row's gen call ran on, as its report says (`extra.auth_source`)."""
+    extra = report.get("extra") if isinstance(report.get("extra"), dict) else {}
+    return extra.get("auth_source")
 
+
+def run_gen_cli(prompt_file: Path, out: Path, refs: list[Path], report: Path, *, provider: str | None, model: str | None, log: Path) -> int:
     cmd = [sys.executable, "-m", "sprite_gen.cli", "gen", "--prompt-file", str(prompt_file), "--out", str(out), "--report", str(report)]
     for ref in refs:
         cmd += ["--ref", str(ref)]
@@ -110,8 +115,7 @@ def run_gen_cli(prompt_file: Path, out: Path, refs: list[Path], report: Path, *,
         cmd += ["--provider", provider]
     if model:
         cmd += ["--model", model]
-    with log.open("w", encoding="utf-8") as fh:
-        return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True).returncode
+    return run_logged(cmd, log)
 
 
 def run_item(
@@ -146,6 +150,7 @@ def run_item(
                 result["reused"] = True
                 result["provider"] = prior.get("provider")
                 result["provider_resolved_from"] = prior.get("provider_resolved_from")
+                result["auth_source"] = _auth_source(prior)
                 result["ok"] = True
                 return result
             result["regenerated_because"] = why or bad_image  # the files exist but do not prove a finished row — generate again, say why
@@ -170,6 +175,7 @@ def run_item(
             raise SystemExit(f"gen exited 0 but its {why or bad_image}; the row and the report were removed so the next run regenerates")
         result["provider"] = gen_report.get("provider")
         result["provider_resolved_from"] = gen_report.get("provider_resolved_from")
+        result["auth_source"] = _auth_source(gen_report)
         if gen_report.get("provider_fallback"):
             result["provider_fallback"] = gen_report["provider_fallback"]
         result["elapsed_seconds"] = round(time.monotonic() - started, 1)

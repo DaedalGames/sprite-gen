@@ -44,3 +44,10 @@ def test_readme_names_declared_python_support_and_venv_requirement() -> None:
 
     assert f"CPython {minimum}+" in readme
     assert "`venv`/`ensurepip`" in readme
+
+
+def test_the_test_timeout_leaves_its_method_to_the_platform(pytestconfig) -> None:
+    """`timeout_method = "signal"` stopped pytest on Windows, which has no SIGALRM, before its first
+    test. Left unset, pytest-timeout takes signal where SIGALRM exists and thread elsewhere."""
+    assert pytestconfig.getini("timeout")
+    assert not pytestconfig.getini("timeout_method")

@@ -150,9 +150,8 @@ class GrokProvider:
         # code is all there is to say why.
         refused = refusal.read(self.name, reply) if status != 200 else None
         if status in (401, 403):
-            remedy = (f"run `{xai.GROK_LOGIN_COMMAND}` to renew the login" if credential.source == xai.AUTH_SOURCE_GROK_LOGIN
-                      else f"check {xai.AUTH_ENV}")
-            raise SystemExit(f"grok-gen: credential {credential.source} rejected (HTTP {status}){refused.suffix()}; {remedy}"
+            raise SystemExit(f"grok-gen: credential {credential.source} rejected (HTTP {status}){refused.suffix()}; "
+                             f"{xai.rejected_fix(credential)}"
                              f"{refusal.said(reply, credential.token)}")
         # The one other thing worth naming is the combination the docs scope to
         # grok-imagine-image-2.0, which another model is entitled to reject.

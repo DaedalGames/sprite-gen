@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 import sys
 import threading
 import time
@@ -27,6 +26,7 @@ from typing import Any, Callable
 from PIL import Image
 
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.gen.base import run_logged
 from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS, validate as validate_facing
 from sprite_gen.gen import handedness as handed_mod
@@ -596,8 +596,7 @@ def run_video_cli(image: Path, prompt: str, out: Path, report: Path, *, duration
     cmd = [sys.executable, "-m", "sprite_gen.gen.video", "--image", str(image), "--prompt", prompt, "--out", str(out), "--duration", str(duration), "--resolution", resolution, "--no-audio", "--report", str(report)]
     if last_frame is not None:
         cmd += ["--last-frame", str(last_frame)]
-    with log.open("w", encoding="utf-8") as fh:
-        return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True).returncode
+    return run_logged(cmd, log)
 
 
 def run_redraw_cli(base: Path, prompt: str, out: Path, report: Path, *, log: Path, provider: str | None = None) -> int:
@@ -605,8 +604,7 @@ def run_redraw_cli(base: Path, prompt: str, out: Path, report: Path, *, log: Pat
     cmd = [sys.executable, "-m", "sprite_gen.cli", "gen", "--ref", str(base), "--prompt", prompt, "--out", str(out), "--report", str(report)]
     if provider:
         cmd += ["--provider", provider]
-    with log.open("w", encoding="utf-8") as fh:
-        return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True).returncode
+    return run_logged(cmd, log)
 
 
 def walk_start_still(base: Path, direction: str, item_dir: Path, *, key: str, force: bool,
@@ -768,6 +766,10 @@ def run_item(
             result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": str(end_frame) if end_frame is not None else pins_last_frame(state, direction)}
             if attempts[-1] != 0 or not clip.exists():
                 raise SystemExit(f"clip generation failed after {len(attempts)} attempt(s); see {item_dir / 'clip.log'}")
+            try:  # what the clip ran on, as its report says: the Grok login or XAI_API_KEY
+                result["clip"]["auth_source"] = json.loads(clip_report.read_text()).get("auth_source")
+            except (OSError, ValueError):
+                result["clip"]["auth_source"] = None
             if end_digest is not None:
                 generated = json.loads(clip_report.read_text())
                 generated["end_frame_sha256"] = end_digest

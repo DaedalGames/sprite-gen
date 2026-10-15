@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from sprite_gen import cli
 from sprite_gen.gen import pixel_draw, prepare
 from sprite_gen.gen.base import flags_over_spec
 
@@ -82,6 +83,36 @@ def test_a_request_alone_or_a_flag_alone_says_nothing_and_keeps_its_value(tmp_pa
     emitted = _prepare(tmp_path, {"states": STATES, "style": "ink wash", "cell": {"size": 128}}, fit_resample="nearest")
     assert emitted["style"] == "ink wash" and emitted["cell"]["width"] == 128 and emitted["fit"] == {"resample": "nearest"}
     assert "given both" not in capsys.readouterr().err
+
+
+def _sprite_gen_prepare(tmp_path: Path, request: dict, *flags: str) -> dict:
+    out = tmp_path / "run"
+    assert cli.main(["prepare", "--out-dir", str(out), "--character-id", "hero",
+                     "--request-json", json.dumps(request), *flags]) == 0
+    return json.loads((out / "sprite-request.json").read_text(encoding="utf-8"))
+
+
+def test_sprite_gen_prepare_keeps_a_request_it_was_given_no_flag_for(tmp_path, capsys):
+    """`sprite-gen prepare` declared its own --style and --cell-size with defaults, so a request's style
+    was replaced by the default sentence under a note naming flags nobody gave."""
+    emitted = _sprite_gen_prepare(tmp_path, {"states": STATES, "style": "ink wash", "cell": {"size": 128}})
+    assert emitted["style"] == "ink wash" and emitted["cell"]["width"] == 128
+    assert "given both" not in capsys.readouterr().err
+
+
+def test_sprite_gen_prepare_lets_a_given_flag_win_and_says_so(tmp_path, capsys):
+    emitted = _sprite_gen_prepare(tmp_path, {"states": STATES, "style": "ink wash"}, "--style", "flat pixel")
+    assert emitted["style"] == "flat pixel"
+    assert "[prepare] --style given both as a flag and in --request-json: the flag wins" in capsys.readouterr().err
+
+
+def test_sprite_gen_prepare_takes_every_option_prepare_declares():
+    """One declaration: the subcommand had lost --directions and --mirror."""
+    def options(parser: argparse.ArgumentParser) -> set[str]:
+        return {o for action in parser._actions for o in action.option_strings}
+
+    sub = next(a for a in cli._build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    assert options(sub.choices["prepare"]) == options(prepare._build_parser())
 
 
 def test_a_request_subject_is_carried_and_no_note_says_it_was_dropped(tmp_path, capsys):
