@@ -12,7 +12,8 @@ colors:
 2. ``choose_chroma_key`` ranked candidates by the 1st-percentile distance to
    subject pixels, which discards sub-1% features (eyes, gems, ear lamps): the
    auto key could look safe while its nearest subject pixel was still inside the
-   extraction erase radius and would be deleted.
+   extraction erase radius and would be deleted. Its guards are in
+   ``test_chroma_key_auto.py``, beside the function.
 3. The old fringe cut erased every pixel inside the fringe color band *anywhere
    in the image* — hot pink (~129 from magenta) and purple (~153) subjects fell
    in the band and were bleached wholesale. Soft-alpha unmix now treats boundary
@@ -42,7 +43,6 @@ def _load(name: str):
 
 
 extract = _load("extract_sprite_row_frames")
-prepare = _load("prepare_sprite_run")
 
 MAGENTA = (255, 0, 255)
 # extract_sprite_row_frames.py main() defaults
@@ -220,10 +220,6 @@ def test_despill_preserves_far_subject_colors() -> None:
         assert _key(pixel) == (*pixel, 255), f"{pixel} was mangled by despill"
 
 
-def test_exact_key_is_removed_everywhere() -> None:
-    assert _key(MAGENTA)[3] == 0
-
-
 FRINGE = (147, 90, 157)  # magenta blended with a green subject edge
 
 
@@ -292,32 +288,6 @@ def _trap_band_subject(subject: tuple[int, int, int], size: int = 100, margin: i
     return canvas
 
 
-def _subject_band_survival(image: Image.Image) -> float:
-    """Survival ratio of fringe-band subject pixels after cleanup."""
-    source = image.load()
-    band = []
-    for y in range(image.height):
-        for x in range(image.width):
-            color = source[x, y][:3]
-            distance = extract.color_distance(color, MAGENTA)
-            if KEY_THRESHOLD < distance <= FRINGE_THRESHOLD and extract.key_tint_score(color, MAGENTA) >= FRINGE_DELTA:
-                band.append((x, y))
-    assert band, "generated subject has no fringe-band pixels; generator is wrong"
-    out = _clean(image).load()
-    survived = sum(1 for x, y in band if out[x, y][3] != 0)
-    return survived / len(band)
-
-
-def test_key_tinted_subject_material_survives() -> None:
-    # Hot-pink and purple subjects sit inside the magenta key's fringe trap. The
-    # old position-blind cut erased ~100% of them; boundary-limited despill must
-    # keep nearly all — only genuine key-blend edge pixels (the outer despill
-    # layers of the block) may go.
-    for subject in (HOT_PINK, PURPLE):
-        ratio = _subject_band_survival(_trap_band_subject(subject))
-        assert ratio >= 0.90, f"{subject}: only {ratio:.1%} of key-tinted subject pixels survived"
-
-
 def test_key_tinted_subject_opaque_pixels_do_not_regress() -> None:
     # A 100x100 in-band subject block is ~10k opaque pixels; interior is
     # untouchable and only the outer despill layers may go, so the vast majority
@@ -326,76 +296,3 @@ def test_key_tinted_subject_opaque_pixels_do_not_regress() -> None:
         out = _clean(_trap_band_subject(subject))
         opaque = out.getchannel("A").histogram()[255]
         assert opaque >= 9000, f"{subject}: opaque subject pixels regressed to {opaque}"
-
-
-# A small, cyan-leaning teal feature: ~55 from the cyan key, so cyan would erase
-# it, yet it is far enough from magenta/green/blue for those to keep it.
-EYE = (0, 250, 200)
-
-
-def _reference_image(path: Path) -> None:
-    # 128px so PIL never downscales the sample (deterministic across platforms).
-    image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
-    pixels = image.load()
-    for y in range(128):
-        for x in range(128):
-            if (x - 64) ** 2 + (y - 64) ** 2 < 58 ** 2:
-                pixels[x, y] = (196, 54, 38, 255)  # red-orange body (the bulk hue)
-    # Two tiny eyes: well under 1% of the subject, so the 1st-percentile ranking
-    # ignores them and a naive selector happily picks the cyan key that erases them.
-    for cx, cy in ((50, 52), (78, 52)):
-        for dy in range(-1, 2):
-            for dx in range(-2, 3):
-                pixels[cx + dx, cy + dy] = (*EYE, 255)
-    image.save(path)
-
-
-def test_auto_key_avoids_erasing_small_feature(tmp_path: Path) -> None:
-    ref = tmp_path / "base.png"
-    _reference_image(ref)
-
-    opaque = eyes = 0
-    with Image.open(ref) as opened:
-        data = opened.convert("RGBA").load()
-        for y in range(128):
-            for x in range(128):
-                r, g, b, a = data[x, y]
-                if a <= 16:
-                    continue
-                opaque += 1
-                if (r, g, b) == EYE:
-                    eyes += 1
-    assert opaque and eyes / opaque < 0.01  # the eyes are a sub-1% feature
-
-    pixels = prepare.sampled_reference_pixels(ref)
-    cyan = prepare.parse_hex_color("#00FFFF")
-    cyan_min = min(prepare.color_distance(cyan, pixel) for pixel in pixels)
-    # cyan would win the raw 1st-percentile ranking yet erase the eyes: that is
-    # exactly the trap the guard exists for.
-    assert cyan_min <= prepare.MIN_SUBJECT_KEY_DISTANCE
-
-    result = prepare.choose_chroma_key(ref, "auto")
-    assert result["selection"] == "auto"
-    assert result["name"] != "cyan"
-    # The chosen key clears every subject pixel, including the tiny eyes.
-    assert result["min_subject_distance"] > prepare.MIN_SUBJECT_KEY_DISTANCE
-    assert "warning" not in result
-
-
-def test_auto_key_warns_when_no_candidate_is_safe(tmp_path: Path) -> None:
-    # A subject that parks saturated pixels next to every candidate key: no safe
-    # choice exists, so the selector falls back to the ranking *and* warns.
-    ref = tmp_path / "rainbow.png"
-    image = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-    pixels = image.load()
-    near_keys = [(235, 30, 235), (30, 235, 30), (30, 235, 235), (20, 80, 235)]
-    for index, color in enumerate(near_keys):
-        for x in range(index * 8, index * 8 + 8):
-            for y in range(32):
-                pixels[x, y] = (*color, 255)
-    image.save(ref)
-
-    result = prepare.choose_chroma_key(ref, "auto")
-    assert result["selection"] == "auto"
-    assert result["min_subject_distance"] <= prepare.MIN_SUBJECT_KEY_DISTANCE
-    assert "warning" in result

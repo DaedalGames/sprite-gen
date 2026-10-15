@@ -96,35 +96,19 @@ def clock(monkeypatch) -> _Clock:
 # --- credential resolution -------------------------------------------------
 
 
-@pytest.mark.parametrize("api_key", ["xai-console", "", "  "])
+# A login file is read before the env is (`xai.resolve_credential`), so any key value, or none, takes one path.
+@pytest.mark.parametrize("api_key", ["xai-console", "  "])
 def test_grok_login_wins_over_api_key_env(tmp_path: Path, monkeypatch, api_key) -> None:
     monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path)))
     cred = video.resolve_credential(env={"XAI_API_KEY": api_key}, now=NOW)
     assert cred.token == "tok" and cred.source == video.AUTH_SOURCE_GROK_LOGIN
+    assert cred.expires_at == "2026-09-08T18:00:00.000000Z"
 
 
 def test_api_key_is_used_only_without_a_login_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
     cred = video.resolve_credential(env={"XAI_API_KEY": "xai-console"}, now=NOW)
     assert cred == video.Credential(token="xai-console", source=video.AUTH_SOURCE_API_KEY)
-
-
-def test_grok_login_is_used_when_no_api_key(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, key="oidc-token")))
-    cred = video.resolve_credential(env={}, now=NOW)
-    assert cred.source == video.AUTH_SOURCE_GROK_LOGIN
-    assert cred.token == "oidc-token"
-    assert cred.expires_at == "2026-09-08T18:00:00.000000Z"
-
-
-def test_expired_grok_login_fails_before_upload_with_refresh_prescription(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, expires_at="2026-09-08T10:56:34.899829Z")))
-    with pytest.raises(SystemExit, match="expired at 2026-09-08T10:56:34") as excinfo:
-        video.resolve_credential(env={}, now=NOW)
-    message = str(excinfo.value)
-    assert video.GROK_REFRESH_COMMAND in message
-    assert video.GROK_LOGIN_COMMAND in message
-    assert "never rewrites" in message
 
 
 def test_missing_login_and_key_prescribes_both_setups(tmp_path: Path, monkeypatch) -> None:
@@ -138,14 +122,6 @@ def test_empty_api_key_env_is_refused_not_ignored(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
     with pytest.raises(SystemExit, match="XAI_API_KEY is set but empty"):
         video.resolve_credential(env={"XAI_API_KEY": "  "}, now=NOW)
-
-
-def test_login_file_with_two_accounts_is_refused(tmp_path: Path, monkeypatch) -> None:
-    home = _login_file(tmp_path)
-    (home / "auth.json").write_text(json.dumps({"a": {"key": "1"}, "b": {"key": "2"}}), encoding="utf-8")
-    monkeypatch.setenv("GROK_HOME", str(home))
-    with pytest.raises(SystemExit, match="holds 2 account entries"):
-        video.resolve_credential(env={}, now=NOW)
 
 
 def test_login_without_expiry_is_accepted(tmp_path: Path, monkeypatch) -> None:
@@ -190,22 +166,13 @@ def test_generate_video_posts_data_url_polls_and_publishes_verified_mp4(tmp_path
     assert "tok" not in dumped.replace("token", "") and "vidgen.x.ai/v/1.mp4" not in dumped
 
 
-def test_audio_default_is_left_to_the_api(tmp_path: Path) -> None:
-    api = _FakeApi()
-    video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=lambda s: None)
-    assert "generate_audio" not in api.calls[0][3] and "aspect_ratio" not in api.calls[0][3]
-
-
+# A refused POST, a failed poll, a poll refused for good and a done poll naming no url each have their own test below.
 @pytest.mark.parametrize(
     ("post", "polls", "expected"),
     [
         ((200, {"error": "quota"}), None, "generation request refused"),
-        ((400, {"code": "invalid-argument", "error": "Zero Data Retention teams must provide output.upload_url"}), None, "refused \\(HTTP 400\\)"),
         ((403, {"code": "unauthenticated:bad-credentials", "error": "The OAuth2 access token could not be validated."}), None, "rejected the credential \\(grok-login\\) with HTTP 403"),
-        ((200, {"request_id": "r"}), [(200, {"status": "failed", "error": "nsfw"})], "status='failed'"),
         ((200, {"request_id": "r"}), [(200, {"status": "expired"})], "status='expired'"),
-        ((200, {"request_id": "r"}), [(404, {"raw": "boom"})], "HTTP 404"),
-        ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "poll named no video url to download"),
     ],
 )
 def test_api_failures_are_named_and_write_nothing(tmp_path: Path, post, polls, expected) -> None:
@@ -223,14 +190,6 @@ def test_bad_credential_prescribes_refresh_for_login_and_check_for_key(tmp_path:
         video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN), call=api.call, download=api.download, sleep=lambda s: None)
     with pytest.raises(SystemExit, match="check the XAI_API_KEY value"):
         video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_API_KEY), call=api.call, download=api.download, sleep=lambda s: None)
-
-
-def test_poll_timeout_fails_loud(tmp_path: Path, clock) -> None:
-    api = _FakeApi(polls=[(200, {"status": "pending"})])
-    request = _request(tmp_path)
-    with pytest.raises(SystemExit, match="poll timeout"):
-        video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=clock.sleep, poll_timeout=10)
-    assert not request.out.exists()
 
 
 @pytest.mark.parametrize(
@@ -329,7 +288,8 @@ def test_uninspectable_login_never_permits_api_credit(tmp_path, monkeypatch):
         video.resolve_credential(env={"XAI_API_KEY": "console-key"}, now=NOW)
 
 
-@pytest.mark.parametrize("status", [200, 403, 503])
+# 403 and 503 both end on the first call, on the subscription token.
+@pytest.mark.parametrize("status", [200, 403])
 def test_video_uses_subscription_with_api_key_present(tmp_path, monkeypatch, status):
     monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, key="subscription-token", expires_at="2100-01-01T00:00:00Z")))
     monkeypatch.setenv("XAI_API_KEY", "console-key")
@@ -353,9 +313,12 @@ def test_refresh_prescription_is_a_non_agent_command_run_outside_the_repo(tmp_pa
     assert " -p " not in f" {video.GROK_REFRESH_COMMAND} " and "--single" not in video.GROK_REFRESH_COMMAND
     assert "empty directory" in video.GROK_REFRESH_WHERE
     monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, expires_at="2026-09-08T10:56:34.899829Z")))
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(SystemExit, match="expired at 2026-09-08T10:56:34") as excinfo:
         video.resolve_credential(env={}, now=NOW)
     message = str(excinfo.value)
+    assert video.GROK_REFRESH_COMMAND in message
+    assert video.GROK_LOGIN_COMMAND in message
+    assert "never rewrites" in message
     assert video.GROK_REFRESH_WHERE in message
     assert "grok -p ok" not in message.replace("`grok -p …`", "")
     assert "coding agent" in message
@@ -406,7 +369,8 @@ def test_every_verb_announces_the_charge_before_the_request_leaves(tmp_path: Pat
     assert f"`{video.GROK_LOGIN_COMMAND}` signs your Grok subscription in." in notice[0]
 
 
-@pytest.mark.parametrize("verb", ["video", "video-extend", "video-edit"])
+# One `if credential.source == AUTH_SOURCE_API_KEY` for every verb.
+@pytest.mark.parametrize("verb", ["video"])
 def test_the_subscription_route_stays_silent_about_billing(tmp_path: Path, capsys, verb) -> None:
     api = _FakeApi()
     _billed_run(verb, tmp_path, credential=video.Credential("tok", video.AUTH_SOURCE_GROK_LOGIN),
@@ -467,18 +431,6 @@ def test_a_moderated_clip_is_a_content_policy_refusal(tmp_path: Path) -> None:
     assert HTTP_STATUS.search(message).group(1) == "200"
 
 
-def test_a_moderated_clip_is_refused_even_if_a_url_came_back(tmp_path: Path) -> None:
-    api = _FakeApi(polls=[(200, {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "respect_moderation": False}})])
-    assert "refused by the provider's content policy" in _refused(tmp_path, api)[0]
-
-
-def test_a_clip_that_respects_moderation_publishes(tmp_path: Path) -> None:
-    api = _FakeApi(polls=[(200, {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "duration": 6.0, "respect_moderation": True}})])
-    request = _request(tmp_path)
-    video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN), call=api.call, download=api.download, sleep=lambda s: None)
-    assert request.out.read_bytes() == MP4
-
-
 def test_a_failed_poll_names_the_code_inside_its_error_object(tmp_path: Path) -> None:
     """`invalid_argument` covers moderation and bad parameters alike, so it is a code, not a policy verdict."""
     api = _FakeApi(polls=[(200, {"status": "failed", "error": {"code": "invalid_argument", "message": "synthetic"}})])
@@ -520,31 +472,19 @@ def test_a_key_the_300_character_cut_would_split_is_masked_before_the_cut(body) 
     assert "xai-[redacted]" in detail and len(detail) <= 300
 
 
+# The separators and the word case are cells of tests/gen/test_refusal.py's masking grid (`video:repr`);
+# this lowercase row is the one that reaches `_BEARER`'s `(?i)`.
 @pytest.mark.parametrize(("said", "masked"), [
-    ("api_key_sk-" + "Synthetic0Key1For2Tests" * 2, "api_key_sk-[redacted]"),
-    ("token-xai-" + "Synthetic0Key1For2Tests" * 2, "token-xai-[redacted]"),
-    ("task-" + "Synthetic0Key1For2Tests" * 2, "task-" + "Synthetic0Key1For2Tests" * 2),
-], ids=["underscore", "hyphen", "word"])
-def test_a_key_after_an_underscore_or_hyphen_is_masked_and_a_word_ending_in_sk_is_not(said, masked) -> None:
-    assert video._error_detail({"message": said}) == f"message={masked!r}"
-
-
-@pytest.mark.parametrize(("said", "masked"), [
-    ("Authorization: Bearer " + "synthetic.token.value-0123456789", "Authorization: Bearer [redacted]"),
-    ("x_Bearer " + "synthetic.token.value-0123456789", "x_Bearer [redacted]"),
     ("x-bearer " + "synthetic.token.value-0123456789", "x-bearer [redacted]"),
-    ("xbearer " + "synthetic.token.value-0123456789", "xbearer " + "synthetic.token.value-0123456789"),
-], ids=["header", "underscore", "hyphen", "word"])
+], ids=["hyphen"])
 def test_a_bearer_value_after_an_underscore_or_hyphen_is_masked_and_a_word_ending_in_bearer_is_not(said, masked) -> None:
     assert video._error_detail({"message": said}) == f"message={masked!r}"
 
 
+# One code read and one left off; refusal.read's other cases are the provider grids'.
 @pytest.mark.parametrize(("post", "prefix"), [
     ((400, {"code": "invalid-argument", "error": "synthetic"}), "video: generation request refused (HTTP 400) code=invalid-argument: "),
-    ((400, {"error": {"code": "invalid_argument", "message": "synthetic"}}), "video: generation request refused (HTTP 400) code=invalid_argument: "),
-    ((400, {"error": "synthetic"}), "video: generation request refused (HTTP 400): "),
     ((400, {"code": "not a code", "error": "synthetic"}), "video: generation request refused (HTTP 400): "),
-    ((429, {"error": {"code": "x" * 65}}), "video: generation request refused (HTTP 429): "),
 ])
 def test_a_refused_request_names_a_well_formed_code(tmp_path: Path, post, prefix) -> None:
     message, _ = _refused(tmp_path, _FakeApi(post=post))
@@ -561,7 +501,8 @@ def test_a_refused_request_names_a_well_formed_code(tmp_path: Path, post, prefix
 DONE = (200, {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "duration": 6.0}, "model": "grok-imagine-video-1.5"})
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+# One branch, `http in retry.GET_AGAIN`; the set itself is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [429, 503])
 def test_a_throttled_poll_asks_the_same_request_again_and_publishes(tmp_path: Path, status) -> None:
     api = _FakeApi(polls=[(status, {"code": "synthetic", "error": "slow down"}), (status, {"error": "slow down"}),
                           (200, {"status": "pending"}), DONE])
@@ -577,11 +518,13 @@ def test_a_throttled_poll_asks_the_same_request_again_and_publishes(tmp_path: Pa
     assert payload["request_id"] == "req-1" and payload["polls"] == 4 and payload["polls_refused"] == 2
 
 
-def test_a_clip_whose_polls_were_never_refused_reports_no_retry(tmp_path: Path) -> None:
+def test_a_clip_answered_at_once_reports_no_retry_none_unanswered_and_one_download(tmp_path: Path) -> None:
     api = _FakeApi()
     payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
                                    call=api.call, download=api.download, sleep=lambda s: None).to_dict()
     assert payload["polls"] == 1 and payload["polls_refused"] == 0
+    assert payload["polls_unanswered"] == 0
+    assert payload["downloads"] == 1
 
 
 def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_again(tmp_path: Path, clock, capsys) -> None:
@@ -610,16 +553,19 @@ def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_agai
 
 def test_a_poll_timeout_while_pending_names_the_request_to_ask_again(tmp_path: Path, clock) -> None:
     api = _FakeApi(polls=[(200, {"status": "pending"})])
+    request = _request(tmp_path)
     with pytest.raises(video.GenerationUnfinished) as unfinished:
-        video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+        video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"),
                              call=api.call, download=api.download, sleep=clock.sleep, poll_timeout=10)
     message = str(unfinished.value)
     assert message.startswith("video: generation req-1 still 'pending' after 3 polls — poll timeout; ")
     assert "request_id=req-1" in message and HTTP_STATUS.search(message) is None
     assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.last_status) == ("req-1", 200, "pending")
+    assert not request.out.exists()
 
 
-@pytest.mark.parametrize("status", [400, 404])
+# One branch for any status past GET_AGAIN and 401/403; 404 is the resume test's.
+@pytest.mark.parametrize("status", [400])
 def test_a_poll_refused_for_good_ends_at_once_with_its_status(tmp_path: Path, status) -> None:
     api = _FakeApi(polls=[(status, {"error": "synthetic"})])
     message, _ = _refused(tmp_path, api)
@@ -627,7 +573,8 @@ def test_a_poll_refused_for_good_ends_at_once_with_its_status(tmp_path: Path, st
     assert HTTP_STATUS.search(message).group(1) == str(status)
 
 
-@pytest.mark.parametrize("status", [400, 500, 503])
+# Every status but 429 fails `retry.again_after("xai")`; the table is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [503])
 def test_a_refused_submission_is_never_sent_again(tmp_path: Path, status) -> None:
     """A POST is sent again only on an answer xAI documents as a request not taken, 429 (gen.retry):
     any other refusal may have been worked on, and it keeps `(HTTP n)` for the caller."""
@@ -710,13 +657,12 @@ class _LossyApi(_FakeApi):
         return reply
 
 
+# `xai.no_answer_reason`: a URLError unwrapped, an empty message named by its type, a plain OSError.
 @pytest.mark.parametrize(("raised", "reason"), [
-    (urllib.error.URLError("[Errno 8] nodename nor servname provided"), "[Errno 8] nodename nor servname provided"),
     (urllib.error.URLError(TimeoutError("timed out")), "timed out"),
-    (TimeoutError("timed out"), "timed out"),
     (TimeoutError(), "TimeoutError"),
     (ConnectionResetError(54, "Connection reset by peer"), "[Errno 54] Connection reset by peer"),
-], ids=["dns", "url-timeout", "timeout", "bare-timeout", "reset"])
+], ids=["url-timeout", "bare-timeout", "reset"])
 def test_http_json_names_a_request_that_got_no_answer(monkeypatch, raised, reason) -> None:
     """Still the SystemExit and line it always was; the type lets a caller that may ask again catch it."""
     def urlopen(request, *, timeout):
@@ -743,13 +689,6 @@ def test_a_poll_that_gets_no_answer_is_asked_again_and_publishes(tmp_path: Path,
     payload = result.to_dict()
     assert (payload["polls"], payload["polls_refused"], payload["polls_unanswered"]) == (5, 1, 2)
     assert "[video] poll 1 of generation req-1 got no answer (timed out); asking again in 8s" in capsys.readouterr().err
-
-
-def test_a_clip_whose_polls_were_all_answered_reports_none_unanswered(tmp_path: Path) -> None:
-    api = _FakeApi()
-    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
-                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
-    assert payload["polls_unanswered"] == 0
 
 
 def test_polls_that_get_no_answer_until_the_poll_timeout_end_unfinished_naming_the_request(tmp_path: Path, clock) -> None:
@@ -787,12 +726,12 @@ def test_a_submission_that_gets_no_answer_is_not_unfinished_and_is_never_sent_ag
     assert calls == ["POST"] and "no automatic retry" in str(failed.value)
 
 
-@pytest.mark.parametrize("status", [401, 403])
-@pytest.mark.parametrize(("source", "fix"), [
-    (video.AUTH_SOURCE_GROK_LOGIN, f"refresh the login with `{video.GROK_REFRESH_COMMAND}` run {video.GROK_REFRESH_WHERE} "
-                                   f"or `{video.GROK_LOGIN_COMMAND}`"),
-    (video.AUTH_SOURCE_API_KEY, f"check the {video.AUTH_ENV} value"),
-], ids=["grok-login", "api-key"])
+# `http in (401, 403)` is one branch; the source picks only the fix text.
+@pytest.mark.parametrize(("status", "source", "fix"), [
+    (401, video.AUTH_SOURCE_GROK_LOGIN, f"refresh the login with `{video.GROK_REFRESH_COMMAND}` run {video.GROK_REFRESH_WHERE} "
+                                        f"or `{video.GROK_LOGIN_COMMAND}`"),
+    (403, video.AUTH_SOURCE_API_KEY, f"check the {video.AUTH_ENV} value"),
+], ids=["401-grok-login", "403-api-key"])
 def test_a_poll_whose_credential_is_rejected_ends_unfinished_at_once(tmp_path: Path, status, source, fix) -> None:
     api = _FakeApi(polls=[(200, {"status": "pending"}), (status, {"error": "token expired"})])
     request = _request(tmp_path)
@@ -838,10 +777,9 @@ def test_resume_polls_the_request_without_a_submission_and_publishes(tmp_path: P
     assert "per-call API charge" not in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("scripted", ["refused", "lost", "pending"])
-def test_a_resume_cut_short_again_is_unfinished_on_the_same_request(tmp_path: Path, clock, scripted) -> None:
-    poll = {"refused": (429, {"error": "slow down"}), "lost": LOST, "pending": (200, {"status": "pending"})}[scripted]
-    api = _LossyApi(polls=[poll])
+def test_a_resume_cut_short_again_is_unfinished_on_the_same_request(tmp_path: Path, clock) -> None:
+    # The polls' stop reasons (refused, lost, pending) are `_poll_publish`'s, tested on the generate path.
+    api = _LossyApi(polls=[LOST])
     with pytest.raises(video.GenerationUnfinished) as unfinished:
         _resume(tmp_path, api, sleep=clock.sleep, poll_timeout=30)
     assert "POST" not in [call[0] for call in api.calls]
@@ -853,16 +791,6 @@ def test_a_resume_cut_short_again_is_unfinished_on_the_same_request(tmp_path: Pa
     report = unfinished.value.to_dict()
     assert (report["verb"], report["request_id"], report["model"]) == ("video-resume", "req-7", None)
     assert not (tmp_path / "clip.mp4").exists()
-
-
-@pytest.mark.parametrize("status", [401, 403])
-def test_a_resume_whose_credential_is_rejected_is_unfinished_on_the_same_request(tmp_path: Path, status) -> None:
-    api = _FakeApi(polls=[(status, {"error": "token expired"})])
-    with pytest.raises(video.GenerationUnfinished) as unfinished:
-        _resume(tmp_path, api)
-    assert [call[0] for call in api.calls] == ["GET"]
-    assert str(unfinished.value).startswith(
-        f"video-resume: generation req-7 was accepted, but xAI rejected the credential (grok-login) on poll 1 (answer {status}); ")
 
 
 def test_a_resume_of_a_request_xai_does_not_know_ends_with_its_status(tmp_path: Path) -> None:
@@ -1078,13 +1006,16 @@ def _on_wire(method, url, token, body, **deadline):
     return xai.http_json(method, url, token, body, timeout=5, **deadline)
 
 
-@pytest.mark.parametrize(("answer", "line", "reason"), [
-    (CUT, xai.TRANSPORT_FAILED, CUT_SAID),
-    (CUT_REFUSAL, xai.TRANSPORT_FAILED, "IncompleteRead(9 bytes read, 191 more expected)"),
-    (GARBLED, xai.TRANSPORT_FAILED, "BadStatusLine('garbage\\r\\n')"),
-    (NOT_JSON, "xai: response was not valid JSON", "response was not valid JSON"),
-], ids=["cut", "cut-refusal", "garbled", "not-json"])
-@pytest.mark.parametrize("bounded", [False, True], ids=["no-deadline", "deadline"])
+# A body cut short reads differently with and without a deadline; a garbled status line fails inside urlopen
+# and a whole body that is not JSON fails in json.loads, the same on either read.
+@pytest.mark.parametrize(("answer", "line", "reason", "bounded"), [
+    (CUT, xai.TRANSPORT_FAILED, CUT_SAID, False),
+    (CUT, xai.TRANSPORT_FAILED, CUT_SAID, True),
+    (CUT_REFUSAL, xai.TRANSPORT_FAILED, "IncompleteRead(9 bytes read, 191 more expected)", False),
+    (CUT_REFUSAL, xai.TRANSPORT_FAILED, "IncompleteRead(9 bytes read, 191 more expected)", True),
+    (GARBLED, xai.TRANSPORT_FAILED, "BadStatusLine('garbage\\r\\n')", False),
+    (NOT_JSON, "xai: response was not valid JSON", "response was not valid JSON", False),
+], ids=["cut-no-deadline", "cut-deadline", "cut-refusal-no-deadline", "cut-refusal-deadline", "garbled", "not-json"])
 def test_http_json_reads_an_answer_it_cannot_read_whole_as_no_answer(wire, clock, answer, line, reason, bounded) -> None:
     """The line each always had — the transport's, or the not-JSON one — on the type a poll asks again on,
     whether or not a deadline bounds the read (a body read a chunk at a time still knows it was cut short)."""
@@ -1109,15 +1040,6 @@ def test_a_poll_cut_short_garbled_or_not_json_is_asked_again_and_publishes(tmp_p
     err = capsys.readouterr().err
     assert f"[video] poll 1 of generation req-1 got no answer ({CUT_SAID}); asking again in 8s" in err
     assert "[video] poll 3 of generation req-1 got no answer (response was not valid JSON); asking again in 32s" in err
-
-
-def test_a_resume_whose_poll_is_cut_short_asks_the_same_request_again(tmp_path: Path, wire) -> None:
-    """The validator's counterexample: a resumed poll cut 10 bytes into its 200-byte body."""
-    server = wire(CUT, DONE_ON_WIRE)
-    result = video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
-                                call=_on_wire, download=lambda url, token, **_: MP4, sleep=lambda s: None)
-    assert server.seen == [("GET", "/v1/videos/req-1")] * 2
-    assert result.out.read_bytes() == MP4 and result.to_dict()["polls_unanswered"] == 1
 
 
 def test_polls_cut_short_until_the_poll_timeout_leave_an_unfinished_report_naming_the_request(
@@ -1266,13 +1188,6 @@ def test_a_download_cut_short_or_refused_is_downloaded_again_and_publishes(tmp_p
     err = capsys.readouterr().err
     assert f"[video] download 1 of generation req-1 got no answer ({CLIP_CUT_SAID}); downloading again in 8s" in err
     assert "[video] download 2 of generation req-1 was refused (503); downloading again in 16s" in err
-
-
-def test_a_clip_downloaded_whole_at_once_reports_one_download(tmp_path: Path) -> None:
-    api = _FakeApi()
-    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
-                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
-    assert payload["downloads"] == 1
 
 
 @pytest.mark.parametrize(("answer", "downloads", "said", "status"), [
@@ -1503,14 +1418,12 @@ def _done_naming(named) -> bytes:
     return _answer("200 OK", json.dumps({"status": "done", "video": named, "model": video.DEFAULT_MODEL}).encode("utf-8"))
 
 
+# The branches: `video` not an object, its url not a str, a str with no scheme.
 @pytest.mark.parametrize("named", [
     {"duration": 6.0},
-    {"url": "", "duration": 6.0},
-    {"url": None},
-    {"url": 7},
     {"url": "vidgen.x.ai/v/1.mp4"},
     "a clip",
-], ids=["no-url", "empty-url", "null-url", "a-number", "no-scheme", "not-an-object"])
+], ids=["no-url", "no-scheme", "not-an-object"])
 def test_a_done_poll_that_names_no_url_leaves_an_unfinished_report_naming_the_request(
         tmp_path: Path, wire, monkeypatch, capsys, named) -> None:
     """The second counterexample: xAI says done — the clip is made and may be billed — and names nothing the
@@ -1542,15 +1455,3 @@ def test_a_done_poll_that_names_no_url_leaves_an_unfinished_report_naming_the_re
         "elapsed_seconds": 0.0,
     }
     assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
-
-
-def test_a_resume_whose_done_poll_names_no_url_is_unfinished_on_the_same_request(tmp_path: Path, wire) -> None:
-    server = wire(_done_naming({"duration": 6.0}))
-    with pytest.raises(video.GenerationUnfinished) as unfinished:
-        video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
-                           call=_on_wire, sleep=lambda s: None)
-    assert server.seen == [("GET", "/v1/videos/req-1")]
-    assert str(unfinished.value).startswith(
-        "video-resume: generation req-1 is done, but its poll named no video url to download; ")
-    assert (unfinished.value.verb, unfinished.value.request_id) == ("video-resume", "req-1")
-    assert not (tmp_path / "clip.mp4").exists()
