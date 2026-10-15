@@ -882,8 +882,8 @@ def scattered_sheet(seed):
 def anchored_sheet(seed):
     """A 2:3 sheet drawn under a drift picked at random within the accepted range: the seven frames full size, as
     `synthetic_sheet` draws them, and a random half of the band elements, each a rectangle a random share of its box
-    across (from a twentieth to seven tenths) anywhere inside its moved box, at least 1 px clear of the edges. The sheet,
-    and each element's rect by name."""
+    across (from a twentieth to seven tenths) anywhere inside its moved box, at least 1 px clear of the edges. The
+    sheet, and each element's rect by name."""
     rng = np.random.default_rng(100_000 + seed)
     drift = accepted_drift(rng)
     sx, tx, sy, ty = drift
