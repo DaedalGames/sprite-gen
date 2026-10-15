@@ -42,6 +42,22 @@ def run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def symlink_or_skip(link: Path, target: Path) -> None:
+    """Create ``link`` -> ``target``, skipping when the OS refuses symlinks.
+
+    Windows only lets accounts with SeCreateSymbolicLinkPrivilege (or Developer
+    Mode) create symlinks; otherwise the call fails with WinError 1314. The skip
+    is limited to that creation failure, so a product that mishandles a link
+    that *was* created still fails the test.
+    """
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("symlink creation needs SeCreateSymbolicLinkPrivilege or Developer Mode on Windows")
+        raise
+
+
 # Tests that skip where no RIFE is reachable for a reason other than RIFE: an input the lane does not
 # give. Named without their parameters. In the lane's RIFE-less run (`pytest --rife-unmeasured`) these
 # and the tests marked real_rife may skip; any other skip fails (docs/release.md).
