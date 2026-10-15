@@ -56,6 +56,7 @@ from sprite_gen._deps import np
 from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.hexcolor import parse_hex
 
 # Opaque enough to be the character: the body's centre and the marker are read on these pixels.
 ALPHA_MIN = 128
@@ -101,11 +102,8 @@ GAIT_STATES = ("walk", "run")
 
 
 def parse_marker(value: str) -> tuple[int, int, int]:
-    text = value.strip().lstrip("#")
-    if len(text) != 6:
-        raise SystemExit(f"handed-check: --marker is a colour as #RRGGBB, got {value!r}")
     try:
-        return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
+        return parse_hex(value)
     except ValueError:
         raise SystemExit(f"handed-check: --marker is a colour as #RRGGBB, got {value!r}") from None
 

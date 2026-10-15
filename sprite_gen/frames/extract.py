@@ -18,6 +18,7 @@ from typing import Any
 
 from PIL import Image, ImageChops
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen._deps import np
 from sprite_gen.curate.curation import effective_logical_height, pixel_snap_scale
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, take_raw_rel
@@ -1000,21 +1001,13 @@ def key_residue_fraction_ycc(image: Image.Image, key: tuple[int, int, int]) -> f
     return count / (width * height)
 
 
-def _cleanup_alpha_ycc(image: Image.Image) -> None:
-    """Remove fully isolated opaque dots and fill nearly-enclosed pinholes.
-
-    Decisions are made on an alpha snapshot so the pass cannot cascade; soft
-    matte edges are untouched (only 0-neighbor dots and ≥7-neighbor holes).
-    """
-    width, height = image.size
-    if width < 3 or height < 3:
-        return
+def _neighbour_code(op: Image.Image) -> Image.Image:
+    """`op` (1 where opaque, 0 elsewhere) as one code per pixel: op*16 plus how many of its eight
+    neighbours are opaque (outside the image counts as clear)."""
+    width, height = op.size
     # PIL 네이티브 스텐실 — 8이웃 불투명 카운트를 시프트-합으로 벡터화한다 (핫스팟:
     # 상태당 추출의 ~17%, 1280×720 전체 순회). 정수 논리(임계 비교·이웃 카운트)라
     # 픽셀 루프와 **바이트 동일**하며, numpy 없이 pillow 만으로 된다.
-    alpha = image.getchannel("A")
-    # op: 불투명 마스크 (0/1) — before 스냅샷과 같은 기준 (> EMPTY).
-    op = alpha.point(lambda a: 1 if a > _YCC_ALPHA_EMPTY else 0)
     # 1px zero-pad 후 8방향 크롭으로 이웃을 꺼내 합산 (경계 밖 = 0, 정수 덧셈은 순서 무관).
     padded = Image.new("L", (width + 2, height + 2), 0)
     padded.paste(op, (1, 1))
@@ -1023,9 +1016,37 @@ def _cleanup_alpha_ycc(image: Image.Image) -> None:
                    (-1, -1), (1, -1), (-1, 1), (1, 1)):
         shifted = padded.crop((1 + dx, 1 + dy, 1 + dx + width, 1 + dy + height))
         neighbors = shifted if neighbors is None else ImageChops.add(neighbors, shifted)
-    # combined = op*16 + neighbors (둘 다 작아 24 이하) → 단일 LUT 로 두 마스크 분리.
-    combined = ImageChops.add(op.point(lambda v: v * 16), neighbors)
-    clear_mask = combined.point(lambda v: 255 if (v >> 4) == 1 and (v & 15) == 0 else 0)
+    # combined = op*16 + neighbors (둘 다 작아 24 이하) → 단일 LUT 로 마스크를 분리한다.
+    return ImageChops.add(op.point(lambda v: v * 16), neighbors)
+
+
+def _dots(code: Image.Image) -> Image.Image:
+    return code.point(lambda v: 255 if (v >> 4) == 1 and (v & 15) == 0 else 0)
+
+
+def isolated_dots(op: Image.Image) -> Image.Image:
+    """The lone pixels of `op` (an L mask, 1 where opaque): 255 where a pixel is opaque and none of
+    its eight neighbours is — one touching another only at a corner is joined to it. One judgment:
+    the YCbCr matte's cleanup erases a matte's dots by it (`_cleanup_alpha_ycc`), and `pixel-draw`'s
+    G5 counts a grid's stray pixels by it."""
+    return _dots(_neighbour_code(op))
+
+
+def _cleanup_alpha_ycc(image: Image.Image) -> None:
+    """Remove fully isolated opaque dots and fill nearly-enclosed pinholes.
+
+    Decisions are made on an alpha snapshot so the pass cannot cascade; soft
+    matte edges are untouched (only 0-neighbor dots — `isolated_dots` — and
+    ≥7-neighbor holes).
+    """
+    width, height = image.size
+    if width < 3 or height < 3:
+        return
+    alpha = image.getchannel("A")
+    # op: 불투명 마스크 (0/1) — before 스냅샷과 같은 기준 (> EMPTY).
+    op = alpha.point(lambda a: 1 if a > _YCC_ALPHA_EMPTY else 0)
+    combined = _neighbour_code(op)
+    clear_mask = _dots(combined)
     fill_mask = combined.point(lambda v: 255 if (v >> 4) == 0 and (v & 15) >= 7 else 0)
     # 원본은 알파만 바꾼다 (RGB 불변) — 스냅샷에서 시작해 두 disjoint 마스크만 덮어쓴다.
     new_alpha = alpha.copy()
@@ -1192,6 +1213,24 @@ def cell_geometry(cell: dict[str, Any]) -> tuple[int, int, int, int]:
     if width <= 0 or height <= 0:
         raise SystemExit("cell width/height must be positive in sprite-request.json")
     return width, height, safe_margin_x, safe_margin_y
+
+
+def safe_area_fit(sizes: list[tuple[int, int]], cell_width: int, cell_height: int, safe_margin_x: int,
+                  safe_margin_y: int, scale: int = 1) -> dict[str, Any]:
+    """셀에 들어갈 프레임 크기(논리 픽셀 `(w, h)`, `scale` = 논리 1칸의 셀 픽셀 수)의 안전영역 판정.
+
+    물리캡 = 가로는 칸 너비, 세로는 칸 높이에서 바닥 여백 하나를 뺀 것(바닥 줄에 선 프레임이 가진
+    줄들). 넘으면 `over` — 경고, 리롤 후보. 안전영역(사방 여백 안)은 넘었지만 물리캡 이내면 `soft` —
+    여백 침범, 리롤 대상 아님, 정보성 알림만 (maintainer 확정 2026-07-14). 실패는 없다.
+    `over`/`soft` 는 `sizes` 의 인덱스. 판정은 여기 하나다 — 픽셀 스냅(아래 `_snap_strip`)과
+    `pixel-draw` 의 G8(`sprite_gen/gen/pixel_gates.py`)이 같이 부른다."""
+    cap_w = max(1, cell_width // scale)
+    cap_h = max(1, (cell_height - safe_margin_y) // scale)
+    safe_w = max(1, (cell_width - safe_margin_x * 2) // scale)
+    safe_h = max(1, (cell_height - safe_margin_y * 2) // scale)
+    over = [i for i, (w, h) in enumerate(sizes) if w > cap_w or h > cap_h]
+    soft = [i for i, (w, h) in enumerate(sizes) if (w > safe_w or h > safe_h) and w <= cap_w and h <= cap_h]
+    return {"cap": [cap_w, cap_h], "safe": [safe_w, safe_h], "over": over, "soft": soft}
 
 
 # align_x "alpha-centroid" 는 perfectpixel-studio internal/sprite/extract.go 이식
@@ -2689,24 +2728,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _load_validated(path: Path, name: str, require) -> dict:
     """Read a canonical run JSON record, FAILING LOUD on any corruption — unreadable,
     unparseable, or a broken schema — instead of silently treating it as absent/empty. EVERY
@@ -3375,27 +3396,23 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
         # 제거된 결정이 플래그 하나로 되살아나는 회귀 경로였다 (회귀 2026-07-17:
         # 높이 통일 시도가 이 플래그로 재발) — 선언되어 있으면 요란하게 거부한다.
         # 물리 한계(셀에서 바닥 마진만 지킴)만 캡으로 강제하고, 캡에 걸리면 관측
-        # 가능하게 경고한다.
+        # 가능하게 경고한다. 캡과 안전영역의 판정은 `safe_area_fit` 하나다.
         if fit_config.get("conform") is not None:
             raise SystemExit(
                 "fit.conform was removed (maintainer 2026-07-14/17): native logical size is "
                 "the only behavior — squashing to logical_height merges cells and eats "
                 "detail. Remove the key from sprite-request.json.")
-        cap_w = max(1, cell_width // pp_scale)
-        cap_h = max(1, (cell_height - safe_margin_y) // pp_scale)
-        over = [f"{i}:{s.width}x{s.height}" for i, s in enumerate(snapped)
-                if s.width > cap_w or s.height > cap_h]
+        fit = safe_area_fit([(s.width, s.height) for s in snapped], cell_width, cell_height,
+                            safe_margin_x, safe_margin_y, pp_scale)
+        (cap_w, cap_h), (safe_w, safe_h) = fit["cap"], fit["safe"]
+        over = [f"{i}:{snapped[i].width}x{snapped[i].height}" for i in fit["over"]]
         if over:
             all_warnings.append(
                 f"{tag}: native logical exceeds the physical cap "
                 f"{cap_w}x{cap_h} — capped frames (reroll candidates): {', '.join(over)}")
         # 안전영역(사방 여백 준수 상한)은 넘었지만 물리캡 이내 = 여백 침범.
         # 리롤 대상 아님 — 정보성 알림만 (maintainer 확정 2026-07-14).
-        safe_w = max(1, (cell_width - safe_margin_x * 2) // pp_scale)
-        safe_h = max(1, (cell_height - safe_margin_y * 2) // pp_scale)
-        soft = [f"{i}:{s.width}x{s.height}" for i, s in enumerate(snapped)
-                if (s.width > safe_w or s.height > safe_h)
-                and s.width <= cap_w and s.height <= cap_h]
+        soft = [f"{i}:{snapped[i].width}x{snapped[i].height}" for i in fit["soft"]]
         if soft:
             all_warnings.append(
                 f"{tag}: frames exceed the safe area {safe_w}x{safe_h} but fit "
@@ -3776,7 +3793,7 @@ def _clear_progress(run_dir: Path) -> None:
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
     parser = _build_parser()

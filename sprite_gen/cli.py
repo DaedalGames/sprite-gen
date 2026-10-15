@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Callable
 
 from sprite_gen import _modules, gen
+from sprite_gen.audio import sound
 from sprite_gen.background import tile
 from sprite_gen.curate import anchor
 from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compose_layers, export_aseprite, export_pngs
+from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
-from sprite_gen.frames import cutout, extract, slice_sheet, unpack_atlas
-from sprite_gen.gen import gen_set, prepare, video
+from sprite_gen.frames import cutout, extract, slice_sheet, ui_kit, unpack_atlas
+from sprite_gen.gen import gen_set, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
@@ -23,6 +25,7 @@ from sprite_gen.video import clip_prompt as video_prompt
 from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
 from sprite_gen.video import follow_inspect as video_follow_inspect
+from sprite_gen.video import set_sheet as video_set_sheet
 from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
@@ -174,7 +177,7 @@ def _add_export_pngs(p: argparse.ArgumentParser) -> None:
 def _add_slice_sheet(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sheet", required=True, type=Path)
     p.add_argument("--out-dir", required=True, type=Path)
-    p.add_argument("--chroma-key", required=True, help="magenta, green, or #RRGGBB")
+    p.add_argument("--chroma-key", required=True, help=slice_sheet.CHROMA_KEY_HELP)
     p.add_argument("--grid", type=_parse_grid, default=(3, 2), help="COLSxROWS, default 3x2")
     p.add_argument("--names", help="comma-separated output names, one per cell in reading order")
     p.add_argument("--prefix", default="")
@@ -189,6 +192,10 @@ def _add_slice_sheet(p: argparse.ArgumentParser) -> None:
     p.add_argument("--spill-max-fraction", type=float, default=0.005)
     p.add_argument("--noise-min", type=int, default=slice_sheet.DEFAULT_NOISE_MIN)
     p.add_argument("--debris-fraction", type=float, default=slice_sheet.DEFAULT_DEBRIS_FRACTION)
+    p.add_argument("--alpha-floor", type=int, default=0, help=slice_sheet.ALPHA_FLOOR_HELP)
+    p.add_argument("--alpha-edge", type=int, default=2, help=slice_sheet.ALPHA_EDGE_HELP)
+    p.add_argument("--scale", choices=slice_sheet.SCALES, default="cell", help=slice_sheet.SCALE_HELP)
+    p.add_argument("--fit", choices=slice_sheet.FITS, default="none", help=slice_sheet.FIT_HELP)
 
 
 def _add_inspect(p: argparse.ArgumentParser) -> None:
@@ -242,6 +249,8 @@ def _add_correction_loop(p: argparse.ArgumentParser) -> None:
 
 
 COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callable[..., int]]] = {
+    "game-pack": ("Resize finished assets into game atlases with playback policies.", game_pack.add_arguments, game_pack.run),
+    "sound": ("Generate a named game sound or instrumental music with browser audio exports.", sound.add_arguments, sound.run),
     "background-tile": ("Quilt a repeating RGBA background and measure its join.", tile.add_arguments, tile.run),
     "shadow": ("Project silhouette shadows from any supported asset.", shadow.add_arguments, shadow.run),
     "inspect-motion": ("Measure asset timing and contact evidence without changing animation.", motion.add_arguments, motion.run),
@@ -304,6 +313,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         _add_slice_sheet,
         slice_sheet.run,
     ),
+    "ui-kit": (
+        "Split a UI kit sheet drawn on the fixed layout into nine-slice elements with measured insets.",
+        ui_kit.add_arguments,
+        ui_kit.run,
+    ),
     "gen": (
         "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login, or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
         _add_gen,
@@ -319,12 +333,18 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         gen_set.add_arguments,
         gen_set.run,
     ),
+    # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
+    "pixel-draw": (
+        "Experimental: Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (ANTHROPIC_API_KEY, billed per call).",
+        pixel_draw.add_arguments,
+        pixel_draw.run,
+    ),
     "video": (
         "Animate a still (or pin a last frame / guide with references) into a verified mp4 via Grok Imagine (your own grok login or XAI_API_KEY).",
         _add_video,
         video.run,
     ),
-    # Same declaration-once rule: the module owns the argument surface. Both verbs force
+    # Same declaration-once rule: the module owns the argument surface. Extend and edit force
     # the classic model and inherit resolution/length from the input clip (docs/video.md).
     "video-extend": (
         "Continue an existing clip by N seconds via Grok Imagine (POST /v1/videos/extensions).",
@@ -335,6 +355,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Edit an existing clip (≤ 8.7 s) with a prompt via Grok Imagine (POST /v1/videos/edits).",
         video.add_edit_arguments,
         video.run_edit,
+    ),
+    "video-resume": (
+        "Ask again for a clip a video / video-extend / video-edit run left unfinished, by its request_id (no new POST, nothing bought twice).",
+        video.add_resume_arguments,
+        video.run_resume,
     ),
     # Video -> sprite pipeline (docs/video-pipeline.md): canvas -> video -> frames -> loop, or video-set for a batch.
     "video-canvas": (
@@ -399,6 +424,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Where video-follow carries each region in every cell and what it would change there, with nothing moved: a record and two boards of every cell, for whoever says what is inside an ellipse.",
         video_follow_inspect.add_arguments,
         video_follow_inspect.run,
+    ),
+    "video-set-sheet": (
+        "The directions of one set on one sheet: rows in compass order (S SW W NW N NE E SE), one cell holding every body box, one ground line under every cell, no row scaled; an optional centre picture stood on the same line at the rows' standing height.",
+        video_set_sheet.add_arguments,
+        video_set_sheet.run,
     ),
     "rife": (
         "install: download the pinned RIFE (rife-ncnn-vulkan, sha256-checked) into the user data directory, where the loop repair finds it.",

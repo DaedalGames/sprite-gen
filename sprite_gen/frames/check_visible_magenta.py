@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 from PIL import Image
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 
 def is_visible_magenta(r: int, g: int, b: int, a: int, args: argparse.Namespace) -> bool:
@@ -37,24 +38,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 def _run(args: argparse.Namespace):
 
     image = Image.open(args.image).convert("RGBA")
@@ -94,7 +77,7 @@ def _run(args: argparse.Namespace):
 
 
 def run(**kwargs: object):
-    return _run(_namespace_from_kwargs(**kwargs))
+    return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
     parser = _build_parser()

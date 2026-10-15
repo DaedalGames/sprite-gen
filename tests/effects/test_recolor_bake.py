@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image
 
 import sprite_gen.effects.recolor as recolor
+from sprite_gen.util.hexcolor import format_hex
 
 # Flat art colours in the fixture sheet.
 COAT = (180, 40, 40)      # mapped by every variant
@@ -37,7 +38,7 @@ def _build_sheet(path: Path) -> None:
 
 
 def _spec(path: Path, *, match: str = "exact", tolerance: int = 0, extra_source: bool = False) -> None:
-    variant_map = {recolor.format_hex(COAT): "#14c814"}
+    variant_map = {format_hex(COAT, lower=True): "#14c814"}
     if extra_source:
         variant_map["#010203"] = "#ffffff"  # source absent from the sheet -> unused
     spec = {
@@ -47,7 +48,7 @@ def _spec(path: Path, *, match: str = "exact", tolerance: int = 0, extra_source:
         "tolerance": tolerance,
         "variants": [
             {"name": "green", "map": variant_map},
-            {"name": "gold", "map": {recolor.format_hex(COAT): "#f0c000"}},
+            {"name": "gold", "map": {format_hex(COAT, lower=True): "#f0c000"}},
         ],
     }
     path.write_text(json.dumps(spec), encoding="utf-8")
@@ -101,7 +102,7 @@ def test_report_names_substitutions_passthrough_and_unused(tmp_path: Path) -> No
     green = next(v for v in report["variants"] if v["name"] == "green")
 
     # 4 COAT pixels swapped (the sub-threshold one does not count).
-    hit = next(s for s in green["substitutions"] if s["from"] == recolor.format_hex(COAT))
+    hit = next(s for s in green["substitutions"] if s["from"] == format_hex(COAT, lower=True))
     assert hit["pixels"] == 4
     assert green["substituted_pixels"] == 4
 
@@ -110,9 +111,9 @@ def test_report_names_substitutions_passthrough_and_unused(tmp_path: Path) -> No
 
     # TRIM, GLOW, NEAR_COAT pass through — named and counted, never dropped.
     passthrough = {c["hex"]: c["pixels"] for c in green["passthrough_colors"]}
-    assert passthrough[recolor.format_hex(TRIM)] == 2
-    assert passthrough[recolor.format_hex(GLOW)] == 2
-    assert passthrough[recolor.format_hex(NEAR_COAT)] == 1
+    assert passthrough[format_hex(TRIM, lower=True)] == 2
+    assert passthrough[format_hex(GLOW, lower=True)] == 2
+    assert passthrough[format_hex(NEAR_COAT, lower=True)] == 1
     assert green["passthrough_pixels"] == 5
     assert green["passthrough_color_count"] == 3
 
@@ -129,7 +130,7 @@ def test_tolerance_matches_near_colour_nearest_wins(tmp_path: Path) -> None:
     # NEAR_COAT (2 away) now snaps to COAT's target under tolerance 3.
     assert tuple(baked[2, 0, :3]) == (0x14, 0xc8, 0x14)
     green = next(v for v in report["variants"] if v["name"] == "green")
-    hit = next(s for s in green["substitutions"] if s["from"] == recolor.format_hex(COAT))
+    hit = next(s for s in green["substitutions"] if s["from"] == format_hex(COAT, lower=True))
     assert hit["pixels"] == 5  # 4 exact + 1 near
 
 
@@ -153,9 +154,9 @@ def test_extract_palette_orders_by_frequency(tmp_path: Path) -> None:
 
     hexes = [c["hex"] for c in palette["colors"]]
     # COAT is the most frequent opaque colour (4 px), so it leads.
-    assert hexes[0] == recolor.format_hex(COAT)
+    assert hexes[0] == format_hex(COAT, lower=True)
     # Sub-threshold pixel excluded -> COAT count is 4, not 5.
-    coat = next(c for c in palette["colors"] if c["hex"] == recolor.format_hex(COAT))
+    coat = next(c for c in palette["colors"] if c["hex"] == format_hex(COAT, lower=True))
     assert coat["pixels"] == 4
     assert palette["color_count"] == len(palette["colors"])
 

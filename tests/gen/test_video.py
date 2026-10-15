@@ -4,15 +4,21 @@ verified mp4 publishing, and loud failures. No network — the HTTP layer is a f
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
+import socket
+import threading
+import time
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from sprite_gen.gen import video
+from sprite_gen.gen import video, xai
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
@@ -44,13 +50,13 @@ class _FakeApi:
         self.downloads: list[str] = []
         self.payload = MP4
 
-    def call(self, method, url, token, body):
+    def call(self, method, url, token, body, *, deadline=None):
         self.calls.append((method, url, token, body))
         if method == "POST":
             return self.post
         return self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
 
-    def download(self, url, token):
+    def download(self, url, token, *, deadline=None):
         self.downloads.append(url)
         return self.payload
 
@@ -172,8 +178,8 @@ def test_audio_default_is_left_to_the_api(tmp_path: Path) -> None:
         ((403, {"code": "unauthenticated:bad-credentials", "error": "The OAuth2 access token could not be validated."}), None, "rejected the credential \\(grok-login\\) with HTTP 403"),
         ((200, {"request_id": "r"}), [(200, {"status": "failed", "error": "nsfw"})], "status='failed'"),
         ((200, {"request_id": "r"}), [(200, {"status": "expired"})], "status='expired'"),
-        ((200, {"request_id": "r"}), [(500, {"raw": "boom"})], "HTTP 500"),
-        ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "reported no video url"),
+        ((200, {"request_id": "r"}), [(404, {"raw": "boom"})], "HTTP 404"),
+        ((200, {"request_id": "r"}), [(200, {"status": "done", "video": {}})], "poll named no video url to download"),
     ],
 )
 def test_api_failures_are_named_and_write_nothing(tmp_path: Path, post, polls, expected) -> None:
@@ -204,15 +210,6 @@ def test_poll_timeout_fails_loud(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     with pytest.raises(SystemExit, match="poll timeout"):
         video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=sleep, poll_timeout=10)
-    assert not request.out.exists()
-
-
-def test_non_mp4_download_is_refused(tmp_path: Path) -> None:
-    api = _FakeApi()
-    api.payload = b"<html>not a video</html>"
-    request = _request(tmp_path)
-    with pytest.raises(SystemExit, match="not an mp4"):
-        video.generate_video(request, credential=video.Credential("t", "XAI_API_KEY"), call=api.call, download=api.download, sleep=lambda s: None)
     assert not request.out.exists()
 
 
@@ -313,7 +310,7 @@ def test_uninspectable_login_never_permits_api_credit(tmp_path, monkeypatch):
         video.resolve_credential(env={"XAI_API_KEY": "console-key"}, now=NOW)
 
 
-@pytest.mark.parametrize("status", [200, 403, 429])
+@pytest.mark.parametrize("status", [200, 403, 503])
 def test_video_uses_subscription_with_api_key_present(tmp_path, monkeypatch, status):
     monkeypatch.setenv("GROK_HOME", str(_login_file(tmp_path, key="subscription-token", expires_at="2100-01-01T00:00:00Z")))
     monkeypatch.setenv("XAI_API_KEY", "console-key")
@@ -372,10 +369,10 @@ def test_every_verb_announces_the_charge_before_the_request_leaves(tmp_path: Pat
     api = _FakeApi()
     heard: list[str] = []
 
-    def call(method, url, token, body):
+    def call(method, url, token, body, **kw):
         if method == "POST":
             heard.append(capsys.readouterr().err)  # everything said before the job was submitted
-        return api.call(method, url, token, body)
+        return api.call(method, url, token, body, **kw)
 
     _billed_run(verb, tmp_path, credential=video.Credential("console-key", video.AUTH_SOURCE_API_KEY),
                 call=call, download=api.download, sleep=lambda s: None)
@@ -535,3 +532,1045 @@ def test_a_refused_request_names_a_well_formed_code(tmp_path: Path, post, prefix
     message, _ = _refused(tmp_path, _FakeApi(post=post))
     assert message.startswith(prefix)
     assert HTTP_STATUS.search(message).group(1) == str(post[0])
+
+
+# --- a poll answered 429 or 5xx ----------------------------------------------
+# The POST was accepted, so xAI may bill the clip whatever its polls answer. A poll the
+# provider throttles (429) or fails on its side (5xx) asks the same request again; ending
+# the run there sends a caller that retries on `(HTTP 429)` (video-set, a product's
+# backoff) to submit a second clip and pay for both.
+
+DONE = (200, {"status": "done", "video": {"url": "https://vidgen.x.ai/v/1.mp4", "duration": 6.0}, "model": "grok-imagine-video-1.5"})
+
+
+def _clock(monkeypatch) -> tuple[dict, list[float], object]:
+    clock = {"t": 0.0}
+    slept: list[float] = []
+    monkeypatch.setattr(video.time, "monotonic", lambda: clock["t"])
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    return clock, slept, sleep
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_a_throttled_poll_asks_the_same_request_again_and_publishes(tmp_path: Path, status) -> None:
+    api = _FakeApi(polls=[(status, {"code": "synthetic", "error": "slow down"}), (status, {"error": "slow down"}),
+                          (200, {"status": "pending"}), DONE])
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=api.call, download=api.download, sleep=slept.append)
+    assert [call[0] for call in api.calls] == ["POST", "GET", "GET", "GET", "GET"]
+    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    # The wait doubles from the poll interval while the polls are refused; an answer puts it back.
+    assert slept == [video.POLL_INTERVAL_SECONDS * 2, video.POLL_INTERVAL_SECONDS * 4, video.POLL_INTERVAL_SECONDS]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert payload["request_id"] == "req-1" and payload["polls"] == 4 and payload["polls_refused"] == 2
+
+
+def test_a_clip_whose_polls_were_never_refused_reports_no_retry(tmp_path: Path) -> None:
+    api = _FakeApi()
+    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
+    assert payload["polls"] == 1 and payload["polls_refused"] == 0
+
+
+def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_again(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi(polls=[(429, {"code": "synthetic", "error": "slow down"})])
+    clock, slept, sleep = _clock(monkeypatch)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=api.call, download=api.download, sleep=sleep, poll_timeout=300)
+    assert isinstance(unfinished.value, SystemExit)
+    assert [call[0] for call in api.calls].count("POST") == 1
+    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    # Doubling, held at the ceiling; the poll at 296 s would wait past the timeout for the next, so it is the last.
+    assert slept == [8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
+    assert clock["t"] == 296 and len(api.calls) == 1 + 8
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 was accepted, but its polls were refused (last answer 429) until the "
+                       "poll timeout (300s, 8 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       f"again with `sprite-gen video-resume --request-id req-1 --out {request.out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    # No `(HTTP n)`, a refusal line's status: a caller reading `(HTTP 429)` sends the request again.
+    assert HTTP_STATUS.search(message) is None
+    assert "HTTP 429" not in message + capsys.readouterr().err
+    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.polls) == ("req-1", 429, 8)
+    assert not request.out.exists() and not list(tmp_path.glob("*.part")) and api.downloads == []
+
+
+def test_a_poll_timeout_while_pending_names_the_request_to_ask_again(tmp_path: Path, monkeypatch) -> None:
+    api = _FakeApi(polls=[(200, {"status": "pending"})])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                             call=api.call, download=api.download, sleep=sleep, poll_timeout=10)
+    message = str(unfinished.value)
+    assert message.startswith("video: generation req-1 still 'pending' after 3 polls — poll timeout; ")
+    assert "request_id=req-1" in message and HTTP_STATUS.search(message) is None
+    assert (unfinished.value.request_id, unfinished.value.last_http, unfinished.value.last_status) == ("req-1", 200, "pending")
+
+
+@pytest.mark.parametrize("status", [400, 404])
+def test_a_poll_refused_for_good_ends_at_once_with_its_status(tmp_path: Path, status) -> None:
+    api = _FakeApi(polls=[(status, {"error": "synthetic"})])
+    message, _ = _refused(tmp_path, api)
+    assert len(api.calls) == 2
+    assert HTTP_STATUS.search(message).group(1) == str(status)
+
+
+@pytest.mark.parametrize("status", [400, 500, 503])
+def test_a_refused_submission_is_never_sent_again(tmp_path: Path, status) -> None:
+    """A POST is sent again only on an answer xAI documents as a request not taken, 429 (gen.retry):
+    any other refusal may have been worked on, and it keeps `(HTTP n)` for the caller."""
+    api = _FakeApi(post=(status, {"error": "refused"}))
+    message, _ = _refused(tmp_path, api)
+    assert [call[0] for call in api.calls] == ["POST"]
+    assert HTTP_STATUS.search(message).group(1) == str(status)
+
+
+def test_a_rate_limited_submission_is_sent_again_and_the_poll_timeout_counts_from_the_send_it_answered(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """xAI's 429 ("reached the rate limit") made nothing: the POST goes again after the doubling wait the
+    polls wait by, and the poll timeout starts at the send that was accepted, not the first one."""
+    clock, slept, sleep = _clock(monkeypatch)
+    answers = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, {"request_id": "req-1"})]
+    api = _FakeApi()
+    api.post = None
+    real_call = api.call
+
+    def call(method, url, token, body, *, deadline=None):
+        if method == "POST":
+            api.calls.append((method, url, token, body))
+            return answers.pop(0)
+        assert deadline == 8.0 + 30  # the accepted send came after the 8 s wait
+        return real_call(method, url, token, body, deadline=deadline)
+
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=call, download=api.download, sleep=sleep, poll_timeout=30)
+    assert [c[0] for c in api.calls] == ["POST", "POST", "GET"] and slept == [8.0]
+    assert result.out.read_bytes() == MP4
+    assert "[video] xai refused the request (429 resource-exhausted); nothing was made — asking again in 8s (1 of 2)" \
+        in capsys.readouterr().err
+
+
+def test_a_rate_limit_still_there_after_two_more_sends_keeps_its_status_for_the_caller(tmp_path: Path) -> None:
+    api = _FakeApi(post=(429, {"error": "slow down"}))
+    message, _ = _refused(tmp_path, api)
+    assert [call[0] for call in api.calls] == ["POST"] * 3
+    assert HTTP_STATUS.search(message).group(1) == "429"
+
+
+def test_the_cli_leaves_an_unfinished_report_naming_the_request(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi(polls=[(503, {"error": "unavailable"})])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video, "http_json", api.call)
+    monkeypatch.setattr(video, "http_download", api.download)
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", 30)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished):
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 3,
+        "polls_refused": 3,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 503, "status": None},
+        "elapsed_seconds": 24.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists()
+
+
+# --- a poll that gets no answer, or whose credential xAI rejects ----------------------
+# The POST was accepted either way, so the run must leave the request's id. A poll lost on the
+# way (the connection failed or timed out) is a GET, safe to ask again like a refused one; a
+# poll whose credential is rejected ends unfinished at once — that token will not mend itself.
+
+LOST = "lost"  # a scripted poll that gets no HTTP answer
+
+
+class _LossyApi(_FakeApi):
+    def call(self, method, url, token, body, *, deadline=None):
+        reply = super().call(method, url, token, body)
+        if reply == LOST:
+            raise video.TransportError("timed out")
+        return reply
+
+
+@pytest.mark.parametrize(("raised", "reason"), [
+    (urllib.error.URLError("[Errno 8] nodename nor servname provided"), "[Errno 8] nodename nor servname provided"),
+    (urllib.error.URLError(TimeoutError("timed out")), "timed out"),
+    (TimeoutError("timed out"), "timed out"),
+    (TimeoutError(), "TimeoutError"),
+    (ConnectionResetError(54, "Connection reset by peer"), "[Errno 54] Connection reset by peer"),
+], ids=["dns", "url-timeout", "timeout", "bare-timeout", "reset"])
+def test_http_json_names_a_request_that_got_no_answer(monkeypatch, raised, reason) -> None:
+    """Still the SystemExit and line it always was; the type lets a caller that may ask again catch it."""
+    def urlopen(request, *, timeout):
+        raise raised
+
+    monkeypatch.setattr(xai.urllib.request, "urlopen", urlopen)
+    with pytest.raises(xai.TransportError) as lost:
+        xai.http_json("GET", f"{xai.API_BASE}/videos/req-1", "t")
+    assert isinstance(lost.value, SystemExit) and video.TransportError is xai.TransportError
+    assert str(lost.value) == "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
+    assert lost.value.reason == reason
+
+
+def test_a_poll_that_gets_no_answer_is_asked_again_and_publishes(tmp_path: Path, capsys) -> None:
+    api = _LossyApi(polls=[LOST, (200, {"status": "pending"}), (503, {"error": "unavailable"}), LOST, DONE])
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=api.call, download=api.download, sleep=slept.append)
+    assert [call[0] for call in api.calls] == ["POST", "GET", "GET", "GET", "GET", "GET"]
+    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    # A lost poll waits like a refused one, and a refused poll then a lost one are two in a row.
+    assert slept == [8.0, 4.0, 8.0, 16.0]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert (payload["polls"], payload["polls_refused"], payload["polls_unanswered"]) == (5, 1, 2)
+    assert "[video] poll 1 of generation req-1 got no answer (timed out); asking again in 8s" in capsys.readouterr().err
+
+
+def test_a_clip_whose_polls_were_all_answered_reports_none_unanswered(tmp_path: Path) -> None:
+    api = _FakeApi()
+    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
+    assert payload["polls_unanswered"] == 0
+
+
+def test_polls_that_get_no_answer_until_the_poll_timeout_end_unfinished_naming_the_request(tmp_path: Path, monkeypatch) -> None:
+    api = _LossyApi(polls=[LOST])
+    clock, slept, sleep = _clock(monkeypatch)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=api.call, download=api.download, sleep=sleep, poll_timeout=30)
+    assert [call[0] for call in api.calls].count("POST") == 1
+    assert slept == [8.0, 16.0] and clock["t"] == 24 and len(api.calls) == 1 + 3
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 was accepted, but its polls got no answer (last: timed out) until the "
+                       "poll timeout (30s, 3 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       f"again with `sprite-gen video-resume --request-id req-1 --out {request.out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    report = unfinished.value.to_dict()
+    assert (report["polls"], report["polls_refused"], report["polls_unanswered"]) == (3, 0, 3)
+    assert report["last_poll"] == {"http": None, "status": None, "error": "timed out"}
+    assert not request.out.exists() and not list(tmp_path.glob("*.part")) and api.downloads == []
+
+
+def test_a_submission_that_gets_no_answer_is_not_unfinished_and_is_never_sent_again(tmp_path: Path) -> None:
+    """No request_id came back, so there is nothing to ask for: the POST's line stays as it was."""
+    calls: list[str] = []
+
+    def call(method, url, token, body):
+        calls.append(method)
+        raise video.TransportError("timed out")
+
+    with pytest.raises(SystemExit) as failed:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=call, download=lambda url, token, **_: MP4, sleep=lambda s: None)
+    assert not isinstance(failed.value, video.GenerationUnfinished)
+    assert calls == ["POST"] and "no automatic retry" in str(failed.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize(("source", "fix"), [
+    (video.AUTH_SOURCE_GROK_LOGIN, f"refresh the login with `{video.GROK_REFRESH_COMMAND}` run {video.GROK_REFRESH_WHERE} "
+                                   f"or `{video.GROK_LOGIN_COMMAND}`"),
+    (video.AUTH_SOURCE_API_KEY, f"check the {video.AUTH_ENV} value"),
+], ids=["grok-login", "api-key"])
+def test_a_poll_whose_credential_is_rejected_ends_unfinished_at_once(tmp_path: Path, status, source, fix) -> None:
+    api = _FakeApi(polls=[(200, {"status": "pending"}), (status, {"error": "token expired"})])
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", source),
+                             call=api.call, download=api.download, sleep=lambda s: None)
+    assert [call[0] for call in api.calls] == ["POST", "GET", "GET"]
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 was accepted, but xAI rejected the credential ({source}) on poll 2 "
+                       f"(answer {status}); it may still finish and be billed — {fix}, then ask for request_id=req-1 "
+                       f"again with `sprite-gen video-resume --request-id req-1 --out {request.out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None and f"HTTP {status}" not in message
+    report = unfinished.value.to_dict()
+    assert (report["request_id"], report["polls"], report["last_poll"]) == ("req-1", 2, {"http": status, "status": None})
+    assert not request.out.exists() and api.downloads == []
+
+
+# --- video-resume: an accepted request asked for again by its id ----------------------
+# The request an unfinished run named is polled, downloaded and published — no POST, so nothing
+# is bought twice. A resume cut short again is unfinished on the same id.
+
+RESUMED = video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN)
+
+
+def _resume(tmp_path: Path, api: _FakeApi, request_id: str = "req-7", **kwargs) -> video.VideoResult:
+    return video.resume_video(video.ResumeRequest(request_id=request_id, out=tmp_path / "clip.mp4"),
+                              call=api.call, download=api.download, **{"credential": RESUMED, "sleep": lambda s: None, **kwargs})
+
+
+def test_resume_polls_the_request_without_a_submission_and_publishes(tmp_path: Path, capsys) -> None:
+    api = _FakeApi(polls=[(429, {"error": "slow down"}), (200, {"status": "pending"}), DONE])
+    result = _resume(tmp_path, api, credential=video.Credential("xai-console", video.AUTH_SOURCE_API_KEY))
+    assert [call[0] for call in api.calls] == ["GET", "GET", "GET"]
+    assert {call[1] for call in api.calls} == {f"{video.API_BASE}/videos/req-7"}
+    assert result.out == (tmp_path / "clip.mp4").resolve() and result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert payload["kind"] == "sprite-gen-video-report" and payload["mode"] == "resume"
+    assert (payload["request_id"], payload["polls"], payload["polls_refused"]) == ("req-7", 3, 1)
+    assert payload["model"] == "grok-imagine-video-1.5" and payload["duration_reported"] == 6.0
+    assert payload["duration_requested"] is None and payload["inputs"] == {} and payload["auth_source"] == "XAI_API_KEY"
+    # Nothing new is bought, so the API-key route announces no charge.
+    assert "per-call API charge" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("scripted", ["refused", "lost", "pending"])
+def test_a_resume_cut_short_again_is_unfinished_on_the_same_request(tmp_path: Path, monkeypatch, scripted) -> None:
+    poll = {"refused": (429, {"error": "slow down"}), "lost": LOST, "pending": (200, {"status": "pending"})}[scripted]
+    api = _LossyApi(polls=[poll])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        _resume(tmp_path, api, sleep=sleep, poll_timeout=30)
+    assert "POST" not in [call[0] for call in api.calls]
+    message = str(unfinished.value)
+    assert message.startswith("video-resume: generation req-7 ")
+    assert message.endswith("it may still finish and be billed — ask for request_id=req-7 again with "
+                            f"`sprite-gen video-resume --request-id req-7 --out {(tmp_path / 'clip.mp4').resolve()}` "
+                            "instead of submitting a new request; nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["verb"], report["request_id"], report["model"]) == ("video-resume", "req-7", None)
+    assert not (tmp_path / "clip.mp4").exists()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_resume_whose_credential_is_rejected_is_unfinished_on_the_same_request(tmp_path: Path, status) -> None:
+    api = _FakeApi(polls=[(status, {"error": "token expired"})])
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        _resume(tmp_path, api)
+    assert [call[0] for call in api.calls] == ["GET"]
+    assert str(unfinished.value).startswith(
+        f"video-resume: generation req-7 was accepted, but xAI rejected the credential (grok-login) on poll 1 (answer {status}); ")
+
+
+def test_a_resume_of_a_request_xai_does_not_know_ends_with_its_status(tmp_path: Path) -> None:
+    api = _FakeApi(polls=[(404, {"error": "not found"})])
+    with pytest.raises(SystemExit) as refused:
+        _resume(tmp_path, api)
+    assert not isinstance(refused.value, video.GenerationUnfinished)
+    assert str(refused.value).startswith("video-resume: generation req-7 ")
+    assert HTTP_STATUS.search(str(refused.value)).group(1) == "404"
+    assert not (tmp_path / "clip.mp4").exists()
+
+
+@pytest.mark.parametrize("request_id", ["", "  ", "req/../1", "req-1?x=1", "req 1", "req#1", "%2e%2e", "-req"])
+def test_resume_refuses_what_cannot_be_a_request_id_before_any_call(tmp_path: Path, request_id) -> None:
+    api = _FakeApi()
+    with pytest.raises(SystemExit, match="video-resume: --request-id"):
+        _resume(tmp_path, api, request_id=request_id)
+    assert api.calls == []
+
+
+def test_the_resume_cli_writes_the_report_and_prints_it(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi()
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: RESUMED)
+    monkeypatch.setattr(video, "http_json", api.call)
+    monkeypatch.setattr(video, "http_download", api.download)
+    monkeypatch.setattr(video.time, "sleep", lambda s: None)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    assert video.run_resume(request_id="req-7", out=out, report=report) == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert (payload["mode"], payload["request_id"], payload["out"]) == ("resume", "req-7", str(out.resolve()))
+    assert json.loads(capsys.readouterr().out)["report"] == str(report.resolve())
+    assert [call[0] for call in api.calls] == ["GET"] and out.read_bytes() == MP4
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        video.run_resume(request_id="req-7", out=out, prompt="p")
+
+
+def test_the_resume_cli_leaves_an_unfinished_report_on_the_same_request(tmp_path: Path, monkeypatch, capsys) -> None:
+    api = _FakeApi(polls=[(200, {"status": "pending"})])
+    _clock_state, _slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: RESUMED)
+    monkeypatch.setattr(video, "http_json", api.call)
+    monkeypatch.setattr(video, "http_download", api.download)
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", 10)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished):
+        video.run_resume(request_id="req-7", out=out, report=report)
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video-resume",
+        "auth_source": "grok-login",
+        "model": None,
+        "request_id": "req-7",
+        "out": str(out.resolve()),
+        "polls": 3,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "pending"},
+        "elapsed_seconds": 8.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists()
+
+
+def test_the_unified_cli_routes_video_resume_under_gen() -> None:
+    from sprite_gen import cli
+
+    assert "video-resume" in cli.command_domains()["gen"]
+    parser = cli._build_parser()
+    args = parser.parse_args(["video-resume", "--request-id", "req-7", "--out", "o.mp4", "--report", "r.json"])
+    assert (args.command, args.request_id, args.out, args.report) == ("video-resume", "req-7", Path("o.mp4"), Path("r.json"))
+    for missing in (["--out", "o.mp4"], ["--request-id", "req-7"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["video-resume", *missing])
+
+
+# --- an answer cut short, garbled or not JSON, over a real socket ---------------------
+# A poll whose answer began and broke (the body ends before its Content-Length, the status line is
+# not one) or came whole but is not JSON gave the run nothing to read: it is asked again on the same
+# request like a lost one, and at the poll timeout the run is unfinished on that id — never an
+# exception that leaves no id behind. A local server answers over a real socket, so http.client
+# raises what it raises on the wire.
+
+
+def _answer(status: str, body: bytes, *, length: int | None = None, content_type: str = "application/json") -> bytes:
+    """A raw HTTP/1.1 answer whose Content-Length says `length` (by default the body's own)."""
+    head = (f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n"
+            f"Content-Length: {len(body) if length is None else length}\r\nConnection: close\r\n\r\n")
+    return head.encode("latin-1") + body
+
+
+ACCEPTED = _answer("200 OK", b'{"request_id": "req-1"}')
+CUT = _answer("200 OK", b'{"status":', length=200)  # 10 of 200 bytes, then the connection closes
+CUT_REFUSAL = _answer("503 Service Unavailable", b'{"error":', length=200)  # a refusal's body cut the same way
+GARBLED = b"garbage\r\n"  # where the status line should be
+NOT_JSON = _answer("200 OK", b"<html>upstream busy</html>")  # whole, and not JSON
+PENDING_ON_WIRE = _answer("200 OK", b'{"status": "pending"}')
+DONE_ON_WIRE = _answer("200 OK", json.dumps(DONE[1]).encode("utf-8"))
+CUT_SAID = "IncompleteRead(10 bytes read, 190 more expected)"
+
+
+class _Hold:
+    """Scripted bytes after which the server holds the connection open, until the client gives up and closes it."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+
+class _Trickle:
+    """A scripted answer whose head comes at once and whose body comes a byte every `every` seconds — an
+    answer that keeps coming, too slowly for one read's timeout ever to fire — then the connection closes."""
+
+    def __init__(self, head: bytes, body: bytes, every: float) -> None:
+        self.head, self.body, self.every = head, body, every
+
+
+class _Wire:
+    """A local xAI on 127.0.0.1: each request, read whole, gets the next scripted bytes (the last one
+    repeats), then the server closes the connection whatever its Content-Length promised — or, for a
+    `_Hold`, keeps it open until the client closes it; a `_Trickle` comes as it says, until the client
+    closes."""
+
+    def __init__(self, answers: list[bytes | _Hold | _Trickle]) -> None:
+        self.answers = list(answers)
+        self.seen: list[tuple[str, str]] = []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.listener.settimeout(0.1)
+        self.root = f"http://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.base = f"{self.root}/v1"
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while not self.stopped.is_set():
+            try:
+                conn, _ = self.listener.accept()
+            except TimeoutError:
+                continue
+            with conn:
+                conn.settimeout(5)
+                received = b""
+                while b"\r\n\r\n" not in received:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    received += chunk
+                head, _, body = received.partition(b"\r\n\r\n")
+                lines = head.decode("latin-1").split("\r\n")
+                length = next((int(line.split(":", 1)[1]) for line in lines[1:]
+                               if line.lower().startswith("content-length:")), 0)
+                while len(body) < length:  # a body left unread would make the close a reset
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    body += chunk
+                method, path = lines[0].split(" ")[:2]
+                self.seen.append((method, path))
+                answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+                if isinstance(answer, _Hold):
+                    conn.sendall(answer.data)
+                    try:
+                        while conn.recv(65536):
+                            pass
+                    except OSError:
+                        pass
+                elif isinstance(answer, _Trickle):
+                    try:
+                        conn.sendall(answer.head)
+                        for at in range(len(answer.body)):
+                            if self.stopped.wait(answer.every):
+                                break
+                            conn.sendall(answer.body[at:at + 1])
+                        conn.shutdown(socket.SHUT_WR)
+                    except OSError:  # the client gave up and closed
+                        pass
+                else:
+                    conn.sendall(answer)
+                    conn.shutdown(socket.SHUT_WR)
+
+    def close(self) -> None:
+        self.stopped.set()
+        self.thread.join(5)
+        self.listener.close()
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    """`wire(*answers)` starts a _Wire and points every xAI URL of the video module at it."""
+    started: list[_Wire] = []
+
+    def serve(*answers: bytes | _Hold | _Trickle) -> _Wire:
+        server = _Wire(list(answers))
+        started.append(server)
+        monkeypatch.setattr(video, "API_BASE", server.base)
+        return server
+
+    yield serve
+    for server in started:
+        server.close()
+
+
+def _on_wire(method, url, token, body, **deadline):
+    # The real transport, with a timeout a test can wait out if the server ever stalls, and the run's deadline.
+    return xai.http_json(method, url, token, body, timeout=5, **deadline)
+
+
+@pytest.mark.parametrize(("answer", "line", "reason"), [
+    (CUT, xai.TRANSPORT_FAILED, CUT_SAID),
+    (CUT_REFUSAL, xai.TRANSPORT_FAILED, "IncompleteRead(9 bytes read, 191 more expected)"),
+    (GARBLED, xai.TRANSPORT_FAILED, "BadStatusLine('garbage\\r\\n')"),
+    (NOT_JSON, "xai: response was not valid JSON", "response was not valid JSON"),
+], ids=["cut", "cut-refusal", "garbled", "not-json"])
+@pytest.mark.parametrize("bounded", [False, True], ids=["no-deadline", "deadline"])
+def test_http_json_reads_an_answer_it_cannot_read_whole_as_no_answer(wire, answer, line, reason, bounded) -> None:
+    """The line each always had — the transport's, or the not-JSON one — on the type a poll asks again on,
+    whether or not a deadline bounds the read (a body read a chunk at a time still knows it was cut short)."""
+    server = wire(answer)
+    with pytest.raises(xai.TransportError) as lost:
+        _on_wire("GET", f"{server.base}/videos/req-1", "t", None, **({"deadline": time.monotonic() + 60} if bounded else {}))
+    assert isinstance(lost.value, SystemExit)
+    assert (str(lost.value), lost.value.reason) == (line, reason)
+    assert server.seen == [("GET", "/v1/videos/req-1")]
+
+
+def test_a_poll_cut_short_garbled_or_not_json_is_asked_again_and_publishes(tmp_path: Path, wire, capsys) -> None:
+    server = wire(ACCEPTED, CUT, GARBLED, NOT_JSON, CUT_REFUSAL, PENDING_ON_WIRE, DONE_ON_WIRE)
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=_on_wire, download=lambda url, token, **_: MP4, sleep=slept.append)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 6
+    # Four unreadable answers in a row wait like four lost polls; the pending answer puts the wait back.
+    assert slept == [8.0, 16.0, 32.0, 60.0, 4.0]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert (payload["request_id"], payload["polls"], payload["polls_refused"], payload["polls_unanswered"]) == ("req-1", 6, 0, 4)
+    err = capsys.readouterr().err
+    assert f"[video] poll 1 of generation req-1 got no answer ({CUT_SAID}); asking again in 8s" in err
+    assert "[video] poll 3 of generation req-1 got no answer (response was not valid JSON); asking again in 32s" in err
+
+
+def test_a_resume_whose_poll_is_cut_short_asks_the_same_request_again(tmp_path: Path, wire) -> None:
+    """The validator's counterexample: a resumed poll cut 10 bytes into its 200-byte body."""
+    server = wire(CUT, DONE_ON_WIRE)
+    result = video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
+                                call=_on_wire, download=lambda url, token, **_: MP4, sleep=lambda s: None)
+    assert server.seen == [("GET", "/v1/videos/req-1")] * 2
+    assert result.out.read_bytes() == MP4 and result.to_dict()["polls_unanswered"] == 1
+
+
+def test_polls_cut_short_until_the_poll_timeout_leave_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    server = wire(ACCEPTED, CUT)
+    clock, slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", 30)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 3
+    assert slept == [8.0, 16.0] and clock["t"] == 24
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 was accepted, but its polls got no answer (last: {CUT_SAID}) until the "
+                       "poll timeout (30s, 3 polls); it may still finish and be billed — ask for request_id=req-1 "
+                       f"again with `sprite-gen video-resume --request-id req-1 --out {out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 3,
+        "polls_refused": 0,
+        "polls_unanswered": 3,
+        "last_poll": {"http": None, "status": None, "error": CUT_SAID},
+        "elapsed_seconds": 24.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_submission_cut_short_is_not_unfinished_and_is_never_sent_again(tmp_path: Path, wire) -> None:
+    """No request_id could be read, so there is nothing to ask for: the POST ends at once on the transport's line."""
+    server = wire(CUT)
+    with pytest.raises(SystemExit) as failed:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, download=lambda url, token, **_: MP4, sleep=lambda s: None)
+    assert isinstance(failed.value, xai.TransportError) and not isinstance(failed.value, video.GenerationUnfinished)
+    assert str(failed.value) == xai.TRANSPORT_FAILED and failed.value.reason == CUT_SAID
+    assert server.seen == [("POST", "/v1/videos/generations")]
+
+
+# --- a clip that is done and could not be downloaded, over a real socket ---------------
+# The poll said done: the clip is made and may be billed, and its request_id is the one way back to
+# it. A download that gets no answer it can read (the connection refused, the body cut short, a read
+# that timed out) or that the clip's host refuses with 429 or 5xx is downloaded again, up to three
+# downloads; one still failing — or refused with another status, or bytes that are not an mp4 —
+# leaves the run unfinished on that request_id, never an exception that names no request, and
+# `video-resume` polls it again for a fresh URL.
+
+CLIP = _answer("200 OK", MP4, content_type="video/mp4")
+CLIP_CUT = _answer("200 OK", MP4[:10], length=len(MP4), content_type="video/mp4")  # closes 10 bytes in
+CLIP_HELD = _Hold(CLIP_CUT)  # the same 10 bytes, then the connection stays open: the read times out
+CLIP_REFUSED = _answer("503 Service Unavailable", b"busy", content_type="text/plain")
+CLIP_GONE = _answer("404 Not Found", b"gone", content_type="text/plain")
+NOT_A_CLIP_BODY = b"<html>this link has expired</html>"
+NOT_A_CLIP = _answer("200 OK", NOT_A_CLIP_BODY, content_type="text/html")  # whole, and not an mp4
+CLIP_CUT_SAID = f"IncompleteRead(10 bytes read, {len(MP4) - 10} more expected)"
+REFUSED_SAID = f"[Errno {errno.ECONNREFUSED}] {os.strerror(errno.ECONNREFUSED)}"
+READ_TIMEOUT_SECONDS = 1.0
+SUBMITTED = [("POST", "/v1/videos/generations"), ("GET", "/v1/videos/req-1")]
+
+
+def _done_at(url: str) -> bytes:
+    """The done poll, naming the clip at `url`."""
+    return _answer("200 OK", json.dumps({**DONE[1], "video": {**DONE[1]["video"], "url": url}}).encode("utf-8"))
+
+
+def _clip_wire(wire, *downloads: bytes | _Hold | _Trickle, clip_url: str | None = None) -> _Wire:
+    """The POST accepted, one poll done naming the clip at `clip_url` (by default on the wire itself,
+    `/clips/1.mp4`), then `downloads` answer the clip's downloads in turn."""
+    server = wire()
+    server.answers = [ACCEPTED, _done_at(clip_url or f"{server.root}/clips/1.mp4"), *downloads]
+    return server
+
+
+def _refused_url() -> str:
+    """A clip URL on a port nothing holds: a free port is taken and let go, so a connection to it is refused.
+    (A port held bound and not listening is no such port on macOS: its SYN is dropped and the connect times out.)"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"http://127.0.0.1:{port}/clips/1.mp4"
+
+
+def _cli_on_wire(monkeypatch) -> list[float]:
+    """The CLI on its own transports, a read that waits READ_TIMEOUT_SECONDS for the clip, a clock its waits move."""
+    _clock_state, slept, sleep = _clock(monkeypatch)
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", sleep)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", READ_TIMEOUT_SECONDS)
+    return slept
+
+
+@pytest.mark.parametrize(("failure", "said"), [
+    ("cut", CLIP_CUT_SAID),
+    ("read-timeout", "timed out"),
+    ("refused-connection", REFUSED_SAID),
+], ids=["cut", "read-timeout", "refused-connection"])
+def test_a_clip_whose_downloads_get_no_answer_leaves_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys, failure, said) -> None:
+    if failure == "refused-connection":
+        server, downloads = _clip_wire(wire, clip_url=_refused_url()), []
+    else:
+        server = _clip_wire(wire, CLIP_CUT if failure == "cut" else CLIP_HELD)
+        downloads = [("GET", "/clips/1.mp4")] * 3
+    slept = _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    # One POST, one poll; the clip downloaded three times with waits 8 and 16 between.
+    assert server.seen == SUBMITTED + downloads
+    assert slept == [8.0, 16.0]
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 is done, but its download got no answer (last: {said}) after 3 "
+                       "attempts; the clip is made and may be billed — ask for request_id=req-1 again with "
+                       f"`sprite-gen video-resume --request-id req-1 --out {out.resolve()}` instead of submitting a "
+                       "new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "downloads": 3,
+        "last_download": {"http": None, "error": said},
+        "elapsed_seconds": 24.0,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"[video] download 1 of generation req-1 got no answer ({said}); downloading again in 8s" in captured.err
+    assert f"[video] download 2 of generation req-1 got no answer ({said}); downloading again in 16s" in captured.err
+    assert not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_cut_short_or_refused_is_downloaded_again_and_publishes(tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    server = _clip_wire(wire, CLIP_CUT, CLIP_REFUSED, CLIP)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", READ_TIMEOUT_SECONDS)
+    slept: list[float] = []
+    result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                                  call=_on_wire, sleep=slept.append)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 3
+    assert slept == [8.0, 16.0]
+    assert result.out.read_bytes() == MP4
+    payload = result.to_dict()
+    assert (payload["request_id"], payload["polls"], payload["downloads"]) == ("req-1", 1, 3)
+    err = capsys.readouterr().err
+    assert f"[video] download 1 of generation req-1 got no answer ({CLIP_CUT_SAID}); downloading again in 8s" in err
+    assert "[video] download 2 of generation req-1 was refused (503); downloading again in 16s" in err
+
+
+def test_a_clip_downloaded_whole_at_once_reports_one_download(tmp_path: Path) -> None:
+    api = _FakeApi()
+    payload = video.generate_video(_request(tmp_path), credential=video.Credential("t", "XAI_API_KEY"),
+                                   call=api.call, download=api.download, sleep=lambda s: None).to_dict()
+    assert payload["downloads"] == 1
+
+
+@pytest.mark.parametrize(("answer", "downloads", "said", "status"), [
+    (CLIP_REFUSED, 3, "was refused (last answer 503) after 3 attempts", 503),
+    (CLIP_GONE, 1, "was refused (answer 404)", 404),
+], ids=["refused-503", "gone-404"])
+def test_a_download_refused_ends_unfinished_on_the_same_request(tmp_path: Path, wire, answer, downloads, said, status) -> None:
+    """429 and 5xx are downloaded again; any other status ends at once — `video-resume` asks for a fresh URL."""
+    server = _clip_wire(wire, answer)
+    slept: list[float] = []
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=slept.append)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * downloads
+    assert slept == [8.0, 16.0][:downloads - 1]
+    message = str(unfinished.value)
+    assert message == (f"video: generation req-1 is done, but its download {said}; the clip is made and may be billed — "
+                       f"ask for request_id=req-1 again with `sprite-gen video-resume --request-id req-1 --out "
+                       f"{request.out.resolve()}` instead of submitting a new request; nothing was written")
+    # No `(HTTP n)`: a caller reading `(HTTP 503)` sends the request again and buys the clip twice.
+    assert HTTP_STATUS.search(message) is None
+    report = unfinished.value.to_dict()
+    assert (report["request_id"], report["downloads"], report["last_download"]) == ("req-1", downloads, {"http": status})
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_that_is_not_an_mp4_is_unfinished_on_the_same_request(tmp_path: Path, wire) -> None:
+    """The ruling on a failed mp4 check: bytes that came whole and are not an mp4 are not xAI's verdict on
+    the request (that is `respect_moderation`, read before the download), so the run is unfinished on its
+    id — `video-resume` polls for a fresh URL — and never a refusal that leaves only a second purchase.
+    The same URL would bring the same bytes, so it is not downloaded again."""
+    server = _clip_wire(wire, NOT_A_CLIP)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=lambda s: None)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")]
+    size = len(NOT_A_CLIP_BODY)
+    assert str(unfinished.value) == (
+        f"video: generation req-1 is done, but its download brought {size} bytes that are not an mp4 (no ftyp box); "
+        "the clip is made and may be billed — ask for request_id=req-1 again with `sprite-gen video-resume "
+        f"--request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["downloads"], report["last_download"]) == (
+        1, {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": size})
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_clip_left_unfinished_by_its_download_is_published_by_video_resume(tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    """The run's report names the request; `video-resume` on that id polls without a POST, gets the clip's
+    fresh URL and publishes it."""
+    server = _clip_wire(wire, CLIP_CUT, CLIP_CUT, CLIP_CUT)
+    server.answers += [_done_at(f"{server.root}/clips/2.mp4"), CLIP]
+    _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished):
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    left = json.loads(report.read_text(encoding="utf-8"))
+    assert (left["kind"], left["request_id"], left["downloads"]) == ("sprite-gen-video-unfinished", "req-1", 3)
+    capsys.readouterr()
+
+    assert video.run_resume(request_id=left["request_id"], out=out, report=report) == 0
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 3 + [("GET", "/v1/videos/req-1"), ("GET", "/clips/2.mp4")]
+    resumed = json.loads(report.read_text(encoding="utf-8"))
+    assert (resumed["kind"], resumed["mode"], resumed["request_id"]) == ("sprite-gen-video-report", "resume", "req-1")
+    assert (resumed["polls"], resumed["downloads"]) == (1, 1)
+    assert json.loads(capsys.readouterr().out)["report"] == str(report.resolve())
+    assert out.read_bytes() == MP4 and not list(tmp_path.glob("*.part"))
+
+
+# --- one time limit: the poll timeout bounds the polls and the downloads ------------------
+# A caller that stops the run at a hard limit (an app's clip stage) sets the poll timeout under it, and must
+# get the request_id back before that limit: a run it kills leaves no id, and the clip it may be billed for
+# can then only be bought again. So the timeout counts from the request's send, every poll and download
+# reads only what is left of it — one that stalls, or keeps coming too slowly for a read's timeout ever to
+# fire, is cut when it comes — and a poll or download whose wait would reach it is not asked: the run is
+# unfinished on the request_id then. A done poll that names nothing to download is unfinished on its id
+# too. The slow cases run on the real clock and a real socket, with a timeout of BUDGET seconds.
+
+BUDGET = 1.5  # a run's poll timeout on the real clock
+SLACK = 1.0  # what a run cut at BUDGET may take past it on a busy host; a read timeout or a wait is more
+EARLY = 0.05  # a socket's timeout may fire this much before the instant it was set for
+SLOW_CLIP = MP4 + b"\x00" * 240  # a clip whose bytes, a byte every 20 ms, come for about 6 s
+SLOW_CLIP_HEAD = _answer("200 OK", b"", length=len(SLOW_CLIP), content_type="video/mp4")  # its head alone
+PENDING_BODY = b'{"status": "pending"}'
+
+
+def _cli_on_real_clock(monkeypatch) -> list[float]:
+    """The CLI on its own transports and the real clock, its poll timeout BUDGET and its read timeout
+    longer than that — the 120 s read against what is left of a 210 s stage. Its waits are recorded,
+    not slept, so only the reads take time."""
+    slept: list[float] = []
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN))
+    monkeypatch.setattr(video.time, "sleep", slept.append)
+    monkeypatch.setattr(video, "POLL_TIMEOUT_SECONDS", BUDGET)
+    monkeypatch.setattr(video, "HTTP_TIMEOUT_SECONDS", BUDGET + 2.5)
+    return slept
+
+
+@pytest.mark.parametrize("slow", ["stalled", "trickled"])
+def test_a_download_slower_than_the_time_left_leaves_an_unfinished_report_by_the_poll_timeout(
+        tmp_path: Path, wire, monkeypatch, capsys, slow) -> None:
+    """The counterexample: a download that stalls (its read timeout longer than what is left) or that keeps
+    coming a byte at a time is cut when the poll timeout comes, and the run leaves its report naming the
+    request then — not three downloads and two waits later, when its caller has killed it."""
+    answer = (_Hold(SLOW_CLIP_HEAD + SLOW_CLIP[:10]) if slow == "stalled"
+              else _Trickle(SLOW_CLIP_HEAD, SLOW_CLIP, 0.02))
+    server = _clip_wire(wire, answer)
+    slept = _cli_on_real_clock(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    # One download, cut at the deadline; another one's wait would run past it, so none is tried.
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")]
+    assert slept == []
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 is done, but its download got no answer (last: timed out) until the "
+                       f"poll timeout ({BUDGET:g}s, 1 attempt); the clip is made and may be billed — ask for "
+                       f"request_id=req-1 again with `sprite-gen video-resume --request-id req-1 --out {out.resolve()}` "
+                       "instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    left = json.loads(report.read_text(encoding="utf-8"))
+    assert BUDGET - EARLY <= left.pop("elapsed_seconds") < BUDGET + SLACK
+    assert left == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "downloads": 1,
+        "last_download": {"http": None, "error": "timed out"},
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_whose_next_wait_would_reach_the_poll_timeout_is_not_tried_again(
+        tmp_path: Path, wire, monkeypatch, capsys) -> None:
+    """The downloads and their waits (8 s, then 16 s) run inside the poll timeout: a refused download whose
+    next wait would reach it ends the run on the request_id there, not a wait and a download later."""
+    server = _clip_wire(wire, CLIP_REFUSED)
+    clock, slept, sleep = _clock(monkeypatch)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=sleep, poll_timeout=20)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] * 2
+    assert slept == [8.0] and clock["t"] == 8.0
+    assert str(unfinished.value) == (
+        "video: generation req-1 is done, but its download was refused (last answer 503) until the poll timeout "
+        "(20s, 2 attempts); the clip is made and may be billed — ask for request_id=req-1 again with `sprite-gen "
+        f"video-resume --request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; "
+        "nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["downloads"], report["last_download"], report["elapsed_seconds"]) == (2, {"http": 503}, 8.0)
+    assert "[video] download 1 of generation req-1 was refused (503); downloading again in 8s" in capsys.readouterr().err
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.parametrize("slow", ["stalled", "trickled"])
+def test_a_poll_slower_than_the_time_left_ends_unfinished_by_the_poll_timeout(tmp_path: Path, wire, monkeypatch, slow) -> None:
+    """A poll's own read is cut by the poll timeout too: one that stalls past it, or whose answer keeps coming
+    too slowly, does not hold the run a read timeout past the limit its caller set."""
+    head = _answer("200 OK", b"", length=len(PENDING_BODY))
+    server = wire(ACCEPTED, PENDING_ON_WIRE, _Hold(head) if slow == "stalled" else _Trickle(head, PENDING_BODY, 0.2))
+    monkeypatch.setattr(video, "POLL_INTERVAL_SECONDS", 0.1)
+    slept: list[float] = []
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, download=lambda url, token, **_: MP4, sleep=slept.append, poll_timeout=BUDGET)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 2
+    assert slept == [0.1]
+    message = str(unfinished.value)
+    assert message.startswith("video: generation req-1 was accepted, but its polls got no answer (last: timed out) "
+                              f"until the poll timeout ({BUDGET:g}s, 2 polls); it may still finish and be billed — "
+                              "ask for request_id=req-1 again with ")
+    report = unfinished.value.to_dict()
+    assert BUDGET - EARLY <= report["elapsed_seconds"] < BUDGET + SLACK
+    assert (report["polls"], report["polls_unanswered"], report["last_poll"]) == (
+        2, 1, {"http": None, "status": None, "error": "timed out"})
+    assert not request.out.exists()
+
+
+def test_the_poll_timeout_counts_from_the_requests_send(tmp_path: Path, monkeypatch) -> None:
+    """A caller's limit covers the POST: the polls get what the POST's answer left of the timeout."""
+    api = _FakeApi(polls=[(200, {"status": "pending"})])
+    clock, slept, sleep = _clock(monkeypatch)
+
+    def call(method, url, token, body, **kw):
+        if method == "POST":
+            clock["t"] += 12.0  # the upload and xAI's answer took 12 of the 20 seconds
+        return api.call(method, url, token, body, **kw)
+
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=call, download=api.download, sleep=sleep, poll_timeout=20)
+    # Polls at 12 s and 16 s; a third at 20 s would have no time left to be answered.
+    assert [sent[0] for sent in api.calls] == ["POST", "GET", "GET"] and slept == [4.0]
+    assert str(unfinished.value).startswith("video: generation req-1 still 'pending' after 2 polls — poll timeout; ")
+    assert (unfinished.value.polls, unfinished.value.elapsed_seconds) == (2, 16.0)
+
+
+def test_a_request_accepted_after_the_whole_poll_timeout_is_unfinished_before_any_poll(tmp_path: Path, monkeypatch) -> None:
+    """The POST is not cut by the poll timeout — its answer is the one way to the id — and one that comes after
+    the whole of it ends the run there, naming the request, without a poll that would run past the limit."""
+    api = _FakeApi()
+    clock, slept, sleep = _clock(monkeypatch)
+
+    def call(method, url, token, body, **kw):
+        if method == "POST":
+            clock["t"] += 25.0
+        return api.call(method, url, token, body, **kw)
+
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=call, download=api.download, sleep=sleep, poll_timeout=20)
+    assert [sent[0] for sent in api.calls] == ["POST"] and slept == [] and api.downloads == []
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 was accepted after the poll timeout (20s) had run out, before any poll; "
+                       "it may still finish and be billed — ask for request_id=req-1 again with `sprite-gen video-resume "
+                       f"--request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; "
+                       "nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    report = unfinished.value.to_dict()
+    assert (report["request_id"], report["polls"], report["last_poll"], report["elapsed_seconds"]) == (
+        "req-1", 0, {"http": None, "status": None}, 25.0)
+    assert not request.out.exists()
+
+
+def _done_naming(named) -> bytes:
+    """A done poll on the wire whose `video` is `named`."""
+    return _answer("200 OK", json.dumps({"status": "done", "video": named, "model": video.DEFAULT_MODEL}).encode("utf-8"))
+
+
+@pytest.mark.parametrize("named", [
+    {"duration": 6.0},
+    {"url": "", "duration": 6.0},
+    {"url": None},
+    {"url": 7},
+    {"url": "vidgen.x.ai/v/1.mp4"},
+    "a clip",
+], ids=["no-url", "empty-url", "null-url", "a-number", "no-scheme", "not-an-object"])
+def test_a_done_poll_that_names_no_url_leaves_an_unfinished_report_naming_the_request(
+        tmp_path: Path, wire, monkeypatch, capsys, named) -> None:
+    """The second counterexample: xAI says done — the clip is made and may be billed — and names nothing the
+    run can download. The run ends unfinished on the request_id, its report left for the caller, never as a
+    refusal or a crash that leaves no id; `video-resume` polls it afresh."""
+    server = wire(ACCEPTED, _done_naming(named))
+    _cli_on_wire(monkeypatch)
+    out, report = tmp_path / "clip.mp4", tmp_path / "clip.report.json"
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.run(image=_still(tmp_path), prompt="sway", out=out, report=report)
+    assert server.seen == SUBMITTED
+    message = str(unfinished.value)
+    assert message == ("video: generation req-1 is done, but its poll named no video url to download; the clip is made "
+                       "and may be billed — ask for request_id=req-1 again with `sprite-gen video-resume --request-id "
+                       f"req-1 --out {out.resolve()}` instead of submitting a new request; nothing was written")
+    assert HTTP_STATUS.search(message) is None
+    assert json.loads(report.read_text(encoding="utf-8")) == {
+        "kind": "sprite-gen-video-unfinished",
+        "provider": "grok-imagine",
+        "verb": "video",
+        "auth_source": "grok-login",
+        "model": video.DEFAULT_MODEL,
+        "request_id": "req-1",
+        "out": str(out.resolve()),
+        "polls": 1,
+        "polls_refused": 0,
+        "polls_unanswered": 0,
+        "last_poll": {"http": 200, "status": "done"},
+        "elapsed_seconds": 0.0,
+    }
+    assert capsys.readouterr().out == "" and not out.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_a_resume_whose_done_poll_names_no_url_is_unfinished_on_the_same_request(tmp_path: Path, wire) -> None:
+    server = wire(_done_naming({"duration": 6.0}))
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.resume_video(video.ResumeRequest(request_id="req-1", out=tmp_path / "clip.mp4"), credential=RESUMED,
+                           call=_on_wire, sleep=lambda s: None)
+    assert server.seen == [("GET", "/v1/videos/req-1")]
+    assert str(unfinished.value).startswith(
+        "video-resume: generation req-1 is done, but its poll named no video url to download; ")
+    assert (unfinished.value.verb, unfinished.value.request_id) == ("video-resume", "req-1")
+    assert not (tmp_path / "clip.mp4").exists()

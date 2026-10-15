@@ -40,6 +40,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_save_image, atomic_write_text
+from sprite_gen.util.hexcolor import format_hex, parse_hex
 
 # Opaque-enough to count as art. Edge pixels below this are treated as
 # background bleed, not recolour targets (the extraction chain already soft-keys
@@ -64,21 +65,6 @@ DEFAULT_REPORT_NAME = "recolor.report.json"
 # Manifest string fields that name the atlas image, repointed per variant. Only
 # these known keys are rewritten; an unknown schema is copied verbatim.
 MANIFEST_SHEET_FIELDS = ("atlas", "game_input", "sprite_sheet_alpha", "sprite_sheet")
-
-
-def parse_hex(value: str) -> tuple[int, int, int]:
-    """Parse ``#RRGGBB`` (or ``RRGGBB``) into an ``(r, g, b)`` tuple."""
-    text = value.strip().lstrip("#")
-    if len(text) != 6:
-        raise ValueError(f"expected #RRGGBB, got {value!r}")
-    try:
-        return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
-    except ValueError as exc:
-        raise ValueError(f"invalid hex colour {value!r}") from exc
-
-
-def format_hex(rgb: tuple[int, int, int]) -> str:
-    return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
 def _load_rgba(path: Path) -> np.ndarray:
@@ -140,7 +126,7 @@ def extract_palette(
         "alpha_threshold": alpha_threshold,
         "color_count": len(histogram),
         "colors": [
-            {"hex": format_hex(rgb), "rgb": list(rgb), "pixels": count}
+            {"hex": format_hex(rgb, lower=True), "rgb": list(rgb), "pixels": count}
             for rgb, count in histogram
         ],
     }
@@ -218,7 +204,7 @@ def _bake_variant_exact(
             out[mask, 1] = tgt[1]
             out[mask, 2] = tgt[2]
             covered |= mask
-        records.append({"from": format_hex(src), "to": format_hex(tgt), "pixels": hits})
+        records.append({"from": format_hex(src, lower=True), "to": format_hex(tgt, lower=True), "pixels": hits})
     return out, records, covered
 
 
@@ -250,7 +236,7 @@ def _bake_variant_tolerance(
             out[mask, 0] = tgt[0]
             out[mask, 1] = tgt[1]
             out[mask, 2] = tgt[2]
-        records.append({"from": format_hex(src), "to": format_hex(tgt), "pixels": hits})
+        records.append({"from": format_hex(src, lower=True), "to": format_hex(tgt, lower=True), "pixels": hits})
     return out, records, covered
 
 
@@ -264,7 +250,7 @@ def _passthrough_report(
     total_colors = len(histogram)
     total_pixels = sum(count for _rgb, count in histogram)
     top = [
-        {"hex": format_hex(rgb), "pixels": count}
+        {"hex": format_hex(rgb, lower=True), "pixels": count}
         for rgb, count in histogram[:PASSTHROUGH_REPORT_CAP]
     ]
     return top, total_colors, total_pixels

@@ -678,7 +678,9 @@ def test_motion_templates_do_not_assume_a_body_plan() -> None:
             assert word not in text, (state, word)
 
 
-def test_run_set_staggers_retries_429_and_tables_failures(tmp_path: Path, monkeypatch) -> None:
+def test_run_set_runs_each_clip_once_and_tables_failures(tmp_path: Path, monkeypatch) -> None:
+    """A 429 is sent again inside `sprite-gen video` (gen.retry); the set does not run the clip a second
+    time on top of that, which would make every one of its POSTs a second retry loop."""
     monkeypatch.setattr(batch_mod.facing_mod.vision, "grok_inspect", lambda *a, **kw: ("right", {}))
     base = _still(tmp_path)
     calls: list[tuple[str, float]] = []
@@ -687,18 +689,15 @@ def test_run_set_staggers_retries_429_and_tables_failures(tmp_path: Path, monkey
     def fake_video(image, prompt, out, report, *, duration, resolution, log):
         calls.append((out.parent.name, _time.monotonic()))
         item = out.parent.name
-        if item == "side-run" and sum(1 for c in calls if c[0] == item) == 1:
-            log.write_text("video: generation request refused (HTTP 429): resource-exhausted")
-            return 1
         if item == "side-jump":
-            log.write_text("video: generation failed for good")
+            log.write_text("video: generation request refused (HTTP 429): resource-exhausted")
             return 1
         out.write_bytes(b"\x00\x00\x00\x18ftypisom")
         report.write_text("{}")
         log.write_text("ok")
         return 0
 
-    monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)  # no real backoff waits
+    monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)  # no real stagger waits
     monkeypatch.setattr(frames_mod, "run_frames", lambda clip, out_dir, **kw: {"fps": 24.0, "frames": 10, "alpha_zero_pct_min": 60.0, "alpha_zero_pct_max": 70.0, "keyed_dir": str(out_dir / "keyed")})
     monkeypatch.setattr(batch_mod.frames_mod, "run_frames", frames_mod.run_frames)
     monkeypatch.setattr(batch_mod.loop_mod, "run_loop", lambda frames_dir, out_dir, **kw: {"cycle": {"length": 12, "period_global": 12, "ratio": 0.3, "review_recommended": kw["state"] == "run"}, "resampled_seam_ratio": 0.5, "n_out": 12, "gif": {"file": "x.gif"}, "webp": {"file": "x.webp"}, "strip": {"path": "x.png"}})
@@ -707,8 +706,9 @@ def test_run_set_staggers_retries_429_and_tables_failures(tmp_path: Path, monkey
 
     by = {r["item"]: r for r in payload["items"]}
     assert by["side-walk"]["ok"] and by["side-walk"]["clip"]["attempts"] == [0]
-    assert by["side-run"]["ok"] and by["side-run"]["clip"]["attempts"] == [1, 0]  # one 429 retry
+    assert by["side-run"]["ok"] and by["side-run"]["clip"]["attempts"] == [0]
     assert not by["side-jump"]["ok"] and "clip generation failed" in by["side-jump"]["error"]
+    assert by["side-jump"]["clip"]["attempts"] == [1] and [c[0] for c in calls].count("side-jump") == 1  # never run again by the set
     assert by["side-run"]["loop"]["review_recommended"] is True
     assert by["side-walk"]["loop"]["review_recommended"] is False
     assert payload["failed"] == ["side-jump"]

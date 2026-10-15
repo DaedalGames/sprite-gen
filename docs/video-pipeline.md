@@ -1,6 +1,6 @@
 # Video → sprite pipeline (engine SSoT)
 
-> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, the batch · Index: [docs/README.md](README.md)
+> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, the batch, a set's sheet · Index: [docs/README.md](README.md)
 
 One still becomes a whole motion set: the still is padded into the canvas a state
 needs, Grok Imagine animates it in place, the clip is keyed frame by frame, and one
@@ -26,6 +26,7 @@ still ──video-canvas──▶ canvas.png ──video──▶ clip.mp4 ─�
 | `sprite-gen video-cycle-align` | `sprite_gen/video/align.py` | the loop directories of one walk or run, one per direction → one cycle length, each loop turned to start on a foot strike, + report ([loop repair](loop-repair.md) section 4) |
 | `sprite-gen video-follow` | `sprite_gen/video/follow.py` | a loop directory + an ellipse → the strip, GIF and WebP with that region following the body ([section 6](#6-follow-through--video-follow)) |
 | `sprite-gen video-follow-inspect` | `sprite_gen/video/follow_inspect.py` | a loop directory + the ellipses `video-follow` takes → a record of where each is carried in every cell and what the move changes there, and two boards of every cell; the loop directory is only read ([section 6](#inspecting-a-follow-through--video-follow-inspect)) |
+| `sprite-gen video-set-sheet` | `sprite_gen/video/set_sheet.py` | the loop directories of one set, each with its `--view` → one sheet: a row per direction in compass order, one cell size, one ground line, every row as cut, + a record and an optional centre picture; the loop directories are only read ([section 7](#7-one-sheet-for-a-set--video-set-sheet)) |
 
 Wrappers: `scripts/video_canvas.py`, `scripts/video_frames.py`, `scripts/video_loop.py`,
 `scripts/video_set.py`. Binaries: `ffmpeg`/`ffprobe` (frames), `img2webp` from libwebp
@@ -378,8 +379,12 @@ default): one `--loop-dir` per direction of the same walk or run, one `--view` e
 order, so that every loop starts as the same own foot lands wherever its view can tell the feet
 apart. A frame that falls between two source frames is made by RIFE, and the command fails where one
 is needed and RIFE is not installed; `--between nearest` makes none. A frame RIFE made that melted
-(lost its outline where legs crossed too far) is replaced by the nearer source frame and named
-(`--between auto`, the default; [loop repair](loop-repair.md) section 4). A loop whose view cannot
+(lost its outline where legs crossed too far) or carries a ghost (a band of part coverage) is
+replaced by the nearer source frame and named, and a filmed frame left half drawn between two
+drawings gives way to a clean source frame beside it (`--between auto`, the default; [loop
+repair](loop-repair.md) section 4, "The ghost screen"); a made frame that may cross-fade two
+drawings inside its outline is kept and named to look at (section 4, "A cross-fade inside the
+silhouette"). A loop whose view cannot
 tell its feet apart — or tells them apart by too small a margin (`foot_why` `low-margin`) — starts
 on its larger strike and is listed under the report's `unnamed_feet` with its two strike frames in
 `cycle/`: look at the first, say which own foot lands there, and run the same alignment again with
@@ -709,6 +714,24 @@ forced canvas is the forced-wide row (35 % above), so a jump in that batch keeps
 head-room; an attack in it gets that row too, not its own 20 %. A walk or run gets its own wide
 row, with nothing above (section 1).
 
+## Video Processing Pipeline and Terminal Gate
+
+```bash
+sprite-gen video-canvas --still still.png --state death --out canvas.png
+sprite-gen video-prompt --direction side --state death > prompt.txt
+sprite-gen video --image canvas.png --prompt-file prompt.txt --duration 3 --resolution 480p --out clip.mp4
+sprite-gen video-frames --clip clip.mp4 --out-dir frames --spill auto --reference canvas.png
+sprite-gen video-loop --frames-dir frames/keyed --fps 24 --state death --cycle once --out-dir out
+```
+
+In the sequence above, replace 24 with the `fps` value from `frames.report.json`. For batch operations, `sprite-gen video-set --end-frame` takes `ITEM=PATH` (e.g., `--end-frame side-death=final.png`). With no seam gate or wrap correction, nonloop insists on `--anchor none` and `--fit state`, with no optional override to anchor; nonloop states reject non-none anchor and tight fit. See [states-and-frames.md](states-and-frames.md) for the state table.
+
+For `--cycle once`, the terminal gate searches the whole clip for the first stable terminal window of $K = \max(4, \lceil\text{fps} \times 0.2\rceil)$ frames after action departure, then ends at the window end and discards later recovery or shaking. Across the window, pairwise window distance diameter divided by median subject mass must be $\le 0.025$ (premultiplied RGBA thumbnail difference divided by median terminal subject mass), detecting jitter and slow drift regardless of canvas padding. The first frame precedes departure from the initial pose. The gate refuses clips with no action; the retained cut must have a visible body and no alpha >= 8 pixels touching any source edge, ignoring the discarded tail for that check. Candidate end pose geometry uses alpha >= 8 body boxes, rejecting candidates as returned starting geometry if height and width/height ratio are each within 5% of initial and bottom movement is <= 2% of initial height. `death` and `fall` require median end-window height <= 80% of initial height, while other `once` states require changed geometry. This provides a conservative geometric screen; inspect semantic pose visually.
+
+Strip and preview downsampling preserves start and end endpoints. Strip metadata includes `loop: false`, `hold_last: true`, `end_frame`, and candidate `events:[{"frame": n, "name":"motion_peak"}]`. Strip `end_frame` and event `frame` are zero-based output cell indices. Report `cycle.end_frame` and `cycle.event_frame` are keyed source frame indices. `source_cut.samples` maps each strip output cell to its keyed source frame; they are not numerically equal after trimming/subsampling. WebP previews set `loop=1`, GIF previews omit loop extension, and decoded preview verification enforces `once` behavior.
+
+In `sprite-gen video`, `--image` is the start frame and `--last-frame` is the end frame. Unpinned execution is the default when omitting terminal canvas arguments. Newly added flags are `video-prompt --end-frame final.png` and `video-set --end-frame ITEM=PATH`. Both are nonloop-only; `video-prompt` also refuses `--no-last-frame`. `video-prompt` only prints instructions, does not open/validate image, whereas `video-set` checks final canvas dimensions and corner key match initial canvas. Nonloop clip cache identity includes end image SHA256; a changed end pin cache rejects until user explicitly `--force` regenerates. Terminal stability checks remain strictly enforced with pins.
+
 ## 4. Loop — period first, seam second, then the gait floor
 
 The 2026-09-08 lesson: a single-start "most similar later frame" search lands on the
@@ -901,9 +924,14 @@ transparent corners, no RGB under alpha 0 in the WebP).
 A walk or run loop then has its jump frames repaired before the strip is built: a frame that
 breaks a step 1.4× the loop's median (whole body, or the hair behind it) is replaced by RIFE's
 frame between its two neighbours, at most three and never two side by side (`--repair auto`,
-the default; `--repair off` cuts as filmed). The report's `jump_repair` names the frames. RIFE
+the default; `--repair off` cuts as filmed). A frame the ghost screen names a filmed ghost, read on
+the cut as filmed, is replaced in the same stage first: by RIFE's frame between the two clean
+frames beside it, else by the clean frame beside it, else kept and named (`ghost_given_way`,
+`ghost_kept`) — a walk of one direction is delivered as cut and never meets the alignment that would
+take a clean frame there. The report's `jump_repair` names the frames. RIFE
 is installed once with `sprite-gen rife install`; without it a loop that needs a frame is cut as
-filmed with a warning (`--repair on` fails instead). See [loop repair](loop-repair.md). The repaired loop's jolt index and the head's frame-to-frame
+filmed with a warning, each filmed ghost given way to the clean frame beside it (`--repair on`
+fails instead). A frame shown twice in a row is one frame of the GIF and WebP, checked so, and the seam gate reads a frame given way as filmed (`seam_as_filmed`). See [loop repair](loop-repair.md). The repaired loop's jolt index and the head's frame-to-frame
 moves are reported (`jolt`); beyond the reference bounds that is a warning line, and a gate
 (`video-loop: loop jolts — …`) only when `--jolt-max` / `--head-step-max` are passed.
 
@@ -1062,7 +1090,8 @@ Outputs:
 `sprite-gen video-set --base side=side.png --base front=front.png --states idle,walk,run,jump,attack --out-dir set/`
 runs canvas → video → frames → loop for every (direction, state). The xAI team quota
 is **2 requests per second** (five parallel starts produced two HTTP 429s): starts are
-staggered (`--start-gap 2`) and a 429 gets a bounded, logged retry (15 s, 30 s). Clip length
+staggered (`--start-gap 2`); a 429 is sent again inside `sprite-gen video` (8 s, 16 s,
+[a refused request sent again](gen.md#a-refused-request-sent-again)) and each clip runs once. Clip length
 is each state's own default (3 s, attack 2 s) unless `--duration` sets one for all, and an
 attack or idle clip is pinned to end on its canvas and cut whole (`--cycle pinned`). States use differently shaped canvases (square, tall, wide),
 so the same character films at different pixel heights; `--body-height N` gives every state's loop the
@@ -1088,7 +1117,9 @@ under `unnamed_feet`, told back with `--align-foot <item>=left|right`), a failed
 and a made frame with a smear, one that melted and was replaced, or a loop whose foot could not be named is a line under
 `warnings`. A held loop stretched past what an interpolator bridges is named for a new take: the
 state's `retake` (reason `held-drawings`, with its numbers; per item under `cycle_align.retake`) and
-a warning line ([loop repair](loop-repair.md) section 4, "Held drawings"). Two cases skip the alignment with a warning instead of failing it (`applied: false`,
+a warning line ([loop repair](loop-repair.md) section 4, "Held drawings"), as is a loop that delivers a filmed
+ghost with no clean frame beside it (reason `filmed-ghost`, its cells under `ghost`; `reasons` lists both
+where both apply). Two cases skip the alignment with a warning instead of failing it (`applied: false`,
 `reason`, and a line under the report's `warnings`): no RIFE (`rife-not-installed`), and a loop
 that may hold more than one cycle (`cycle-suspects`, the loops under `suspects`; count them, then
 `video-cycle-align --cycles <loop>=<k>`). See [loop repair](loop-repair.md) section 4.
@@ -1342,6 +1373,57 @@ sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,6
   `follow-inspect.moved.png` has them as `video-follow` would write them, laid and ringed alike.
   They are two files so that whoever says what is inside an ellipse can be given the cells as cut
   alone, without the answer beside them.
+
+## 7. One sheet for a set — `video-set-sheet`
+
+Each direction of a set is cut on its own, and a strip is the union of its own cycle's bodies: a side
+walk's cell is wider than a front one's, a direction with a long ear taller. Laid side by side as they
+are — a 3×3 board, a sheet for a game engine — the directions stand at different heights and the board
+shows it as it plays. `video-set-sheet` lays them on one sheet that a board or an engine can place as it
+is:
+
+```bash
+sprite-gen video-set-sheet --loop-dir S/loop --view front --loop-dir W/loop --view side@left \
+  --loop-dir N/loop --view back --loop-dir E/loop --view side@right --center base.png --out-dir walk-set --name walk
+```
+
+- **Rows.** One per direction given, in the compass order **S, SW, W, NW, N, NE, E, SE** — clockwise from
+  the viewer, the order a character turns in — whatever order the loops are given in. `--view` names the
+  row, as `video-cycle-align` takes it: `front` S, `back` N, `side@right` E, `side@left` W,
+  `front_diagonal@right` SE, `front_diagonal@left` SW, `back_diagonal@right` NE, `back_diagonal@left` NW
+  (`@left` faces the screen's left). A strip turned over to face the other way is a direction like any
+  other. A direction given twice, a front or back view with a side (its picture turned over is not a
+  compass direction) and a count of `--view` other than the loops' are refused before anything is written.
+- **One cell.** Each strip is laid on its pivot — the one its sidecar declares (`anchor`: the foot line
+  under `video-loop --anchor feet`), else its bottom centre, where `video-loop` stands the feet — and the
+  cell is the union of every pixel of every cell of every direction (and of the centre picture), centred
+  on that pivot: every cell's pivot is its bottom centre (`anchor` in the record), and no pixel is dropped.
+- **One ground line.** `baseline_y` is the lowest body pixel of any cell of any direction — body as
+  `video-loop` reads one, alpha 8 and over: that pixel is row `baseline_y − 1` of its cell. A fainter
+  pixel (a soft shadow under the feet) is no body: it is kept, and the cell reaches below the line to hold
+  it, so `cell_h` is `baseline_y` or more. A direction whose strip leaves room under its feet stands that
+  much above the line, as cut: each row's `body_bottom_y` says where its lowest body pixel ends.
+- **No row scaled.** Every cell of the sheet is the strip's own cell, pixel for pixel. One size across
+  the set is `video-loop --body-height`'s; the sheet never sizes a direction on its own. A board that
+  shows the sheet smaller scales it as one, and stands each cell's `baseline_y` on its ground.
+- **The centre picture** (`--center`): a transparent still — the set's base, the picture a board shows in
+  its middle. It is scaled to the rows' standing height (the median of their `body_h`, against the
+  still's own standing height read as `video-loop` reads one: its box at alpha 8 and over), its body
+  stood on the ground line and centred on the pivot, alone in a cell of the sheet's size
+  (`<name>.center.png`); a fainter shadow under it is kept below the line. A
+  still with no transparent background is refused (cut it off first: `sprite-gen cutout`), and so are
+  rows without `body_h` beside one.
+- **Lengths.** Loops of different lengths, in frames or in frame time, are laid all the same, one frame
+  a column and the shorter rows' last cells empty; the record says `same_length: false` and a warning line
+  names each direction's length. `video-cycle-align` gives a set one cycle length.
+
+The record, `<name>.sheet.json` (kind `sprite-gen-video-set-sheet`, schema 1): `sheet`, `order` (the
+rows' codes), `columns`, `cell_w`, `cell_h`, `baseline_y`, `anchor` (`[cell_w / 2, baseline_y]`),
+`same_length`; `rows`, one per row with its `row`, `code`, `view`, `frames`, `delay_ms`, the strip's
+`name`, the loop directory as `input`, the strip's `strip_sha256`, `body_h` and `body_bottom_y`; and
+`center` — null, or the picture's `png`, `input`, `sha256`, its own `standing_h`, the rows' `body_h` it
+was scaled to, the `scale` and its `box` in the cell. The loop directories are only read: no strip,
+frame or frame time is changed.
 
 ## What the rules were measured on
 

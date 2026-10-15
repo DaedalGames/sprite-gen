@@ -177,6 +177,7 @@ class _Snapshot:
     def __init__(self):
         self.digests: dict[Path, str] = {}
         self._bytes: dict[Path, bytes] = {}
+        self._images: dict[Path, Image.Image] = {}
 
     def read(self, path: Path) -> bytes:
         if path not in self._bytes:
@@ -186,7 +187,9 @@ class _Snapshot:
         return self._bytes[path]
 
     def image(self, path: Path) -> Image.Image:
-        return _decode_image(self.read(path))
+        if path not in self._images:
+            self._images[path] = _decode_image(self.read(path))
+        return self._images[path]
 
     def json(self, path: Path):
         return json.loads(self.read(path).decode("utf-8"))
@@ -213,7 +216,48 @@ def _integer(value, name):
 
 def load_asset(source: Path, *, state=None, fps=None, anchor=None) -> FrameSequence:
     source = Path(source).expanduser().resolve()
+    return _load_asset(source, _Snapshot(), state=state, fps=fps, anchor=anchor)
+
+
+def load_asset_states(source: Path, *, state=None, fps=None, anchor=None) -> dict[str | None, FrameSequence]:
+    """Read every declared state from one snapshot; never discover frames by filename sort."""
+    source = Path(source).expanduser().resolve()
     snapshot = _Snapshot()
+    states = [state]
+    if state is None and source.suffix.lower() == ".json":
+        data = snapshot.json(source)
+        if not isinstance(data, dict):
+            raise ValueError("asset descriptor must be an object")
+        if "frame_layout" in data:
+            states = list(data["frame_layout"]["rows"])
+        elif data.get("kind") == "sprite-gen-video-set-sheet":
+            states = [row["code"] for row in data["rows"]]
+        elif isinstance(data.get("rows"), list) and "cell" in data:
+            states = data["rows"]
+        if not states or len(set(states)) != len(states):
+            raise ValueError("asset states must be nonempty and unique")
+    return {key: _load_asset(source, snapshot, state=key, fps=fps, anchor=anchor) for key in states}
+
+
+PLAYBACK_FIELDS = ("loop", "hold_last", "end_frame", "events", "blend", "direction", "body_h", "frame_variant")
+
+
+def _grid_frames(sheet, columns, rows, width, height, count, *, row=None):
+    columns, rows, width, height, count = (
+        _integer(v, name) for v, name in zip((columns, rows, width, height, count),
+                                            ("columns", "rows", "width", "height", "frames")))
+    if sheet.size != (columns * width, rows * height):
+        raise ValueError("sheet size disagrees with its sidecar")
+    if row is not None and (type(row) is not int or not 0 <= row < rows):
+        raise ValueError("sheet row is outside the sheet")
+    if count > (columns if row is not None else columns * rows):
+        raise ValueError("sheet frame count exceeds its cells")
+    return [sheet.crop(((i % columns) * width, (row if row is not None else i // columns) * height,
+                        (i % columns + 1) * width, ((row if row is not None else i // columns) + 1) * height))
+            for i in range(count)]
+
+
+def _load_asset(source, snapshot, *, state=None, fps=None, anchor=None):
     meta = {"source": str(source)}
     declared_anchor = None
     if source.suffix.lower() != ".json":
@@ -225,6 +269,7 @@ def load_asset(source: Path, *, state=None, fps=None, anchor=None) -> FrameSeque
         data = snapshot.json(source)
         if not isinstance(data, dict):
             raise ValueError("asset descriptor must be an object")
+        meta.update({key: data[key] for key in PLAYBACK_FIELDS if key in data})
         declared_anchor = data.get("anchor")
         if data.get("kind") == "sprite-gen-asset":
             if data.get("version") != 1 or state is not None:
@@ -250,11 +295,45 @@ def load_asset(source: Path, *, state=None, fps=None, anchor=None) -> FrameSeque
                     raise ValueError("atlas frame rectangle outside sheet")
                 frames.append(sheet.crop((int(x), int(y), int(x)+w, int(y)+h)))
             anim = data["animation"]["rows"][state]
+            meta.update({key: anim[key] for key in PLAYBACK_FIELDS if key in anim})
+            declared_anchor = anim.get("anchor", declared_anchor)
             if "durations_ms" in anim:
                 durations = [finite(v, "duration_ms", positive=True) / 1000 for v in anim["durations_ms"]]
             else:
                 durations = [1 / finite(anim.get("fps"), "atlas fps", positive=True)] * len(frames)
-            meta.update(state=state, loop=bool(anim.get("loop", True)))
+            meta.update(state=state, loop=anim.get("loop", True))
+        elif data.get("kind") == "sprite-gen-video-set-sheet":
+            if data.get("schema") != 1:
+                raise ValueError("direction sheet requires schema 1")
+            rows = data["rows"]
+            by_code = {row["code"]: row for row in rows}
+            if len(by_code) != len(rows) or len({row["row"] for row in rows}) != len(rows):
+                raise ValueError("direction sheet rows must be unique")
+            state = _choose(by_code, state)
+            selected = by_code[state]
+            sheet = snapshot.image((source.parent / data["sheet"]).resolve())
+            frames = _grid_frames(sheet, data["columns"], len(rows), data["cell_w"], data["cell_h"],
+                                  selected["frames"], row=selected["row"])
+            durations = [finite(selected["delay_ms"], "delay_ms", positive=True)/1000] * len(frames)
+            meta.update({key: selected[key] for key in PLAYBACK_FIELDS if key in selected})
+            meta.update(state=state, direction=state)
+            declared_anchor = selected.get("anchor", declared_anchor)
+        elif isinstance(data.get("rows"), list) and "cell" in data:
+            # Row-labelled direction sheets: explicit row order, never compass sorting.
+            rows = data["rows"]
+            if len(set(rows)) != len(rows):
+                raise ValueError("direction sheet rows must be unique")
+            state = _choose(dict.fromkeys(rows, True), state)
+            sheet = snapshot.image(source.with_suffix(".png"))
+            frames = _grid_frames(sheet, data["frames"], len(rows), *data["cell"], data["frames"], row=rows.index(state))
+            durations = [1/finite(data["fps"], "fps", positive=True)] * len(frames)
+            meta.update(state=state, direction=state)
+        elif all(k in data for k in ("columns", "rows", "frame_width", "frame_height", "frames", "delay_ms")):
+            if state is not None or data.get("order") != "row-major":
+                raise ValueError("grid sheet requires row-major order and no --state")
+            sheet = snapshot.image(source.with_suffix(".png"))
+            frames = _grid_frames(sheet, data["columns"], data["rows"], data["frame_width"], data["frame_height"], data["frames"])
+            durations = [finite(data["delay_ms"], "delay_ms", positive=True)/1000] * len(frames)
         elif all(k in data for k in ("frames", "w", "h", "delay_ms")):
             if state is not None:
                 raise ValueError("--state is only valid for atlas input")
@@ -266,7 +345,7 @@ def load_asset(source: Path, *, state=None, fps=None, anchor=None) -> FrameSeque
             durations = [finite(data["delay_ms"], "delay_ms", positive=True)/1000] * n
             # `video-loop` writes `loop: false` for a one-shot cut (rest -> action -> rest);
             # an older sidecar without the key is a loop, as every strip was before.
-            meta["loop"] = bool(data.get("loop", True))
+            meta["loop"] = data.get("loop", True)
         else:
             raise ValueError("unsupported asset descriptor; use sprite-gen-asset, loop strip sidecar or atlas manifest")
     if not frames:

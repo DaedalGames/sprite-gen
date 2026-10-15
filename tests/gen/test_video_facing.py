@@ -19,7 +19,7 @@ class Api:
         self.direction, self.failure = direction, failure
         self.calls = []
 
-    def call(self, method, url, token, body):
+    def call(self, method, url, token, body, *, deadline=None):
         self.calls.append((method, url, token, body))
         if url.endswith("/responses"):
             if self.failure:
@@ -38,7 +38,7 @@ def test_side_input_is_inspected_once_before_upload(tmp_path, fix, observed):
     original = FIXTURE.read_bytes()
     request = video.VideoRequest(FIXTURE, "idle", tmp_path / "out.mp4", direction="side", facing_fix=fix)
     result = video.generate_video(request, credential=video.Credential("synthetic", "grok-login"),
-                                  call=api.call, download=lambda *a: MP4)
+                                  call=api.call, download=lambda *a, **kw: MP4)
     assert FIXTURE.read_bytes() == original
     assert len(api.calls) == 3 and api.calls[0][1].endswith("/responses")
     assert all(call[2] == "synthetic" for call in api.calls)
@@ -61,7 +61,7 @@ def test_side_input_is_inspected_once_before_upload(tmp_path, fix, observed):
 def test_non_side_video_keeps_prompt_and_has_no_inspection(tmp_path, direction):
     api = Api()
     result = video.generate_video(video.VideoRequest(FIXTURE, "original prompt", tmp_path / "out.mp4", direction=direction),
-                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a: MP4)
+                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a, **kw: MP4)
     assert len(api.calls) == 2
     assert result.prompt == "original prompt" and "facing" not in result.to_dict()
     assert result.image == FIXTURE
@@ -70,7 +70,7 @@ def test_non_side_video_keeps_prompt_and_has_no_inspection(tmp_path, direction):
 def test_failed_video_inspection_is_reported_and_generation_continues(tmp_path):
     api = Api(failure=True)
     result = video.generate_video(video.VideoRequest(FIXTURE, "idle", tmp_path / "out.mp4", direction="side"),
-                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a: MP4)
+                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a, **kw: MP4)
     assert result.facing["direction"] == "unknown" and "reason" in result.facing
     assert result.image.read_bytes() == FIXTURE.read_bytes()
     assert len(api.calls) == 3
@@ -89,7 +89,7 @@ def test_video_cli_passes_side_policy(tmp_path, monkeypatch, options):
     api = Api()
     monkeypatch.setattr(video, "resolve_credential", lambda: video.Credential("synthetic", "grok-login"))
     monkeypatch.setattr(video, "http_json", api.call)
-    monkeypatch.setattr(video, "http_download", lambda *a: MP4)
+    monkeypatch.setattr(video, "http_download", lambda *a, **kw: MP4)
     report = tmp_path / "report.json"
     assert video.main(["--image", str(FIXTURE), "--prompt", "idle", "--out", str(tmp_path / "out.mp4"),
                        "--direction", "side", "--facing", "right", *options, "--report", str(report)]) == 0
@@ -104,7 +104,7 @@ def test_default_video_preserves_bytes_despite_wrong_observation(tmp_path):
     source = FIXTURE.with_name("right.png")
     api = Api("left")
     result = video.generate_video(video.VideoRequest(source, "idle", tmp_path / "out.mp4", direction="side"),
-                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a: MP4)
+                                  credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a, **kw: MP4)
     assert result.image.read_bytes() == source.read_bytes()
     uploaded = base64.b64decode(api.calls[1][3]["image"]["url"].split(",", 1)[1])
     assert uploaded == source.read_bytes()

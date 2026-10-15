@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -47,12 +48,13 @@ from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
-from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback
+from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
 from sprite_gen.video import repair as repair_mod
 from sprite_gen.video import rife as rife_mod
+from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video.frames import drop_specks
 
@@ -74,7 +76,7 @@ ONE_SHOT_MIN_MOVED = 0.4
 ONE_SHOT_MIN_COHERENCE = 3.0  # departure must exceed three ordinary playback steps
 ONE_SHOT_MIN_ACTIVE = 4  # isolated keying/jitter spikes are not a performed action
 ONE_SHOT_PAD = 2  # one-shot: rest frames kept on each side of the excursion so the seam is rest -> rest
-CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned")
+CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", *nonloop.KINDS)
 # --cycle pinned: the clip was asked to end on its first frame (first-last mode). A re-rendered
 # first frame is never byte-identical to its source; on the analysis thumbnail (mean absolute
 # RGBA difference, 0..1) it lands within this of it, well under one frame of visible motion.
@@ -253,8 +255,12 @@ def leg_signals(frames: list[Image.Image]) -> dict[str, list[float]] | None:
 
 
 def distance_matrix(files: list[Path]) -> np.ndarray:
-    flat = np.stack([_load_small(f) for f in files])
-    n = len(files)
+    return _distances(np.stack([_load_small(f) for f in files]))
+
+
+def _distances(flat: np.ndarray) -> np.ndarray:
+    """The distance between every two frames of their analysis features (`_small_features`)."""
+    n = len(flat)
     D = np.zeros((n, n), dtype=np.float32)
     for i in range(n):
         D[i] = np.abs(flat - flat[i]).mean(axis=1)
@@ -672,7 +678,8 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     `max_cells`: the crop is measured over every cycle frame first, then as many evenly
     spaced frames as fit are kept. Subsampling is recorded in the meta, never silent."""
     L = len(frames)
-    boxes = [im.getchannel("A").point(lambda v: 255 if v >= 8 else 0).getbbox() for im in frames]
+    lifetime = kind == "lifetime"
+    boxes = [(im.getchannel("A") if lifetime else im.getchannel("A").point(lambda v: 255 if v >= 8 else 0)).getbbox() for im in frames]
     boxes = [b for b in boxes if b]
     if not boxes:
         raise SystemExit("video-loop: every cycle frame is fully transparent")
@@ -680,9 +687,9 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     # edge (video-frames --allow-subject-edge-contact) still gets its 8 transparent columns,
     # so no cell corner is ever the subject. `crop` fills outside the frame with alpha 0.
     left = min(b[0] for b in boxes) - 8
-    top = max(0, min(b[1] for b in boxes) - 8)
+    top = min(b[1] for b in boxes) - 8 if lifetime else max(0, min(b[1] for b in boxes) - 8)
     right = max(b[2] for b in boxes) + 8
-    bottom = max(b[3] for b in boxes)
+    bottom = max(b[3] for b in boxes) + (8 if lifetime else 0)
     # body_h = the STANDING height: the tallest frame whose feet touch the floor. A median
     # over the whole cycle undercounts a jump (crouch + airborne frames dominate) and then
     # over-scales it — the 2026-09-09 hero read 22 % taller than the walk beside it.
@@ -692,7 +699,8 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     # first frame, or the cut's first — clip frame `standing_frame` — where the cut is filmed at
     # another size than it). The tallest grounded frame counts whatever is raised overhead — an attack's
     # windup lifts the weapon above the head — and would shrink that state against the others.
-    body_src = standing_src if standing_src is not None else max(grounded)
+    body_src = (max(b[3] for b in boxes) - min(b[1] for b in boxes) if lifetime else
+                standing_src if standing_src is not None else max(grounded))
     # max_height is a ceiling on the CELL; an explicit body_height is a target for the BODY.
     # Without one, nothing is ever scaled up. With one, a state whose source body is SHORTER
     # than the request has to grow — clamping to 1.0 first made the option a downward clamp
@@ -712,12 +720,12 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
         cell_src_w = lead + trail
     else:
         cell_src_w = right - left
-    w = round(cell_src_w * scale)
-    h = round((bottom - top) * scale)
+    w = max(1, round(cell_src_w * scale))
+    h = max(1, round((bottom - top) * scale))
     cap = max(1, min(max_cells, max_width // max(1, w)))
     idx = list(range(L))
     if L > cap:
-        idx = [round(k * L / cap) for k in range(cap)]
+        idx = nonloop.samples(L, cap) if kind in nonloop.KINDS else [round(k * L / cap) for k in range(cap)]
     chosen = [frames[i] for i in idx]
     if feet:
         cells = []
@@ -741,7 +749,7 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
         # (rest -> action -> rest) plays once on a trigger; every other cut is a loop.
         # The spec asset loader reads `loop` from this sidecar.
         "kind": kind,
-        "loop": kind != "one-shot",
+        "loop": kind not in ("one-shot", *nonloop.KINDS),
         "body_h": round(body_src * scale),
         "body_src_h": body_src,  # the standing height as filmed; body_h / body_src_h > 1 means the cells were upscaled
         "body_ref": ("cut-first-frame" if standing_frame else "first-frame") if standing_src is not None else "tallest-grounded",
@@ -761,6 +769,10 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     }
     if standing_src is not None and standing_frame:
         meta["body_ref_frame"] = standing_frame  # the clip frame the standing height was read on
+    if lifetime:
+        meta.update(blend="add", body_ref="effect-extent",
+                    anchor=[(frames[0].width / 2 - left) * w / (right - left),
+                            (frames[0].height / 2 - top) * h / (bottom - top)])
     if feet:
         # the spec asset loader reads a sidecar `anchor` as the [x, y] pivot (default:
         # bottom-centre); with feet alignment the true pivot is the foot line at the
@@ -783,7 +795,7 @@ def img2webp_supports_exact(binary: str | None = None) -> bool:
     return "-exact" in (proc.stdout + proc.stderr)
 
 
-def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: Path) -> None:
+def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: Path, loop: int = 0) -> None:
     """Animated WebP through libwebp's img2webp with -exact (Pillow's animated writer drops `exact`
     and rewrites RGB under alpha 0 to white; measured 2026-09-08)."""
     img2webp = shutil.which("img2webp")
@@ -800,32 +812,46 @@ def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: 
         p = workdir / f"webp-{k:03d}.png"
         im.save(p)
         paths.append(str(p))
-    proc = subprocess.run([img2webp, "-loop", "0", "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
+    proc = subprocess.run([img2webp, "-loop", str(loop), "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
     if proc.returncode != 0 or not out.is_file():
         raise SystemExit(f"video-loop: img2webp failed: {proc.stderr.strip()[:300]}")
 
 
-def verify_animation(path: Path, *, expect_frames: int, check_stale: bool) -> dict[str, Any]:
+def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expected_loop: int | None = 0,
+                     background: str | None = None) -> dict[str, Any]:
     # Closed on the way out: `video-follow` checks its animations before it moves them over the loop's.
     with Image.open(path) as im:
         n = getattr(im, "n_frames", 1)
         loop = im.info.get("loop")
         corners_ok = True
+        background_pixel = Image.new("RGBA", (1, 1), background).getpixel((0, 0)) if background is not None else None
+        background_ok = True
+        opaque = True
         stale = 0
         for k in range(n):
             im.seek(k)
             f = im.convert("RGBA")
             w, h = f.size
             corners_ok &= all(f.getpixel(c)[3] == 0 for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+            if background_pixel is not None:
+                background_ok &= all(f.getpixel(c) == background_pixel for c in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+                opaque &= f.getchannel("A").getextrema() == (255, 255)
             if check_stale:
                 stale += sum(1 for p in f.get_flattened_data() if p[3] == 0 and (p[0] or p[1] or p[2]))
         report = {"file": path.name, "format": im.format, "n_frames": n, "loop": loop, "size": list(im.size), "corners_transparent": corners_ok, "stale_rgb_under_alpha0": stale, "bytes": path.stat().st_size}
+        if background is not None:
+            report.update(background=background, opaque=opaque)
     problems = []
     if n != expect_frames:
         problems.append(f"{n} frames, expected {expect_frames}")
-    if loop != 0:
-        problems.append(f"loop={loop!r}, expected 0 (infinite)")
-    if not corners_ok:
+    if loop != expected_loop:
+        problems.append(f"loop={loop!r}, expected {expected_loop!r}")
+    if background is not None:
+        if not opaque:
+            problems.append("a frame is not opaque on its declared background")
+        if not background_ok:
+            problems.append("a corner does not match the declared background")
+    elif not corners_ok:
         problems.append("a corner is not transparent")
     if stale:
         problems.append(f"{stale} transparent pixels carry RGB")
@@ -849,40 +875,91 @@ def write_loop_report(target: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(target, json.dumps(finite(payload), ensure_ascii=False, indent=2, allow_nan=False) + "\n")
 
 
+def resampled_cells(strip: Image.Image, meta: dict[str, Any], idx: list[int], length: int) -> list[Image.Image]:
+    """The cells of `strip` (`build_strip`, its `meta`) at the frames `idx` of a cycle `length` frames long: the
+    GIF and WebP frames, and what the seam gate reads on rendered cells. A strip subsampled past its cell cap
+    holds fewer cells than the cycle has frames, and gives the nearest."""
+    cells = [strip.crop((k * meta["w"], 0, (k + 1) * meta["w"], meta["h"])) for k in range(meta["frames"])]
+    return [cells[min(len(cells) - 1, round(j * len(cells) / length))] for j in idx]
+
+
+def shown_runs(cells: list[Image.Image]) -> int:
+    """The frames a GIF or WebP of `cells` holds: a cell shown twice in a row (a filmed ghost given way
+    to the frame beside it, `--between nearest` stretching a loop) is one frame of twice the delay in
+    both, so one per run of identical cells."""
+    return 1 + sum(1 for a, b in zip(cells, cells[1:]) if a.tobytes() != b.tobytes())
+
+
 def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, *, facing: str,
-                  required: bool) -> tuple[list[Image.Image], dict[str, Any]]:
-    """`repair_mod.repair_jumps`, with RIFE located only once a frame is to be made: a loop
-    without a jump needs no binary. The report names the interpolator that made the frames.
+                  required: bool, screen: dict[str, Any]) -> tuple[list[Image.Image], dict[str, Any]]:
+    """`repair_mod.repair_jumps` on the cut as filmed and its ghost `screen`, with RIFE located only
+    once a frame is to be made: a loop without a jump or a ghost between two clean frames needs no
+    binary. The report names the interpolator that made the frames.
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
-    the loop comes back as filmed and the record says why (`applied: false`, `rife`, `install`)."""
+    each filmed ghost gives way to the clean frame beside it, a jump stays as filmed, and the record
+    says why where a jump was left (`rife`, `install`; `applied` false where nothing was replaced)."""
     made_by: list[dict[str, str]] = []
+    calls = 0
 
     def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        nonlocal interpolate
+        nonlocal interpolate, calls
         if interpolate is None:
             located = rife_mod.Rife()
             made_by.append(located.describe())
             interpolate = located
+        calls += 1
         return interpolate(a, b, t)
 
     try:
-        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing)
+        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen)
     except rife_mod.RifeNotInstalled as exc:
         if required:
             raise
-        # RIFE is located before the first frame is made, so nothing was replaced yet.
-        worst = round(float(repair_mod.jump_scores(frames, facing=facing)["score"].max()), 4)
-        return frames, {"applied": False, "why": "RIFE not installed — cut as filmed", "rife": str(exc),
-                        "install": rife_mod.INSTALL_COMMAND, "ratio": repair_mod.JUMP_RATIO, "facing": facing,
-                        "score_max_before": worst, "score_max_after": worst, "replaced": []}
+        # RIFE is located before the first frame is made, so nothing was made yet: the stage runs again
+        # with no interpolator, each ghost giving way to the clean frame beside it and a jump left as filmed.
+        repaired, record = repair_mod.repair_jumps(frames, None, facing=facing, screen=screen)
+        record["applied"] = bool(record["replaced"])
+        if "unmade" in record:
+            record.update(why="RIFE not installed — cut as filmed" if not record["replaced"] else
+                          "RIFE not installed — the jump cut as filmed, each filmed ghost given way to the clean frame beside it",
+                          rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+        return repaired, record
     frames = repaired
     record["applied"] = bool(record["replaced"])
     if made_by:
         record["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]}
-    elif record["attempts"]:
+    elif calls:
         record["interpolator"] = {"kind": "injected"}
     return frames, record
+
+
+def _ghost_lines(jump_repair: dict[str, Any]) -> list[str]:
+    """What became of each filmed ghost the jump repair stage read, in words (`video-loop: warning:` lines)."""
+    lines = []
+    for r in jump_repair.get("rounds", []):
+        if r.get("why") != "ghost":
+            continue
+        j = r["target"]
+        line = (f"frame {j} of the cut carries a part-covered band over {100 * r['original']['ghost']:.2f} % of its body, at least "
+                f"{rife_mod.GHOST_THICK} px thick — a filmed ghost; ")
+        if r["taken"] == "rife":
+            lines.append(line + f"given way to RIFE's frame between frames {r['neighbours'][0]} and {r['neighbours'][1]} "
+                         f"(cycle/frame-{j:03d}.png) (docs/loop-repair.md section 2)")
+            continue
+        if r["taken"] is None:
+            lines.append(line + f"and so are the frames beside it ({r['neighbours'][0]} and {r['neighbours'][1]}); kept, as there "
+                         f"is no clean frame to give way to (cycle/frame-{j:03d}.png) — film this direction again (docs/loop-repair.md section 2)")
+            continue
+        if r["proposal"] is not None:
+            why = f"RIFE's frame between its neighbours has a fault ({', '.join(r['faults'])})"
+        elif r["no_proposal"] == "no interpolator":
+            why = f"RIFE is not installed, so no frame between its neighbours was made (`{rife_mod.INSTALL_COMMAND}`)"
+        else:
+            why = r["no_proposal"]
+        lines.append(line + f"given way to frame {r['taken']['source']} beside it, shown twice in a row (cycle/frame-{j:03d}.png): "
+                     f"{why} (docs/loop-repair.md section 2)")
+    return lines
 
 
 def moved_alpha(frames: list[Image.Image], analysis: dict[str, Any]) -> list[np.ndarray]:
@@ -1058,6 +1135,26 @@ def run_loop(
     size_hold: str = "auto",
     steps: int | None = None,
 ) -> dict[str, Any]:
+    state = state.strip().lower() if state else state
+    if state == effect.STATE:
+        if cycle_mode == "auto":
+            cycle_mode = "lifetime"
+        elif cycle_mode != "lifetime":
+            raise SystemExit("video-loop: an effect requires --cycle lifetime")
+    if state in nonloop.STATES:
+        if cycle_mode == "auto":
+            cycle_mode = "once"
+        elif cycle_mode != "once":
+            raise SystemExit(f"video-loop: non-loop state {state} requires --cycle once")
+    if cycle_mode in nonloop.KINDS:
+        if state in nonloop.CYCLIC_STATES:
+            raise SystemExit(f"video-loop: cyclic state {state} cannot use --cycle {cycle_mode}")
+        if anchor not in (None, "none"):
+            raise SystemExit("video-loop: a single-play cut requires --anchor none")
+        if start is not None or length is not None:
+            raise SystemExit("video-loop: a single-play cut selects its terminal bounds; drop --start/--length")
+        if not math.isfinite(fps) or fps <= 0 or not math.isfinite(gif_fps) or gif_fps <= 0 or (n_out is not None and n_out < 2):
+            raise SystemExit("video-loop: positive fps and at least two output frames are required")
     if steps is not None and steps not in STEPS:
         raise SystemExit(f"video-loop: --steps {steps}: the cut holds {' or '.join(map(str, STEPS))} steps here")
     if size_hold not in SIZE_HOLD_MODES:
@@ -1105,7 +1202,7 @@ def run_loop(
     # The clip's steps as keyed, before `--anchor motion-auto` reads its own distance or moves a frame:
     # the hold is read on them, over the clip and over the cut (sprite_gen/video/held.py).
     clip_steps = [float(D[k, k + 1]) for k in range(n - 1)]
-    masses = frame_masses(files)
+    masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
     target = (report_path or (out_dir / f"{name}.loop.report.json")).expanduser().resolve()
     report_base = {
@@ -1191,6 +1288,15 @@ def run_loop(
                     raise failed from first
             if steps is not None:
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
+        elif cycle_mode == "once":
+            source_frames = [Image.open(f).convert("RGBA") for f in files]
+            boxes = [nonloop.body_box(frame) for frame in source_frames]
+            cycle = nonloop.select_cut(D, masses, fps=fps,
+                                      ending=partial(nonloop.hold_ending, boxes=boxes, state=state))
+            nonloop.validate_body(source_frames[cycle["start"]:cycle["end_frame"] + 1])
+        elif cycle_mode == "lifetime":
+            cycle = nonloop.select_cut(D, masses, fps=fps, kind=cycle_mode,
+                                      ending=effect.lifetime_ending)
         elif cycle_mode == "fixed":
             if start is None or length is None:
                 raise SystemExit("video-loop: --cycle fixed needs --start and --length")
@@ -1262,7 +1368,7 @@ def run_loop(
         # Motion review is pixel preserving: cleanup belongs to the keyed input (`video-frames` erases
         # the specks far from the body). The other cuts erase every loose piece of solid pixels under
         # the speck size, wherever it is: the outline's islands and a drawn shadow as well.
-        if anchor not in ("motion", "motion-auto"):
+        if anchor not in ("motion", "motion-auto") and cycle["kind"] != "lifetime":
             scrubbed += _scrub(im)
             im, d = drop_specks(im, alpha_over=16, diagonal=False, apart=0)
             specks += d
@@ -1291,25 +1397,55 @@ def run_loop(
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
-    if anchor in ("none", "body"):
+    if anchor in ("none", "body") and cycle["kind"] != "lifetime":
         from sprite_gen.video.source import RECIPE
         report_base["source_projection"] = {
             "recipe": RECIPE, "wrap_dx_px": wrap_dx,
             "before_repair_pixels_sha256": [evidence_mod.digest(f.tobytes()) for f in frames],
         }
+    if prof.gait:
+        # The ghost screen of the cut as filmed (docs/loop-repair.md section 4), read before the jump repair: each
+        # filmed ghost it names is a target of that repair, which gives it way to a clean frame where there is one.
+        # A loop delivered as cut, never aligned, would show it otherwise.
+        report_base["ghost_screen"] = ghost_screen(frames)
+    # Each cut frame given way to the frame beside it, as filmed: the seam is read on it there (`seam_as_filmed`).
+    as_filmed: dict[int, Image.Image] = {}
     if repair != "off" and prof.gait:
         report_base["jump_repair"] = None
+        filmed = frames
         try:
-            frames, report_base["jump_repair"] = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on")
+            frames, report_base["jump_repair"] = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
+                                                               screen=report_base["ghost_screen"])
         except (ValueError, rife_mod.RifeUnavailable) as exc:
             fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
-            error = f"video-loop: {exc}; the loop has a jump frame to repair — {fix} (docs/loop-repair.md)"
+            error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, or for a filmed ghost between two clean "
+                     f"frames) — {fix} (docs/loop-repair.md)")
             shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
-        if report_base["jump_repair"]["replaced"]:
+        # What became of each filmed ghost: given way (the cell and what it shows now) or kept, no clean frame beside it.
+        ghost_rounds = [r for r in report_base["jump_repair"]["rounds"] if r.get("why") == "ghost"]
+        # A cell given way to the frame beside it is that frame shown twice in a row — a step of nothing and a step of two,
+        # wherever the ghost was. The seam gate asks whether the cut closes, so it reads that cell as filmed (`seam_as_filmed`):
+        # at the wrap the step of two would read as a cut that does not close, and the step of nothing as one that closes
+        # whatever the cut. Only a frame made (RIFE's, for a jump or a ghost) has the gate read the rendered cells.
+        as_filmed = {r["target"]: filmed[r["target"]] for r in ghost_rounds if isinstance(r["taken"], dict)}
+        if as_filmed:
+            report_base["seam_as_filmed"] = sorted(as_filmed)
+        if set(report_base["jump_repair"]["replaced"]) - set(as_filmed):
             report_base["seam_measurement"] = "rendered-cells"
+        report_base["ghost_given_way"] = [{"frame": r["target"], "ghost": r["original"]["ghost"], "taken": r["taken"]}
+                                          for r in ghost_rounds if r["taken"] is not None]
+        report_base["ghost_kept"] = [{"frame": r["target"], "ghost": r["original"]["ghost"]} for r in ghost_rounds if r["taken"] is None]
+        for line in _ghost_lines(report_base["jump_repair"]):
+            print(f"video-loop: warning: {line}", file=sys.stderr)
+        for r in report_base["jump_repair"].get("rounds", []):
+            if r["outcome"] == "accepted" and r["look"]:
+                print(f"video-loop: warning: frame {r['target']} was {'given way for a filmed ghost' if r['why'] == 'ghost' else 'repaired'} "
+                      "with RIFE's frame between its neighbours, which may "
+                      f"cross-fade two drawings inside its outline (crossfade {r['proposal']['crossfade']:.4f}); kept, a reading to "
+                      "look at — see it in the loop, or cut it with --repair off (docs/loop-repair.md section 4)", file=sys.stderr)
         if "rife" in report_base["jump_repair"]:
             print(f"video-loop: warning: a jump frame was not repaired ({report_base['jump_repair']['score_max_before']:.2f}x "
                   f"the median step) — RIFE is not installed, so the loop is cut as filmed; run `{rife_mod.INSTALL_COMMAND}` "
@@ -1345,6 +1481,16 @@ def run_loop(
             raise SystemExit(error)
         for line in warnings:
             print(f"video-loop: warning: {line} (reference bound; the loop is kept — docs/loop-repair.md)", file=sys.stderr)
+        if "ghost_given_way" not in report_base:
+            # The jump repair did not run (--repair off): a filmed ghost is delivered as cut, named here;
+            # `video-cycle-align` screens its source again and takes a clean frame beside it.
+            for g in report_base["ghost_screen"]["ghosts"]:
+                print(f"video-loop: warning: frame {g['frame']} of the cut (cycle/frame-{g['frame']:03d}.png) carries a part-covered band "
+                      f"over {100 * g['ghost']:.2f} % of its body, at least {rife_mod.GHOST_THICK} px thick — a filmed ghost; delivered as cut "
+                      "it shows (--repair off), and video-cycle-align takes a clean frame beside it (docs/loop-repair.md)", file=sys.stderr)
+        if not report_base["ghost_screen"]["reads"]:
+            print(f"video-loop: warning: the ghost screen does not read this cut — {report_base['ghost_screen']['why']}; no frame "
+                  "of it is named a ghost, here or in video-cycle-align, so look at cycle/ (docs/loop-repair.md)", file=sys.stderr)
     cycle_dir.mkdir(parents=True, exist_ok=True)
     for old in cycle_dir.glob("frame-*.png"):
         old.unlink()
@@ -1363,11 +1509,16 @@ def run_loop(
         report_base["cut_size"] = gait_fallback.size_change(gait_fallback.body_size(Image.open(files[0]).convert("RGBA")), cut_sizes)
         if abs(report_base["cut_size"]["change"]) >= gait_fallback.SIZE_HOLD_MIN:
             standing_frame = i
-    strip, strip_meta = build_strip(frames, max_height=strip_height, cycle_seconds=cycle_seconds, body_height=body_height, anchor="feet" if anchor == "feet" else "none", kind=str(cycle.get("kind") or "periodic"),
-                                    standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None else None,
-                                    standing_frame=standing_frame)
+    strip_of = partial(build_strip, max_height=strip_height, cycle_seconds=cycle_seconds, body_height=body_height, anchor="feet" if anchor == "feet" else "none", kind=str(cycle.get("kind") or "periodic"),
+                       standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None and cycle["kind"] != "lifetime" else None,
+                       standing_frame=standing_frame)
+    strip, strip_meta = strip_of(frames)
+    # The cut as its seam is read: each cell given way to the frame beside it as filmed (`seam_as_filmed`).
+    seam_frames = [as_filmed.get(k, f) for k, f in enumerate(frames)]
     strip_meta["source_cut"] = {"source": report_base["source"], "start": i, "length": L,
                                 "samples": [i + k for k in strip_meta["sample_indices"]]}
+    if cycle["kind"] in nonloop.KINDS:
+        strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"]))
     # The scaled-back frames are read for the last time above; the cycle cells keep them.
     shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
     if state:
@@ -1383,14 +1534,20 @@ def run_loop(
     strip_meta["drawings"] = {k: report_base["drawings"][k] for k in ("hold", "drawings_per_second", "contrast", "frames")}
     strip_meta["cycle_drawings"] = {k: report_base["cycle_drawings"][k] for k in ("start", "length", "steps", "hold", "drawings_per_second", "contrast")
                                     } | ({"why": report_base["cycle_drawings"]["why"]} if "why" in report_base["cycle_drawings"] else {})
+    # A cut frame that is no longer the frame as filmed for a filmed ghost, and one kept with no clean frame beside
+    # it: `cycle/` is the alignment's material (`cycle.source/`), whose screen no longer sees a ghost given way, so the
+    # strip says it, and an alignment carries it over (frames of the cut).
+    for key in ("ghost_given_way", "ghost_kept"):
+        if report_base.get(key):
+            strip_meta[key] = report_base[key]
     if motion is not None:
         strip_meta["foot_anchor"] = anchor
         strip_meta["motion_anchor"] = motion
     if anchor == "body":
         strip_meta["foot_anchor"] = "body"
         strip_meta["wrap_dx_px"] = wrap_dx
-        # the wrap as it now plays: last ramped frame -> first, against an ordinary step
-        Dr = distance_matrix(sorted(cycle_dir.glob("frame-*.png")))
+        # the wrap as it now plays: last ramped frame -> first, against an ordinary step (a cell given way read as filmed)
+        Dr = _distances(np.stack([_small_features(f) for f in seam_frames]))
         inner = float(np.mean([Dr[k, k + 1] for k in range(len(frames) - 1)])) if len(frames) > 1 else 0.0
         strip_meta["seam_ratio_after_anchor"] = round(float(Dr[len(frames) - 1, 0]) / inner, 4) if inner > 0 else None
     # The GIF/WebP are cut from the strip's cells. A cycle longer than the cell cap was
@@ -1404,15 +1561,21 @@ def run_loop(
     atomic_write_text(out_dir / f"{name}.strip.json", json.dumps(strip_meta, indent=2) + "\n")
 
     # resampled GIF/WebP frames: same crop as the strip, n_out evenly across the cycle
-    idx = [min(L - 1, i2) for i2 in (round(k * L / n_out) for k in range(n_out))]
-    cells = [strip.crop((k * strip_meta["w"], 0, (k + 1) * strip_meta["w"], strip_meta["h"])) for k in range(strip_meta["frames"])]
-    pick = [cells[min(len(cells) - 1, round(j * len(cells) / L))] for j in idx]
+    single_play = cycle["kind"] in nonloop.KINDS
+    if single_play:
+        preview_indices = nonloop.samples(strip_meta["frames"], n_out)
+        idx = [strip_meta["sample_indices"][k] for k in preview_indices]
+        pick = [strip.crop((k * strip_meta["w"], 0, (k + 1) * strip_meta["w"], strip_meta["h"])) for k in preview_indices]
+    else:
+        idx = [min(L - 1, i2) for i2 in (round(k * L / n_out) for k in range(n_out))]
+        pick = resampled_cells(strip, strip_meta, idx, L)
     seam_idx = [i + j for j in idx]
     resampled_adjacent = float(np.mean([D[seam_idx[k], seam_idx[k + 1]] for k in range(len(seam_idx) - 1)]))
     resampled_seam = float(D[seam_idx[-1], seam_idx[0]])
     if report_base["seam_measurement"] == "rendered-cells":
-        # Gate the actual corrected/repaired/resampled strip cells, with the same limit.
-        flat = np.stack([_small_features(im) for im in pick])
+        # Gate the actual corrected/repaired/resampled strip cells, with the same limit — a cell given way to the frame
+        # beside it as filmed (`seam_as_filmed`), on the strip the cut makes with those frames.
+        flat = np.stack([_small_features(im) for im in (resampled_cells(*strip_of(seam_frames), idx, L) if as_filmed else pick)])
         resampled_adjacent = float(np.abs(flat[1:] - flat[:-1]).mean())
         resampled_seam = float(np.abs(flat[-1] - flat[0]).mean())
     seam_ratio = resampled_seam / resampled_adjacent if resampled_adjacent > 0 else math.inf
@@ -1431,7 +1594,7 @@ def run_loop(
                                       "resampled_inner_mean_adjacent": resampled_adjacent,
                                       "resampled_seam_ratio": seam_ratio})
             raise SystemExit(error)
-    elif seam_ratio > seam_max:
+    elif not single_play and seam_ratio > seam_max:
         error = (
             f"video-loop: loop seam ratio {seam_ratio:.2f} exceeds {seam_max} "
             f"({cycle['kind']} length {L} frames from {i}); the cycle does not close — "
@@ -1443,11 +1606,20 @@ def run_loop(
                                   "resampled_inner_mean_adjacent": resampled_adjacent,
                                   "resampled_seam_ratio": seam_ratio})
         raise SystemExit(error)
-    save_clean_gif(pick, gif_path, duration_ms=delay_ms, loop=0, alpha_threshold=128)
-    write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames")
+    # GIF has binary transparency. Bake the effect onto its declared black preview
+    # background instead of turning its faint partial-alpha glow into opaque dark pixels.
+    gif_background = "#000000" if cycle["kind"] == "lifetime" else None
+    gif_pick = [effect.on_black(im) for im in pick] if gif_background is not None else pick
+    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
+                   alpha_threshold=128, opaque=gif_background is not None)
+    write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
     shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
-    gif_report = verify_animation(gif_path, expect_frames=n_out, check_stale=False)
-    webp_report = verify_animation(webp_path, expect_frames=n_out, check_stale=True)
+    # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
+    shown = shown_runs(pick)
+    gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
+                                  **({"expected_loop": None} if single_play else {}),
+                                  **({"background": gif_background} if gif_background is not None else {}))
+    webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
 
     payload = {
         **report_base,
@@ -1469,7 +1641,8 @@ def run_loop(
         "status": "passed",
         "resampled_seam": resampled_seam,
         "resampled_inner_mean_adjacent": resampled_adjacent,
-        "resampled_seam_ratio": round(seam_ratio, 4),
+        "resampled_seam_ratio": None if single_play else round(seam_ratio, 4),
+        **({"seam_measurement": "not-applicable", "playback_indices": preview_indices} if single_play else {}),
         "seam_max": seam_max,
         "scrubbed_rgb_pixels": scrubbed,
         "specks_dropped": specks,
@@ -1492,7 +1665,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
     parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX})")
-    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="auto: periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin)")
+    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin)")
     parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
     parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
     parser.add_argument("--strip-height", type=int, default=STRIP_MAX_HEIGHT, help=f"cell/strip/GIF height cap in px (default {STRIP_MAX_HEIGHT}); the cycle is scaled down to fit, and never up unless --body-height asks for it")
@@ -1548,6 +1721,11 @@ def run(**kwargs: object) -> int:
         summary["cycle"]["coverage"] = payload["cycle"]["coverage"]
     if "step_screen" in payload["cycle"]:
         summary["cycle"]["step_screen"] = payload["cycle"]["step_screen"]
+    if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:
+        summary["ghost_screen"] = payload["ghost_screen"]
+    for key in ("ghost_given_way", "ghost_kept"):
+        if payload.get(key):
+            summary[key] = payload[key]
     if payload.get("jump_repair", {}).get("replaced"):
         summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "score_max_before", "score_max_after")}
     summary["strip"] = {k: payload["strip"][k] for k in ("path", "frames", "w", "h", "body_h", "delay_ms")}

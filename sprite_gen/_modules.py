@@ -6,6 +6,7 @@ the reorg tooling. Keep in sync with the physical folder layout.
 """
 
 MODULE_DOMAIN = {
+    'sound': 'audio',
     'guide': 'workflow',
     'preferences': 'workflow',
     'runio': 'spec',
@@ -22,6 +23,7 @@ MODULE_DOMAIN = {
     'migrate_breathe': 'spec',
     'video': 'gen',
     'gen_set': 'gen',
+    'pixel_draw': 'gen',
     'canvas': 'video',
     'frames': 'video',
     'loop': 'video',
@@ -29,6 +31,7 @@ MODULE_DOMAIN = {
     'align': 'video',
     'follow': 'video',
     'follow_inspect': 'video',
+    'set_sheet': 'video',
     'compare': 'video',
     'restoration': 'video',
     'source': 'video',
@@ -39,11 +42,14 @@ MODULE_DOMAIN = {
     'cutout': 'frames',
     'segment': 'frames',
     'slice_sheet': 'frames',
+    'ui_kit': 'frames',
+    'alpha_floor': 'frames',
     'check_visible_magenta': 'frames',
     'unpack_atlas': 'frames',
     'curation': 'curate',
     'anchor': 'curate',
     'compose_atlas': 'compose',
+    'game_pack': 'compose',
     'compose_cycle': 'compose',
     'compose_gif': 'compose',
     'compose_layers': 'compose',
@@ -73,6 +79,7 @@ MODULE_DOMAIN = {
 DOMAINS: list[tuple[str, str]] = [
     ("workflow", "Start here — image or sprite choices, access checks, saved defaults"),
     ("gen", "Generation — prepare a run, generate stills / rows / clips"),
+    ("audio", "Audio — named effects, music, loop processing and browser exports"),
     ("video", "Video → loop — canvas, keyed frames, seamless cycle, batch"),
     ("frames", "Frames — chroma/white removal, row extraction, sheet slicing, atlas unpacking"),
     ("curate", "Curation — direction anchors and the curation sidecar"),
@@ -95,13 +102,13 @@ DOMAIN_TITLE = dict(DOMAINS)
 PIPELINES: list[dict[str, object]] = [
     {"key": "A", "name": "atlas rows", "verbs": ["prepare", "gen", "gen-set", "extract", "compose-atlas", "curation"],
      "chain": "prepare → gen (or gen-set) → extract → compose-atlas; optional curation and recompose", "doc": "docs/run-contract.md"},
-    {"key": "B", "name": "video → loop", "verbs": ["video-canvas", "video", "video-prompt", "video-frames", "video-loop", "video-set", "video-cycle-align", "video-follow", "video-follow-inspect", "handed-check"],
-     "chain": "video-canvas → video (or video-prompt + a video MCP) → video-frames → video-loop, or video-set; video-cycle-align across a set; video-follow for a soft part's follow-through (video-follow-inspect shows every cell of it and moves nothing); handed-check for an item on one side", "doc": "docs/video-pipeline.md"},
+    {"key": "B", "name": "video → loop", "verbs": ["video-canvas", "video", "video-prompt", "video-frames", "video-loop", "video-set", "video-cycle-align", "video-follow", "video-follow-inspect", "video-set-sheet", "handed-check"],
+     "chain": "video-canvas → video (or video-prompt + a video MCP) → video-frames → video-loop, or video-set; video-cycle-align across a set; video-follow for a soft part's follow-through (video-follow-inspect shows every cell of it and moves nothing); video-set-sheet lays a set's directions on one sheet on one ground line; handed-check for an item on one side", "doc": "docs/video-pipeline.md"},
 ]
 
 TOOL_GROUPS: list[dict[str, object]] = [
-    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "unpack-atlas"],
-     "chain": "cutout · slice-sheet · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
+    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "ui-kit", "unpack-atlas"],
+     "chain": "cutout · slice-sheet · ui-kit · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
     {"key": "D", "name": "post-processing", "verbs": ["recolor", "recolor-palette", "compose-layers", "export-pngs", "export-aseprite"],
      "chain": "recolor · compose-layers · export-pngs · export-aseprite", "doc": "docs/recolor.md"},
     {"key": "E", "name": "asset tools", "verbs": ["background-tile", "shadow", "inspect-motion"],
