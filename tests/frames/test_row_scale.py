@@ -66,3 +66,29 @@ def test_cli_extract_preserves_body_scale(tmp_path):
     assert len(sizes) == 3
     for axis in (0, 1):
         assert max(size[axis] for size in sizes) - min(size[axis] for size in sizes) <= 1
+
+
+def red_body_centre_x(frame):
+    mask = Image.new('L', frame.size)
+    mask.putdata([255 if r > 180 and g < 80 and b < 80 and a > 128 else 0
+                  for r, g, b, a in frame.get_flattened_data()])
+    box = mask.getbbox()
+    assert box is not None
+    return (box[0] + box[2]) / 2
+
+
+@pytest.mark.parametrize('route', ['components', 'slots'])
+@pytest.mark.parametrize('align_x', ['foot-centroid', 'centroid', 'alpha-centroid', 'bbox-center'])
+def test_a_reaching_weapon_does_not_push_its_pose_off_its_anchor(route, align_x):
+    """The row scale used to fit the widest pose by its own width; placed at its anchor (the legs, by
+    default) that pose crossed the cell and was pushed back in, body and all, so the body jumped back
+    in that frame alone. The scale now keeps every pose inside the safe area where its anchor puts it."""
+    fn = extract.extract_component_frames if route == 'components' else extract.extract_slot_frames
+    frames = fn(attack_strip(), 3, 128, 128, 12, 12, {'align_x': align_x})
+    assert frames is not None and len(frames) == 3
+    for frame in frames:  # inside the safe area, give or take the pixel the shrink rounds
+        x0, y0, x1, y1 = frame.getbbox()
+        assert x0 >= 12 - 1 and x1 <= 128 - 12 + 1
+    if align_x == 'foot-centroid':  # the legs are the body here, so the body stays put
+        centres = [red_body_centre_x(frame) for frame in frames]
+        assert max(centres) - min(centres) <= 1
