@@ -62,6 +62,7 @@ def test_an_item_films_its_play_mode_and_motion_text_once_back_to_its_first_pose
         return {"fps": 24.0, "frames": 36, "alpha_zero_pct_min": 0, "alpha_zero_pct_max": 0, "keyed_dir": str(keyed)}
 
     monkeypatch.setattr(batch_mod.frames_mod, "run_frames", frames_stub)
+    monkeypatch.setattr(batch_mod.facing_mod.vision, "grok_inspect", lambda *a, **kw: ("right", {}))
     root = tmp_path / "set"
     report = batch_mod.run_set(bases={"side": base}, states=["punch"], root=root, character=None, duration=None,
                                resolution="480p", key="green", concurrency=1, force=False, gap=0, video_runner=video_stub,

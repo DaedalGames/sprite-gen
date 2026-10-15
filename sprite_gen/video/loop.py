@@ -559,6 +559,24 @@ def pinned_cycle(D: np.ndarray, *, seam_max: float) -> dict[str, Any]:
             "pin_tolerance": max(seam_max * inner, PIN_NOISE_MAX), "period_global": None, "periodicity": None}
 
 
+def once_return_cycle(D: np.ndarray, *, seam_max: float) -> dict[str, Any]:
+    """The whole clip played once, for a clip pinned to end on its first frame (`--cycle once-return`).
+
+    Every frame is kept, the last too: the strip starts on the first pose and ends on it again, so a game plays it
+    once and goes on from the pose it started in. The gate is the pin, as `pinned_cycle`'s: the last frame is the
+    first again within `seam_max` ordinary steps or the re-render noise. The motion's peak is its largest step,
+    as a `once` cut's (`nonloop.select_cut`).
+    """
+    n = D.shape[0]
+    steps = np.diag(D, 1)
+    inner = float(steps.mean())
+    pin_error = float(D[n - 1, 0])
+    return {"kind": "once-return", "start": 0, "length": n, "end_frame": n - 1, "event_frame": int(np.argmax(steps)) + 1,
+            "seam": pin_error, "inner_mean_adjacent": inner, "pin_error": pin_error,
+            "pin_tolerance": max(seam_max * inner, PIN_NOISE_MAX), "period_global": None, "periodicity": None,
+            "ratio": 0.0, "review_recommended": False}
+
+
 def _scrub(image: Image.Image) -> int:
     px = image.load()
     n = 0
@@ -1305,6 +1323,8 @@ def run_loop(
             cycle = _one_shot(D, window, hi, masses)
         elif cycle_mode == "pinned":
             cycle = pinned_cycle(D, seam_max=seam_max)
+        elif cycle_mode == "once-return":
+            cycle = once_return_cycle(D, seam_max=seam_max)
         else:
             gait_floor = round(prof.min_seconds * fps) if prof.gait and prof.min_seconds > 0 else None
             cycle = detect_cycle(D, min_len=lo, max_len=hi, gait_floor=gait_floor,
@@ -1582,11 +1602,12 @@ def run_loop(
     delay_ms = max(20, round(1000 * cycle_seconds / n_out))
     gif_path = out_dir / f"{name}.gif"
     webp_path = out_dir / f"{name}.webp"
-    if cycle["kind"] == "pinned":
+    if cycle["kind"] in ("pinned", "once-return"):
         if cycle["pin_error"] > cycle["pin_tolerance"]:
+            what = "the loop does not close" if cycle["kind"] == "pinned" else "it does not return to its first pose"
             error = (
-                f"video-loop: the pinned clip does not end on its first frame (pin error {cycle['pin_error']:.4f} "
-                f"exceeds {cycle['pin_tolerance']:.4f}); the loop does not close — regenerate the clip with "
+                f"video-loop: the {cycle['kind']} clip does not end on its first frame (pin error {cycle['pin_error']:.4f} "
+                f"exceeds {cycle['pin_tolerance']:.4f}); {what} — regenerate the clip with "
                 "--last-frame set to its first frame"
             )
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle,
@@ -1665,7 +1686,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
     parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX})")
-    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin)")
+    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin); once-return: the whole clip with its last frame, played once from its first pose back to it (loop false, returns true), for a clip pinned to end on its first frame (the gate is that pin)")
     parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
     parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
     parser.add_argument("--strip-height", type=int, default=STRIP_MAX_HEIGHT, help=f"cell/strip/GIF height cap in px (default {STRIP_MAX_HEIGHT}); the cycle is scaled down to fit, and never up unless --body-height asks for it")

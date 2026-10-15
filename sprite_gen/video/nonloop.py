@@ -7,7 +7,9 @@ from typing import Any, Callable
 
 from sprite_gen._deps import np
 
-KINDS = ("once", "lifetime")
+# Cuts played once: `once` ends held on its terminal pose, `lifetime` on an empty frame, `once-return` back on its
+# first pose (a clip pinned to end on its first frame, kept whole, `loop.once_return_cycle`).
+KINDS = ("once", "lifetime", "once-return")
 MOTION_TEXT = {'death': 'collapses directly onto the ground, settles into a completely prone position, and remains '
           'lying entirely motionless for the final 0.4 seconds without shifting, rising, or returning '
           'to the starting posture.',
@@ -132,8 +134,11 @@ def samples(length: int, count: int) -> list[int]:
 
 
 def metadata(cycle: dict[str, Any], indices: list[int]) -> dict[str, Any]:
+    """A single play's strip metadata: it plays once (`loop: false`); a `once` cut holds its last cell (`hold_last`),
+    and a `once-return` cut starts and ends on its first pose (`returns`)."""
     event = cycle["event_frame"] - cycle["start"]
-    return {"loop": False, "hold_last": cycle["kind"] == "once", "end_frame": len(indices) - 1,
+    return {"loop": False, "hold_last": cycle["kind"] == "once", **({"returns": True} if cycle["kind"] == "once-return" else {}),
+            "end_frame": len(indices) - 1,
             "events": [{"frame": min(range(len(indices)), key=lambda k: abs(indices[k] - event)),
                         "name": "motion_peak"}]}
 
