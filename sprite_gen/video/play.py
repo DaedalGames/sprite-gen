@@ -7,7 +7,9 @@ request names no mode, and its own sentence, canvas row and cut are the engine's
 no state for is filmed under the caller's name for it, in the mode the request gives, with the caller's motion text
 or the mode's own sentence (`batch.PLAY_TEXT`). The mode decides whether the clip is pinned to end on its first
 frame (`batch.pins_last_frame`), what the prompt asks of the ending (`batch.clip_prompt_parts`), how the clip is cut
-(`batch.cycle_for`) and what the strip's metadata says (`loop`, `hold_last`, `returns`).
+(`batch.cycle_for`) and what the strip's metadata says (`loop`, `hold_last`, `returns`). A once-hold ends on its first
+settled pose: a terminal state's by its own body geometry, any other motion's by a drawing other than its first
+(`nonloop.end_pose`).
 """
 
 from __future__ import annotations

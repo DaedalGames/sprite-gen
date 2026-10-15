@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
+from PIL import Image
+
 from sprite_gen._deps import np
 
 # Cuts played once: `once` ends held on its terminal pose, `lifetime` on an empty frame, `once-return` back on its
@@ -45,10 +47,15 @@ GROUND_HEIGHT_MAX = 0.8
 GROUND_STATES = frozenset({"death", "fall"})
 
 
-def hold_ending(D: np.ndarray, masses: np.ndarray, fps: float, *,
-                boxes: list[tuple[int, int, int, int] | None] | None = None,
-                state: str | None = None) -> tuple[int, int, dict[str, Any]]:
-    """End at the first settled terminal pose, discarding subsequent motion."""
+Box = tuple[int, int, int, int]
+# How a once cut judges the pose a settled window ends on (`end_pose`): given the window [first, end] and the subject
+# mass its distances are divided by, the pose's evidence, or a ValueError saying why the window ends in no end pose.
+EndPose = Callable[[int, int, float], dict[str, Any]]
+
+
+def hold_ending(D: np.ndarray, masses: np.ndarray, fps: float, *, pose: EndPose) -> tuple[int, int, dict[str, Any]]:
+    """End at the first settled window after the action whose pose `pose` (`end_pose`) takes for the end pose,
+    discarding subsequent motion."""
     n = len(D)
     count = max(4, math.ceil(fps * STABLE_SECONDS))
     if n <= count + 1 or float(masses[0]) <= 0:
@@ -64,29 +71,71 @@ def hold_ending(D: np.ndarray, masses: np.ndarray, fps: float, *,
         diameter = float(D[first:end + 1, first:end + 1].max()) / scale
         if diameter > STABLE_MAX:
             continue
-        departure = D[0] / max(float(masses[0]), scale)
+        mass = max(float(masses[0]), scale)
+        departure = D[0] / mass
         active = np.flatnonzero(departure[:first] > STABLE_MAX * 2)
         if not len(active):
             continue
-        pose = None
-        if boxes is not None:
-            try:
-                pose = terminal_pose(boxes[:end + 1], count=count, state=state)
-            except ValueError as exc:
-                reason = str(exc)
-                continue
-        elif float(np.median(departure[first:end + 1])) <= STABLE_MAX * 2:
+        try:
+            evidence = pose(first, end, mass)
+        except ValueError as exc:
+            reason = str(exc)
             continue
         start = max(0, int(active[0]) - 1)
         return start, end, {"kind": "hold", "frames": count, "start": first,
                            "diameter": diameter, "max": STABLE_MAX, "normalization": "subject-mass",
-                           **({"pose": pose} if pose is not None else {})}
+                           "pose": evidence}
     raise ValueError(f"once has no stable end pose: {reason} ({count} frames, limit {STABLE_MAX})")
 
 
-def terminal_pose(boxes: list[tuple[int, int, int, int] | None], *, count: int,
-                  state: str | None) -> dict[str, Any]:
-    """Compare body geometry, independent of color noise and horizontal drift."""
+def end_pose(state: str | None, frames: list[Image.Image], features: Callable[[Image.Image], np.ndarray]) -> EndPose:
+    """The one judge of the pose a once cut ends on. A named terminal state (`STATES`) ends in its own body geometry
+    (`terminal_pose`): lowered for `death` and `fall`, changed for the rest. Any other motion played once — a once-hold
+    the request chose, `video-loop --cycle once` on a jump or on a word of your own — ends in a drawing other than its
+    first (`drawing_pose`), whatever its body box does. `features` is the distance matrix's feature function, so a
+    drawing's distance is on the scale of the subject mass."""
+    boxes = [body_box(frame) for frame in frames]
+    if state in STATES:
+        return lambda first, end, mass: terminal_pose(boxes[:end + 1], count=end - first + 1, state=state)
+    return drawing_pose(frames, boxes, features)
+
+
+def drawing_pose(frames: list[Image.Image], boxes: list[Box | None],
+                 features: Callable[[Image.Image], np.ndarray]) -> EndPose:
+    """A motion with no terminal state of its own ends in a drawing other than its first. Each frame of the settled
+    window is moved sideways until its body box is centred where the first frame's is, and its distance from the
+    first frame (`features`) must be more than an action's departure, `STABLE_MAX * 2` of the subject mass, as
+    `hold_ending` reads the action. The body box may keep its size and floor — a shield raised across the chest is a
+    new pose — while the first drawing slid sideways is not one."""
+    reference = features(frames[0])
+    measured: dict[int, tuple[float, int]] = {}
+
+    def distance(k: int) -> tuple[float, int]:
+        if k not in measured:
+            shift = round((boxes[0][0] + boxes[0][2] - boxes[k][0] - boxes[k][2]) / 2)
+            moved = Image.new("RGBA", frames[k].size)
+            moved.paste(frames[k], (shift, 0))
+            measured[k] = float(np.abs(features(moved) - reference).mean()), shift
+        return measured[k]
+
+    def judge(first: int, end: int, mass: float) -> dict[str, Any]:
+        if boxes[0] is None or any(b is None for b in boxes[first:end + 1]):
+            raise ValueError("once needs a visible end pose")
+        held = [distance(k) for k in range(first, end + 1)]
+        departure = float(np.median([d for d, _ in held])) / mass
+        if departure <= STABLE_MAX * 2:
+            raise ValueError(f"once ends in the starting pose: its drawing, moved back to where it started, differs "
+                             f"from the first frame by {departure:.3f} of the subject (an end pose differs by more "
+                             f"than {STABLE_MAX * 2:g})")
+        return {"profile": "drawing", "departure": departure, "departure_min": STABLE_MAX * 2,
+                "shift_px": round(float(np.median([shift for _, shift in held])))}
+
+    return judge
+
+
+def terminal_pose(boxes: list[Box | None], *, count: int, state: str | None) -> dict[str, Any]:
+    """A named terminal state's end pose (`end_pose`): compare body geometry, independent of color noise and horizontal
+    drift."""
     first = boxes[0]
     tail = boxes[-count:]
     if first is None or any(b is None for b in tail):
@@ -113,9 +162,9 @@ def terminal_pose(boxes: list[tuple[int, int, int, int] | None], *, count: int,
 Ending = Callable[[np.ndarray, np.ndarray, float], tuple[int, int, dict[str, Any]]]
 
 
-def select_cut(D: np.ndarray, masses: np.ndarray, *, fps: float, kind: str = "once",
-               ending: Ending = hold_ending) -> dict[str, Any]:
-    """One cut body; an ending returns inclusive bounds and its measured evidence."""
+def select_cut(D: np.ndarray, masses: np.ndarray, *, fps: float, ending: Ending, kind: str = "once") -> dict[str, Any]:
+    """One cut body; an ending (`hold_ending` with its `end_pose`, `effect.lifetime_ending`) returns inclusive bounds
+    and its measured evidence."""
     start, end, terminal = ending(D, masses, fps)
     if not 0 <= start < end < len(D):
         raise ValueError(f"{kind}: invalid terminal cut [{start}, {end}]")
@@ -143,7 +192,7 @@ def metadata(cycle: dict[str, Any], indices: list[int]) -> dict[str, Any]:
                         "name": "motion_peak"}]}
 
 
-def body_box(frame: Any) -> tuple[int, int, int, int] | None:
+def body_box(frame: Any) -> Box | None:
     return frame.getchannel("A").point(lambda a: 255 if a >= 8 else 0).getbbox()
 
 

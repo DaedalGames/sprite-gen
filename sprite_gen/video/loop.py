@@ -1308,9 +1308,8 @@ def run_loop(
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
-            boxes = [nonloop.body_box(frame) for frame in source_frames]
-            cycle = nonloop.select_cut(D, masses, fps=fps,
-                                      ending=partial(nonloop.hold_ending, boxes=boxes, state=state))
+            cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(
+                nonloop.hold_ending, pose=nonloop.end_pose(state, source_frames, _small_features)))
             nonloop.validate_body(source_frames[cycle["start"]:cycle["end_frame"] + 1])
         elif cycle_mode == "lifetime":
             cycle = nonloop.select_cut(D, masses, fps=fps, kind=cycle_mode,
