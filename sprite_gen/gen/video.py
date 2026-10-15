@@ -67,8 +67,8 @@ from sprite_gen.video import facing as facing_mod
 from .xai import (
     API_BASE, AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
     HTTP_TIMEOUT_SECONDS, GROK_REFRESH_COMMAND, GROK_REFRESH_WHERE, GROK_LOGIN_COMMAND,
-    NO_ANSWER, Credential, HttpCall, TransportError, grok_home, resolve_credential, http_json, no_answer, post,
-    read_whole, time_left,
+    NO_ANSWER, Credential, HttpCall, TransportError, resolve_credential, http_json, no_answer, post,
+    read_whole, rejected_fix, time_left,
 )
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
@@ -532,11 +532,7 @@ def _submit_poll_publish(
     if status in (401, 403):
         raise SystemExit(
             f"{verb}: xAI rejected the credential ({credential.source}) with HTTP {status}: {_error_detail(reply, credential.token)}\n"
-            + (
-                f"  the grok login token may have been revoked or rotated — run `{GROK_REFRESH_COMMAND}` {GROK_REFRESH_WHERE} or `{GROK_LOGIN_COMMAND}`."
-                if credential.source == AUTH_SOURCE_GROK_LOGIN
-                else f"  check the {AUTH_ENV} value."
-            )
+            f"  {rejected_fix(credential)}."
         )
     request_id = reply.get("request_id") if isinstance(reply, dict) else None
     if status not in (200, 202) or not request_id:
@@ -629,8 +625,7 @@ def _poll_publish(
         elif http in (401, 403):
             # The token this request was submitted with stopped working (a login expires in about six
             # hours); asking again with it changes nothing. A fresh one can ask for the same request.
-            fix = (f"refresh the login with `{GROK_REFRESH_COMMAND}` run {GROK_REFRESH_WHERE} or `{GROK_LOGIN_COMMAND}`"
-                   if credential.source == AUTH_SOURCE_GROK_LOGIN else f"check the {AUTH_ENV} value")
+            fix = rejected_fix(credential)
             raise unfinished(
                 f"was accepted, but xAI rejected the credential ({credential.source}) on poll {polls} (answer {http}); "
                 f"it may still finish and be billed — {fix}, then {_ask_again(request_id, out)}",

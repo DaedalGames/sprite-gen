@@ -319,7 +319,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         ui_kit.run,
     ),
     "gen": (
-        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login, or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
+        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login first (an API key only without one, billed per call and said), or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
         _add_gen,
         gen.run,
     ),
@@ -335,7 +335,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     ),
     # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
     "pixel-draw": (
-        "Experimental: Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (ANTHROPIC_API_KEY, billed per call).",
+        "Experimental: Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (your Claude subscription first; without a login ANTHROPIC_API_KEY, billed per call).",
         pixel_draw.add_arguments,
         pixel_draw.run,
     ),

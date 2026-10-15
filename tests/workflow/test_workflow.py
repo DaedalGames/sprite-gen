@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sprite_gen.gen import codex_provider
 from sprite_gen.workflow import access, guide, preferences
 from sprite_gen.workflow.catalog import FIELDS, FLOWS, MOTION_METHODS
 from sprite_gen.gen.video import AUTH_SOURCE_API_KEY
@@ -23,8 +24,8 @@ def isolated_settings(tmp_path, monkeypatch):
 @pytest.fixture
 def ready_login(monkeypatch):
     seen = []
-    def probe(provider, *, video=False):
-        seen.append((provider, video))
+    def probe(provider):
+        seen.append(provider)
         return {"provider": provider, "login": "ready", "subscription": "unknown", "quota": "unknown",
                 "billing": "subscription", "reason": "unverified media access"}
     monkeypatch.setattr(guide, "probe_access", probe)
@@ -105,7 +106,7 @@ def test_first_sprite_request_and_existing_base(ready_login, tmp_path):
     ready_login.clear()
     view = guide.guide("sprite", base_image=base, choices={"motion_method": "gpt-rows"}, confirmed_access=("codex",))
     assert view["status"] == "ready" and view["pipeline"]["image_provider"] is None
-    assert ready_login == [("codex", False)]
+    assert ready_login == ["codex"]
     assert "extract" in view["pipeline"]["steps"]
 
 
@@ -157,18 +158,19 @@ def test_finish_requires_result_and_generation_choices(tmp_path):
 
 
 def test_access_probe_redacts_output_and_separates_auth_from_subscription(monkeypatch):
-    monkeypatch.setattr(access.shutil, "which", lambda _: "/fake/codex")
-    monkeypatch.setattr(access.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="Logged in using ChatGPT", stderr="synthetic-secret"))
+    monkeypatch.setattr(codex_provider.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="Logged in using ChatGPT", stderr="synthetic-secret"))
     result = access.probe_access("codex")
-    assert result["login"] == "ready" and result["subscription"] == "unknown"
+    assert result["login"] == "ready" and result["subscription"] == "unknown" and result["billing"] == "subscription"
     assert "synthetic-secret" not in json.dumps(result)
-    monkeypatch.setattr(access.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="API key authentication", stderr=""))
-    assert access.probe_access("codex")["login"] == "unknown"
+    monkeypatch.setattr(codex_provider.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="Logged in using an API key - synthetic-secret", stderr=""))
+    result = access.probe_access("codex")
+    assert result["login"] == "ready" and result["billing"] == "api-credit"
+    assert "synthetic-secret" not in json.dumps(result)
 
 
 def test_video_api_key_requires_own_confirmation(monkeypatch, tmp_path):
     monkeypatch.setattr(access, "resolve_credential", lambda **kw: SimpleNamespace(source=AUTH_SOURCE_API_KEY))
-    actual = access.probe_access("grok", video=True)
+    actual = access.probe_access("grok")
     assert actual["billing"] == "api-credit"
     monkeypatch.setattr(guide, "probe_access", lambda *a, **k: actual)
     base = tmp_path / "base.png"

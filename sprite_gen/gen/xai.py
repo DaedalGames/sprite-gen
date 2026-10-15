@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import refusal, retry
+from .base import env_api_key
 
 API_BASE = "https://api.x.ai/v1"
 AUTH_ENV = "XAI_API_KEY"
@@ -118,16 +119,22 @@ def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | Non
         raise SystemExit(f"xai: cannot inspect grok login file {auth_path}; refusing API-credit fallback") from exc
     else:
         return _load_grok_login(auth_path, now=now)
-    api_key = (env.get(AUTH_ENV) or "").strip()
+    api_key = env_api_key(AUTH_ENV, env, who="xai")
     if api_key:
         return Credential(token=api_key, source=AUTH_SOURCE_API_KEY)
-    if AUTH_ENV in env and not api_key:
-        raise SystemExit(f"xai: {AUTH_ENV} is set but empty and no grok login exists; run `{GROK_LOGIN_COMMAND}` or give the key a value")
     raise SystemExit(
         f"xai: no xAI credential — no grok login at {auth_path} and {AUTH_ENV} is not set.\n"
         f"  sign in with `{GROK_LOGIN_COMMAND}` (SuperGrok Imagine quota, no API key), "
         f"or export {AUTH_ENV}=<your xAI console key>."
     )
+
+
+def rejected_fix(credential: Credential) -> str:
+    """What to do when xAI rejects `credential` (401/403), for every Grok call: a login is refreshed by a
+    non-agent round-trip or signed in again; a key is checked."""
+    if credential.source == AUTH_SOURCE_GROK_LOGIN:
+        return f"refresh the login with `{GROK_REFRESH_COMMAND}` run {GROK_REFRESH_WHERE} or `{GROK_LOGIN_COMMAND}`"
+    return f"check the {AUTH_ENV} value"
 
 
 HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]

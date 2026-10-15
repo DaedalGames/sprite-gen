@@ -223,8 +223,16 @@ def test_provider_contract_and_safe_retry(monkeypatch, capsys):
     assert requests[0].full_url.endswith('/sound-generation?output_format=mp3_44100_128')
     assert json.loads(requests[0].data) == {'text':'Impact', 'duration_seconds':3.0,
         'loop':True, 'model_id':'eleven_text_to_sound_v2', 'prompt_influence':.3}
-    assert meta['character_cost'] == 120
-    assert 'secret-key' not in capsys.readouterr().err
+    assert meta['character_cost'] == 120 and meta['auth_source'] == 'ELEVENLABS_API_KEY'
+    err = capsys.readouterr().err
+    assert 'secret-key' not in err
+    assert '[gen] elevenlabs: running on ELEVENLABS_API_KEY — this is a per-call API charge' in err
+    monkeypatch.setenv('ELEVENLABS_API_KEY', ' ')
+    with pytest.raises(ValueError, match='sound: ELEVENLABS_API_KEY is set but empty'):
+        provider.generate(req)
+    monkeypatch.delenv('ELEVENLABS_API_KEY')
+    with pytest.raises(ValueError, match='ELEVENLABS_API_KEY is required for a new sound request'):
+        provider.generate(req)
     bgm = provider.request('bgm', 'Adventure', 8, True)
     assert bgm['body'] == {'prompt':'Adventure', 'music_length_ms':8000,
                           'model_id':'music_v1', 'force_instrumental':True}

@@ -4,7 +4,7 @@
 > varies from run to run: expect to compare candidates, re-draw, or touch up `grid.txt` by hand. The numbers below come from a
 > small set of measured runs, not from a benchmark.
 
-> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the style a drawing is asked in, a set of more than four frames drawn four at a time, the run folder and `report.json`, gates G1–G8 and what they take from sprite-gen, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
+> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the style a drawing is asked in, a set of more than four frames drawn four at a time, the run folder and `report.json`, which credential a call runs on, gates G1–G8 and what they take from sprite-gen, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
 
 The model does not paint an image that is then shrunk to a grid. It writes the grid itself: a
 palette of keys and, per frame, one line of keys per pixel row. Code checks every answer, asks for
@@ -32,13 +32,18 @@ subjects made with GPT images shrunk by sprite-gen's own functions):
   (cobblestones) at effort xhigh on 2026-10-12, and a set of four 48 px frames at effort high, all
   64,000 tokens, on 2026-10-14 — the run draws it once more one effort lower.
 
-It runs on `ANTHROPIC_API_KEY` and **every call is billed per call** against that key; the run
-says so on stderr before the first request leaves, and `report.json` adds up what it cost.
+It runs on your **Claude subscription first**, like `codex` and `grok` do: when the `claude` binary
+(Claude Code) is signed in with a subscription, every call goes through it and costs nothing per
+call — it counts against the plan's usage limits. Only without a subscription login does it run on
+`ANTHROPIC_API_KEY`, where **every call is billed per call**; the run says so on stderr before the
+first request leaves, and `report.json` adds up what it cost. See [Which credential a call runs
+on](#which-credential-a-call-runs-on).
 
 ## Quick start
 
 ```bash
-export ANTHROPIC_API_KEY=<your Claude Console key>
+claude   # once: sign in with /login (a Pro, Max, Team or Enterprise plan); or
+export ANTHROPIC_API_KEY=<your Claude Console key>   # per-call billing, used only without a login
 
 # one sprite, 32x32, two candidates, the vision pick
 sprite-gen pixel-draw --out-dir runs/slime \
@@ -101,7 +106,7 @@ candidate's files are at the top of the run folder.
 | `--candidates K` | 1–6 (2) | Answers drawn for the request, each on its own; one is picked (G7). |
 | `--effort` | `medium`, `high`, `xhigh` (`high`) | Thinking effort of each drawing. |
 | `--format` | `chargrid`, `json` (`chargrid`) | How the model writes the grid. `grid.txt` is a character grid either way. |
-| `--batch` | flag | Draw through Message Batches at half price and wait for the batch (below). |
+| `--batch` | flag | Draw through Message Batches at half price and wait for the batch (below). Batches exist only on the API, so the whole run uses `ANTHROPIC_API_KEY` even when a subscription is signed in. |
 | `--batch-wait S` | seconds (3600) | How long to wait for one batch before the run ends unfinished; `--resume` collects it later. `0` submits and returns. |
 | `--max-tokens N` | 1024–128000 (32000 for one frame, 64000 for more) | Output cap of each drawing, thinking included. |
 | `--pick` | `vision`, `human` (`vision`) | Who picks among candidates that passed. |
@@ -291,6 +296,7 @@ answers a question the verb asks, it asks that function; a part that is its own 
 | `anim.gif` | `util.gif_utils.save_clean_gif` | — |
 | The pick sheet's checker | `qa.preview.checker`, the contact sheets' | — |
 | The billing line, the printed report | `gen.base.announce_api_billing`, `gen.base.print_json` | [gen.md](gen.md) |
+| The subscription login first, the key only without one | `gen.claude_login.resolve_credential`, the order `gen.xai.resolve_credential` keeps for Grok; the key read by `gen.base.env_api_key`; the child's environment from `gen.base.provider_subprocess_env` | [Which credential a call runs on](#which-credential-a-call-runs-on) |
 | The refusal line | `gen.refusal` (`CONTENT_POLICY`) | [gen.md](gen.md#direct-openai-calls-and-authentication) |
 | What ends a call unanswered, and its words; a refusal's body | `gen.xai` (`NO_ANSWER`, `no_answer_reason`, `error_body`) | — |
 
@@ -341,11 +347,13 @@ zlib build. The previews, the tiling and the GIF are views for the eye.
 | `chosen`, `files`, `warnings`, `info` | the picked candidate, its top-level files, its warnings (worth a look, maybe a redraw) and its info lines (nothing to do) |
 | `pick` | `by` (`vision` / `only` / `human`), `best`, and for the vision pick its `labels`, `sheet` and `verdict` |
 | `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `info`, `files`, and for a set drawn over several calls `parts` (each call's frames and the effort it was drawn at; `effort` is then the lowest) |
-| `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `c1-part2-gen1` for a set drawn over several calls, `pick`), `purpose`, `mode` (`realtime` / `batch`), `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
+| `auth_source` | what the run's calls ran on: `claude-login` (the subscription) or `ANTHROPIC_API_KEY` |
+| `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `c1-part2-gen1` for a set drawn over several calls, `pick`), `purpose`, `mode` (`subscription` / `realtime` / `batch`), `auth_source`, `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
 | `batches[]` | per batch: `id`, `custom_ids`, `submitted_at`, `collected`, `ended_at`, `waited_seconds` |
 | `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |
 
-`cost_usd` is each call's usage at the published price (below), Message Batches at half. It is
+`cost_usd` is nothing for a call on the subscription (its `usage` is kept: it counts against the
+plan), and on the key each call's usage at the published price (below), Message Batches at half. It is
 what the calls cost by the API's own usage counts, not a console bill. Which price each token is
 billed at is one function, `anthropic_api.billed_tokens`: input, output, cache reads, and cache
 writes by their lifetime (`usage.cache_creation`'s five-minute and one-hour counts; a reply that
@@ -400,6 +408,44 @@ the same files and a report with no calls.
 Pass the `--kind`, `--palette`, `--walk-cycle` and `--motion` the grid was drawn under; the run's
 `request.json` has them. `--duration-ms` times `anim.gif` anew; `--style` belongs to a drawing and is
 refused here.
+
+## Which credential a call runs on
+
+`claude_login.resolve_credential` answers it once per run, in the order `codex` and `grok` keep:
+
+1. **The subscription login.** `claude auth status --json` is asked in the environment the call
+   would run in. Signed in with `claude.ai` (`/login`) or `oauth_token` (`claude setup-token`) is a
+   subscription: every call — the drawings, the row repairs, the pick — runs through the unmodified
+   `claude` binary in print mode (`claude -p`) from an empty directory, with no tool, no session
+   written, and no CLAUDE.md, hook, skill, plugin or MCP server loaded (`--safe-mode`). Model, effort,
+   system prompt, output cap (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), the pick's schema and its sheet go as
+   the binary's flags and one stream-json message; the answer comes back as the API's would.
+2. **`ANTHROPIC_API_KEY`**, only when no subscription login is here (no `claude` installed, nobody
+   signed in, or Claude Code signed in with a key, a key helper or a cloud account). Billed per call,
+   said on stderr before the first request leaves.
+3. Neither is a refusal naming both, before the run folder is made.
+
+The child never sees `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` — in print mode the binary uses a
+key whenever one is present — nor the calling Claude Code session's own variables. A login that is
+here but refuses a call, has expired or has reached its usage limit fails that call as it came; the
+run never switches to the key on its own. `--batch` is the API's Message Batches, so it names the key
+and the login is not asked. One call through the binary may take up to
+`SPRITE_GEN_CLAUDE_CALL_TIMEOUT_SECONDS` (1800) before it is stopped and reported; on the key, one
+socket read of the stream may wait `SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS` (300) — the API sends
+`ping`s while the model thinks, so a stream silent that long is stalled.
+
+An answer that reaches the output cap is not cut by the binary: it asks for a continuation, which goes
+on in another message, and the answer is read whole from every message in order (the binary's own
+`result` holds only the last part). When the continuations do not finish it fails with "exceeded the N
+output token maximum"; that is read as the API's `stop_reason: max_tokens`, so the one redraw one
+effort lower happens on either route.
+
+The subscription route is for the person running sprite-gen on their own machine, signed in to their
+own plan. Anthropic permits an end user signing in to the unmodified Claude Code binary with their
+own subscription, and does not permit routing other people's requests through one
+([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance.md)): a service that
+draws for other people runs on `ANTHROPIC_API_KEY` — no login exists in its container, so that is
+the route it gets.
 
 ## Model, effort and price
 

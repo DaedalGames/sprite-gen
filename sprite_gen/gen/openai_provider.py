@@ -31,7 +31,6 @@ import base64
 import binascii
 import io
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -50,6 +49,7 @@ from .base import (
     GenRequest,
     ProviderRun,
     announce_api_billing,
+    env_api_key,
     publish_png,
 )
 
@@ -105,16 +105,13 @@ RATE_LIMIT_HEADER_PREFIX = "x-ratelimit-"
 
 
 def resolve_credential(env: dict[str, str] | None = None) -> str:
-    """Return the OpenAI API key, or fail loud naming the variable that is missing."""
-    env = os.environ if env is None else env
-    key = (env.get(AUTH_ENV) or "").strip()
+    """Return the OpenAI API key (`base.env_api_key`), or fail loud naming the variable that is missing.
+    This provider never falls back to the codex ChatGPT login: that is `codex`'s route, and it needs
+    an interactive browser sign-in that a container does not have."""
+    key = env_api_key(AUTH_ENV, env, who="openai-gen",
+                      also=". This provider never falls back to the codex ChatGPT login.")
     if key:
         return key
-    if AUTH_ENV in env:
-        raise SystemExit(
-            f"openai-gen: {AUTH_ENV} is set but empty; give it a value. "
-            "This provider never falls back to the codex ChatGPT login."
-        )
     raise SystemExit(
         f"openai-gen: no OpenAI credential — {AUTH_ENV} is not set.\n"
         f"  export {AUTH_ENV}=<your OpenAI API key> (platform.openai.com/api-keys). "

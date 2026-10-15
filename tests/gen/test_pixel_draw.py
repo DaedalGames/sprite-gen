@@ -17,7 +17,7 @@ from PIL import Image
 
 from conftest import help_options
 from sprite_gen.gen import anthropic_api as api
-from sprite_gen.gen import pixel_draw, refusal
+from sprite_gen.gen import claude_login, pixel_draw, refusal
 from sprite_gen.gen import pixel_grid as pg
 from sprite_gen.gen.anthropic_api import ApiError, Reply
 
@@ -92,7 +92,9 @@ class FakeClaude:
 
 @pytest.fixture
 def claude(monkeypatch):
+    """The API key route: no subscription login here (`claude_login.login`), `ANTHROPIC_API_KEY` set."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: None)
     monkeypatch.setattr(pixel_draw, "BATCH_POLL_SECONDS", 0)
 
     def make(script, **kwargs) -> FakeClaude:
@@ -554,12 +556,65 @@ def test_an_edited_grid_is_checked_and_rendered_without_a_call(tmp_path, claude,
         pixel_draw.main(["--grid", str(edited), "--out-dir", str(tmp_path / "fourth"), "--candidates", "2"])
 
 
-def test_no_key_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
+def test_no_credential_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: None)
     out = tmp_path / "run"
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
+    with pytest.raises(SystemExit, match=r"no subscription login \(`claude auth status`\) and ANTHROPIC_API_KEY is not set"):
         draw(out, "--subject", "a knight")
     assert not out.exists()
+
+
+class FakeLogin:
+    """The subscription route: `claude -p` answers by call id; the API must not be reached."""
+
+    def __init__(self, monkeypatch, script):
+        self.script = dict(script)
+        self.asked: list[tuple[str, dict]] = []
+        monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: claude_login.Login("claude.ai", "max"))
+        monkeypatch.setattr(claude_login, "send_message", self.send)
+        for name in ("stream_message", "submit_batch", "get_batch", "batch_results"):
+            monkeypatch.setattr(api, name, lambda *a, **k: pytest.fail("the API was reached on a subscription run"))
+
+    def send(self, body, *, label, env=None, run=None):
+        call_id = label.split()[-1]
+        self.asked.append((call_id, body))
+        return replace(self.script[call_id], mode="subscription", request_id=None)
+
+
+def test_a_signed_in_subscription_draws_with_no_charge_even_with_a_key_set(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    fake = FakeLogin(monkeypatch, {"c1-gen1": reply(ICON_ROW), "c1-gen1-fix1": reply(ICON_ROW_FIX)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a chest", "--kind", "icon", "--candidates", "1") == 0
+    report = report_of(out)
+    err = capsys.readouterr().err
+    assert "per-call API charge" not in err and "subscription" in err  # the call lines say what it ran on
+    assert asked(fake) == ["c1-gen1", "c1-gen1-fix1"]
+    assert report["status"] == "ok" and report["auth_source"] == "claude-login" and report["cost_usd"] == 0.0
+    assert [(c["mode"], c["auth_source"], c["cost_usd"]) for c in report["calls"]] == [
+        ("subscription", "claude-login", 0.0)] * 2
+    assert report["calls"][0]["thinking_tokens"] == 1000  # usage is kept: it counts against the plan
+
+
+def test_a_batch_runs_on_the_key_even_when_signed_in(tmp_path, claude, monkeypatch, capsys):
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: pytest.fail("a batch asked the login"))
+    fake = claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1", "--batch") == 0
+    assert "[gen] claude: running on ANTHROPIC_API_KEY — this is a per-call API charge" in capsys.readouterr().err
+    assert [cid for cid, _ in fake.submitted[0][1]] == ["c1-gen1"]
+    assert report_of(out)["auth_source"] == "ANTHROPIC_API_KEY"
+
+
+def test_a_run_read_back_whole_asks_nothing_and_announces_no_charge(tmp_path, claude, capsys):
+    claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    assert "per-call API charge" in capsys.readouterr().err
+    again = claude({})
+    assert pixel_draw.main(["--out-dir", str(out), "--resume"]) == 0
+    assert again.asked == [] and "per-call API charge" not in capsys.readouterr().err
 
 
 def test_the_cli_names_the_verb_and_its_flags():

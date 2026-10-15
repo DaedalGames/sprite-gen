@@ -182,10 +182,8 @@ def test_timeout_does_not_repeat_billable_request(tmp_path, api, monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("video", [False, True])
-def test_access_uses_api_key_without_grok_binary(api, monkeypatch, video):
-    monkeypatch.setattr(access.shutil, "which", lambda _: None)
-    result = access.probe_access("grok", video=video)
+def test_access_uses_api_key_without_grok_binary(api, monkeypatch):
+    result = access.probe_access("grok")
     assert result["login"] == "ready" and result["billing"] == "api-credit"
 
 
@@ -359,7 +357,7 @@ def test_a_rejected_credential_names_the_code_too(tmp_path, api):
     with pytest.raises(SystemExit) as error:
         gen.generate_image("grok", "x", tmp_path / "out.png")
     assert str(error.value) == ("grok-gen: credential XAI_API_KEY rejected (HTTP 401) code=unauthenticated:bad-credentials; "
-                                'check XAI_API_KEY: {"code": "unauthenticated:bad-credentials", "error": "[redacted]"}')
+                                'check the XAI_API_KEY value: {"code": "unauthenticated:bad-credentials", "error": "[redacted]"}')
 
 
 def test_an_xai_key_and_a_signed_url_in_the_body_are_masked(tmp_path, api):

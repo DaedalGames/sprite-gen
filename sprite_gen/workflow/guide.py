@@ -33,26 +33,28 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
             if field not in selected:
                 questions.append({"field": field, **FIELDS[field]})
         # Report both candidates while choosing, then only the services actually
-        # used. One probe per provider/auth route; a row run always pins codex.
+        # used. One probe per provider: its images and videos share one credential.
         required = set()
         if "image_provider" in active_fields and selected.get("image_provider"):
-            required.add((selected["image_provider"], False))
+            required.add(selected["image_provider"])
         motion = MOTION_METHODS.get(selected.get("motion_method", ""))
         if motion:
-            required.add((motion["provider"], selected["motion_method"] == "grok-video"))
-        candidates = required or {(provider, False) for provider in FIELDS["image_provider"]["options"]}
-        for provider, is_video in sorted(candidates):
-            state = probe_access(provider, video=is_video)
+            required.add(motion["provider"])
+        candidates = required or set(FIELDS["image_provider"]["options"])
+        for provider in sorted(candidates):
+            state = probe_access(provider)
             access.append(state)
-            if (provider, is_video) not in required:
+            if provider not in required:
                 continue
+            label = FIELDS["image_provider"]["options"].get(provider, provider)
             if state["login"] == "unavailable":
                 blocked.append({"provider": provider, "reason": state["reason"]})
             elif state["billing"] == "api-credit":
-                if not confirm_api_billing:
-                    questions.append({"field": "confirm_api_billing", "question": "그록 영상에 별도 API 크레딧을 사용할까요?", "options": {"yes": "사용", "no": "구독 로그인으로 변경"}})
+                if not confirm_api_billing and not any(q["field"] == "confirm_api_billing" for q in questions):
+                    questions.append({"field": "confirm_api_billing", "question": f"{label} 호출에 별도 API 크레딧을 사용할까요?",
+                                      "options": {"yes": "사용", "no": "구독 로그인으로 변경"}})
             elif provider not in confirmed_access and not any(q["field"] == f"access_{provider}" for q in questions):
-                questions.append({"field": f"access_{provider}", "question": f"{FIELDS['image_provider']['options'][provider]} 계정의 구독과 이미지/영상 이용 가능 여부를 확인해 주세요.",
+                questions.append({"field": f"access_{provider}", "question": f"{label} 계정의 구독과 이미지/영상 이용 가능 여부를 확인해 주세요.",
                                   "options": {"yes": "사용 가능", "no": "사용 불가"}})
     else:
         missing = [field for field in active_fields if field not in selected]
