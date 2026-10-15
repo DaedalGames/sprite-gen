@@ -24,6 +24,20 @@ function each, called here, never a copy (docs/pixel-draw.md "Gates"):
   the margin). A walk cycle (contact, passing, contact, passing) also warns when
   its two contact frames differ by less than 40% of the mean contact↔passing difference: the legs
   barely change sides.
+- G6 of one motion — the frames, in their order, are one motion (`--motion`; a walk cycle is one
+  too). This is the rule's one place; docs/pixel-draw.md points here. A motion changes the
+  silhouette: an arm goes over the head, a blade swings past it, a pose is held for a beat. So:
+  * one ground still fails: every frame stands on the same bottom row (inside the safe area, as
+    above);
+  * a height that differs from the first frame's by more than the pixel G6 allows is asked of the
+    judgment the image path makes of the same question — did the body change size, or only its
+    pose? — `video.gait_fallback.size_change`, on `body_size` (height, mass, breadth) of each frame
+    against the first, inside the safe area. A pose moves the three apart (an arm over the head adds
+    height, not mass); a body drawn larger or smaller moves them together. When all three move one
+    way by more than that pixel of the first frame's height, it warns (the body changes size — a
+    redraw candidate); otherwise it is an info line (the height changes with the pose);
+  * frames drawn the same are a hold, an info line.
+  Nothing but the ground fails a motion.
 - G8 safe area, on a sprite or icon: the engine's safe area (`safe_area`, the margin `prepare`
   keeps around every cell), a target for the body's average size and not a wall. G8 never fails.
   Its judgment is the one the image path makes when it snaps a sprite to pixels,
@@ -145,9 +159,34 @@ def _difference(a: Frame, b: Frame) -> int:
     return sum(1 for y in range(len(a)) for x in range(len(a[0])) if a[y][x] != b[y][x])
 
 
-def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool, box: Sequence[int] | None = None) -> dict[str, Any]:
+def _sizes(frames: dict[str, Frame], heights: dict[str, int], box: Sequence[int] | None) -> dict[str, dict[str, Any]]:
+    """Per frame whose height differs from the first frame's by more than HEIGHT_SPREAD_MAX: how much
+    larger its body is than the first's, by the image path's reading (`gait_fallback.size_change`: the
+    least of height, mass and breadth when all three move one way, 0 when they part), inside `box`."""
+    # Imported here: the judgment is the video path's, made in one place (it pulls in NumPy).
+    from sprite_gen.video.gait_fallback import body_size, size_change
+
+    names = list(frames)
+    first = names[0]
+    crop = (box[0], box[1], box[2] + 1, box[3] + 1) if box else None
+
+    def size(name: str):
+        image = image_of(frames[name])
+        return body_size(image.crop(crop) if crop else image)
+
+    out = {}
+    for name in names[1:]:
+        if abs(heights[name] - heights[first]) > HEIGHT_SPREAD_MAX:
+            change = size_change(size(first), [size(name)])
+            out[name] = {key: change[key] for key in ("change", "height", "mass", "breadth")}
+    return out
+
+
+def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool, box: Sequence[int] | None = None,
+              motion: bool = False) -> dict[str, Any]:
     """`box` (first and last column and row) is where the rows and heights are measured: a sprite's
-    or icon's safe area, the whole frame without one."""
+    or icon's safe area, the whole frame without one. `motion` (a walk cycle is one) takes the rule of
+    one motion in this module's header."""
     names = list(frames)
     spans = {name: _bbox_rows(frames[name], box) for name in names}
     baselines = {name: (span[1] if span else None) for name, span in spans.items()}
@@ -155,12 +194,18 @@ def g6_frames(frames: dict[str, Frame], *, walk_cycle: bool, box: Sequence[int] 
     identical = [[names[i], names[j]] for i in range(len(names)) for j in range(i + 1, len(names))
                  if frames[names[i]] == frames[names[j]]]
     spread = max(heights.values()) - min(heights.values())
+    grounded = len(set(baselines.values())) == 1 and None not in baselines.values()
     result: dict[str, Any] = {
-        "ok": len(set(baselines.values())) == 1 and None not in baselines.values()
-        and spread <= HEIGHT_SPREAD_MAX and not identical,
+        "ok": grounded and spread <= HEIGHT_SPREAD_MAX and not identical,
         "baselines": baselines, "heights": heights, "height_spread": spread, "identical_pairs": identical,
         "measured_in": list(box) if box else None,
     }
+    if motion or walk_cycle:
+        sizes = _sizes(frames, heights, box)
+        first = heights[names[0]]
+        resized = [name for name, size in sizes.items() if abs(size["change"]) * first > HEIGHT_SPREAD_MAX]
+        result.update(ok=grounded, rule="motion", size_change=sizes, resized=resized,
+                      posed=[name for name in sizes if name not in resized], holds=identical)
     if walk_cycle:
         a, b, c, d = (frames[n] for n in names)
         contact = _difference(a, c)
@@ -248,10 +293,30 @@ def _g8_lines(g8: dict[str, Any]) -> tuple[list[str], list[str]]:
     return warnings, info
 
 
-def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cycle: bool) -> dict[str, Any]:
+def _g6_motion_lines(g6: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """G6's warning (a body drawn at another size) and info lines (a height that changed with the pose,
+    a hold) for one motion."""
+    first = next(iter(g6["heights"]))
+    warnings, info = [], []
+    if g6["resized"]:
+        said = ", ".join(f"{name} {g6['size_change'][name]['change']:+.0%}" for name in g6["resized"])
+        warnings.append("G6 the body changes size, not only its pose - its height, mass and breadth all grow or "
+                        f"shrink by more than a pixel: {said} against {first}")
+    if g6["posed"]:
+        said = ", ".join(f"{name} {g6['heights'][name]} px" for name in g6["posed"])
+        info.append("G6 the height changes with the pose, not the body's size (informational, no action): "
+                    f"{said} against {first} {g6['heights'][first]} px")
+    if g6["holds"]:
+        info.append("G6 frames drawn the same, a hold (informational, no action): "
+                    + ", ".join(f"{a}={b}" for a, b in g6["holds"]))
+    return warnings, info
+
+
+def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cycle: bool,
+             motion: bool = False) -> dict[str, Any]:
     """Every gate of one candidate. `ok` is G2, G3 and G6 together; `warnings` say what G4, G5, the
-    walk check and G8 found that may want a redraw, `info` what G8 found that asks for nothing, one
-    line each."""
+    walk check, G6 of a motion and G8 found that may want a redraw, `info` what G6 of a motion and G8
+    found that asks for nothing, one line each. `motion`: the frames are one motion (the header)."""
     gates: dict[str, Any] = {"G2": g2_palette(frames, rule), "G3": g3_alpha(frames, kind)}
     warnings: list[str] = []
     info: list[str] = []
@@ -269,15 +334,20 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
         gates["G6"] = {"ok": 2 <= len(frames) <= 8 and any(frame != first for frame in frames.values()),
                        "rule": "2..8 frames with a visible change; extent, height and empty frames may differ"}
     elif len(frames) > 1:
-        gates["G6"] = g6_frames(frames, walk_cycle=walk_cycle, box=area["box"] if area else None)
+        gates["G6"] = g6_frames(frames, walk_cycle=walk_cycle, box=area["box"] if area else None, motion=motion)
         walk = gates["G6"].get("walk")
         if walk and walk["warn"]:
             warnings.append(f"G6 weak leg alternation: the contact frames differ by {walk['contact_difference']} "
                             f"pixels, {walk['ratio']:.0%} of the contact-passing difference (under "
                             f"{WALK_CONTACT_RATIO_MIN:.0%}) — touch up the legs")
+        if gates["G6"].get("rule") == "motion":
+            g6_warnings, g6_info = _g6_motion_lines(gates["G6"])
+            warnings += g6_warnings
+            info += g6_info
     if area is not None:
         gates["G8"] = g8_safe_area(frames, kind, area)
-        g8_warnings, info = _g8_lines(gates["G8"])
+        g8_warnings, g8_info = _g8_lines(gates["G8"])
         warnings += g8_warnings
+        info += g8_info
     failed = [name for name in ("G2", "G3", "G6") if name in gates and not gates[name]["ok"]]
     return {"ok": not failed, "failed": failed, "warnings": warnings, "info": info, **gates}

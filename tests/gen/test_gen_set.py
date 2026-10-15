@@ -124,17 +124,13 @@ def test_gen_set_direction_run_generates_anchors_first_and_stops_on_anchor_failu
 def test_run_gen_cli_invokes_the_cli_gen_verb(tmp_path: Path, monkeypatch) -> None:
     """The row call is `python -m sprite_gen.cli gen …` — the package has no __main__, so
     `-m sprite_gen.gen` is not a runnable module (2026-09-09 real-run regression)."""
-    import subprocess
-
     captured: dict = {}
 
-    def fake_run(cmd, **kw):
+    def fake_run(cmd, log):
         captured["cmd"] = cmd
-        class R:  # noqa: D401 — minimal CompletedProcess stand-in
-            returncode = 0
-        return R()
+        return 0
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(gen_set, "run_logged", fake_run)
     log = tmp_path / "x.log"
     rc = gen_set.run_gen_cli(tmp_path / "p.txt", tmp_path / "o.png", [tmp_path / "a.png", tmp_path / "b.png"], tmp_path / "r.json", provider="codex", model=None, log=log)
     assert rc == 0

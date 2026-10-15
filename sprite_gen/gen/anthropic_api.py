@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Anthropic Messages API transport for `pixel-draw`: the credential, one streamed message,
-Message Batches, and what a call cost.
+"""Anthropic Messages API transport for `pixel-draw`: one streamed message, Message Batches, and what a
+call cost. Which credential a call runs on — the person's Claude subscription first, this API's key
+only without one — is `claude_login.resolve_credential`.
 
 Raw HTTP over urllib, like `openai_provider` and `xai`: the runtime dependency surface is Pillow
 and NumPy (SECURITY.md), and one more SDK with its own HTTP stack would be a second transport for
@@ -64,20 +65,6 @@ BATCH_DISCOUNT = 0.5
 READ_TIMEOUT_SECONDS = float(os.environ.get("SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS", "300"))
 
 Sleep = Callable[[float], None]
-
-
-def resolve_credential(env: dict[str, str] | None = None) -> str:
-    """Return the Anthropic API key, or fail loud naming the variable that is missing."""
-    env = os.environ if env is None else env
-    key = (env.get(AUTH_ENV) or "").strip()
-    if key:
-        return key
-    if AUTH_ENV in env:
-        raise SystemExit(f"pixel-draw: {AUTH_ENV} is set but empty; give it a value")
-    raise SystemExit(
-        f"pixel-draw: no Anthropic credential — {AUTH_ENV} is not set.\n"
-        f"  export {AUTH_ENV}=<your Claude Console API key> (platform.claude.com/settings/keys)."
-    )
 
 
 @dataclass

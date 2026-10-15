@@ -174,7 +174,17 @@ python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-githu
   --repo aldegad/sprite-gen --path . --name sprite-gen
 ```
 
-Image generation is part of this engine (`sprite_gen.gen`, providers `codex` and `grok` on a subscription you already pay for, plus an explicit-only `openai` provider for servers and SaaS that bills per call; the general `image-gen` skill is a thin shuttle over it). Video uses **your own** credential — the `grok` CLI login or an `XAI_API_KEY` — and nothing is shipped with the repo ([docs/video.md](docs/video.md)).
+Image generation is part of this engine (`sprite_gen.gen`, providers `codex` and `grok` on a subscription you already pay for, plus an explicit-only `openai` provider for servers and SaaS that bills per call; the general `image-gen` skill is a thin shuttle over it). Every call uses **your own** credential, the subscription login first and an API key only without one, and nothing is shipped with the repo:
+
+| Calls | First | Without it | Docs |
+|---|---|---|---|
+| `gen --provider codex` | the `codex` ChatGPT login | (a codex signed in with an API key bills that key) | [gen](docs/gen.md) |
+| `gen --provider grok`, `video*` | the `grok` CLI login | `XAI_API_KEY` | [gen](docs/gen.md#direct-grok-calls-and-authentication), [video](docs/video.md) |
+| `pixel-draw` | the `claude` (Claude Code) subscription login | `ANTHROPIC_API_KEY` | [pixel-draw](docs/pixel-draw.md#which-credential-a-call-runs-on) |
+| `gen --provider openai` | — | `OPENAI_API_KEY`, named only | [gen](docs/gen.md#subscription-first--openai-is-named-or-it-does-not-run) |
+| `sound` | — | `ELEVENLABS_API_KEY` | [sound](docs/sound.md) |
+
+A call on an API key is billed per call and says so on stderr before the request leaves, also inside `gen-set` and `video-set`.
 
 `sprite-gen` supports CPython 3.11+; CI runs only 3.14. Python 3.10 is no longer supported. The quickstart needs a Python with working `venv`/`ensurepip`.
 

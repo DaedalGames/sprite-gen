@@ -9,7 +9,7 @@ import pytest
 from PIL import Image, ImageOps
 
 from sprite_gen import gen
-from sprite_gen.gen import facing, facing_vision, openai_provider, grok_provider, xai
+from sprite_gen.gen import codex_provider, facing, facing_vision, openai_provider, grok_provider, xai
 from sprite_gen.gen.base import ProviderRun
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "facing"
@@ -224,6 +224,7 @@ def test_codex_vision_reads_new_answer_and_scrubs_identity(monkeypatch, tmp_path
         Path(command[command.index("-o") + 1]).write_text('right')
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(facing_vision.subprocess, "run", run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     text, metadata = facing_vision.codex_inspect(FIXTURES / "left.png", tmp_path)
     assert text == "right" and metadata["auth_source"] == "codex-login"
     assert len(seen) == 1 and "--ephemeral" in seen[0][0] and "read-only" in seen[0][0]
@@ -271,15 +272,12 @@ def test_gen_cli_preserve_default_leaves_reference_prompt_unchanged(tmp_path, mo
 
 
 def test_gen_set_reference_row_keeps_its_prompt(tmp_path, monkeypatch):
-    import subprocess
     from sprite_gen.gen import gen_set
     backend = Backend()
     monkeypatch.setattr(gen, "_make_provider", lambda *a, **kw: backend)
     prompt = tmp_path / "prompt.txt"
     prompt.write_text("a front-facing robot animation row")
-    def run(command, **kwargs):
-        return SimpleNamespace(returncode=gen.main(command[4:]))
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(gen_set, "run_logged", lambda command, log: gen.main(command[4:]))
     assert gen_set.run_gen_cli(prompt, tmp_path / "out.png", [FIXTURES / "front.png"],
                               tmp_path / "report.json", provider="openai", model=None,
                               log=tmp_path / "log.txt") == 0
