@@ -10,6 +10,7 @@ report says. Nothing here draws a font: a logo comes from the model or not at al
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -190,6 +191,21 @@ def test_a_dropped_subtitle_is_a_mismatch(tmp_path, fake) -> None:
         _run(tmp_path, subtitle="Chapter One")
 
 
+def test_a_vowel_sign_the_model_dropped_is_refused_at_either_check(tmp_path, fake) -> None:
+    asked, read = "\u0915\u093f\u0932\u093e", "\u0915\u0932\u093e"  # किला read as कला: the vowel sign ि dropped
+    provider = fake(reads=([read],))
+    with pytest.raises(SystemExit, match="mood image"):
+        _run(tmp_path, text=asked, language="Hindi")
+    assert len(provider.requests) == 1  # the lettering was not bought
+    assert _report(tmp_path)["text_check"]["mood"]["verdict"] == "mismatch"
+    fake(reads=([asked], [read]))
+    with pytest.raises(SystemExit, match="logo reads"):
+        _run(tmp_path, text=asked, language="Hindi")
+    out = tmp_path / "logo"
+    assert not (out / "logo.png").exists() and (out / "logo.rejected.png").is_file()
+    assert _report(tmp_path)["text_check"]["logo"]["verdict"] == "mismatch"
+
+
 def test_a_given_mood_image_skips_the_first_generation(tmp_path, fake) -> None:
     provider = fake(reads=(["ION"], ["ION"]))
     given = tmp_path / "title.png"
@@ -318,6 +334,29 @@ def test_an_answer_names_its_lines_and_may_name_a_box() -> None:
 def test_the_text_is_compared_letter_for_letter(asked, read, same) -> None:
     check = logo.compare_text(read, asked, None)
     assert (check["verdict"] == "match") is same
+
+
+# What a script spells is its letters and the marks written on them. The strings are synthetic, escaped where a
+# code point matters; each id names what the reading dropped, changed or only wrote another way.
+@pytest.mark.parametrize("asked, read, same", [
+    pytest.param("\u0915\u093f\u0932\u093e", ["\u0915\u0932\u093e"], False, id="devanagari-vowel-sign-dropped"),
+    pytest.param("\u0915\u094d\u0937", ["\u0915\u0937"], False, id="devanagari-virama-dropped"),
+    pytest.param("\u095b\u092e\u0940\u0928", ["\u091c\u092e\u0940\u0928"], False, id="devanagari-nukta-dropped"),
+    pytest.param("\u0e44\u0e01\u0e48", ["\u0e44\u0e01"], False, id="thai-tone-mark-dropped"),
+    pytest.param("\u0639\u064e\u0644\u064e\u0645", ["\u0639\u0650\u0644\u0652\u0645"], False,
+                 id="arabic-vowel-marks-changed"),
+    pytest.param("O\u0323\u0300sun", ["O\u0323sun"], False, id="latin-accent-with-no-precomposed-letter-dropped"),
+    pytest.param("Caf\u00e9", ["CAFE"], False, id="latin-accent-dropped"),
+    pytest.param("Caf\u00e9", ["CAFE\u0301"], True, id="latin-accent-precomposed-or-combining"),
+    pytest.param(unicodedata.normalize("NFD", "별빛 기사"), ["별빛 기사"], True, id="hangul-jamo-or-syllables"),
+    pytest.param("ドラゴン", ["ﾄﾞﾗｺﾞﾝ"], True, id="half-width-katakana"),
+    pytest.param("QUEST \u2163", ["Quest IV"], True, id="roman-numeral-form"),
+    pytest.param("I \u2764\ufe0f NY", ["I \u2764 NY"], True, id="variation-selector-on-a-symbol"),
+    pytest.param("1\ufe0f\u20e3UP", ["1UP"], True, id="keycap-enclosing-mark"),
+    pytest.param("\u0915\u094d\u200d\u0937", ["\u0915\u094d\u0937"], True, id="zero-width-joiner"),
+])
+def test_marks_written_on_a_letter_are_its_spelling(asked, read, same) -> None:
+    assert (logo.compare_text(read, asked, None)["verdict"] == "match") is same
 
 
 def test_the_subtitle_may_be_read_before_or_after_the_title() -> None:
