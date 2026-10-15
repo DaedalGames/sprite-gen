@@ -738,9 +738,9 @@ def _fault_line(name: str, m: dict[str, Any], ghost: dict[str, Any] | None = Non
     other a filmed ghost too (`_ghost_line` names both)."""
     what = [*([f"has {100 * m['dark_excess']:.2f} % more dark pixels inside the body than either source frame beside it — a smear"]
               if "smear" in m["faults"] else []),
-            *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it, "
-               f"{100 * m['outline_shift']:.2f} % lighter than theirs at the same rank — a melted or ghost limb"]
-              if "outline" in m["faults"] else []),
+            *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it"
+               + ("" if m["outline_shift"] is None else f", {100 * m['outline_shift']:.2f} % lighter than theirs at the same rank")
+               + " — a melted or ghost limb"] if "outline" in m["faults"] else []),
             *([f"carries {_ghost_words(m['ghost'])} — a ghost"] if "ghost" in m["faults"] else [])]
     if m["method"] == "nearest":
         return (f"{name}: frame {m['at']}: RIFE's frame " + "; ".join(what)

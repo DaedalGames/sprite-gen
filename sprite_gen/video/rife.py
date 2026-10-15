@@ -11,10 +11,10 @@ black a frame premultiplied over black put under it (2.24 and before: a black sm
 crossing legs). Inside the coverage the colour is the frame's own, outline included.
 `smear` measures what a made frame has that neither neighbour has, and the outline it lost where
 the flow failed and melted a limb into the fill; `outline_shift` reads that edge against the
-neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost; `ghost`
-reads a band of part coverage on a frame alone, filmed or made; `crossfade` reads two drawings
-cross-faded inside a whole silhouette, a reading to look at, not a fault (docs/loop-repair.md
-section 4).
+neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost — where the
+neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
+part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
+whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4).
 
 The binary's own CPU path (`-g -1`) returns a wrong frame with rife-v4.6 on both macOS and
 Linux (measured 2026-10-03: mean error 39 against 3.3 through Vulkan), so it is never passed;
@@ -72,6 +72,15 @@ OUTLINE_REACH = 2
 # lighter than the lighter neighbour's at the same rank by more than this (luma, 0..1). A line the flow keeps
 # and softens comes out lighter by less; a line gone to the fill beside it, by the line's own contrast.
 OUTLINE_SHIFT = 50 / 255
+# `outlined`: a frame's fill is read this far inside its solid edge (a share of the body's height, at least a
+# pixel) and pushed out over the edge, as `bleed` pushes the colour from BLEED_DEPTH: twice as deep, so the fill
+# read beside a line is past it where the line is twice as wide as the one `bleed` reads past.
+LINE_DEPTH = 2 * BLEED_DEPTH
+# `outline_shift` reads a pair only where both neighbours are outlined on at least this share of their coverage
+# edge (`outlined`). Under it — art painted without a line, or lined in a tone near its fill — a line gone to fill
+# is lighter by less than OUTLINE_SHIFT, or there is no line to lose, and the dark line judges alone: a frame
+# refused there is replaced by a filmed one, a melted frame kept would be delivered (docs/loop-repair.md section 4).
+OUTLINED = 0.75
 # `ghost`: part-covered pixels count where they make a region at least this many pixels thick. An
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
@@ -206,20 +215,25 @@ def _push_pull(rgb: np.ndarray, known: np.ndarray) -> np.ndarray:
     return np.where(known[..., None] > 0, rgb, up)
 
 
+def _core_fill(frame: np.ndarray, depth: float) -> np.ndarray | None:
+    """The colour of an RGBA frame (0..1) from `depth` (a share of its solid body's height, at least a pixel)
+    inside its solid edge, pushed out over every pixel outside that core; None where nothing is solid."""
+    solid = frame[..., 3] >= 0.5
+    rows = np.nonzero(solid.any(axis=1))[0]
+    if rows.size == 0:
+        return None
+    px = max(1, round((rows[-1] - rows[0] + 1) * depth))
+    core = _square_min(solid, px, mode="edge")  # PIL's MinFilter, which repeats the edge pixels outward
+    if not core.any():  # a body thinner than its outline: read at its edge
+        core = solid
+    return _push_pull(frame[..., :3], core.astype(np.float32))
+
+
 def bleed(frame: np.ndarray) -> np.ndarray:
     """The colour image of an RGBA frame (0..1) RIFE is given: the frame's own colour wherever it
     has coverage, and around it the colour from BLEED_DEPTH inside its solid edge, pushed out."""
-    alpha = frame[..., 3]
-    solid = alpha >= 0.5
-    rows = np.nonzero(solid.any(axis=1))[0]
-    if rows.size == 0:
-        return np.where(alpha[..., None] > 0, frame[..., :3], 0.0)
-    depth = max(1, round((rows[-1] - rows[0] + 1) * BLEED_DEPTH))
-    core = np.asarray(Image.fromarray(np.uint8(solid) * 255).filter(ImageFilter.MinFilter(2 * depth + 1))) > 0
-    if not core.any():  # a body thinner than its outline: read at its edge
-        core = solid
-    fill = _push_pull(frame[..., :3], core.astype(np.float32))
-    return np.where(alpha[..., None] > 0, frame[..., :3], fill)
+    fill = _core_fill(frame, BLEED_DEPTH)
+    return np.where(frame[..., 3:] > 0, frame[..., :3], 0.0 if fill is None else fill)
 
 
 def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> Image.Image:
@@ -240,13 +254,26 @@ def _mask(mask: np.ndarray, size: int, op: type) -> np.ndarray:
     return np.asarray(Image.fromarray(np.uint8(mask) * 255).filter(op(size))) > 0
 
 
+def _square_min(a: np.ndarray, r: int, **pad) -> np.ndarray:
+    """Per pixel, the minimum over the square 2r+1 wide around it, one axis at a time, outside the frame as
+    `np.pad` fills it with `pad`."""
+    out = np.pad(a, r, **pad)
+    for axis in (0, 1):
+        out = np.lib.stride_tricks.sliding_window_view(out, 2 * r + 1, axis=axis).min(axis=-1)
+    return out
+
+
+def _luma(x: np.ndarray) -> np.ndarray:
+    return x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
+
+
 def _smear_counts(frame: Image.Image) -> tuple[int, int, int, int, int]:
     """(dark pixels inside the solid body, one pixel in from its edge; solid pixels; part-covered
     pixels; pixels on the coverage's edge; those of them with no outline within OUTLINE_REACH)."""
     x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
     solid = x[..., 3] >= 0.5
     inner = _mask(solid, 3, ImageFilter.MinFilter)
-    luma = x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
+    luma = _luma(x)
     lo, hi = PARTIAL_ALPHA
     covered = x[..., 3] >= lo
     edge = covered & ~_mask(covered, 3, ImageFilter.MinFilter)
@@ -271,28 +298,46 @@ def smear(made: Image.Image, a: Image.Image, b: Image.Image) -> dict[str, float]
             "outline_loss": round((um - max(ua, ub)) / max(1, em), 5)}
 
 
-def _edge_darkness(frame: Image.Image) -> np.ndarray:
-    """Per pixel of the coverage edge (alpha from PARTIAL_ALPHA's floor, as `smear` reads it), the luma of the
-    darkest solid pixel within OUTLINE_REACH of it, 1 where there is none."""
-    x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+def _edge_line(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The coverage edge of an RGBA frame (0..1; alpha from PARTIAL_ALPHA's floor, as `smear` reads it) and, per
+    pixel, its line: the luma of the darkest solid pixel within OUTLINE_REACH, 1 where there is none."""
     covered = x[..., 3] >= PARTIAL_ALPHA[0]
     edge = covered & ~_mask(covered, 3, ImageFilter.MinFilter)
-    luma = x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
-    near = np.pad(np.where(x[..., 3] >= 0.5, luma, 1.0), OUTLINE_REACH, constant_values=1.0)
-    width = 2 * OUTLINE_REACH + 1
-    for axis in (0, 1):  # a square window's minimum, one axis at a time
-        near = np.lib.stride_tricks.sliding_window_view(near, width, axis=axis).min(axis=-1)
-    return near[edge]
+    return edge, _square_min(np.where(x[..., 3] >= 0.5, _luma(x), 1.0), OUTLINE_REACH, constant_values=1.0)
 
 
-def outline_shift(made: Image.Image, a: Image.Image, b: Image.Image) -> float:
+def _edge_darkness(frame: Image.Image) -> np.ndarray:
+    """Per pixel of the coverage edge, its line (`_edge_line`)."""
+    edge, line = _edge_line(np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0)
+    return line[edge]
+
+
+def outlined(frame: Image.Image) -> float:
+    """The share of a frame's coverage edge outlined against its fill: where its line, the darkest solid pixel
+    within OUTLINE_REACH, is darker than the colour from LINE_DEPTH inside, pushed out over the edge, by more than
+    OUTLINE_SHIFT — so a line there gone to that fill reads lost rank by rank (`outline_shift`). Art outlined all
+    round reads most of its edge; art painted without a line, whose edge is its fill, or lined in a tone near
+    it, little. 0 where it has no edge (docs/loop-repair.md section 4)."""
+    x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+    edge, line = _edge_line(x)
+    fill = _core_fill(x, LINE_DEPTH)
+    if fill is None or not edge.any():
+        return 0.0
+    return round(float(np.mean((_luma(fill) - line)[edge] > OUTLINE_SHIFT)), 5)
+
+
+def outline_shift(made: Image.Image, a: Image.Image, b: Image.Image) -> float | None:
     """The edge of a made frame that lost its line, read against its two neighbours rank by rank: each pixel
     of its coverage edge by how dark the darkest solid pixel within OUTLINE_REACH is, in order, against the
     lighter of the two neighbours' edges at the same rank (their quantiles), and counted where it is lighter
     by more than OUTLINE_SHIFT — as a fraction of its edge. A line drawn in a mid tone and softened by the
     flow reads lighter by less at every rank and is not counted, whatever tone the art outlines in; a line
-    gone to the fill beside it (legs melted into one shape, a pale ghost limb) is. 0 where nothing is lighter
-    (docs/loop-repair.md section 4)."""
+    gone to the fill beside it (legs melted into one shape, a pale ghost limb) is. 0 where nothing is lighter.
+    None where either neighbour is outlined on less than OUTLINED of its edge (`outlined`): there a part can
+    melt with no line to lose, lighter by less at every rank, and the dark line (`smear`'s `outline_loss`)
+    judges alone (docs/loop-repair.md section 4)."""
+    if min(outlined(a), outlined(b)) < OUTLINED:
+        return None
     dm, da, db = (_edge_darkness(f) for f in (made, a, b))
     if not (dm.size and da.size and db.size):
         return 0.0

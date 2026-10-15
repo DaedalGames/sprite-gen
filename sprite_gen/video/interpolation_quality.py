@@ -31,13 +31,16 @@ CROSSFADE_LOOK = 0.015
 def faults(measure: dict[str, float | None]) -> list[str]:
     """Smear inside the body or outline loss beyond both neighbours, and a ghost on the frame's
     own coverage where the measure carries its reading (`ghost`; None where the screen does not
-    read the loop, `ghost_screen`). Where the measure also carries `outline_shift` (the frames the
-    jump repair and the cycle alignment make), an outline is lost only where both readings say so:
-    a line outlined in a mid tone, which the dark line (`rife.DARK_LUMA`) reads as lost wherever the
-    flow softened it, is kept unless its edge went lighter than the neighbours' by more than
-    `rife.OUTLINE_SHIFT` (docs/loop-repair.md section 4). The versioned measures of
-    `video-loop-compare` and `video-loop-repair` carry `rife.smear` alone and judge as before."""
-    outline = min(measure["outline_loss"], measure.get("outline_shift", measure["outline_loss"]))
+    read the loop, `ghost_screen`). Where the measure also carries an `outline_shift` (the frames the
+    jump repair and the cycle alignment make between outlined neighbours, `rife.outlined`), an outline
+    is lost only where both readings say so: a line outlined in a mid tone, which the dark line
+    (`rife.DARK_LUMA`) reads as lost wherever the flow softened it, is kept unless its edge went
+    lighter than the neighbours' by more than `rife.OUTLINE_SHIFT` (docs/loop-repair.md section 4).
+    Where it is None (art painted without a line) and in the versioned measures of
+    `video-loop-compare` and `video-loop-repair`, which carry `rife.smear` alone, the dark line
+    judges alone."""
+    shift = measure.get("outline_shift")
+    outline = measure["outline_loss"] if shift is None else min(measure["outline_loss"], shift)
     return ([*(["smear"] if measure["dark_excess"] > SMEAR_WARN else []),
              *(["outline"] if outline > OUTLINE_WARN else []),
              *(["ghost"] if (measure.get("ghost") or 0.0) > GHOST_WARN else [])])

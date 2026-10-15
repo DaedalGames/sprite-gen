@@ -3,12 +3,14 @@
 coverage edge against its two neighbours' at the same rank, and the fault `outline` of the frames the jump
 repair and the cycle alignment make needs it over the line as well as `outline_loss`. A line outlined in a
 mid tone, either side of the dark line (70/255), and drawn a little lighter by the flow is kept; a line gone
-to the fill is lost, whatever tone the art outlines in. The versioned measures, which carry `rife.smear`
-alone, judge the outline on the dark line as before.
+to the fill is lost, whatever tone the art outlines in. It is read only where both neighbours are outlined
+(`rife.outlined`): art painted without a line is judged on the dark line alone, as the versioned measures,
+which carry `rife.smear` alone, judge every frame.
 
 The fixtures are synthetic: the walker of tests/video/test_rife.py twice the size, outlined in bands of two
 browns either side of 70/255 (luma 57 and 77), the frame between drawn with its line lighter or its legs'
-line turned to fill. The one real-RIFE case runs where RIFE is installed."""
+line turned to fill; and the same walker painted without a line, the frame between with a boot washed
+lighter. The one real-RIFE case runs where RIFE is installed."""
 
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from tests.video.test_rife import _walker
 
 TONES = ((80, 50, 35), (105, 68, 48))  # luma 57 and 77: the dark line falls between them
 FAR, NEAR = ((20, -20), (-5, 5)), ((10, -10), (4, -4))
+SKIN, BOOT, BODY = (240, 205, 185), (70, 40, 30), (130, 120, 80)  # luma 213, 48 and 118, no line between them
 
 
 def _two_tone(front: float, back: float, *, lift: int = 0, s: int = 2) -> Image.Image:
@@ -47,6 +50,24 @@ def _two_tone(front: float, back: float, *, lift: int = 0, s: int = 2) -> Image.
     band = (np.arange(h)[:, None] // (6 * s) % 2).repeat(w, axis=1)
     x[on_line, :3] = np.minimum(np.asarray(TONES)[band[on_line]] + lift, 255)
     return Image.fromarray(x, "RGBA")
+
+
+def _painted(front: float, back: float, *, wash: int = 0, s: int = 2) -> Image.Image:
+    """The walker painted without a line: skin legs swung from the hip, a dark boot over the last third of
+    each and a body of one mid tone; the near boot `wash` tones lighter."""
+    w, h = 128 * s, 192 * s
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    hip, length, r = (w // 2, int(h * 0.55)), int(h * 0.36), int(w * 0.09)
+    for angle, lift in ((back, 0), (front, wash)):
+        a = np.radians(angle)
+        knee, foot = ((hip[0] + k * length * np.sin(a), hip[1] + k * length * np.cos(a)) for k in (0.65, 1.0))
+        boot = tuple(min(255, c + lift) for c in BOOT) + (255,)
+        d.line([hip, foot], fill=SKIN + (255,), width=2 * r)
+        d.line([knee, foot], fill=boot, width=2 * r)
+        d.ellipse([foot[0] - r, foot[1] - r, foot[0] + r, foot[1] + r], fill=boot)
+    d.ellipse([w * 0.25, h * 0.15, w * 0.75, h * 0.62], fill=BODY + (255,))
+    return im
 
 
 def _legs_to_fill(frame: Image.Image, below: float = 0.57) -> Image.Image:
@@ -79,10 +100,12 @@ def test_a_mid_tone_line_drawn_lighter_is_kept_and_one_gone_to_fill_is_lost():
 
 def test_the_versioned_measures_judge_the_outline_on_the_dark_line_alone():
     """`rife.smear` alone — what `video-loop-compare` and `video-loop-repair` read — carries no
-    `outline_shift`, and the lighter line is the fault `outline` there, as before."""
+    `outline_shift`, and the lighter line is the fault `outline` there, as before; so is a measure whose
+    `outline_shift` was not read (None, neighbours not outlined)."""
     a, b = (_two_tone(*p) for p in FAR)
     assert faults(rife.smear(_two_tone(8, -8, lift=20), a, b)) == ["outline"]
     assert faults({"dark_excess": 0.0, "outline_loss": 0.3, "outline_shift": 0.0}) == []
+    assert faults({"dark_excess": 0.0, "outline_loss": 0.3, "outline_shift": None}) == ["outline"]
     assert faults({"dark_excess": 0.0, "outline_loss": 0.3, "outline_shift": 0.3}) == ["outline"]
     assert faults({"dark_excess": 0.0, "outline_loss": 0.0, "outline_shift": 0.3}) == []
 
@@ -103,10 +126,10 @@ def test_art_outlined_near_black_reads_the_same_on_both():
     assert m["outline_loss"] <= 0.01 and m["outline_shift"] == 0
 
 
-def test_a_frame_with_no_edge_and_neighbours_without_one_read_zero():
+def test_a_frame_with_no_edge_reads_zero_and_neighbours_without_one_are_not_read():
     blank = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     a, b = (_two_tone(*p, s=1) for p in FAR)
-    assert rife.outline_shift(blank, a, b) == 0 and rife.outline_shift(a, blank, blank) == 0
+    assert rife.outline_shift(blank, a, b) == 0 and rife.outlined(blank) == 0 and rife.outline_shift(a, blank, blank) is None
 
 
 def test_jump_repair_takes_a_lighter_line_and_refuses_one_gone_to_fill(monkeypatch):
@@ -132,6 +155,27 @@ def test_alignment_keeps_a_lighter_line_and_takes_the_nearer_frame_for_one_gone_
     assert facts["made_at"] == [1, 3] and all(m["faults"] == [] and m["outline_shift"] == 0 for m in facts["smear"])
     out, facts = align.resample([a, b], 4, lambda x, y, t: melted)
     assert facts["nearest_at"] == [1, 3] and all(m["faults"] == ["outline"] for m in facts["smear"])
+
+
+def test_a_boot_washed_lighter_on_art_painted_without_a_line_is_refused_on_the_dark_line(monkeypatch):
+    """Painted without a line, the walker's edge is its fill, and its neighbours are not outlined: the frame
+    between with its near boot washed 40 tones lighter — no further from the boot than a softened line at any
+    rank, so read rank by rank nothing is lost — is the dark line's fault `outline`. The jump repair refuses it
+    and the alignment takes the nearer frame; the frame between drawn whole is kept. The two-tone and the black
+    walker are outlined on all their edge and the painted one on a few % of it."""
+    frames = [_painted(20, -20), _painted(30, -30), _painted(-5, 5), _painted(10, -10)]
+    washed = _painted(8, -8, wash=40)
+    forced_flow_group(monkeypatch, [1], (0, 2), [0.5])
+    out, record = repair.repair_jumps(frames, lambda x, y, t: washed)
+    assert record["rounds"][0]["outcome"] == "rejected" and record["rounds"][0]["faults"] == ["outline"] and out[1] is frames[1]
+    a, b = (_painted(*p) for p in FAR)
+    out, facts = align.resample([a, b], 4, lambda x, y, t: washed)
+    assert facts["nearest_at"] == [1, 3] and all(m["outline_shift"] is None and m["faults"] == ["outline"] for m in facts["smear"])
+    assert faults(_measure(_painted(8, -8), a, b)) == [] and _measure(washed, a, b)["outline_loss"] > OUTLINE_WARN
+    with monkeypatch.context() as patched:  # read as outlined art, its edge is lighter by less than 50/255 everywhere
+        patched.setattr(rife, "OUTLINED", 0.0)
+        assert rife.outline_shift(washed, a, b) == 0
+    assert max(rife.outlined(a), rife.outlined(b)) < 0.1 and min(rife.outlined(_two_tone(*FAR[0])), rife.outlined(_walker(20, -20))) > 0.99
 
 
 @pytest.mark.real_rife

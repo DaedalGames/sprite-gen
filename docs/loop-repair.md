@@ -284,7 +284,8 @@ never tried again in that run, and nothing is made from or beside it. The circul
 adjacency rule and the call budget hold across the wrap. The shared `interpolation_quality` policy
 is the same one used by cycle alignment: `dark_excess > 0.001`, or `outline_loss` and
 `outline_shift` both over 0.05 (an outline lost by the dark line and lighter than the neighbours'
-edge rank by rank, section 4), rejects a proposal, and so does a proposal that is a ghost on its own
+edge rank by rank, read between outlined neighbours; between neighbours painted without a line,
+`outline_loss` alone, section 4), rejects a proposal, and so does a proposal that is a ghost on its own
 coverage (`ghost` over 0.003, read where the loop's ghost screen reads it, section 4). An empty
 proposal is also rejected. One made frame at fault refuses its whole group. A proposal that
 cross-fades two drawings inside its silhouette (`crossfade` over 0.015, section 4) is taken all the
@@ -794,14 +795,14 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     counts), the share with no dark solid pixel within 2 px, beyond the less outlined
     neighbour's, as a fraction of its edge. Legs that crossed too far for the flow melt into one
     shape of fill and lose their outline where they meet the air; a limb left as a ghost has none.
-    Over 5 % it is the fault `outline` — where `outline_shift` is over 5 % too (below). A step the
-    flow follows keeps its outline; a figure drawn without outlines loses none against neighbours
+    Over 5 % it is the fault `outline` — where `outline_shift` is read, over 5 % too (below). A step
+    the flow follows keeps its outline; a figure drawn without outlines loses none against neighbours
     that have none, and is not judged by it.
   - `outline_shift` (`rife.outline_shift`): the same edge read against the neighbours rank by rank —
     each pixel of the frame's coverage edge by how dark the darkest solid pixel within 2 px of it is,
     in order, against the lighter neighbour's edge at the same rank, counted where it is lighter by
-    more than **50/255** (`rife.OUTLINE_SHIFT`), as a fraction of its edge. The fault `outline` needs
-    both readings over 5 %. The dark line alone reads an art outlined in a mid tone — a brown or a
+    more than **50/255** (`rife.OUTLINE_SHIFT`), as a fraction of its edge. Where it is read, the
+    fault `outline` needs both readings over 5 %. The dark line alone reads an art outlined in a mid tone — a brown or a
     painted line whose tone lies about 70/255 — as lost wherever the flow softened it: a line a few
     tones lighter falls on the far side of 70/255 all along the figure, and a frame made between two
     such drawings reads as melted however cleanly the flow followed them. Rank by rank the softened line is lighter by less than 50/255
@@ -816,7 +817,27 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     softened line takes and the lift of a line gone to fill, and a frame near either is worth a look.
     What it does not see: a line less than 50/255 darker than the fill it melts into (a dark grey
     shoe on a mid blue) is no further from its neighbours' than a softened line, and is not read as
-    lost.
+    lost — on art outlined elsewhere; art with no darker line on most of its edge is not read this
+    way at all (below).
+    It is read only between **outlined** neighbours (`rife.outlined`; `null` otherwise, and the dark
+    line judges alone): on each, the line of at least **75 %** (`rife.OUTLINED`) of its coverage
+    edge — the darkest solid pixel within 2 px — darker by more than the same 50/255 than its fill,
+    its colour from `rife.LINE_DEPTH` inside, pushed out over the edge as the colour around the body
+    is pushed out for RIFE (section 1). Art painted without a line has no line to lose: its edge is
+    its fill, and a part the flow melts — a boot washed pale, a shin left a ghost — comes out lighter
+    by less than 50/255 at every rank where its tones run close together, so read rank by rank it
+    would be kept. There the dark line judges alone, as it did before this reading: a frame it
+    refuses is replaced by the nearer filmed one, a little less smooth, where a melted frame kept
+    would be delivered. On the synthetic walkers of
+    `tests/video/test_outline_shift.py`, the two-tone walker and the walker outlined in black read
+    outlined on all their edge; the walker painted without a line (skin legs, dark boots, a body of
+    one mid tone) reads 4 %, and its drawing between with the near boot washed 40 tones lighter reads
+    `outline_loss` 7.8 % and, rank by rank, 0 — refused on the dark line, where the rank reading
+    alone kept it. The 75 % is a reference, set on frames made between drawn walks and judged by
+    eye: with it, no frame seen as broken that the dark line alone refused is kept.
+    `rife.LINE_DEPTH` is twice the bleed's depth (`rife.BLEED_DEPTH`): the walkers of the tests,
+    outlined 2 px on a figure 153 px tall, read about half their edge outlined at the bleed's depth,
+    whose core still takes the line's inner pixel, and all of it at twice that.
     The jump repair (section 2) and the alignment read it on every frame they make; the versioned
     measures of `video-loop-compare` and `video-loop-repair` do not, and judge the outline on the
     dark line alone, as before.
