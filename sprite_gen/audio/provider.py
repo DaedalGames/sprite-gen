@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
-import sys
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from sprite_gen.gen import retry
+from sprite_gen.gen.base import announce_api_billing, env_api_key
 from sprite_gen.gen.xai import error_body, NO_ANSWER
 
 BASE = 'https://api.elevenlabs.io/v1'
+AUTH_ENV = 'ELEVENLABS_API_KEY'
 FORMAT = 'mp3_44100_128'
 SAFE_CODES = frozenset({'system_busy', 'too_many_concurrent_requests', 'quota_exceeded',
     'invalid_api_key', 'missing_permissions', 'bad_prompt', 'bad_composition_plan',
@@ -40,9 +40,13 @@ def request(kind, prompt, duration, loop):
 
 
 def credential():
-    key = os.environ.get('ELEVENLABS_API_KEY', '').strip()
+    # ElevenLabs has no subscription login to prefer: the key is the only route, billed per call.
+    try:
+        key = env_api_key(AUTH_ENV, who='sound')
+    except SystemExit as exc:
+        raise ValueError(str(exc)) from None
     if not key:
-        raise ValueError('ELEVENLABS_API_KEY is required for a new sound request')
+        raise ValueError(f'{AUTH_ENV} is required for a new sound request')
     return key
 
 
@@ -72,13 +76,14 @@ def generate(document):
             # Transport exceptions may include headers or body text. Never print them.
             raise ValueError('ElevenLabs response unavailable; request outcome unresolved; no resubmission') from None
 
-    print('[sound] ElevenLabs paid API request; source audio will be cached', file=sys.stderr)
+    announce_api_billing('elevenlabs', AUTH_ENV, f" ({document['endpoint']}; the audio is cached, so the same "
+                         "request is not bought twice).")
     status, body, headers, asks = retry.ask(send, provider='elevenlabs', who='ElevenLabs', label='sound', kind=_code)
     if not 200 <= status < 300:
         raise ValueError(f'ElevenLabs refused sound (HTTP {status}, {_code(body) or "unclassified"}); {retry.tail(asks)}')
     if not isinstance(body, bytes) or not body:
         raise ValueError('ElevenLabs returned no audio; request outcome unresolved')
-    meta = {'provider': 'elevenlabs', 'model': document['body']['model_id'], 'asks': asks}
+    meta = {'provider': 'elevenlabs', 'auth_source': AUTH_ENV, 'model': document['body']['model_id'], 'asks': asks}
     # Only documented, constrained metadata; provider prose never enters a report or log.
     for header, field in (('request-id', 'request_id'), ('song-id', 'song_id')):
         value = headers.get(header, '')

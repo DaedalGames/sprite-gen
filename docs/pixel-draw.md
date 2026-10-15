@@ -322,7 +322,9 @@ key whenever one is present — nor the calling Claude Code session's own variab
 here but refuses a call, has expired or has reached its usage limit fails that call as it came; the
 run never switches to the key on its own. `--batch` is the API's Message Batches, so it names the key
 and the login is not asked. One call through the binary may take up to
-`SPRITE_GEN_CLAUDE_CALL_TIMEOUT_SECONDS` (1800) before it is stopped and reported.
+`SPRITE_GEN_CLAUDE_CALL_TIMEOUT_SECONDS` (1800) before it is stopped and reported; on the key, one
+socket read of the stream may wait `SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS` (300) — the API sends
+`ping`s while the model thinks, so a stream silent that long is stalled.
 
 The binary answers an answer cut at the output cap by asking for a continuation a few times and then
 failing with "exceeded the N output token maximum"; that is read as the API's `stop_reason:

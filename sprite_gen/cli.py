@@ -319,7 +319,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         ui_kit.run,
     ),
     "gen": (
-        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login, or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
+        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login first (an API key only without one, billed per call and said), or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
         _add_gen,
         gen.run,
     ),

@@ -43,6 +43,11 @@ def response_text(status: int, reply) -> tuple[str, dict]:
 def codex_inspect(path: Path, workdir: Path) -> tuple[str, dict]:
     # Isolated cwd and ephemeral session: no project instructions, no stale
     # output reuse and no persistent vision rollouts. Uses the existing login.
+    from .codex_provider import announce_codex_billing, codex_login
+    login = codex_login()
+    if login.source is None:
+        raise SystemExit(f"facing-vision: {login.reason}")
+    announce_codex_billing(login, " (facing vision check)")
     with tempfile.TemporaryDirectory(prefix="facing-", dir=workdir) as directory:
         output = Path(directory) / "answer.txt"
         command = [provider_binary("codex"), "exec", "--sandbox", "read-only",
@@ -53,7 +58,7 @@ def codex_inspect(path: Path, workdir: Path) -> tuple[str, dict]:
                                    timeout=GEN_TIMEOUT_SECONDS)
         if completed.returncode:
             raise SystemExit(f"facing-vision: codex exited {completed.returncode}")
-        return output.read_text(encoding="utf-8"), {"transport": "codex-exec", "auth_source": "codex-login"}
+        return output.read_text(encoding="utf-8"), {"transport": "codex-exec", "auth_source": login.source}
 
 
 def grok_inspect(path: Path, *, credential=None, call=None) -> tuple[str, dict]:
