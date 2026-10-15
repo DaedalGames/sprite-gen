@@ -347,7 +347,7 @@ zlib build. The previews, the tiling and the GIF are views for the eye.
 | `chosen`, `files`, `warnings`, `info` | the picked candidate, its top-level files, its warnings (worth a look, maybe a redraw) and its info lines (nothing to do) |
 | `pick` | `by` (`vision` / `only` / `human`), `best`, and for the vision pick its `labels`, `sheet` and `verdict` |
 | `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `info`, `files`, and for a set drawn over several calls `parts` (each call's frames and the effort it was drawn at; `effort` is then the lowest) |
-| `auth_source` | what the run's calls ran on: `claude-login` (the subscription) or `ANTHROPIC_API_KEY` |
+| `auth_source` | what the run's calls ran on, as their records say: `claude-login` (the subscription), `ANTHROPIC_API_KEY`, or `mixed` with both in `auth_sources` (a run resumed under the other credential) |
 | `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `c1-part2-gen1` for a set drawn over several calls, `pick`), `purpose`, `mode` (`subscription` / `realtime` / `batch`), `auth_source`, `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
 | `batches[]` | per batch: `id`, `custom_ids`, `submitted_at`, `collected`, `ended_at`, `waited_seconds` |
 | `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |

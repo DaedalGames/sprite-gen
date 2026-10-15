@@ -592,6 +592,7 @@ class Calls:
         self.note = note
         self.announce = announce
         self.announced = False
+        self.announce_lock = threading.Lock()
         self.lock = threading.Lock()
         self.summaries: dict[str, dict[str, Any]] = {}
         self.batches: dict[str, dict[str, Any]] = {}
@@ -604,11 +605,12 @@ class Calls:
         return self.dir / f"{call_id}.json"
 
     def _leaving(self) -> None:
-        with self.lock:
-            if self.announced:
-                return
-            self.announced = True
-        self.announce()
+        """Say the charge once, before the first request leaves. A thread that comes while it is being said
+        waits until it has been: no request of any candidate leaves ahead of the line."""
+        with self.announce_lock:
+            if not self.announced:
+                self.announce()
+                self.announced = True
 
     def cached(self, call_id: str, body: dict[str, Any]) -> Reply | None:
         path = self._path(call_id)
@@ -1335,11 +1337,24 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
     return 0
 
 
+def run_auth_source(summaries: list[dict[str, Any]], resolved: str) -> dict[str, Any]:
+    """What a run's calls ran on, as their records say: one route, or `mixed` with each route named (a run
+    resumed under another credential). A run with no call yet names the credential it resolved."""
+    sources = sorted({s["auth_source"] for s in summaries if s.get("auth_source")})
+    if not sources:
+        return {"auth_source": resolved}
+    if len(sources) == 1:
+        return {"auth_source": sources[0]}
+    return {"auth_source": "mixed", "auth_sources": sources}
+
+
 def _finish(report: dict[str, Any], calls: Calls, started: float) -> Path:
     summaries = [calls.summaries[cid] for cid in sorted(calls.summaries, key=_call_order)]
     usage, cost = _totals(summaries)
+    report.pop("auth_sources", None)
     report.update(calls=summaries, batches=list(calls.batches.values()), usage=usage, cost_usd=cost,
-                  seconds=round(time.monotonic() - started, 3))
+                  seconds=round(time.monotonic() - started, 3),
+                  **run_auth_source(summaries, calls.credential.source))
     return _write_report(Path(report["out_dir"]), report)
 
 
