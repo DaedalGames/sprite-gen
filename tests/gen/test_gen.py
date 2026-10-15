@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,17 @@ def test_env_api_key_is_the_key_none_or_a_refusal_of_an_empty_one() -> None:
         gen_base.env_api_key("SOME_API_KEY", {"SOME_API_KEY": " "}, who="v")
 
 
+def test_run_logged_keeps_everything_in_the_log_and_shows_the_charge_and_the_switch(tmp_path, capsys) -> None:
+    lines = ["working", f"[gen] grok: running on XAI_API_KEY — {gen_base.API_CHARGE_WORDS} (q).",
+             f"sprite-gen gen: default provider 'codex' unavailable (x) {gen_base.PROVIDER_SWITCH_WORDS} 'grok'.", "done"]
+    script = "import sys\n" + "".join(f"print({line!r}, file=sys.stderr if {i} % 2 else sys.stdout)\n"
+                                       for i, line in enumerate(lines))
+    log = tmp_path / "child.log"
+    assert gen_base.run_logged([sys.executable, "-c", script + "raise SystemExit(3)"], log) == 3
+    assert sorted(log.read_text(encoding="utf-8").splitlines()) == sorted(lines)
+    assert sorted(capsys.readouterr().err.splitlines()) == sorted(lines[1:3])
+
+
 def test_provider_binary_resolves_windows_style_path_shims(monkeypatch) -> None:
     monkeypatch.setattr(gen_base.shutil, "which", lambda name: f"C:/tools/{name}.CMD")
     assert gen_base.provider_binary("codex") == "C:/tools/codex.CMD"
@@ -101,6 +113,7 @@ def test_provider_run_uses_scrubbed_env(tmp_path: Path, monkeypatch) -> None:
 
     # Short-circuit codex's post-run rollout parsing — we only assert the env.
     monkeypatch.setattr(codex_provider.subprocess, "run", _fake_codex_run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     monkeypatch.setattr(
         codex_provider,
         "_resolve_rollout",
@@ -134,6 +147,7 @@ def test_provider_commands_use_the_single_resolved_binary(tmp_path: Path, monkey
         return _CodexCompleted()
 
     monkeypatch.setattr(codex_provider.subprocess, "run", fake_codex)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     monkeypatch.setattr(codex_provider, "_resolve_rollout", lambda *_args, **_kwargs: tmp_path / "rollout.jsonl")
     monkeypatch.setattr(
         codex_provider,

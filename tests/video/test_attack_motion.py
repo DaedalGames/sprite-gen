@@ -57,11 +57,11 @@ def test_a_callers_motion_replaces_the_built_in_sentence() -> None:
 def test_video_cli_pins_the_last_frame_only_when_asked(tmp_path: Path, monkeypatch) -> None:
     seen: list[list[str]] = []
 
-    def fake_run(cmd, **kw):
+    def fake_run(cmd, log):
         seen.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+        return 0
 
-    monkeypatch.setattr(batch_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(batch_mod, "run_logged", fake_run)
     common = dict(duration=4, resolution="480p", log=tmp_path / "log")
     batch_mod.run_video_cli(tmp_path / "canvas.png", "p", tmp_path / "c.mp4", tmp_path / "r.json", **common)
     batch_mod.run_video_cli(tmp_path / "canvas.png", "p", tmp_path / "c.mp4", tmp_path / "r.json", last_frame=tmp_path / "canvas.png", **common)
