@@ -121,18 +121,24 @@ def _same_but_the_screen(a: Path, b: Path) -> None:
     assert left == right
 
 
-@pytest.mark.parametrize("cycle, suspect", [(CYCLE, True), (23.5, True), (25, False)])
+@pytest.mark.parametrize("cycle, suspect", [(CYCLE, True)])
 def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatch, cycle, suspect):
-    """A one-step cut, a cycle on a frame count that is not whole (23.5 frames: twice it repeats
-    better, being whole there — a suspect that is no step) and a whole cycle of 25: with the screen
-    or without it, every image, the strip metadata and the report are the same but for its record, and
-    the gait observation's copy of it."""
+    """A one-step cut: with the screen or without it, every image, the strip metadata and the report
+    are the same but for its record, and the gait observation's copy of it. The screen is computed
+    after the cut is chosen and only stored (`local_cycle.py`), so one cut answers for any cycle."""
     keyed = _keyed(tmp_path, cycle)
     report = _cut(tmp_path / "screened", keyed)
     assert report["cycle"]["step_screen"]["suspect"] is suspect
     monkeypatch.setattr(period, "step_screen", lambda *a, **k: {"stubbed": True})
     _cut(tmp_path / "unscreened", keyed)
     _same_but_the_screen(tmp_path / "screened", tmp_path / "unscreened")
+
+
+@pytest.mark.parametrize("cycle, suspect", [(23.5, True), (25, False)])
+def test_the_step_screen_reads_a_cycle_on_a_frame_count_that_is_not_whole(tmp_path, cycle, suspect):
+    """A cycle of 23.5 frames repeats better twice over, being whole there: a suspect that is no step.
+    A whole cycle of 25 is no suspect."""
+    assert _cut(tmp_path / "out", _keyed(tmp_path, cycle))["cycle"]["step_screen"]["suspect"] is suspect
 
 
 def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, tmp_path):

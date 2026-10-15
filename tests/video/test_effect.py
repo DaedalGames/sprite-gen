@@ -126,8 +126,7 @@ def test_lifetime_cut_keeps_dim_edge_spark_and_terminal_sample(tmp_path):
         assert preview.convert("RGBA").getchannel("A").getbbox() is None
 
 
-@pytest.mark.parametrize("extension", ["gif", "webp"])
-def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_path, extension):
+def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_path):
     report = cut(lifetime_frames(tmp_path), tmp_path / "out")
     meta = report["strip"]
     strip = Image.open(meta["path"]).convert("RGBA")
@@ -138,28 +137,30 @@ def test_lifetime_preview_composites_over_white_without_an_unreported_matte(tmp_
             cells.append(cell)
     white = Image.new("RGBA", cells[0].size, "white")
     black = Image.new("RGBA", cells[0].size, "black")
-    background = report[extension].get("background")
-    with Image.open(tmp_path / "out" / f"effect.{extension}") as preview:
-        assert preview.n_frames == len(cells)
-        opacity = []
-        for k, cell in enumerate(cells):
-            preview.seek(k)
-            decoded = preview.convert("RGBA")
-            expected = Image.alpha_composite(black if background == "#000000" else white, cell)
-            actual = Image.alpha_composite(white, decoded)
-            # Ordinary alpha compositing catches black matte pixels on white;
-            # additive compositing on white would make this comparison vacuous.
-            delta = np.array(expected, dtype=int) - np.array(actual, dtype=int)
-            assert np.abs(delta).max() <= 2, f"{extension} frame {k} has an unreported matte"
-            opacity.append(decoded.getchannel("A").getextrema())
-        if extension == "gif":
-            assert all(extrema == (255, 255) for extrema in opacity)
-            assert background == "#000000"
-            assert report[extension]["opaque"] is True
-            assert decoded.getextrema() == ((0, 0), (0, 0), (0, 0), (255, 255))
-        else:
-            assert background is None
-            assert decoded.getchannel("A").getbbox() is None
+    # One cut, both previews: the GIF and the WebP are written from the same cells.
+    for extension in ("gif", "webp"):
+        background = report[extension].get("background")
+        with Image.open(tmp_path / "out" / f"effect.{extension}") as preview:
+            assert preview.n_frames == len(cells), extension
+            opacity = []
+            for k, cell in enumerate(cells):
+                preview.seek(k)
+                decoded = preview.convert("RGBA")
+                expected = Image.alpha_composite(black if background == "#000000" else white, cell)
+                actual = Image.alpha_composite(white, decoded)
+                # Ordinary alpha compositing catches black matte pixels on white;
+                # additive compositing on white would make this comparison vacuous.
+                delta = np.array(expected, dtype=int) - np.array(actual, dtype=int)
+                assert np.abs(delta).max() <= 2, f"{extension} frame {k} has an unreported matte"
+                opacity.append(decoded.getchannel("A").getextrema())
+            if extension == "gif":
+                assert all(extrema == (255, 255) for extrema in opacity)
+                assert background == "#000000"
+                assert report[extension]["opaque"] is True
+                assert decoded.getextrema() == ((0, 0), (0, 0), (0, 0), (255, 255))
+            else:
+                assert background is None
+                assert decoded.getchannel("A").getbbox() is None
 
 
 def test_animation_background_is_explicit_and_requires_full_opacity(tmp_path):

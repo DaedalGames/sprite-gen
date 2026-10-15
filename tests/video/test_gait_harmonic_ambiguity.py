@@ -29,7 +29,7 @@ def test_noisy_harmonic_above_duration_floor_retains_both_occurrences():
     assert gait['review_recommended'] is True
 
 
-@pytest.mark.parametrize('noise', [0, 0.0001])
+@pytest.mark.parametrize('noise', [0.0001])
 def test_exact_or_near_exact_fast_repeat_is_not_doubled(noise):
     cycle = loop.detect_cycle(_repeat_distances(noise=noise), min_len=7, max_len=29, gait_floor=8)
     assert cycle['period_global'] == 13

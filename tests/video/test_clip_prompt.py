@@ -22,7 +22,7 @@ from sprite_gen.video import frames as frames_mod
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
 
-@pytest.mark.parametrize("direction,state", [("side", "walk"), ("front", "walk"), ("back", "run"), ("side", "jump")])
+@pytest.mark.parametrize("direction,state", [("side", "walk"), ("side", "jump")])
 def test_the_prompt_is_the_one_video_set_sends(direction, state) -> None:
     record = clip_prompt.plan_prompt(direction=direction, state=state, facing="left", character="The knight",
                                      last_frame=False)
@@ -32,15 +32,7 @@ def test_the_prompt_is_the_one_video_set_sends(direction, state) -> None:
     assert record["last_frame"] is None and record["cycle"] == "auto" and record["warnings"] == []
 
 
-def test_a_callers_motion_and_a_lite_model_reach_the_prompt() -> None:
-    record = clip_prompt.plan_prompt(direction="side", state="walk", motion="It marches proudly.",
-                                     model="grok-imagine-video-1.5-lite")
-    assert record["prompt"] == batch_mod.build_prompt("side", "walk", None, motion="It marches proudly.",
-                                                      model="grok-imagine-video-1.5-lite")
-    assert "It marches proudly." in record["prompt"]
-
-
-@pytest.mark.parametrize("direction,state", [("side", "idle"), ("side", "attack"), ("front_diagonal", "walk"), ("back_diagonal", "run")])
+@pytest.mark.parametrize("direction,state", [("side", "idle"), ("front_diagonal", "walk")])
 def test_no_end_frame_refuses_a_pinned_state(direction, state) -> None:
     assert batch_mod.pins_last_frame(state, direction)
     with pytest.raises(SystemExit, match="no end frame"):

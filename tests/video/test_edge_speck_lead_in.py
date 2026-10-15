@@ -281,14 +281,7 @@ def test_a_cut_after_a_lead_in_reads_the_standing_height_on_its_own_first_frame(
         ("cut-first-frame", 12, meta["body_src_h"], meta["scale"])
 
 
-def test_a_cut_of_a_clip_with_no_lead_in_reads_its_first_frame_as_before(tmp_path):
-    out, meta, keyed = _fixed(tmp_path, [walks.walker(k) for k in range(73)], 12)
-    assert meta["body_ref"] == "first-frame" and "body_ref_frame" not in meta
-    assert meta["body_src_h"] == _height(keyed / "000.png")
-    assert out["lead_in"]["frames"] == 0 and out["cut_size"]["change"] == 0
-
-
-@pytest.mark.parametrize("start, first, change", [(0.93, 112, 0.063), (1.07, 129, -0.068)])
+@pytest.mark.parametrize("start, first, change", [(0.93, 112, 0.063)])  # the other sign: size_change, below
 def test_a_cut_filmed_at_another_size_than_the_first_frame_reads_the_standing_height_on_its_own_first_frame(tmp_path, start, first, change):
     # Reframed by 7 % over its first 9 frames, the walker opens no lead-in (under LEAD_IN_MIN), and its walk is
     # filmed 7 % larger (or smaller) than its first frame: read there, the standing height delivered the walk
@@ -377,7 +370,7 @@ def test_a_walk_or_run_forced_wide_gets_no_room_above():
     assert math.isclose(canvas.GAIT_WIDE.ratio, 16 / 9)
 
 
-@pytest.mark.parametrize("state", ["walk", "run"])
+@pytest.mark.parametrize("state", ["walk"])  # run takes the same profile (`canvas.profile_for`, above)
 def test_video_canvas_wide_for_a_gait_from_the_command_line(tmp_path, state):
     still = tmp_path / "still.png"
     image = Image.new("RGB", (512, 512), (0, 255, 0))

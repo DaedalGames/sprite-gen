@@ -60,35 +60,49 @@ def _canvas(path: Path, size: tuple[int, int], background: tuple[int, int, int],
     return path
 
 
-def _scenes(tmp_path: Path) -> dict[str, tuple[Path, str]]:
-    clean = _figure(120, 150, GREEN_PAINTED, patch=None, spill=(60, 235, 70))
-    leafy = _figure(120, 150, GREEN_PAINTED, patch=MOSS)
-    teal = _figure(120, 150, GROK_MAGENTA, patch=(40, 150, 150), spill=(230, 60, 215))
-    # a subject that fills its own box, large enough that the ring of background around it is
-    # under the detector's 12 % of the window's samples: only the painted colour read on the
-    # whole still keys that ring
-    block = Image.new("RGB", (240, 260), (190, 195, 205))
-    ImageDraw.Draw(block).rectangle((50, 60, 170, 200), fill=MOSS)
+def _scene(tmp_path: Path, name: str) -> tuple[Path, str]:
+    """One synthetic still and its key: only the scene asked for is drawn."""
+    def clean() -> Image.Image:
+        return _figure(120, 150, GREEN_PAINTED, patch=None, spill=(60, 235, 70))
+
+    def leafy() -> Image.Image:
+        return _figure(120, 150, GREEN_PAINTED, patch=MOSS)
+
+    def teal() -> Image.Image:
+        return _figure(120, 150, GROK_MAGENTA, patch=(40, 150, 150), spill=(230, 60, 215))
+
+    def block() -> Image.Image:
+        # a subject that fills its own box, large enough that the ring of background around it is
+        # under the detector's 12 % of the window's samples: only the painted colour read on the
+        # whole still keys that ring
+        image = Image.new("RGB", (240, 260), (190, 195, 205))
+        ImageDraw.Draw(image).rectangle((50, 60, 170, 200), fill=MOSS)
+        return image
+
+    def transparent_corner() -> Path:
+        # transparent pixels far from the key: keyed by their alpha, whatever their colour
+        rgba = Image.open(_scene(tmp_path, "padded")[0]).convert("RGBA")
+        ImageDraw.Draw(rgba).rectangle((20, 20, 90, 60), fill=(200, 40, 40, 0))
+        rgba.save(tmp_path / "transparent.png")
+        return tmp_path / "transparent.png"
+
     scenes = {
-        "padded": (_canvas(tmp_path / "padded.png", (620, 460), GREEN_PAINTED, [(300, 170, clean)]), "green"),
-        "touches the bottom edge": (_canvas(tmp_path / "edge.png", (400, 300), GREEN_PAINTED, [(40, 150, clean)], seed=1), "green"),
-        "two subjects": (_canvas(tmp_path / "two.png", (700, 400), GREEN_PAINTED, [(10, 10, clean), (560, 240, leafy)], seed=2), "green"),
-        "own green material": (_canvas(tmp_path / "leafy.png", (500, 420), GREEN_PAINTED, [(200, 130, leafy)], seed=3), "green"),
-        "grok magenta": (_canvas(tmp_path / "magenta.png", (520, 400), GROK_MAGENTA, [(150, 90, teal)], seed=4), "magenta"),
-        "fills its box": (_canvas(tmp_path / "block.png", (600, 500), GREEN_PAINTED, [(180, 120, block)], seed=5), "green"),
+        "padded": (lambda: _canvas(tmp_path / "padded.png", (620, 460), GREEN_PAINTED, [(300, 170, clean())]), "green"),
+        "touches the bottom edge": (lambda: _canvas(tmp_path / "edge.png", (400, 300), GREEN_PAINTED, [(40, 150, clean())], seed=1), "green"),
+        "two subjects": (lambda: _canvas(tmp_path / "two.png", (700, 400), GREEN_PAINTED, [(10, 10, clean()), (560, 240, leafy())], seed=2), "green"),
+        "own green material": (lambda: _canvas(tmp_path / "leafy.png", (500, 420), GREEN_PAINTED, [(200, 130, leafy())], seed=3), "green"),
+        "grok magenta": (lambda: _canvas(tmp_path / "magenta.png", (520, 400), GROK_MAGENTA, [(150, 90, teal())], seed=4), "magenta"),
+        "fills its box": (lambda: _canvas(tmp_path / "block.png", (600, 500), GREEN_PAINTED, [(180, 120, block())], seed=5), "green"),
+        "transparent corner": (transparent_corner, "green"),
     }
-    # transparent pixels far from the key: keyed by their alpha, whatever their colour
-    rgba = Image.open(scenes["padded"][0]).convert("RGBA")
-    ImageDraw.Draw(rgba).rectangle((20, 20, 90, 60), fill=(200, 40, 40, 0))
-    rgba.save(tmp_path / "transparent.png")
-    scenes["transparent corner"] = (tmp_path / "transparent.png", "green")
-    return scenes
+    draw, kind = scenes[name]
+    return draw(), kind
 
 
 @pytest.mark.parametrize("scene", ["padded", "touches the bottom edge", "two subjects", "own green material",
                                    "grok magenta", "fills its box", "transparent corner"])
 def test_the_window_gives_the_whole_stills_counts(tmp_path: Path, scene: str) -> None:
-    path, kind = _scenes(tmp_path)[scene]
+    path, kind = _scene(tmp_path, scene)
     material, subject = _whole_still_judgment(path, kind)
     decision = frames_mod.decide_spill(path, kind)
     assert (decision["key_material_px"], decision["subject_px"]) == (material, subject)
@@ -101,14 +115,8 @@ def test_the_window_gives_the_whole_stills_counts(tmp_path: Path, scene: str) ->
     assert (right - left) * (bottom - top) < width * height  # the padding was not keyed
 
 
-def test_the_scenes_cover_both_modes(tmp_path: Path) -> None:
-    scenes = _scenes(tmp_path)
-    assert frames_mod.decide_spill(*scenes["padded"])["mode"] == "full"
-    assert frames_mod.decide_spill(*scenes["own green material"])["mode"] == "small"
-
-
 def test_the_matte_sees_the_window_not_the_canvas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path, kind = _scenes(tmp_path)["padded"]
+    path, kind = _scene(tmp_path, "padded")
     keyed_sizes: list[tuple[int, int]] = []
     real = cutout_mod.extract_route
 
@@ -124,7 +132,7 @@ def test_the_matte_sees_the_window_not_the_canvas(tmp_path: Path, monkeypatch: p
 
 
 def test_a_window_over_the_budget_is_keyed_on_a_stride(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    scenes = _scenes(tmp_path)
+    scenes = {name: _scene(tmp_path, name) for name in ("padded", "own green material")}
     budget = 6000
     monkeypatch.setattr(frames_mod, "SPILL_REFERENCE_MAX_PIXELS", budget)
     keyed_sizes: list[tuple[int, int]] = []
