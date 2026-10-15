@@ -1069,6 +1069,27 @@ def test_no_sampled_drift_reads_the_drawing_better_than_the_cut_found(label):
         assert (box[near] == want).all(), label
 
 
+def test_a_mark_between_two_boxes_whose_widened_boxes_touch_is_never_read_in_no_box():
+    # The gap between the two dots' boxes is twice the reach, so their widened boxes touch: under every drift that
+    # leaves the mark inside the dots' columns, its centroid lies in one of them. A tall thin mark centred in that gap
+    # costs less in no box than in either dot's box, but no drift reads it in no box, so no reading that does is cut or
+    # named. Both readings that put it in a dot's box fit the sheet as well: the sheet is refused, and each of the two
+    # readings the refusal names reads the sheet as it says.
+    image, _ = synthetic_sheet(size=TALL, haze=False, noise=False)
+    pixels = np.asarray(image).copy()
+    x, y, w, h = ui_kit.boxes(TALL)["pip_on"]
+    below = ui_kit.boxes(TALL)["pip_off"][1]
+    cx, cy = x + w // 2, (y + h + below) // 2
+    fill(pixels, cx - 2, cy - 10, cx + 2, cy + 10, BORDER)
+    with pytest.raises(ui_kit.Refusal, match="^pip_on, pip_off: under another drift the cut accepts") as refused:
+        ui_kit.split_ui_kit(Image.fromarray(pixels))
+    names = list(ui_kit.boxes(TALL))
+    for reading in refused.value.witnesses:
+        cost, box = read_at(refused.value.parts, TALL, [reading.drift])
+        assert [names[i] if i >= 0 else None for i in box[0]] == list(reading.boxes), reading
+        assert None not in reading.boxes and cost[0] <= refused.value.least + TIE + 1e-6, (reading, cost[0])
+
+
 @pytest.mark.timeout(10)
 def test_a_sheet_of_many_small_parts_is_cut_or_refused_in_seconds():
     # Every element a 4 px square (16 px, the smallest part kept) anywhere inside its moved box, with about half the
