@@ -32,6 +32,7 @@ MODULE_DOMAIN = {
     'follow': 'video',
     'follow_inspect': 'video',
     'set_sheet': 'video',
+    'stop': 'video',
     'compare': 'video',
     'restoration': 'video',
     'source': 'video',
@@ -102,8 +103,8 @@ DOMAIN_TITLE = dict(DOMAINS)
 PIPELINES: list[dict[str, object]] = [
     {"key": "A", "name": "atlas rows", "verbs": ["prepare", "gen", "gen-set", "extract", "compose-atlas", "curation"],
      "chain": "prepare → gen (or gen-set) → extract → compose-atlas; optional curation and recompose", "doc": "docs/run-contract.md"},
-    {"key": "B", "name": "video → loop", "verbs": ["video-canvas", "video", "video-prompt", "video-frames", "video-loop", "video-set", "video-cycle-align", "video-follow", "video-follow-inspect", "video-set-sheet", "handed-check"],
-     "chain": "video-canvas → video (or video-prompt + a video MCP) → video-frames → video-loop, or video-set; video-cycle-align across a set; video-follow for a soft part's follow-through (video-follow-inspect shows every cell of it and moves nothing); video-set-sheet lays a set's directions on one sheet on one ground line; handed-check for an item on one side", "doc": "docs/video-pipeline.md"},
+    {"key": "B", "name": "video → loop", "verbs": ["video-canvas", "video", "video-prompt", "video-frames", "video-loop", "video-set", "video-cycle-align", "video-follow", "video-follow-inspect", "video-set-sheet", "video-stop", "handed-check"],
+     "chain": "video-canvas → video (or video-prompt + a video MCP) → video-frames → video-loop, or video-set; video-cycle-align across a set; video-follow for a soft part's follow-through (video-follow-inspect shows every cell of it and moves nothing); video-set-sheet lays a set's directions on one sheet on one ground line; video-stop cuts a walk or run's stop from its clip's start played backwards; handed-check for an item on one side", "doc": "docs/video-pipeline.md"},
 ]
 
 TOOL_GROUPS: list[dict[str, object]] = [

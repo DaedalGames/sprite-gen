@@ -115,7 +115,7 @@ def scale_drift(frames: list[Image.Image]) -> dict:
 POSE_EDGE = 48  # px: the pose thumbnail's longer side, the body cut out about its feet
 
 
-def _poses(frames: list[Image.Image], boxes: np.ndarray) -> np.ndarray:
+def poses(frames: list[Image.Image], boxes: np.ndarray) -> np.ndarray:
     """Per frame: the body's thumbnail, cut out about its own feet (the bottom middle of its box),
     so a body that walks across the frame or bobs still matches itself a cycle later."""
     known = ~np.isnan(boxes[:, 0])
@@ -171,8 +171,8 @@ def cycle_drift(frames: list[Image.Image], *, min_lag: int, max_lag: int) -> dic
         return {**base, "lag": None, "pairs": 0, "per_lag": 1.0, "pose_match": None, "drift": 0.0,
                 "height_first_px": fitted["height_first_px"], "height_last_px": fitted["height_first_px"],
                 "height": np.full(n, fitted["height"][0])}
-    poses = _poses(frames, boxes)
-    profile = {lag: float(np.nanmean(np.abs(poses[lag:] - poses[:-lag]))) for lag in range(max(1, min_lag), hi + 1)}
+    thumbs = poses(frames, boxes)
+    profile = {lag: float(np.nanmean(np.abs(thumbs[lag:] - thumbs[:-lag]))) for lag in range(max(1, min_lag), hi + 1)}
     lag = min(profile, key=lambda k: (profile[k], k))
     rates = np.concatenate([np.log(heights[span:] / heights[:-span]) / span for span in range(lag, n, lag)])
     rates = rates[np.isfinite(rates)]
