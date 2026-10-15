@@ -7,19 +7,80 @@ cover image are recorded and left out of the frames."""
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import clip_prompt
 from sprite_gen.video import frames as frames_mod
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+PUNCH = "It throws one straight punch with its front fist and pulls the fist back to its chest."
+
+
+def punch_frames(out: Path, size: tuple[int, int], count: int = 36) -> Path:
+    """Keyed frames of one punch filmed pinned to its first frame: a body that stands still while an arm
+    reaches out and comes back, the last frame the first one's pose."""
+    keyed = out / "keyed"
+    keyed.mkdir(parents=True)
+    w, h = size
+    for k in range(count):
+        reach = round(0.3 * w * math.sin(math.pi * k / (count - 1)))
+        im = Image.new("RGBA", size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(im)
+        draw.rectangle((w // 2 - 8, h // 4, w // 2 + 8, h * 3 // 4), fill=(200, 80, 30, 255))
+        draw.rectangle((w // 2 + 8, h // 3, w // 2 + 14 + reach, h // 3 + 6), fill=(230, 190, 150, 255))
+        im.save(keyed / f"frame-{k:04d}.png")
+    return keyed
+
+
+def test_an_item_films_its_play_mode_and_motion_text_once_back_to_its_first_pose(tmp_path, monkeypatch) -> None:
+    """A motion the engine has no state for — a punch — filmed as a video-set item with play mode once-return and
+    the caller's motion text: the clip is asked for with that text, pinned to end on its first frame, and its strip
+    plays once (`loop: false`) from the first pose back to the first pose."""
+    base = tmp_path / "side.png"
+    still = Image.new("RGB", (96, 96), (0, 255, 0))
+    ImageDraw.Draw(still).rectangle((40, 20, 56, 86), fill=(200, 80, 30))
+    still.save(base)
+    sent = []
+
+    def video_stub(image, prompt, out, report, **kw):
+        sent.append((prompt, kw.get("last_frame")))
+        out.write_bytes(b"clip")
+        report.write_text(json.dumps({"prompt": prompt}))
+        return 0
+
+    def frames_stub(clip, out, **kw):
+        with Image.open(kw["reference"]) as canvas:
+            keyed = punch_frames(out, canvas.size)
+        return {"fps": 24.0, "frames": 36, "alpha_zero_pct_min": 0, "alpha_zero_pct_max": 0, "keyed_dir": str(keyed)}
+
+    monkeypatch.setattr(batch_mod.frames_mod, "run_frames", frames_stub)
+    monkeypatch.setattr(batch_mod.facing_mod.vision, "grok_inspect", lambda *a, **kw: ("right", {}))
+    root = tmp_path / "set"
+    report = batch_mod.run_set(bases={"side": base}, states=["punch"], root=root, character=None, duration=None,
+                               resolution="480p", key="green", concurrency=1, force=False, gap=0, video_runner=video_stub,
+                               play={"punch": "once-return"}, motion={"punch": PUNCH})
+    assert report["ok"] == 1, report["items"]
+    [(prompt, last_frame)] = sent
+    assert prompt == batch_mod.build_prompt("side", "punch", None, motion=PUNCH, play="once-return")
+    assert PUNCH in prompt and "repeating" not in prompt and "so the animation loops" not in prompt
+    assert last_frame == root / "side-punch" / "canvas.png"
+    [item] = report["items"]
+    assert item["play"] == "once-return" and item["loop"]["kind"] == "once-return"
+    meta = json.loads((root / "side-punch" / "loop" / "side-punch.strip.json").read_text())
+    assert meta["loop"] is False and meta["hold_last"] is False and meta["returns"] is True
+    assert meta["source_cut"]["samples"][0] == 0 and meta["source_cut"]["samples"][-1] == 35
+    strip = Image.open(root / "side-punch" / "loop" / "side-punch.strip.png").convert("RGBA")
+    cells = [strip.crop((k * meta["w"], 0, (k + 1) * meta["w"], meta["h"])) for k in range(meta["frames"])]
+    assert cells[0].tobytes() == cells[-1].tobytes()
+    assert cells[len(cells) // 2].tobytes() != cells[0].tobytes()
 
 
 @pytest.mark.parametrize("direction,state", [("side", "walk"), ("front", "walk"), ("back", "run"), ("side", "jump")])

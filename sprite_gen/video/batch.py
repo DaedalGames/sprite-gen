@@ -41,6 +41,7 @@ from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
 from sprite_gen.video import nonloop
+from sprite_gen.video import play as play_mod
 
 START_GAP_SECONDS = 2.0
 # Clip length the batch asks the video model for. 3 s holds two or more cycles of every
@@ -351,9 +352,38 @@ def is_lite(model: str | None) -> bool:
     return model in LITE_VIDEO_MODELS
 
 
-def pins_last_frame(state: str, direction: str) -> bool:
-    """Whether the clip of (state, direction) is filmed ending on its first frame."""
+def pins_last_frame(state: str, direction: str, play: str | None = None) -> bool:
+    """Whether the clip of (state, direction) is filmed ending on its first frame — its end-frame pin: a once-return
+    ends on its first pose and an effect on its empty black frame; a once-hold never; a loop as its state is filmed.
+    `play` is the request's play mode (`play.MODES`), None for the state's preset."""
+    mode = play_mod.resolve(state, play)
+    if mode in (play_mod.ONCE_RETURN, play_mod.LIFETIME):
+        return True
+    if mode == play_mod.ONCE_HOLD:
+        return False
     return state in PIN_LAST_FRAME_STATES or (state in GAIT_STATES and direction in PINNED_GAIT_VIEWS)
+
+
+def cycle_for(state: str, direction: str, play: str | None = None, *, pinned: bool | None = None) -> str:
+    """The `video-loop --cycle` that cuts the clip of (state, direction): `pinned` says whether that clip was filmed
+    ending on its first frame (None: as `pins_last_frame` films it; False: a source that could not pin it).
+
+    A state with no play mode in the request is cut as its preset: an idle or attack filmed pinned whole
+    (`pinned`), any other loop searched (`auto`, which an action state may fail over to `one-shot`). A play mode the
+    request gives is the cut's: a loop is never failed over to a single play (`periodic`), a once-return is the
+    whole clip pinned to its first frame (`once-return`) or, unpinned, the searched return (`one-shot`), a once-hold
+    is cut at its held pose (`once`) and a lifetime at its empty end (`lifetime`)."""
+    mode = play_mod.resolve(state, play)
+    pins = pins_last_frame(state, direction, play) if pinned is None else pinned
+    if mode == play_mod.LIFETIME:
+        return "lifetime"
+    if mode == play_mod.ONCE_HOLD:
+        return "once"
+    if mode == play_mod.ONCE_RETURN:
+        return "once-return" if pins else "one-shot"
+    if pins and state in PINNED_LOOP_STATES:
+        return "pinned"
+    return "auto" if play is None else "periodic"
 COMMON_TEXT = (
     "2D game sprite animation. The character {motion} The character is {view}. Stays centered in the frame and does "
     "not move across the screen; the body and hair always stay fully inside the frame with margin. Camera completely "
@@ -382,6 +412,15 @@ ACTION_COMMON_TEXT = (
 # How many times a caller's own motion paragraph (`build_prompt(motion=...)`) is performed, for
 # states that repeat it. An attack is performed once: its pinned clip is the loop.
 REPEAT_TEXT: dict[str, str] = {}
+# The sentence of a motion that has none of its own in its play mode — a state the engine does not name, or a named
+# one played another way (`play.own_sentence`): the state's word and how it plays.
+PLAY_TEXT = {
+    play_mod.LOOP: "performs the '{state}' action in place, repeating at an even rhythm.",
+    play_mod.ONCE_RETURN: "performs the '{state}' action once in place, then returns to the exact starting stance.",
+    play_mod.ONCE_HOLD: "performs the '{state}' action once and holds its final pose.",
+}
+# Said after a caller's own motion paragraph played once-return: the clip ends on its first frame.
+RETURN_TEXT = "It does this once, then returns to the exact pose of the first frame."
 
 _start_lock = threading.Lock()
 _last_start = [0.0]
@@ -397,15 +436,16 @@ def _staggered_start(gap: float) -> None:
 
 def build_prompt(direction: str, state: str, character: str | None, facing: str = "right", motion: str | None = None,
                  pinned: bool | None = None, model: str | None = None, handed: list[Handed] | None = None,
-                 body_plan: list[Body] | None = None) -> str:
+                 body_plan: list[Body] | None = None, play: str | None = None) -> str:
     """The clip prompt for one (direction, state): `clip_prompt_parts(...).text`."""
     return clip_prompt_parts(direction, state, character, facing=facing, motion=motion, pinned=pinned, model=model,
-                             handed=handed, body_plan=body_plan).text
+                             handed=handed, body_plan=body_plan, play=play).text
 
 
 def clip_prompt_parts(direction: str, state: str, character: str | None, facing: str = "right", motion: str | None = None,
                       pinned: bool | None = None, model: str | None = None,
-                      handed: list[Handed] | None = None, body_plan: list[Body] | None = None) -> prompt_parts.Prompt:
+                      handed: list[Handed] | None = None, body_plan: list[Body] | None = None,
+                      play: str | None = None) -> prompt_parts.Prompt:
     """The clip prompt for one (direction, state), as its pieces (`prompt_parts.Prompt`: `.text` is the
     prompt, `.notes` what the caller's own words say against or again after the engine's).
 
@@ -431,26 +471,33 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
     motion sentence or the caller's paragraph, what it stands on (`body_plan.text`); a walk or run seen from behind
     then says it stays square and does not sway (`BACK_GAIT_TEXT_ANY_BODY`).
 
+    `play` is the request's play mode (`play.MODES`; None, the state's preset). A once-hold takes the terminal
+    template (`nonloop.COMMON_TEXT`), a once-return the one-action template (`ACTION_COMMON_TEXT`) and, after a
+    caller's paragraph, `RETURN_TEXT`, a lifetime the effect's prompt (`effect.prompt`). A state's own sentence is
+    used where it films the mode (`play.own_sentence`); otherwise, without `motion`, the mode's sentence names the
+    state (`PLAY_TEXT`).
+
     Without `handed` or `body_plan` the prompt is 2.22.0's, to the byte (`tests/gen/test_prompt_freeze.py`). `handed` lists
     the character's asymmetric items (`handedness.parse`): the prompt ends with where each one stays, anchored
     to the first frame (`handedness.text(clip=True)`), the one piece `prompt_parts.Prompt.add` checks.
     """
     validate_facing(facing)
-    if state == "effect":
+    mode = play_mod.resolve(state, play)
+    if mode == play_mod.LIFETIME:
         from . import effect
         return prompt_parts.Prompt(effect.prompt(character, motion), caller=f"{character or ''} {motion or ''}", sep=" ")
     view = VIEW_TEXT.get(direction, f"seen from the {direction}").format(facing=facing)
     turned = facing if direction in handed_mod.LATERAL_VIEWS else None
-    if state in nonloop.STATES:
+    if mode == play_mod.ONCE_HOLD:
         template = "2D game sprite animation. The character {motion} The character is {view}. " + nonloop.COMMON_TEXT
-    elif state in ACTION_TEXT_STATES:
+    elif mode == play_mod.ONCE_RETURN or state in ACTION_TEXT_STATES:
         template = ACTION_COMMON_TEXT
     elif (state in PINNED_LOOP_STATES or (state in GAIT_STATES and direction in PINNED_GAIT_VIEWS)) if pinned is None else pinned:
         template = PINNED_LOOP_TEXT
     else:
         template = COMMON_TEXT
     stands_on = body_mod.text(body_plan)
-    if state in nonloop.STATES and body_plan:
+    if mode == play_mod.ONCE_HOLD and body_plan:
         stands_on = " ".join((b.figure + ": " if b.figure else "") + nonloop.ANATOMY_TEXT.get(b.plan, "") for b in body_plan).strip()
     stands_on = f" {stands_on}" if stands_on else ""
     if direction == "back" and state in GAIT_STATES and not body_mod.biped(body_plan):
@@ -465,16 +512,19 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
         if state in GAIT_STATES and direction in GAIT_HOLD_TEXT:
             hold += f" {GAIT_HOLD_TEXT[direction].format(facing=facing)}"
         repeat = f" {REPEAT_TEXT[state]}" if state in REPEAT_TEXT else ""
+        if mode == play_mod.ONCE_RETURN:
+            repeat += f" {RETURN_TEXT}"
         subject = character.strip().rstrip(".") if character else "The character"
         text = (f"2D game sprite animation. {motion}{stands_on}{hold}{repeat} {subject} is {view}." + template[len(head):]
                 + _lite_text(state, direction, model, built_in=False, body_plan=body_plan))
         caller = f"{motion} {character or ''}"
     else:
-        built_in = (VIEW_MOTION_TEXT[(state, direction)].format(facing=facing) if (state, direction) in VIEW_MOTION_TEXT
+        built_in = (PLAY_TEXT[mode].format(state=state) if not play_mod.own_sentence(state, mode)
+                    else VIEW_MOTION_TEXT[(state, direction)].format(facing=facing) if (state, direction) in VIEW_MOTION_TEXT
                     else IDLE_TEXT_ANY_BODY if state == "idle" and not body_mod.biped(body_plan)
                     else ATTACK_TEXT_ANY_BODY if state == "attack" and not body_mod.biped(body_plan)
                     else nonloop.MOTION_TEXT[state] if state in nonloop.STATES
-                    else MOTION_TEXT.get(state, f"performs the '{state}' action in place, repeating at an even rhythm."))
+                    else MOTION_TEXT.get(state, PLAY_TEXT[play_mod.LOOP].format(state=state)))
         text = template.format(motion=built_in + stands_on, view=view)
         text = ((text.replace("The character", character, 1) if character else text)
                 + _lite_text(state, direction, model, built_in=True, body_plan=body_plan))
@@ -664,10 +714,15 @@ def run_item(
     handed: list[Handed] | None = None,
     body_plan: list[Body] | None = None,
     end_frame: Path | None = None,
+    play: str | None = None,
+    motion: str | None = None,
 ) -> dict[str, Any]:
-    if end_frame is not None and state not in nonloop.STATES:
-        raise SystemExit("video-set: --end-frame requires a non-loop state")
-    if state in nonloop.STATES and (fit == "tight" or anchor != "none"):
+    """One (direction, state) item, canvas to loop. `play` is the request's play mode for it (`play.MODES`; None, the
+    state's preset) and `motion` the caller's own motion text in place of the state's sentence."""
+    mode = play_mod.resolve(state, play, prog="video-set")
+    if end_frame is not None and mode != play_mod.ONCE_HOLD:
+        raise SystemExit("video-set: --end-frame requires a once-hold item (a non-loop state, or --play once-hold)")
+    if mode == play_mod.ONCE_HOLD and (fit == "tight" or anchor != "none"):
         raise SystemExit("video-set: non-loop states need --fit state and --anchor none to preserve the terminal pose")
     if walk_start not in WALK_START_MODES:
         raise SystemExit(f"video-set: --walk-start must be one of {', '.join(WALK_START_MODES)}")
@@ -682,11 +737,16 @@ def run_item(
     duration = duration_for(state, duration)
     item_dir = root / item
     item_dir.mkdir(parents=True, exist_ok=True)
-    result: dict[str, Any] = {"item": item, "direction": direction, "state": state, "dir": str(item_dir)}
+    result: dict[str, Any] = {"item": item, "direction": direction, "state": state, "play": mode, "dir": str(item_dir)}
+    if motion is not None:
+        result["motion"] = motion
+    lifetime = mode == play_mod.LIFETIME
+    pins = pins_last_frame(state, direction, play)
     if direction in handed_mod.LATERAL_VIEWS:
         result["turned"] = facing
     try:
-        parts = clip_prompt_parts(direction, state, character, facing=facing, handed=handed, body_plan=body_plan)
+        parts = clip_prompt_parts(direction, state, character, facing=facing, motion=motion, handed=handed,
+                                  body_plan=body_plan, play=play)
         prompt = parts.text
         if parts.notes:
             result["prompt_notes"] = parts.notes
@@ -703,7 +763,7 @@ def run_item(
                 previous = json.loads(clip_report.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 raise SystemExit("cannot verify cached clip prompt; use --force to regenerate") from exc
-            if state in nonloop.STATES and isinstance(previous, dict) and previous.get("end_frame_sha256") != end_digest:
+            if mode == play_mod.ONCE_HOLD and isinstance(previous, dict) and previous.get("end_frame_sha256") != end_digest:
                 raise SystemExit("cached clip end frame differs; use --force to regenerate")
             if not isinstance(previous, dict) or previous.get("prompt") != prompt:
                 raise SystemExit("cached clip prompt differs (including facing); use --force to regenerate")
@@ -718,7 +778,7 @@ def run_item(
                     raise ValueError("incomplete canvas report")
                 if canvas_report.get("fit", "state") != fit:
                     raise ValueError("cached canvas was framed with another --fit")
-                if direction == "side" and state != "effect":
+                if direction == "side" and not lifetime:
                     prior = canvas_report.get("facing_check") or {}
                     if not isinstance(prior, dict):
                         raise ValueError("invalid cached facing")
@@ -734,13 +794,14 @@ def run_item(
                 still, result["walk_start"] = walk_start_still(base, direction, item_dir, key=key, force=force,
                                                                runner=redraw_runner, provider=still_provider, handed=handed,
                                                                body_plan=body_plan)
-            if direction == "side" and state != "effect":
+            if direction == "side" and not lifetime:
                 if prepare_side is not None:
                     still, facing_report = prepare_side(base)
                 else:
                     still = item_dir / "facing.png"
                     facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix)
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit)
+            # a lifetime is framed as an effect, whatever its name: on black, its centre kept
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
@@ -754,8 +815,8 @@ def run_item(
             # One run of `sprite-gen video`: a 429 is sent again inside it (`gen.retry`), so a second run here
             # would be a second retry loop on top of the first, each of its POSTs a request.
             _staggered_start(gap)
-            pin_frame = Path(canvas_report["end_frame"]) if state == "effect" else canvas_png
-            pin = {"last_frame": pin_frame} if pins_last_frame(state, direction) else {}
+            pin_frame = Path(canvas_report["end_frame"]) if lifetime else canvas_png
+            pin = {"last_frame": pin_frame} if pins else {}
             if end_frame is not None:
                 with Image.open(end_frame) as final, Image.open(canvas_png) as initial:
                     if final.size != initial.size or canvas_mod.corner_key(final) != canvas_mod.corner_key(initial):
@@ -763,7 +824,7 @@ def run_item(
                 pin = {"last_frame": end_frame}
             attempts = [video_runner(canvas_png, prompt, clip, clip_report, duration=duration, resolution=resolution,
                                      log=item_dir / "clip.log", **pin)]
-            result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": str(end_frame) if end_frame is not None else pins_last_frame(state, direction)}
+            result["clip"] = {"attempts": attempts, "duration": duration, "last_frame": str(end_frame) if end_frame is not None else pins}
             if attempts[-1] != 0 or not clip.exists():
                 raise SystemExit(f"clip generation failed after {len(attempts)} attempt(s); see {item_dir / 'clip.log'}")
             try:  # what the clip ran on, as its report says: the Grok login or XAI_API_KEY
@@ -778,13 +839,13 @@ def run_item(
         # a tight frame is clipped on purpose; leftover key background still fails. The default
         # call keeps its pre-decontam signature, so a stand-in for run_frames still fits
         extra = {} if decontam == "off" else {"decontam": decontam}
-        if state == "effect":
+        if lifetime:
             extra["alpha_mode"] = "brightness"
         fr = frames_mod.run_frames(clip, item_dir / "frames", key=key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", **extra)
         result["frames"] = {k: fr[k] for k in ("fps", "frames", "alpha_zero_pct_min", "alpha_zero_pct_max")}
         result["frames"]["spill"] = fr.get("spill", {}).get("mode")
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
-                               cycle_mode="lifetime" if state == "effect" else "once" if state in nonloop.STATES else "pinned" if state in PINNED_LOOP_STATES else "auto",
+                               cycle_mode=cycle_for(state, direction, play, pinned=pins),
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right")
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
@@ -1009,12 +1070,17 @@ def run_set(
     align_feet: dict[str, str] | None = None,
     body_plan: list[Body] | None = None,
     end_frames: dict[str, Path] | None = None,
+    play: dict[str, str] | None = None,
+    motion: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """`bases` maps a view to its still; `facing` is right, left or `right,left` (`facings_of`), and a view filmed
     both ways is keyed `view@right` and `view@left` (`resolve_bases`). `handed` (`handedness.parse`) puts each
     asymmetric item's side into every clip prompt; it refuses `facing_fix` mirror, which would move it.
     `align_feet` (`--align-foot`) maps an item of a walk or run filmed in two or more directions to the
-    own foot that lands on its loop's first strike (`align_gaits`); any other item is refused up front."""
+    own foot that lands on its loop's first strike (`align_gaits`); any other item is refused up front.
+    `play` (`--play`) and `motion` (`--motion`) map a state of the set — every item of it — or one item to its play
+    mode (`play.MODES`) and to the caller's motion text (`item_values`): a motion the engine has no state for is
+    filmed under its name in that mode, a named state without one plays as its preset."""
     if align_cycles not in ALIGN_MODES:
         raise SystemExit(f"video-set: --align-cycles must be one of {', '.join(ALIGN_MODES)}")
     if anchor == "motion-auto" and any(not loop_mod.profile_for(state).gait for state in states):
@@ -1037,11 +1103,13 @@ def run_set(
             raise SystemExit(f"video-set: base still for '{direction}' not found: {base}")
     # (item, direction, state, facing, base); a set filmed both ways names a lateral item's facing
     items = [(f"{d}-{f}-{s}" if both and f else f"{d}-{s}", d, s, f or facings[0], b) for d, f, b in views for s in states]
+    plays = item_values(play or {}, items, "--play")
+    motions = item_values(motion or {}, items, "--motion")
+    modes = {i: play_mod.resolve(s, plays.get(i), prog="video-set") for i, _, s, _, _ in items}
     for item, path in (end_frames or {}).items():
-        selected = [state for name, _, state, _, _ in items if name == item]
-        if not selected or selected[0] not in nonloop.STATES or not path.is_file():
-            raise SystemExit(f"video-set: --end-frame {item} needs a non-loop item and an existing image")
-    if any(s in nonloop.STATES for s in states) and (fit == "tight" or anchor != "none"):
+        if item not in modes or modes[item] != play_mod.ONCE_HOLD or not path.is_file():
+            raise SystemExit(f"video-set: --end-frame {item} needs a non-loop item (a once-hold) and an existing image")
+    if play_mod.ONCE_HOLD in modes.values() and (fit == "tight" or anchor != "none"):
         raise SystemExit("video-set: non-loop states need --fit state and --anchor none")
     aligned_items = [i for i, _, s, _, _ in items if align_cycles == "auto" and loop_mod.profile_for(s).gait
                      and sum(1 for _, _, s2, _, _ in items if s2 == s) >= 2]
@@ -1066,7 +1134,7 @@ def run_set(
         return prepare_side
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {})): i for i, d, s, f, b in items}
+        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {})): i for i, d, s, f, b in items}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
@@ -1087,7 +1155,7 @@ def run_set(
     warnings += [f"cycle-align:{st}: {line}" for st, a in aligned.items() for line in a.get("warnings", [])]
     warnings += [f"cycle-align:{st}: --align-foot {item}={foot} not applied ({a.get('why') or a.get('error') or 'the item failed'})"
                  for st, a in aligned.items() for item, foot in a.get("feet_unused", {}).items()]
-    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, "items": results, "cycle_align": aligned}
+    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), **({"play": play} if play else {}), **({"motion": motion} if motion else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, "items": results, "cycle_align": aligned}
     atomic_write_text(root / "set.report.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     print(table)
     return payload
@@ -1108,6 +1176,34 @@ def _parse_bases(values: list[str]) -> dict[str, Path]:
     return bases
 
 
+def item_values(values: dict[str, str], items: list[tuple[str, str, str, str, Path]], flag: str) -> dict[str, str]:
+    """`values` keyed by a state of the set (every item of it) or by one item, as each item's own: an item's key wins
+    over its state's. A key that names neither is refused."""
+    names = {i for i, *_ in items}
+    states = {s for _, _, s, _, _ in items}
+    for key in values:
+        if key not in names and key not in states:
+            raise SystemExit(f"video-set: {flag} {key}=…: {key} is neither a state of the set ({', '.join(sorted(states))}) "
+                             f"nor one of its items ({', '.join(sorted(names))})")
+    out = {}
+    for i, _, s, _, _ in items:
+        if i in values or s in values:
+            out[i] = values[i] if i in values else values[s]
+    return out
+
+
+def _parse_keyed(values: list[str], flag: str) -> dict[str, str]:
+    """`--play` / `--motion`: KEY=VALUE, each key once, neither side empty."""
+    result: dict[str, str] = {}
+    for value in values:
+        key, sep, text = value.partition("=")
+        key, text = key.strip(), text.strip()
+        if not sep or not key or not text or key in result:
+            raise SystemExit(f"video-set: {flag} expects each STATE=… or ITEM=… once, neither side empty, got {value!r}")
+        result[key] = text
+    return result
+
+
 def _parse_end_frames(values: list[str]) -> dict[str, Path]:
     result = {}
     for value in values:
@@ -1125,7 +1221,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--handed", action="append", default=[], metavar="ITEM=SIDE [PART]", help="an asymmetric item on one of the character's own sides, e.g. 'the black smartwatch=left wrist' (repeatable): every clip prompt says where it is in its view and that it stays there")
     parser.add_argument("--body-plan", action="append", default=[], metavar="PLAN | FIGURE=PLAN", help="what the character stands on: biped (default), quadruped or legless; a scene of several figures names each, e.g. 'the man=biped' 'the horse=quadruped' (repeatable): no prompt names a part the body lacks")
     parser.add_argument("--end-frame", action="append", default=[], metavar="ITEM=PATH", help="non-loop item: terminal-pose canvas with the same size and key as the starting canvas (repeatable)")
-    parser.add_argument("--states", default="idle,walk,run,jump,attack", help="comma list of motion states")
+    parser.add_argument("--states", default="idle,walk,run,jump,attack", help="comma list of motion states: a named state (idle, walk, run, jump, attack, death, effect, …) films as its preset; any other word names a motion of your own, filmed with --play and --motion")
+    parser.add_argument("--play", action="append", default=[], metavar="STATE=MODE | ITEM=MODE",
+                        help=f"how a state of the set (every view of it) or one item plays: {', '.join(play_mod.MODES)} "
+                             "(repeatable; an item's own wins). Without it a named state plays as its preset and any other "
+                             "word as a loop; with it the clip's end-frame pin, the prompt's ending, the cut and the strip's "
+                             "loop/hold_last/returns follow the mode")
+    parser.add_argument("--motion", action="append", default=[], metavar="STATE=TEXT | ITEM=TEXT",
+                        help="your own motion text for a state of the set (every view of it) or one item, in place of the "
+                             "state's sentence, written as whole sentences about the subject, e.g. "
+                             "'punch=It throws one straight punch with its front fist.' (repeatable; an item's own wins)")
     parser.add_argument("--out-dir", required=True, type=Path, help="batch root; one folder per direction-state")
     parser.add_argument("--character", help="short subject phrase used in the prompts (e.g. 'The armored knight')")
     parser.add_argument("--duration", type=int, default=None, help=f"seconds per clip for every state (default: {DEFAULT_DURATION_SECONDS}, attack {STATE_DURATION_SECONDS['attack']}); a repeating motion holds enough cycles at 3 s and a longer clip only costs more (2026-09-18)")
@@ -1167,6 +1272,8 @@ def run(**kwargs: object) -> int:
         handed=handed_mod.parse_all(list(kwargs.get("handed") or [])) or None,  # type: ignore[arg-type]
         align_feet=align_mod.parse_feet(list(kwargs.get("align_foot") or []), prog="video-set", flag="--align-foot"),
         body_plan=body_mod.parse_all(list(kwargs.get("body_plan") or [])) or None,  # type: ignore[arg-type]
+        play=_parse_keyed(list(kwargs.get("play") or []), "--play") or None,  # type: ignore[arg-type]
+        motion=_parse_keyed(list(kwargs.get("motion") or []), "--motion") or None,  # type: ignore[arg-type]
     )
     return 0 if not payload["failed"] else 1
 
