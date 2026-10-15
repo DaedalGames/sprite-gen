@@ -22,7 +22,7 @@ flowchart LR
     end
     subgraph C["C · utilities"]
         direction LR
-        c1[cutout] ~~~ c2[slice-sheet] ~~~ c3[unpack-atlas]
+        c1[cutout] ~~~ c2[slice-sheet] ~~~ c4[ui-kit] ~~~ c3[unpack-atlas]
     end
     subgraph D["D · post-processing"]
         direction LR
@@ -41,7 +41,7 @@ flowchart LR
 |---|---|---|
 | **A · atlas rows** — one still becomes a runtime sprite sheet | [run-contract.md](run-contract.md) | `prepare` → `gen` / `gen-set` → `extract` → `compose-atlas`; optional `curation` and recompose |
 | **B · video → loop** — one still becomes transparent motion loops | [video-pipeline.md](video-pipeline.md) | `video-canvas` → `video` (or `video-prompt` and a video MCP on your agent) → `video-frames` → `video-loop`, `video-set`, `video-cycle-align`, `video-follow` (`video-follow-inspect` shows every cell of it and moves nothing), `video-set-sheet` (a set's directions on one sheet, on one ground line); `handed-check` for an item on one side |
-| **C · utilities** — imported images in, clean cuts out | [sheet-slicing.md](sheet-slicing.md) | `cutout`, `slice-sheet`, `unpack-atlas` |
+| **C · utilities** — imported images in, clean cuts out | [sheet-slicing.md](sheet-slicing.md) | `cutout`, `slice-sheet`, `ui-kit`, `unpack-atlas` |
 | **D · post-processing** — finished sheets, refined | [recolor.md](recolor.md) | `recolor`, `recolor-palette`, `compose-layers`, breathing (compose), `export-pngs`, `export-aseprite` |
 | **E · asset tools** — independent background, shadow and motion tools | [asset-tools.md](asset-tools.md) | `background-tile`, `shadow`, `inspect-motion` |
 | **S · scene** — optional composition of existing assets | [scene.md](scene.md) | `scene-render`, `scene-inspect` |
@@ -55,12 +55,13 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 |---|---|
 | [user-workflow.md](user-workflow.md) | Two conversation flows, access checks, optional curation and saved defaults |
 | [atlas-workflow.md](atlas-workflow.md) | Execution of GPT row sprites through the existing extraction pipeline |
+| [Effects](effects.md) | `pixel-draw --kind effect`, `video-frames --alpha-mode brightness`, `video-loop --cycle lifetime` |
 
 ## Contract & structure
 
 | Doc | Owns |
 |---|---|
-| [run-contract.md](run-contract.md) | The atlas pipeline's normative contract: stages, the run-dir folder tree, curation-view display, atomic extract, concurrency scope |
+| [run-contract.md](run-contract.md) | The atlas pipeline's normative contract: stages, a flag against the file that holds the same key, the run-dir folder tree, curation-view display, atomic extract, concurrency scope |
 | [architecture.md](architecture.md) | How the code is laid out: domains, stage ownership, the numeric SSoT, the cell model, extraction internals, runtime manifest |
 | [loop-comparison.md](loop-comparison.md) | Final loop artifact digests, comparable quality axes and explicit unknown verdicts |
 
@@ -77,9 +78,11 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 
 | Doc | Owns |
 |---|---|
-| [gen.md](gen.md) | `sprite-gen gen` / `gen-set`: providers, default resolution, transparency strategy per provider, row usage |
+| [gen.md](gen.md) | `sprite-gen gen` / `gen-set`: providers, default resolution, transparency strategy per provider, when a refused provider request is sent again, row usage |
+| [`sprite-gen sound`](sound.md) | Generate normalized SFX and BGM audio assets with Opus and AAC encoding, SQLite raw request caching, and Web Audio loop metadata. |
+| [pixel-draw.md](pixel-draw.md) | `sprite-gen pixel-draw` (experimental): Claude Opus draws 8–48 px pixel art as a pixel grid — the inputs, the safe area, the run folder and its report, gates G1–G8, the row repair and the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` |
 | [prompt-assembly.md](prompt-assembly.md) | What the engine adds to a still or clip prompt and when: the pieces, the 2.22.0 freeze without `--handed`, what counts as already said, and the notes on the caller's own words |
-| [video.md](video.md) | `sprite-gen video` / `video-extend` / `video-edit`: stills and clips to mp4 through Grok Imagine (image-to-video, last-frame pin, references, extension, editing) with the user's own credential |
+| [video.md](video.md) | `sprite-gen video` / `video-extend` / `video-edit` / `video-resume`: stills and clips to mp4 through Grok Imagine (image-to-video, last-frame pin, references, extension, editing, asking again for an unfinished generation) with the user's own credential |
 | [video-pipeline.md](video-pipeline.md) | Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, the batch, a set's directions on one sheet |
 | [loop-review.md](loop-review.md) | Automatic loop decisions, ambiguous gait review, visual evidence and explicit cut/alignment overrides |
 | [loop-repair.md](loop-repair.md) | RIFE (where it runs, cost, licences, `sprite-gen rife install`, what runs without it), jump-frame repair, the jolt index and its gate, one cycle length per direction set |
@@ -101,6 +104,7 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 | [recolor.md](recolor.md) | Deterministic palette-swap bake, colourway pick, `variants/` and its report |
 | [layer-tracks.md](layer-tracks.md) | Rig runs: `rig` / `track` / `layers` contract and `compose-layers` |
 | [engine-export.md](engine-export.md) | Aseprite-compatible export for Phaser and Flame |
+| [`game-pack`](game-pack.md) | Compile sprite assets into deterministic multi-page texture atlases and manifests. |
 
 ## Asset tools and optional scenes
 
@@ -115,6 +119,7 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 |---|---|
 | [directional-anchor-workflow.md](directional-anchor-workflow.md) | Directional / 45° rows: base → direction anchors → rows, the left-right gate |
 | [sheet-slicing.md](sheet-slicing.md) | Multi-figure grid sheets to per-cell standing cuts; the `cutout` routes |
+| [ui-kit.md](ui-kit.md) | The UI kit layout guide (square for the frames, 2:3 for the whole kit), splitting a transparent UI kit sheet into nine-slice elements with measured insets and padding, fills fitted to their bar frames, and the shared alpha haze cleanup |
 
 ## QA
 

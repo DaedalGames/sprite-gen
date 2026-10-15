@@ -6,6 +6,7 @@ the reorg tooling. Keep in sync with the physical folder layout.
 """
 
 MODULE_DOMAIN = {
+    'sound': 'audio',
     'guide': 'workflow',
     'preferences': 'workflow',
     'runio': 'spec',
@@ -22,6 +23,7 @@ MODULE_DOMAIN = {
     'migrate_breathe': 'spec',
     'video': 'gen',
     'gen_set': 'gen',
+    'pixel_draw': 'gen',
     'canvas': 'video',
     'frames': 'video',
     'loop': 'video',
@@ -40,11 +42,14 @@ MODULE_DOMAIN = {
     'cutout': 'frames',
     'segment': 'frames',
     'slice_sheet': 'frames',
+    'ui_kit': 'frames',
+    'alpha_floor': 'frames',
     'check_visible_magenta': 'frames',
     'unpack_atlas': 'frames',
     'curation': 'curate',
     'anchor': 'curate',
     'compose_atlas': 'compose',
+    'game_pack': 'compose',
     'compose_cycle': 'compose',
     'compose_gif': 'compose',
     'compose_layers': 'compose',
@@ -74,6 +79,7 @@ MODULE_DOMAIN = {
 DOMAINS: list[tuple[str, str]] = [
     ("workflow", "Start here — image or sprite choices, access checks, saved defaults"),
     ("gen", "Generation — prepare a run, generate stills / rows / clips"),
+    ("audio", "Audio — named effects, music, loop processing and browser exports"),
     ("video", "Video → loop — canvas, keyed frames, seamless cycle, batch"),
     ("frames", "Frames — chroma/white removal, row extraction, sheet slicing, atlas unpacking"),
     ("curate", "Curation — direction anchors and the curation sidecar"),
@@ -101,8 +107,8 @@ PIPELINES: list[dict[str, object]] = [
 ]
 
 TOOL_GROUPS: list[dict[str, object]] = [
-    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "unpack-atlas"],
-     "chain": "cutout · slice-sheet · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
+    {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "ui-kit", "unpack-atlas"],
+     "chain": "cutout · slice-sheet · ui-kit · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
     {"key": "D", "name": "post-processing", "verbs": ["recolor", "recolor-palette", "compose-layers", "export-pngs", "export-aseprite"],
      "chain": "recolor · compose-layers · export-pngs · export-aseprite", "doc": "docs/recolor.md"},
     {"key": "E", "name": "asset tools", "verbs": ["background-tile", "shadow", "inspect-motion"],

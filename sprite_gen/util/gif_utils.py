@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared GIF helpers for sprite-gen.
 
-GIF previews must not leak the previous frame through transparent pixels. Use a
-fresh transparent palette index per frame and GIF disposal method 2, so each
-frame clears before the next one is drawn.
+Transparent previews clear each frame with GIF disposal method 2. Opaque
+previews retain their canvas with disposal method 1 and no transparency.
 """
 
 from __future__ import annotations
@@ -44,21 +43,47 @@ def _prepare_transparent_frame(frame: Image.Image, alpha_threshold: int) -> Imag
     return paletted
 
 
+def _prepare_opaque_frame(frame: Image.Image) -> Image.Image:
+    rgb = frame.convert("RGB")
+    if rgb.getcolors(maxcolors=256) is not None:
+        # Palette-sized inputs can retain every colour, including very dim light.
+        paletted = rgb.quantize(colors=256)
+    else:
+        # Refine coverage for both sparse highlights and the main glow, reserving
+        # exact black so the refinement cannot tint an empty preview background.
+        palette = rgb.quantize(colors=255, method=Image.Quantize.MAXCOVERAGE, kmeans=1)
+        colors = (palette.getpalette() or [])[:765]
+        colors.extend([0] * (768 - len(colors)))
+        palette.putpalette(colors)
+        paletted = rgb.quantize(palette=palette, dither=Image.Dither.NONE)
+    paletted.info.pop("transparency", None)
+    return paletted
+
+
 def save_clean_gif(
     frames: Iterable[Image.Image],
     output_path: Path,
     *,
     duration_ms: int,
-    loop: int = 0,
+    loop: int | None = 0,
     alpha_threshold: int = 8,
+    opaque: bool = False,
 ) -> None:
-    """Save RGBA frames as a clean transparent GIF.
+    """Save frames as a transparent GIF, or an explicitly opaque preview.
 
     `loop=0` means infinite loop in GIF/Pillow terminology.
+    `opaque=True` expects frames already composited onto their preview background.
     """
     if duration_ms <= 0:
         raise ValueError("duration_ms must be positive")
-    prepared = [_prepare_transparent_frame(frame, alpha_threshold) for frame in frames]
+    if opaque:
+        prepared = [_prepare_opaque_frame(frame) for frame in frames]
+        # Restore-to-background depends on palette indices that can change per
+        # frame. Keep the opaque canvas and encode every changed pixel instead.
+        options = {"disposal": 1, "optimize": False}
+    else:
+        prepared = [_prepare_transparent_frame(frame, alpha_threshold) for frame in frames]
+        options = {"disposal": 2, "transparency": 255}
     if not prepared:
         raise ValueError("at least one frame is required")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,9 +92,8 @@ def save_clean_gif(
         save_all=True,
         append_images=prepared[1:],
         duration=duration_ms,
-        loop=loop,
-        disposal=2,
-        transparency=255,
+        **({"loop": loop} if loop is not None else {}),
+        **options,
     )
 
 

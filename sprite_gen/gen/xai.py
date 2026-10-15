@@ -7,8 +7,10 @@ that login. Never spawn an agent or switch sources after a login failure.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -16,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import refusal
+from . import refusal, retry
 
 API_BASE = "https://api.x.ai/v1"
 AUTH_ENV = "XAI_API_KEY"
@@ -131,7 +133,107 @@ def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | Non
 HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]
 
 
-def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> tuple[int, Any]:
+def post(call: HttpCall, url: str, token: str, body: dict, *, who: str, label: str,
+         sleep: Callable[[float], None] | None = None) -> tuple[int, Any, int]:
+    """POST `body` with `call` (as http_json), and again after a refusal `retry` sends again: (status, answer,
+    sends). xAI documents 429 alone as a request not taken, and no retry-after, so http_json keeps no headers."""
+    status, reply, _headers, sends = retry.ask(lambda: (*call("POST", url, token, body), None), provider="xai",
+                                               who=who, label=label, sleep=sleep, kind=refusal.provider_code)
+    return status, reply, sends
+
+
+TRANSPORT_FAILED = "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
+NOT_JSON = "xai: response was not valid JSON"
+
+
+class TransportError(SystemExit):
+    """No answer that could be read came back: the connection failed or timed out, the answer broke
+    after it began (a body shorter than its Content-Length, a status line that is not one), or it came
+    whole and was not JSON — and the server may have taken the request. Still the SystemExit and line
+    it always was (`NOT_JSON` for the last); a caller that may safely ask again (a poll of an accepted
+    request, the download of a clip that is done) catches this type. `reason` is what the transport said."""
+
+    def __init__(self, reason: str, line: str = TRANSPORT_FAILED) -> None:
+        super().__init__(line)
+        self.reason = reason
+
+
+# Everything that ends a request before its answer is read whole. http.client raises its own
+# HTTPException family (IncompleteRead, BadStatusLine, LineTooLong, …) past urllib once the answer
+# has begun; the socket's errors are OSError, inside a URLError while the request is still sent.
+NO_ANSWER = (OSError, http.client.HTTPException)
+
+
+def no_answer(exc: BaseException) -> TransportError:
+    return TransportError(no_answer_reason(exc))
+
+
+def no_answer_reason(exc: BaseException) -> str:
+    """What the transport said when a request got no answer it could read: the words every direct
+    provider call (xAI here, Anthropic in `anthropic_api`) puts in its line."""
+    said = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    # An http.client exception carries what the server sent (BadStatusLine its line, CRLF included);
+    # its repr names the kind and keeps that on one line. RemoteDisconnected is a reset too: its words.
+    if isinstance(said, http.client.HTTPException) and not isinstance(said, OSError):
+        return repr(said)[:200]
+    return (str(said) or type(said).__name__)[:200]
+
+
+ANSWER_CHUNK = 1 << 16  # what one read of an answer bounded by a deadline asks for
+
+
+def time_left(timeout: float, deadline: float | None) -> float:
+    """What one read may wait: `timeout`, cut to what is left before `deadline`, a `time.monotonic()`
+    instant (None: no deadline). With nothing left it is a TimeoutError before anything is sent or read."""
+    if deadline is None:
+        return timeout
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("timed out")
+    return min(timeout, left)
+
+
+def read_whole(response: http.client.HTTPResponse, timeout: float, deadline: float | None) -> bytes:
+    """`response`'s body read whole, as `response.read()` reads it — and with a `deadline`, by then.
+
+    A socket's timeout bounds one read, so an answer that keeps coming a little at a time is never cut
+    by it. With a deadline the body is read a chunk at a time, each read waiting only what is left, so
+    an answer that stalls or comes too slowly ends in `TimeoutError('timed out')` when the deadline
+    comes. A body that ends short of its Content-Length raises IncompleteRead, as `read()` does."""
+    if deadline is None:
+        return response.read()
+    chunks: list[bytes] = []
+    while not response.isclosed():
+        # http.client keeps no public handle on the connection once its answer began; the socket under
+        # the response's reader is where a read's wait is set.
+        response.fp.raw._sock.settimeout(time_left(timeout, deadline))
+        chunk = response.read1(ANSWER_CHUNK)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if response.length:  # read1 stops where the connection closed, short of the Content-Length, without a word
+        raise http.client.IncompleteRead(data, response.length)
+    return data
+
+
+def error_body(refused: urllib.error.HTTPError, timeout: float = HTTP_TIMEOUT_SECONDS, deadline: float | None = None) -> Any:
+    """The body of a refusal, read whole (read_whole): its JSON, or its text as `refusal.RawBody`. A refusal's
+    status alone is not an answer read whole: a body broken on the way raises what broke it (one of NO_ANSWER),
+    which every direct provider transport (`xai`, `anthropic_api`, `openai_provider`) takes as no answer."""
+    raw = read_whole(refused.fp, timeout, deadline).decode("utf-8", "replace")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return refusal.RawBody(raw)
+
+
+def http_json(method: str, url: str, token: str, body: dict | None = None, *, timeout: float = HTTP_TIMEOUT_SECONDS,
+              deadline: float | None = None) -> tuple[int, Any]:
+    """One request, its JSON answer read whole. `timeout` bounds each wait on the connection. A `deadline`
+    (a `time.monotonic()` instant) cuts the waits for the answer to what is left of it when the request
+    goes and the reads of its body to what is left at each (read_whole): an answer that stalls or comes
+    too slowly is no answer when it comes (TransportError, `timed out`)."""
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method)
     request.add_header("Authorization", f"Bearer {token}")
@@ -139,16 +241,15 @@ def http_json(method: str, url: str, token: str, body: dict | None = None, *, ti
     if body is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+        with urllib.request.urlopen(request, timeout=time_left(timeout, deadline)) as response:
+            raw = read_whole(response, timeout, deadline).decode("utf-8")
             return response.status, (json.loads(raw) if raw else {})
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise SystemExit("xai: response was not valid JSON") from exc
+        raise TransportError("response was not valid JSON", NOT_JSON) from exc
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
         try:
-            return exc.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return exc.code, refusal.RawBody(raw)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise SystemExit("xai: request failed or timed out; no automatic retry (the server may have accepted it)") from exc
+            return exc.code, error_body(exc, timeout, deadline)
+        except NO_ANSWER as cut:
+            raise no_answer(cut) from cut
+    except NO_ANSWER as exc:
+        raise no_answer(exc) from exc

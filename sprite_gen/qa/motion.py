@@ -30,6 +30,7 @@ from PIL import Image
 
 from sprite_gen.spec.assets import sequence_identity
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 if TYPE_CHECKING:
     from sprite_gen.spec.assets import FrameSequence
@@ -430,14 +431,8 @@ def run(**kwargs) -> int:
 
     parser = argparse.ArgumentParser(add_help=False)
     add_arguments(parser)
-    allowed = {action.dest: action.default for action in parser._actions}
-    unexpected = kwargs.keys() - allowed.keys()
-    if unexpected:
-        raise TypeError(f"unexpected keyword arguments: {', '.join(sorted(unexpected))}")
-    args = argparse.Namespace(**(allowed | kwargs))
+    args = namespace_from_kwargs(parser, kwargs)
     try:
-        if args.source is None:
-            raise ValueError("source is required")
         if (args.anchor_x is None) != (args.anchor_y is None):
             raise ValueError("anchor-x and anchor-y must be supplied together")
         anchor = None if args.anchor_x is None else (args.anchor_x, args.anchor_y)

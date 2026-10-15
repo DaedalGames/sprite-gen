@@ -62,6 +62,7 @@ from sprite_gen.curate.curation import (CURATION_FILENAME, SCHEMA_VERSION, effec
 from sprite_gen.frames.extract import heal_run, load_consistent_frames_manifest
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, row_frame_rel, row_orig_rel, state_frame_total
 from sprite_gen.spec.runio import load_request, publish_guard, read_guard, write_request
+from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen._modules import qualified
 
 # The SPA assets are package data (declared in pyproject's `package-data`), so the one
@@ -1412,10 +1413,10 @@ class CurationHandler(BaseHTTPRequestHandler):
                         continue
                     fill: tuple
                     if value:
-                        hexv = str(value).lstrip("#")
-                        if len(hexv) != 6:
+                        try:
+                            fill = parse_hex(str(value)) + (255,)
+                        except ValueError:
                             continue
-                        fill = tuple(int(hexv[i:i + 2], 16) for i in (0, 2, 4)) + (255,)
                     else:
                         fill = chroma + (255,)  # 지우개 = 크로마 배경 복원
                     if grid is not None:

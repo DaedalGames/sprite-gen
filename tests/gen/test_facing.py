@@ -184,7 +184,7 @@ def test_rest_vision_uses_same_provider_credential_once(monkeypatch, tmp_path, p
         monkeypatch.setattr(openai_provider, "resolve_credential", lambda: "synthetic")
         def http(url, token, data, content_type, **kw):
             seen.append((url, token, json.loads(data)))
-            return 200, vision_response()
+            return 200, vision_response(), {}
         monkeypatch.setattr(openai_provider, "http_image", http)
         backend = openai_provider.OpenAIProvider()
     else:
@@ -209,7 +209,7 @@ def test_rest_rejection_is_unknown_without_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(openai_provider, "resolve_credential", lambda: "synthetic")
     def http(*a, **kw):
         calls.append(1)
-        return 403, {"error": "sensitive"}
+        return 403, {"error": "sensitive"}, {}
     monkeypatch.setattr(openai_provider, "http_image", http)
     report = facing.inspect(openai_provider.OpenAIProvider(), FIXTURES / "left.png", tmp_path)
     assert len(calls) == 1 and report["direction"] == "unknown"

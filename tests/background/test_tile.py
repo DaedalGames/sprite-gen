@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Synthetic pixel oracles for periodic cropping and RGBA quilting."""
+"""Synthetic pixel oracles for periodic cropping and RGBA quilting. The join measure, `inspect_tile`,
+is also `pixel-draw`'s G4 tile seam (below)."""
 
 import json
 
@@ -156,3 +157,54 @@ def test_inspection_handles_one_pixel_and_rejects_empty_or_bad_axis():
                         (Image.new("RGBA", (2, 2)), "diagonal")]:
         with pytest.raises(ValueError):
             inspect_tile(image, axis)
+
+
+GRASS, INK = (78, 144, 56, 255), (40, 30, 46, 255)
+
+
+@pytest.fixture
+def tile_calls(monkeypatch):
+    """Every call to the join measure: the image and axis it was asked about, and what it answered."""
+    from sprite_gen.background import tile as tile_module
+
+    real, seen = tile_module.inspect_tile, []
+
+    def recording(image, axis="x"):
+        seen.append((image.copy(), axis, real(image, axis)))
+        return seen[-1][2]
+
+    monkeypatch.setattr(tile_module, "inspect_tile", recording)
+    return seen
+
+
+def test_pixel_draw_g4_asks_it_of_each_frame_along_both_axes(tile_calls):
+    """`pixel-draw`'s G4 tile seam is this measure, asked of a tile frame along x and along y; what it
+    says needs review warns, in its words, and nothing fails."""
+    from sprite_gen.gen import pixel_grid as pg
+    from sprite_gen.gen.pixel_gates import evaluate
+
+    seam = [[GRASS if x < 7 else INK for x in range(8)] for _ in range(8)]
+    gates = evaluate({"tile": seam}, kind="tile", rule=pg.palette_rule("free"), walk_cycle=False)
+    assert [axis for _, axis, _ in tile_calls] == ["x", "y"]
+    assert all(image.tobytes() == pg.image_of(seam).tobytes() for image, _, _ in tile_calls)
+    x_report, y_report = (report for _, _, report in tile_calls)
+    assert x_report["status"] == "needs-review" and y_report["status"] == "pass"
+    assert gates["ok"] and gates["G4"]["warn"] and gates["G4"]["needs_review"] == ["tile x"]
+    assert gates["G4"]["frames"] == {"tile": {"x": x_report, "y": y_report}}
+    assert gates["warnings"] == ["G4 tile seam (look at tiled-3x3.png): tile x: "
+                                 "Wrap edge color difference exceeds interior variation."]
+
+
+def test_pixel_draw_g4_says_what_it_answers(monkeypatch):
+    """Answer that every join needs review: G4 warns of a tile that wraps cleanly, and still passes it."""
+    from sprite_gen.background import tile as tile_module
+    from sprite_gen.gen import pixel_grid as pg
+    from sprite_gen.gen.pixel_gates import evaluate
+
+    real = tile_module.inspect_tile
+    monkeypatch.setattr(tile_module, "inspect_tile", lambda image, axis="x": {
+        **real(image, axis), "status": "needs-review", "review_reasons": ["Said so."]})
+    flat = [[GRASS] * 8 for _ in range(8)]
+    gates = evaluate({"tile": flat}, kind="tile", rule=pg.palette_rule("free"), walk_cycle=False)
+    assert gates["ok"] and gates["G4"]["needs_review"] == ["tile x", "tile y"]
+    assert gates["warnings"] == ["G4 tile seam (look at tiled-3x3.png): tile x: Said so.; tile y: Said so."]

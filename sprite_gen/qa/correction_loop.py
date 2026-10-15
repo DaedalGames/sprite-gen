@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.qa import inspect as inspect_mod
 from sprite_gen.qa import score as score_mod
 from sprite_gen.spec.runio import atomic_write_text
@@ -28,26 +29,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-preserve-best", action="store_true")
     return parser
-
-
-def _namespace_from_kwargs(**kwargs: object) -> argparse.Namespace:
-    parser = _build_parser()
-    values: dict[str, object] = {}
-    remaining = dict(kwargs)
-    for action in parser._actions:
-        if action.dest == "help":
-            continue
-        default = [] if action.nargs == "*" else action.default
-        if default is argparse.SUPPRESS:
-            default = None
-        value = remaining.pop(action.dest, default)
-        if getattr(action, "required", False) and value is None:
-            raise TypeError(f"missing required argument: {action.dest}")
-        values[action.dest] = value
-    if remaining:
-        names = ", ".join(sorted(remaining))
-        raise TypeError(f"unexpected keyword argument(s): {names}")
-    return argparse.Namespace(**values)
 
 
 def _copy_run_dir(source: Path, target: Path) -> None:
@@ -122,12 +103,13 @@ def run_loop(
             raise SystemExit("correction loop needs --provider-command, or use --dry-run for an inspect/score/hint demo")
         next_run_dir = out_dir / f"candidate-{attempt + 1}"
         prompt_file = attempt_dir / "correction-hints.txt"
-        command = provider_command.format(
-            prompt_file=str(prompt_file),
-            next_run_dir=str(next_run_dir),
-            attempt=attempt + 1,
-        )
-        completed = subprocess.run(shlex.split(command), capture_output=True, text=True)
+        # The template is split first and each argument filled in after, so a substituted
+        # path is never re-read as shell syntax: POSIX splitting would drop the backslashes
+        # of a Windows path and break a path that holds a space or a quote.
+        argv = [arg.format(prompt_file=str(prompt_file), next_run_dir=str(next_run_dir), attempt=attempt + 1)
+                for arg in shlex.split(provider_command)]
+        command = shlex.join(argv)
+        completed = subprocess.run(argv, capture_output=True, text=True)
         atomic_write_text(
             attempt_dir / "provider.log",
             completed.stdout + ("\n--- stderr ---\n" + completed.stderr if completed.stderr else ""),
@@ -175,7 +157,7 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def run(**kwargs: object) -> int:
-    args = _namespace_from_kwargs(**kwargs)
+    args = namespace_from_kwargs(_build_parser(), kwargs)
     return _run(args)
 
 

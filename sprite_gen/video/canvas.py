@@ -78,6 +78,12 @@ STATE_CANVAS: dict[str, CanvasProfile] = {
     "cheer": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "arms raised and spread leave a 1:1 frame"),
     "wave": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "a raised waving arm leaves a 1:1 frame"),
     "celebrate": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.0, 0.30, 0.0, "same envelope as cheer"),
+    "death": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the death terminal pose"),
+    "fall": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the fall terminal pose"),
+    "land": CanvasProfile(SHAPE_TALL, 3 / 4, 0.34, 0.0, 0.0, "room for the land terminal pose"),
+    "cast": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the cast terminal pose"),
+    "hurt_hold": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the hurt_hold terminal pose"),
+    "transform": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the transform terminal pose"),
     "default": CanvasProfile(SHAPE_SQUARE, 1.0, 0.0, 0.0, 0.0, "in-place motion fits the still's own frame"),
 }
 # `--shape wide` is not the attack row. It is forced on a state whose own row is
@@ -343,13 +349,22 @@ def run_canvas(
         raise SystemExit(f"video-canvas: still not found: {still}")
     if fit == "tight" and (shape is not None or headroom is not None or lead is not None or trail is not None):
         raise SystemExit("video-canvas: --fit tight picks its own shape and adds no room; drop --shape/--headroom/--lead/--trail")
-    profile = profile_for(state, shape)
-    canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit)
+    if state == "effect":
+        from . import effect
+        if fit != "state" or any(v is not None for v in (shape, headroom, lead, trail)):
+            raise SystemExit("video-canvas: an effect keeps its source canvas and center; drop framing overrides")
+        with Image.open(still) as image:
+            canvas, report = effect.canvas(image)
+    else:
+        profile = profile_for(state, shape)
+        canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit)
     out = out.expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".part")
     canvas.save(tmp, format="PNG")
     tmp.replace(out)
+    if state == "effect":
+        report["end_frame"] = str(effect.empty_end(out, out.with_name(out.stem + ".end.png")))
     payload = {"kind": "sprite-gen-video-canvas-report", "still": str(still), "out": str(out), "state": state, **report}
     if report_path is not None:
         atomic_write_text(report_path.expanduser().resolve(), json.dumps(payload, ensure_ascii=False, indent=2) + "\n")

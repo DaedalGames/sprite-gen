@@ -10,7 +10,8 @@
 
 No silent success on either path: an output with no measurable transparent area,
 no alpha channel at all, or transparent pixels that retain RGB fails before any
-output is published.
+output is published. A key background painted as a transparency checkerboard
+(`painted_checkerboard`) is refused before it is keyed, with its own reason.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any
 
 from PIL import Image
 
+from sprite_gen._deps import np
 from sprite_gen.frames.extract import remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
 
@@ -83,15 +85,24 @@ def classify_raw_alpha(path: Path) -> dict[str, Any]:
     when it has no alpha band or no alpha-0 pixel (a checkerboard, a key background,
     an opaque RGBA); `ambiguous` for alpha-0 pixels that miss either bar. The alpha
     band is the one `verify_native_alpha` reads, so a `real-alpha` raw is one it accepts.
+    The judgment of the band is `alpha_verdict`.
     """
     with Image.open(path) as source:
         mode = source.mode
         has_alpha = "A" in source.getbands()
         alpha = source.getchannel("A") if has_alpha else None
-        width, height = source.size
     stats: dict[str, Any] = {"mode": mode, "has_alpha_band": has_alpha}
     if alpha is None:
         return {**stats, "verdict": RAW_ALPHA_NONE, "alpha_zero_pct": 0.0, "border_alpha_zero_pct": 0.0}
+    return {**stats, **alpha_verdict(alpha)}
+
+
+def alpha_verdict(alpha: Image.Image) -> dict[str, Any]:
+    """Whether an alpha band is a real transparent background: `verdict` `real-alpha`,
+    `no-alpha` or `ambiguous` by the bars `classify_raw_alpha` names, with the two
+    shares it judged by. One judgment: `classify_raw_alpha` asks it of a generated raw,
+    and `pixel-draw`'s G3 of each frame it drew (docs/gen.md)."""
+    width, height = alpha.size
     total = width * height
     alpha_zero = alpha.histogram()[0]
     edges = [(0, 0, width, 1), (0, height - 1, width, height),
@@ -108,8 +119,68 @@ def classify_raw_alpha(path: Path) -> dict[str, Any]:
         verdict = RAW_ALPHA_REAL
     else:
         verdict = RAW_ALPHA_AMBIGUOUS
-    return {**stats, "verdict": verdict, "alpha_zero_pct": round(alpha_zero_pct, 2),
+    return {"verdict": verdict, "alpha_zero_pct": round(alpha_zero_pct, 2),
             "border_alpha_zero_pct": round(border_alpha_zero_pct, 2)}
+
+
+# A painted transparency checkerboard (`painted_checkerboard`): the grey and white squares an editor shows
+# behind transparent pixels, painted where a key background was asked for; the matte would key nearly the whole
+# image away. Each edge is read on its CHECKER_LINES nearest lines; a line is a checkerboard row when nearly
+# all of it is grey, it holds two greys at least CHECKER_STEP apart, and it alternates between them at least
+# CHECKER_MIN_RUNS times in runs of one length (most within a quarter of their median, which lies in
+# CHECKER_SQUARE).
+CHECKER_LINES = 8
+CHECKER_GREY = 24
+CHECKER_GREY_SHARE = 0.9
+CHECKER_STEP = 12
+CHECKER_MIN_RUNS = 6
+CHECKER_SQUARE = (4, 128)
+CHECKER_REGULAR = 0.75
+
+
+def _checker_square(line: Any) -> int | None:
+    """The square size of a checkerboard row along ``line`` (pixels x RGB), or None when it is not one."""
+    if ((line.max(axis=-1) - line.min(axis=-1)) <= CHECKER_GREY).mean() < CHECKER_GREY_SHARE:
+        return None
+    luma = line.mean(axis=-1)
+    low, high = np.percentile(luma, (10, 90))
+    if high - low < CHECKER_STEP:
+        return None
+    runs = np.diff(np.flatnonzero(np.diff((luma > (low + high) / 2).astype(np.int8))))
+    if len(runs) < CHECKER_MIN_RUNS:
+        return None
+    median = float(np.median(runs))
+    if not CHECKER_SQUARE[0] <= median <= CHECKER_SQUARE[1]:
+        return None
+    if (np.abs(runs - median) <= max(2.0, median / 4)).mean() < CHECKER_REGULAR:
+        return None
+    return round(median)
+
+
+def painted_checkerboard(image: Image.Image) -> dict[str, Any] | None:
+    """Whether ``image``'s background is a painted transparency checkerboard: ``{"edges", "square_px"}`` or None.
+
+    An edge shows the checkerboard when one of its CHECKER_LINES nearest lines is a checkerboard row
+    (`_checker_square`). A checkerboard alternates along both axes, so the image is one when the top or the bottom
+    edge and the left or the right edge show it; stripes alternate along one axis only. `square_px` is the median
+    square size of the edges that show it. A key background is not grey, and a subject drawn inside it does not
+    reach the edges."""
+    rgb = np.asarray(image.convert("RGB")).astype(np.int16)
+    columns = rgb.transpose(1, 0, 2)
+    lines = {"top": rgb[:CHECKER_LINES], "bottom": rgb[::-1][:CHECKER_LINES],
+             "left": columns[:CHECKER_LINES], "right": columns[::-1][:CHECKER_LINES]}
+    squares = {}
+    for edge, band in lines.items():
+        found = next((square for square in map(_checker_square, band) if square is not None), None)
+        if found is not None:
+            squares[edge] = found
+    if not ({"top", "bottom"} & set(squares) and {"left", "right"} & set(squares)):
+        return None
+    return {"edges": list(squares), "square_px": round(float(np.median(list(squares.values()))))}
+
+
+def _and_list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def write_white_check(image: Image.Image, path: Path) -> None:
@@ -132,11 +203,21 @@ def key_transparent(
     `decontam` is the edge decontamination pass after the matte, reported under
     `decontam`: "off" (the default) publishes the matte as it is, "auto" runs it where
     it applies, "palette" demands it. Raises SystemExit before publishing if no
-    measurable transparent area was made, or if a transparent pixel keeps non-zero RGB.
+    measurable transparent area was made, or if a transparent pixel keeps non-zero RGB, and
+    before keying if the background is a painted transparency checkerboard (`painted_checkerboard`).
     """
     if key not in KEYS:
         raise SystemExit(f"chroma: unknown key {key!r}; expected one of {sorted(KEYS)}")
     source = Image.open(input_path).convert("RGBA")
+    # The matte reads its key off the borders: on a painted checkerboard it reads the checkerboard and keys the
+    # whole image away, so the image is refused before keying and the caller generates it again.
+    checker = painted_checkerboard(source)
+    if checker is not None:
+        raise SystemExit(
+            f"chroma: the background is a painted transparency checkerboard ({checker['square_px']} px squares "
+            f"along the {_and_list(checker['edges'])} edges), not the {key} key the image was asked for; keying it "
+            "would erase the image — generate it again"
+        )
     source_pixels = source.load()
     warnings: list[str] = []
     decontam_stats: dict[str, Any] = {}
