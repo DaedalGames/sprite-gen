@@ -17,10 +17,19 @@ and a report.
   loop from the cell nearest to it (`from_cell`) — a player shows the loop through that cell, then the
   stop — and its first frame is the clip frame before the entry. The seam, from that cell into that
   frame, is reported in steps; past the jump line (`repair.JUMP_RATIO`, `--seam-max`) the stop is refused.
+- **Another motion**: a setting-off goes one way, from the still into the loop; the body does not come
+  back to a pose it has left. A run-up frame within SAME_POSE of an earlier frame of the clip — the still,
+  or a pose of the run-up — after the body went TURN_BACK_AWAY steps or more from it in between is a
+  motion that turned back: a gesture that ends where it began, a motion done again, a run going round a
+  cycle of its own. The stop would play it backwards, and it is refused, its frames named (`turn_back`,
+  the nearest such comeback, is reported either way). This is the one judgment of another motion, and the
+  run-up's length is no part of it. A motion carried one way into the run (an arm drawn in, a crouch, a
+  turn before the first stride) is the setting-off's own and is not refused: the pose distance does not
+  tell it from a gesture carried one way.
 - **The run-up** is what lies between the rest and the entry, the frames the stop plays before the
   still. A body sets off into its gait within about a cycle; a run-up longer than RUN_UP_MAX_CYCLES of
-  the clip's own cycles (`--run-up-max`) holds something else — another motion, or strides unlike the
-  loop's — that the stop would play backwards, and it is refused.
+  the clip's own cycles (`--run-up-max`) plays strides unlike the loop's — a run of its own before the
+  loop's, or a start slower than a setting-off — and it is refused.
 - **Drift**: the clip's body may move across its frame as it sets off, and played back as filmed the stop
   would slide that far into the still. Two frames are laid where the loop stands: the entry on its cell
   (the least coverage difference), and the first frame with its lowest body row on the loop's ground and
@@ -70,8 +79,10 @@ KIND = "stop"
 REPORT_KIND = "sprite-gen-video-stop-report"
 # Two poses within a third of the loop's step are one pose: a frame of the rest, or one of the loop's frames.
 SAME_POSE = 0.35
-# A body sets off into its gait within about a cycle; past one and a half of the clip's own cycles the
-# frames before the loop hold something else.
+# A pose the body has left by a whole step (a frame of its own gait) and comes back to: a motion that turned back.
+TURN_BACK_AWAY = 1.0
+# A body sets off into its gait within about a cycle; past one and a half of the clip's own cycles the run-up
+# plays strides unlike the loop's.
 RUN_UP_MAX_CYCLES = 1.5
 SPEEDS = (1, 2)
 MARGIN = 8  # px of transparent room around the bodies, the strip cells' own side and top margin
@@ -193,12 +204,31 @@ def stand_on(cells: list[Image.Image], frame: Image.Image, ground: int, reach: i
     return (dx, dy), round(cost(dx), 6)
 
 
+def turn_back(poses: np.ndarray, rest_end: int, entry: int, step: float) -> dict[str, Any] | None:
+    """The nearest the run-up (frames rest_end + 1 to entry - 1) comes back to a pose it has left: over every run-up
+    frame and every earlier frame of the clip that the body went TURN_BACK_AWAY steps or more from in between, the pair
+    nearest in steps (the earliest such frame, then the latest pose it is back at), with the farthest frame between.
+    None when the body leaves no pose by that much. Within SAME_POSE, the run-up turns back: another motion."""
+    d = np.stack([np.nanmean(np.abs(poses[:entry] - poses[i]), axis=1) for i in range(entry)]) / step
+    best = None
+    for j in range(rest_end + 1, entry):
+        for i in range(j - 2, -1, -1):
+            between = d[i, i + 1:j]
+            k = i + 1 + int(np.argmax(np.where(np.isnan(between), -np.inf, between)))
+            if d[i, k] >= TURN_BACK_AWAY and np.isfinite(d[i, j]) and (best is None or d[i, j] < best[0]):
+                best = (float(d[i, j]), j, i, k)
+    if best is None:
+        return None
+    steps, j, i, k = best
+    return {"frame": j, "back_to": i, "steps": round(steps, 4), "away_frame": k, "away_steps": round(float(d[i, k]), 4)}
+
+
 def find_stop(cells: list[Image.Image], frames: list[Image.Image], *, start: int, length: int,
               seam_max: float = JUMP_RATIO, run_up_max: float = RUN_UP_MAX_CYCLES) -> dict[str, Any]:
-    """Rest, entry, the cell left from, the seam and the run-up of a clip whose frames (`frames`, from the
-    first, at the loop's scale, through the frame after the window) reach the loop's `cells` in the window
-    [start, start + length). Refused (`StopRefused`) where no frame reaches the loop, the seam is past
-    `seam_max` steps, or the run-up is longer than `run_up_max` cycles."""
+    """Rest, entry, the cell left from, the seam, the turn-back and the run-up of a clip whose frames (`frames`,
+    from the first, at the loop's scale, through the frame after the window) reach the loop's `cells` in the window
+    [start, start + length). Refused (`StopRefused`) where no frame reaches the loop, the seam is past `seam_max`
+    steps, the run-up turns back (another motion), or the run-up is longer than `run_up_max` cycles."""
     n = len(cells)
     thumbs = gait_fallback.poses(cells + frames, gait_fallback.subject_boxes(cells + frames))
     pc, pf = thumbs[:n], thumbs[n:]
@@ -218,7 +248,7 @@ def find_stop(cells: list[Image.Image], frames: list[Image.Image], *, start: int
         rest_end += 1
     record: dict[str, Any] = {
         "step": round(step, 6), "loop_cell_step": round(cell_step / step, 4), "same_pose": SAME_POSE,
-        "rest": {"end": rest_end},
+        "turn_back_away": TURN_BACK_AWAY, "rest": {"end": rest_end},
         "to_rest": [round(v, 4) for v in to_rest],
         "to_loop": [[round(v, 4), k] for v, k in near],
     }
@@ -230,19 +260,25 @@ def find_stop(cells: list[Image.Image], frames: list[Image.Image], *, start: int
     cell = near[entry][1]
     played = list(range(entry - 1, rest_end, -1)) + [0]
     seam = dist(pc[cell], pf[played[0]]) / step
+    turn = turn_back(pf, rest_end, entry, step)
     run_up = entry - 1 - rest_end
     record.update(entry={"frame": entry, "match": round(near[entry][0], 4), "from_cell": cell},
                   seam={"steps": round(seam, 4), "from_cell": cell, "into_frame": played[0], "max": seam_max},
+                  turn_back=turn,
                   run_up={"frames": run_up, "cycles": round(run_up / length, 3), "max_cycles": run_up_max},
                   played=played)
     refused = []
     if seam > seam_max:
         refused.append(f"the seam from loop cell {cell} into clip frame {played[0]} is {seam:.2f} steps, past the jump line "
                        f"{seam_max} (--seam-max): the clip reaches the loop (frame {entry}) by a jump")
+    if turn is not None and turn["steps"] <= SAME_POSE:
+        refused.append(f"clip frame {turn['frame']} is back at the pose of frame {turn['back_to']} ({turn['steps']:.2f} steps, "
+                       f"within {SAME_POSE}) after the body went {turn['away_steps']:.2f} steps from it (frame "
+                       f"{turn['away_frame']}): the run-up turns back — another motion, that the stop would play backwards")
     if run_up > run_up_max * length:
-        refused.append(f"the head holds {run_up} frames ({run_up / length:.2f} cycles) between the rest (frame {rest_end}) and "
-                       f"the loop's frames (frame {entry}), more than a setting-off ({run_up_max} cycles, --run-up-max): "
-                       "another motion, or strides unlike the loop's, that the stop would play backwards")
+        refused.append(f"the run-up is {run_up} frames ({run_up / length:.2f} cycles) between the rest (frame {rest_end}) and "
+                       f"the loop's frames (frame {entry}), longer than a setting-off ({run_up_max} cycles, --run-up-max): "
+                       "strides unlike the loop's, that the stop would play backwards")
     if refused:
         raise StopRefused(f"{PROG}: " + "; ".join(refused), record)
     return record
