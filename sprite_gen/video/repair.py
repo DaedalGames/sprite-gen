@@ -14,6 +14,10 @@ frame beside it (docs/loop-repair.md section 4).
 Measured on the loop as it plays — cyclic, the last frame followed by the first — and inside
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
 score does not depend on where the canvas put the body.
+
+The flow reading (`flow_scores`, `flow_targets`) reads the same loop by direction and speed
+instead of size: how far each frame lies off the line between its neighbours, in the usual steps
+of the region it is read in (docs/loop-repair.md section 2, "The flow reading").
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.video import held as held_mod
 from sprite_gen.video.rife import Interpolate, crossfade, ghost, smear
 from sprite_gen.video.interpolation_quality import clean_beside, faults, ghost_screen, looks
 
@@ -76,6 +81,219 @@ def jump_scores(frames: list[Image.Image], *, facing: str = "right", box: tuple[
     w = whole / mw if mw > 0 else np.zeros_like(whole)
     h = hair / mh if mh > 0 else np.zeros_like(hair)
     return {"whole": w, "hair": h, "score": np.maximum(w, h)}
+
+
+# --- the flow reading (docs/loop-repair.md section 2, "The flow reading") ---------------------------
+
+# A loop plays its frames as a path: each frame a point, the body's coverage and shading blurred to
+# the size of a step. Where a part moves the way it is going — slow or fast, a leg swung through — a
+# frame lies near the line between the frames either side of it. A frame drawn where the flow does
+# not go (a tail flung against its sway for one frame, a tail snapping back at a wrap that does not
+# close) lies far off that line, whatever its size. The size reading above counts how much a step
+# changes and cannot tell the two apart: on an ordinary walk it names a fast swing a jump.
+FLOW_BLUR = 0.03  # the blur's sigma, of the body height: a shape moved one ordinary step still overlaps where it was
+FLOW_GRID = 4  # the union box in FLOW_GRID x FLOW_GRID cells, read in windows of 2 x 2 cells at a stride of one cell
+FLOW_LIMIT = 3.0  # a frame this many of its window's usual steps off the line between its neighbours leaves the flow
+FLOW_SPAN = 2  # frames in a row a group takes out at most, to be made again between the frames either side
+_LUMA = np.array([0.299, 0.587, 0.114])
+
+
+def _blur(planes: np.ndarray, sigma: float) -> np.ndarray:
+    """A Gaussian blur of `sigma` px over axes 1 and 2 of (n, h, w, c), outside the grid empty."""
+    r = max(1, int(np.ceil(3 * sigma)))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    for axis in (1, 2):
+        pad = [(0, 0)] * planes.ndim
+        pad[axis] = (r, r)
+        padded = np.pad(planes, pad)
+        size = planes.shape[axis]
+        planes = sum(k[i] * np.take(padded, np.arange(i, i + size), axis=axis) for i in range(2 * r + 1))
+    return planes
+
+
+def flow_states(frames: list[Image.Image], box: tuple[int, int, int, int] | None = None) -> np.ndarray:
+    """Each frame of the loop as a point of its path, (frames, h, w, 2): its coverage and its shading
+    (luma times coverage) inside `box` (the union box), averaged down to a grid of a third of the blur
+    and blurred by FLOW_BLUR of the body height. Raises ValueError for a loop with no body."""
+    pixels = np.stack([np.asarray(f.crop(box or union_box(frames)), dtype=np.float64) / 255.0 for f in frames])
+    alpha = pixels[..., 3]
+    rows = np.where(alpha.max(axis=(0, 2)) > 0.1)[0]
+    if rows.size == 0:
+        raise ValueError("every loop frame is fully transparent")
+    sigma = FLOW_BLUR * max(1, int(rows.max() - rows.min()))
+    planes = np.stack([alpha, (pixels[..., :3] @ _LUMA) * alpha], axis=-1)
+    n, height, width, c = planes.shape
+    f = max(1, min(int(round(sigma / 1.5)), height, width))
+    h, w = height // f, width // f
+    small = planes[:, :h * f, :w * f].reshape(n, h, f, w, f, c).mean(axis=(2, 4))
+    return _blur(small, sigma / f)
+
+
+def flow_windows(h: int, w: int) -> list[tuple[int, int, int, int]]:
+    """The windows of a (h, w) grid the flow is read in, (y0, y1, x0, x1): 2 x 2 of FLOW_GRID x FLOW_GRID
+    cells at a stride of one cell, so a part between two cells is whole in one window."""
+    ys = np.linspace(0, h, FLOW_GRID + 1).astype(int)
+    xs = np.linspace(0, w, FLOW_GRID + 1).astype(int)
+    return [(int(ys[i]), int(ys[i + 2]), int(xs[j]), int(xs[j + 2])) for i in range(FLOW_GRID - 1) for j in range(FLOW_GRID - 1)]
+
+
+def _flow_read(states: np.ndarray, windows: list[tuple[int, int, int, int]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per frame and window, cyclic: how far the frame lies off the line between its two neighbours (half the
+    change from the step into it to the step out of it), the step out of it (frame k to k+1), and the cosine
+    between the step into it and the step out of it. Each (frames, windows)."""
+    n = len(states)
+    off, step, turn = (np.zeros((n, len(windows))) for _ in range(3))
+    for i, (y0, y1, x0, x1) in enumerate(windows):
+        x = states[:, y0:y1, x0:x1].reshape(n, -1)
+        out = np.roll(x, -1, axis=0) - x
+        into = np.roll(out, 1, axis=0)
+        step[:, i] = np.linalg.norm(out, axis=1)
+        off[:, i] = np.linalg.norm(out - into, axis=1) / 2
+        norms = np.linalg.norm(into, axis=1) * step[:, i]
+        turn[:, i] = np.where(norms > 0, (into * out).sum(axis=1) / np.where(norms > 0, norms, 1.0), 1.0)
+    return off, step, turn
+
+
+def _flow_scale(step: np.ndarray) -> np.ndarray:
+    """Per window, the usual step it is read against: its median step, and no less than the median of
+    those over the windows, so a window where little moves is not read on its noise."""
+    median = np.median(step, axis=0)
+    return np.maximum(median, max(float(np.median(median)), 1e-12))
+
+
+def flow_drawings(states: np.ndarray) -> tuple[list[list[int]], int]:
+    """The drawings of a loop's path, as runs of the frames that show each (each run from the frame that
+    begins it, in play order), and the hold. A loop filmed on twos or threes shows each drawing for two or
+    three frames: the repeat is the same point of the path, and its step of nothing beside the drawing's
+    step of two would read as a lurch at every drawing. The hold is `held.measure`'s, read on the steps of
+    this path as a ring; a frame whose step from the frame before it is under its boundary repeats that
+    frame's drawing. A loop drawn every frame (hold 1) is a drawing a frame."""
+    n = len(states)
+    steps = [float(np.linalg.norm(states[(k + 1) % n] - states[k])) for k in range(n)]
+    # The hold is read on the rhythm of the steps; the rate only says how many drawings a second, unused here.
+    rhythm = held_mod.measure(steps, fps=1.0, cyclic=True)
+    hold = int(rhythm.get("hold") or 1)
+    repeat = [hold > 1 and steps[(t - 1) % n] < rhythm["held_below"] for t in range(n)]
+    if all(repeat) or not any(repeat):
+        return [[t] for t in range(n)], 1
+    begin = repeat.index(False)
+    runs: list[list[int]] = []
+    for i in range(n):
+        t = (begin + i) % n
+        if repeat[t]:
+            runs[-1].append(t)
+        else:
+            runs.append([t])
+    return runs, hold
+
+
+def _flow(frames: list[Image.Image], box: tuple[int, int, int, int] | None) -> dict[str, Any]:
+    """The loop's path read on its drawings: their states, the runs of frames that show them, the windows,
+    and per drawing and window the distance off the path, the step out and the turn, and the windows' usual
+    step."""
+    states = flow_states(frames, box)
+    runs, hold = flow_drawings(states)
+    path = states[[run[0] for run in runs]]
+    windows = flow_windows(states.shape[1], states.shape[2])
+    off, step, turn = _flow_read(path, windows)
+    h, w = states.shape[1], states.shape[2]
+    return {"path": path, "runs": runs, "hold": hold, "windows": windows, "off": off, "step": step, "turn": turn,
+            "scale": _flow_scale(step), "fractions": [(x0 / w, y0 / h, x1 / w, y1 / h) for y0, y1, x0, x1 in windows]}
+
+
+def _drawing_scores(flow: dict[str, Any]) -> dict[str, Any]:
+    """Per drawing: `off`, `window`, `turn`, `into` and `out` in its worst window (`flow_scores`)."""
+    rel = flow["off"] / flow["scale"]
+    worst = rel.argmax(axis=1)
+    at = np.arange(len(rel))
+    out = flow["step"] / flow["scale"]
+    return {"off": rel[at, worst], "window": worst, "turn": flow["turn"][at, worst],
+            "into": np.roll(out, 1, axis=0)[at, worst], "out": out[at, worst]}
+
+
+def flow_scores(frames: list[Image.Image], *, box: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+    """Per frame, how far its drawing lies off the loop's flow (`off`): the distance from the line between
+    the drawings either side of it, over its window's usual step, in the window where that is largest
+    (`window`, its index in `windows`, fractions of the box (x0, y0, x1, y1)); there the cosine between
+    the step into the drawing and the step out of it (`turn`, below 0 against the way it came, 1 where
+    either is still) and the two steps in the window's usual steps (`into`, `out`). Every frame that
+    shows a drawing (`flow_drawings`, `hold`) reads the drawing's values."""
+    flow = _flow(frames, box)
+    per = _drawing_scores(flow)
+    of = np.zeros(len(frames), dtype=int)
+    for d, run in enumerate(flow["runs"]):
+        of[run] = d
+    return {**{k: v[of] for k, v in per.items()}, "windows": flow["fractions"], "hold": flow["hold"]}
+
+
+def flow_targets(frames: list[Image.Image], *, limit: float = FLOW_LIMIT, span: int = FLOW_SPAN,
+                 box: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+    """The frames that leave the loop's flow, in groups to take out and make again between the frames either
+    side (docs/loop-repair.md section 2, "The flow reading"). Read on the loop's drawings (`flow_drawings`):
+    a frame on its own where every frame is a drawing, all the frames that show it on twos or threes.
+
+    The worst drawing at or over `limit` first: the fewest drawings in a row around it (one, then up to
+    `span`) whose straight in-between from the drawing before them to the drawing after brings every drawing
+    it touches under `limit`, the smallest result among the groups that do; the path then reads with that
+    in-between, and the next worst drawing is read. A group never takes, or is made from, a drawing a group
+    before it took. A drawing no group of up to `span` brings under `limit` is `unfixed`. Each group: its
+    `frames` in play order, `off` (the worst of its drawings before) with its `turn`, `into`, `out` and
+    `window`, and `off_after`. The in-between is the straight line of the blurred path, a stand-in for the frames RIFE
+    makes there: it says which frames to take out, not how the made frames will look."""
+    flow = _flow(frames, box)
+    first = _drawing_scores(flow)
+    runs, windows, scale = flow["runs"], flow["windows"], flow["scale"]
+    n = len(runs)
+    record: dict[str, Any] = {"limit": limit, "span": span, "blur": FLOW_BLUR, "grid": FLOW_GRID, "hold": flow["hold"],
+                              "drawings": n, "off_max_before": round(float(first["off"].max()), 4), "groups": [], "unfixed": []}
+    if n < 4:
+        record.update(stopped="loop shorter than 4 drawings", off_max_after=record["off_max_before"])
+        return record
+
+    def reading(path: np.ndarray) -> np.ndarray:
+        return (_flow_read(path, windows)[0] / scale).max(axis=1)
+
+    def said(d: int) -> dict[str, Any]:
+        return {"off": round(float(first["off"][d]), 4), "turn": round(float(first["turn"][d]), 4),
+                "into": round(float(first["into"][d]), 4), "out": round(float(first["out"][d]), 4),
+                "window": [round(v, 4) for v in flow["fractions"][int(first["window"][d])]]}
+
+    path, taken, unfixed = flow["path"].copy(), set(), set()
+    current = reading(path)
+    while True:
+        open_ = [d for d in np.argsort(-current, kind="stable") if current[d] >= limit and d not in taken and d not in unfixed]
+        if not open_:
+            break
+        d = int(open_[0])
+        tried: list[tuple[float, list[int], np.ndarray]] = []
+        ok: list[tuple[float, list[int], np.ndarray]] = []
+        for size in range(1, min(span, n - 2) + 1):
+            for start in range(d - size + 1, d + 1):
+                group = [(start + i) % n for i in range(size)]
+                a, b = (start - 1) % n, (start + size) % n
+                if {a, b, *group} & taken:
+                    continue
+                made = path.copy()
+                for i, g in enumerate(group):
+                    made[g] = path[a] + (i + 1) / (size + 1) * (path[b] - path[a])
+                after = reading(made)
+                tried.append((float(max(after[(a + i) % n] for i in range(size + 2))), group, made))
+            ok = [x for x in tried if x[0] < limit]
+            if ok:
+                break
+        if not ok:
+            unfixed.add(d)
+            record["unfixed"].append({"frames": runs[d], **said(d),
+                                      "off_after": round(min((x[0] for x in tried), default=float(current[d])), 4)})
+            continue
+        result, group, made = min(ok, key=lambda x: x[0])
+        worst = max(group, key=lambda g: float(first["off"][g]))
+        record["groups"].append({"frames": [t for g in group for t in runs[g]], **said(worst), "off_after": round(result, 4)})
+        taken |= set(group)
+        path, current = made, reading(made)
+    record["off_max_after"] = round(float(current.max()), 4)
+    return record
 
 
 def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], interpolate: Interpolate | None,

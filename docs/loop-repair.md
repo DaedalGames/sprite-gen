@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, how it is installed and what runs without it, jump-frame repair in `video-loop`, the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -259,6 +259,88 @@ engine replaces the same frames as the experiment on every take tried — Lite s
 [0, 16, 8] (score 1.75 → 1.42), Lite back-diagonal NE2 [13, 0] (1.60 → 1.43), Pro side E1
 [3, 15, 19], Pro back-diagonal NE2 [9], Lite front S2 [0, 11, 14], and nothing in the smooth
 Lite side E2. About 0.7 s a replaced frame on the Mac's GPU.
+
+### The flow reading — a frame off the walk's way, not a large step
+
+The jump score above counts how much a step changes. A walk's own steps change by very different
+amounts — a leg swung through moves far in one frame, a planted foot not at all — so on an ordinary
+walk the size reading names fast swings as jumps (on the synthetic walks below, five to eighteen
+steps of a loop that has none), and a frame that pops against the way a part is going reads no
+larger than a swing. `repair.flow_scores` and `repair.flow_targets` read the same loop by direction
+and speed instead. They are measured, not yet acted on: `--repair auto` still picks its frames by
+the size reading.
+
+**What is read.** Each frame is a point of the loop's path: its coverage and its shading (luma
+times coverage) inside the union box, averaged down to a grid a third of the blur's size and
+blurred with a sigma of 3 % of the body height (`FLOW_BLUR`) — a shape moved an ordinary step still
+overlaps where it was, so a step is a short move along the path, not a jump to an unrelated
+picture. The box is read in nine windows, each half its width and half its height, at a stride of a
+quarter (`FLOW_GRID` 4), so a tail, a hand or a foot is whole in at least one window.
+
+| Per frame t, per window | What |
+|---|---|
+| off the path | \|x(t+1) − 2 x(t) + x(t−1)\| / 2: how far the frame lies from the straight line between its two neighbours — the second difference, the acceleration of pose-from-video papers, and the error a straight in-between of the neighbours would make there |
+| usual step | the window's median step over the loop, and no less than the median of those over the windows (a window where little moves is not read on its noise) |
+| `off` | off the path over the usual step; a frame's `off` is its worst window's |
+| `turn` | there, the cosine between the step into the frame and the step out of it: below 0 the part goes back the way it came (1 where either step is still) |
+| `into`, `out` | there, the step into the frame and the step out of it, in the window's usual steps: a lurch is one far larger than the other |
+
+Off the path is direction and speed at once: |out − in|² = |in|² + |out|² − 2 |in| |out| cos θ.
+A part that moves on the way it was going, slow or fast, keeps it small; one that turns back, or
+lurches, makes it large. A part that slows to a stop and swings back (a leg at the end of its swing)
+turns back over small steps, and stays small.
+
+**On its drawings.** A clip filmed on twos or threes shows each drawing for two or three frames
+(`sprite_gen/video/held.py`; section 4, "Held drawings — a take to film again"): a step of nothing, then a step of two, at every drawing — a lurch at
+every drawing, read frame by frame, and a median step that falls between the two kinds. The path is
+read on the drawings instead (`flow_drawings`): the hold is `held.measure`'s, read on the path's own
+steps as a ring, a frame whose step from the frame before it is under its boundary repeats that
+drawing, and every frame that shows a drawing reads the drawing's values. A loop drawn every frame is
+a drawing a frame.
+
+**Which frames.** `flow_targets` takes the worst drawing at or over `FLOW_LIMIT` (3.0) first: the
+fewest drawings in a row around it (one, then two, `FLOW_SPAN`) whose straight in-between, from the
+drawing before them to the drawing after, brings every drawing it touches under the limit — the
+smallest result among those that do. The path then reads with that in-between and the next worst
+drawing is read. A group never takes, or is made from, a drawing a group before it took (two made
+frames side by side are made from each other). A drawing no group of up to two brings under the
+limit is `unfixed`. A flung frame is one group of one (on twos, the two frames that show it); a part
+that snaps back at a wrap that does not close is the frame on one side of the wrap, or both. The
+straight line is a stand-in for the frames RIFE makes there: it says which frames to take out, not
+how the made frames will look.
+
+Each group records its `frames` in play order, the worst drawing's `off`, `turn`, `into`, `out` and
+`window` (fractions of the box, x0, y0, x1, y1), and `off_after`; an `unfixed` entry the same with the
+best `off_after` a group reached. The record has `limit`, `span`, `blur`, `grid`, `hold`, `drawings`,
+`off_max_before` and `off_max_after`.
+
+**The limit.** On the synthetic walker of `tests/video/test_loop_flow.py` and its variants (measured
+2026-10-15), an ordinary loop reads at most 1.65 — drawn every frame with its quick swing faster or
+even, at 24 frames, with a tail swaying twice a cycle, or on twos. A frame whose tail is flung 5 % of
+the body height against its sway reads 2.8 to 4.1, by where the sway is; 8 % reads 3.7 to 6.4; 3 %
+reads 2.2, under the limit; a tail that runs a quarter of a cycle short snaps back at the wrap at 5.3,
+half a cycle short at 4.8. A part flung over the body reads less (1.8 to 2.2 at 5 %, 2.6 to 3.0 at
+8 %, where the tail crosses the torso): there the coverage does not change, only the shading. Two
+frames in a row flung as far are a plateau, each of its edges half as far off the path (2.2 at 5 %,
+3.4 at 8 %). `FLOW_LIMIT` 3.0 sits above every
+ordinary loop with room to spare: a frame is taken only where it plainly leaves the way.
+
+**The methods weighed.** The question — which frame of a sequence leaves its motion — has answers
+already; they were measured side by side on the synthetic loops above, each read in the same windows
+of the same blurred path, over the same usual step unless said otherwise.
+
+| Method | Source | On the synthetic loops | Taken? |
+|---|---|---|---|
+| Size of a step (the jump score above) | section 2, above | the ordinary walks name 8 to 18 steps over 1.4; a frame flung 3 % reads 2.61, under an ordinary walk's 2.67 | no: it counts size, not direction |
+| **Second difference — the acceleration — on the drawings** | Kanazawa et al., "Learning 3D Human Dynamics from Video", CVPR 2019, section 6.1: the acceleration error, and where there is no ground truth "we simply report the acceleration" | ordinary ≤ 1.65; flung 5 % 2.8 to 4.1; flung 3 % 2.2 | **yes**: it is the error of the straight in-between, the repair's own question; Pillow and numpy |
+| Interpolation error, with RIFE as the interpolator (the optical-flow warping family) | Baker et al., "A Database and Evaluation Methodology for Optical Flow", IJCV 2011 (interpolation error); Lai et al., "Learning Blind Video Temporal Consistency", ECCV 2018 (temporal warping error) | the same ranks; ordinary up to 2.11, on the quickest swing | no: a RIFE call for every frame (about 3 s each on a CPU in the cloud, section 1), and flow is least sure on large, occluded and flat-coloured motion in 2D animation — AnimeRun (Siyao et al., NeurIPS 2022, table 2) measures RAFT's end-point error at 58 px over motions past 50 px and 35 px on occluded pixels, where a pop is |
+| Optical flow itself (Farnebäck; RAFT) | Farnebäck, SCIA 2003; Teed and Deng, ECCV 2020 | not run | no: OpenCV or PyTorch for the engine (a PyTorch RIFE was turned down for the same reason, section 1), and the weakness above |
+| A periodic (Fourier) curve fitted to each region's path | gait as a Fourier series: Cunado, Nixon and Carter, CVIU 2003 | ordinary up to 2.94; flung 3 % 2.23 | no: a quick swing and a slow plant need more harmonics than a one-cycle loop has frames to fit them with |
+| Constant-velocity prediction (a Kalman predictor) | Kalman, Journal of Basic Engineering, 1960 | ordinary up to 3.29; names the frame after the flung one | no: one-sided — the frame after a flung frame misses most |
+| Savitzky–Golay smoothing residual | Savitzky and Golay, Analytical Chemistry, 1964 | the same ranks at half the scale | no: a wider smoothing of the same second difference |
+| A Hampel test (median and MAD) of the acceleration | Hampel, JASA 1974; Leys et al., JESP 2013 | ordinary walks up to 10; flung 3 % 20 | no: an even walk's acceleration varies so little that its z has no fixed bound. The median stays, as the usual step |
+| Frame deletion and insertion by optical-flow consistency | Chao, Jiang and Sun, IWDW 2012 | not run | no: the same question for edited video, answered on flow (above) |
+| Outermost points (each row's outermost column) fitted on a periodic curve | — | not run on these loops | no: the outermost point of a row switches from one part to another (a foot leaving the row), a jump on an ordinary step |
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 
