@@ -5,8 +5,9 @@
 (the original-quality twin beside a pixel-unfake frame) and `slice_sheet` (a sheet's figures
 brought to one height) used LANCZOS over premultiplied RGBA, which drew a lighter rim and a
 key tint at the edge that the keyed picture did not have. They scale through `resize_cell`
-(`tests/video/test_strip_resample.py` holds its own properties). Each test fails with LANCZOS
-put back.
+(`tests/video/test_strip_resample.py` holds its own properties, at a shrink and a growth). The
+callers do not branch on size, so each is checked at one size. Each test fails with LANCZOS put
+back.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def _shrunk_into(cell: int, margin: int, sprite: Image.Image) -> tuple[int, int]
     return max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale))
 
 
-@pytest.mark.parametrize("cell", (64, 96, 150))
+@pytest.mark.parametrize("cell", (96,))
 def test_a_frame_fitted_to_its_cell_carries_no_colour_the_frame_did_not_have(cell: int) -> None:
     src = figure()
     sprite = src.crop(src.getbbox())
@@ -57,7 +58,7 @@ def test_the_other_fit_filters_are_left_as_they_were(monkeypatch) -> None:
     assert extract.fit_to_cell(src, 96, 96, 4, 4, {"resample": "kcentroid"}).getbbox() is not None
 
 
-@pytest.mark.parametrize("box_height", (60, 172, 240))  # the twin shrinks, nearly keeps its size, grows
+@pytest.mark.parametrize("box_height", (60,))  # the twin shrinks
 def test_the_twin_beside_a_pixel_frame_carries_no_colour_the_component_did_not_have(box_height: int) -> None:
     src = figure()
     sprite = src.crop(src.getbbox())
@@ -74,8 +75,8 @@ def test_the_twin_beside_a_pixel_frame_carries_no_colour_the_component_did_not_h
     assert colour_outside(sprite, sprite.resize(size, Image.Resampling.LANCZOS)) > 50
 
 
-# the main component (the body) is 96-97 px tall on the sheet: the figures shrink, nearly keep their size, grow
-@pytest.mark.parametrize("target_height", (72.0, 99.0, 130.0))
+# the main component (the body) is 96-97 px tall on the sheet: the figures shrink
+@pytest.mark.parametrize("target_height", (72.0,))
 def test_a_sliced_figure_carries_no_colour_its_keyed_piece_did_not_have(tmp_path: Path, monkeypatch, target_height: float) -> None:
     fig = figure()
     sheet = Image.new("RGBA", (2 * fig.width, fig.height), GREEN + (255,))

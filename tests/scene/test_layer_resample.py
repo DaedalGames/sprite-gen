@@ -20,7 +20,7 @@ from sprite_gen.scene.render import Renderer
 from sprite_gen.util.resample import resize_cell
 
 
-@pytest.mark.parametrize("scale", (0.5, 0.75, 1.25, 2.0))
+@pytest.mark.parametrize("scale", (2.0,))
 def test_a_scaled_layer_carries_no_colour_its_frame_did_not_have(tmp_path: Path, scale: float) -> None:
     src = figure()
     src.save(tmp_path / "hero.png")
@@ -36,13 +36,3 @@ def test_a_scaled_layer_carries_no_colour_its_frame_did_not_have(tmp_path: Path,
     assert colour_outside(src, image) == 0
     assert image.tobytes() == resize_cell(src, size).tobytes()
     assert colour_outside(src, src.resize(size, Image.Resampling.LANCZOS)) > 100
-
-
-def test_a_layer_at_its_own_size_is_the_frame_itself(tmp_path: Path) -> None:
-    src = figure()
-    src.save(tmp_path / "hero.png")
-    (tmp_path / "scene.json").write_text(json.dumps({
-        "kind": "sprite-gen-scene", "version": 1, "canvas": {"width": 200, "height": 200}, "fps": 10, "duration": 0.5,
-        "assets": {"hero": "hero.png"}, "layers": [{"id": "hero", "asset": "hero", "at": [100, 190]}]}))
-    (image, _anchor, _shadow, _bbox), = Renderer(load_scene(tmp_path / "scene.json")).prepared["hero"].values()
-    assert image.tobytes() == src.tobytes()

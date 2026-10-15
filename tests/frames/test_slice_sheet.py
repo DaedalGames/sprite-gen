@@ -74,57 +74,24 @@ def test_slice_sheet_normalizes_height_and_baseline(tmp_path: Path) -> None:
         assert bottom == round(BASELINE), path.name
         if path.stem != "cell-1":  # cell 1 carries an effect above the head
             assert (bottom - top) == round(TARGET), path.name
+        # no chroma residue in any cell
+        pixels = image.load()
+        for y in range(image.size[1]):
+            for x in range(image.size[0]):
+                r, g, b, a = pixels[x, y]
+                assert not (a > 60 and r > 150 and b > 150 and g < 100), f"{path.name} keeps magenta"
 
-
-def test_slice_sheet_drops_neighbour_overhang_keeps_effect(tmp_path: Path) -> None:
-    sheet_path = tmp_path / "sheet.png"
-    _synthetic_sheet().save(sheet_path)
-    written = slice_sheet(
-        sheet_path,
-        tmp_path / "out",
-        parse_chroma_key("magenta"),
-        grid=GRID,
-        canvas=CANVAS,
-        baseline_y=BASELINE,
-        target_height=TARGET,
-        noise_min=10,
-    )
+    # the neighbour's overhang is dropped from cell 1, its detached in-cell effect kept
     cell1 = Image.open(next(p for p in written if p.stem == "cell-1"))
     pixels = cell1.load()
-    reds = greys = 0
+    reds = 0
     for y in range(cell1.size[1]):
         for x in range(cell1.size[0]):
             r, g, b, a = pixels[x, y]
-            if a == 0:
-                continue
-            if r > 150 and g < 90:
+            if a and r > 150 and g < 90:
                 reds += 1
-            if r < 90 and b > 60:
-                greys += 1
     assert reds > 0, "detached in-cell effect must survive"
     # 오버행 팔은 셀 좌측 경계에 붙은 얇은 조각으로 들어오므로, 본체+이펙트 외의
     # 좌측 경계 접촉 픽셀이 남아 있으면 실패다: 경계 3px 안 불투명 픽셀 검사
     left_edge = sum(1 for y in range(cell1.size[1]) for x in range(0, 3) if pixels[x, y][3] > 0)
     assert left_edge == 0, "neighbour overhang must be dropped"
-
-
-def test_slice_sheet_no_chroma_residue(tmp_path: Path) -> None:
-    sheet_path = tmp_path / "sheet.png"
-    _synthetic_sheet().save(sheet_path)
-    written = slice_sheet(
-        sheet_path,
-        tmp_path / "out",
-        parse_chroma_key("magenta"),
-        grid=GRID,
-        canvas=CANVAS,
-        baseline_y=BASELINE,
-        target_height=TARGET,
-        noise_min=10,
-    )
-    for path in written:
-        pixels = Image.open(path).load()
-        image = Image.open(path)
-        for y in range(image.size[1]):
-            for x in range(image.size[0]):
-                r, g, b, a = pixels[x, y]
-                assert not (a > 60 and r > 150 and b > 150 and g < 100), f"{path.name} keeps magenta"

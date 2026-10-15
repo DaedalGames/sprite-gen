@@ -43,31 +43,6 @@ def _noop_report(run_dir):
     return {"healed": [], "kept_stale": [], "failed": [], "notes": []}
 
 
-def test_long_heal_returns_busy_within_grace(tmp_path: Path, monkeypatch) -> None:
-    release = {"at": time.monotonic() + 4.0}
-
-    def slow_heal(run_dir):
-        while time.monotonic() < release["at"]:
-            time.sleep(0.05)
-        return _walk_report(run_dir)
-
-    monkeypatch.setattr(serve_curation, "heal_run", slow_heal)
-    started = time.monotonic()
-    busy = serve_curation.maybe_heal(tmp_path)
-    elapsed = time.monotonic() - started
-    assert busy is True
-    # 그레이스(1.5s) + 여유 안에 응답해야 첫 탭이 로딩 UI 를 본다
-    assert elapsed < serve_curation._HEAL_GRACE_SECONDS + 1.0
-
-    # heal 완료 후: busy 해제 + 리포트가 단일 소비자에서 1회 나온다
-    serve_curation._heal_state["thread"].join(timeout=10)
-    monkeypatch.setattr(serve_curation, "heal_run", _noop_report)
-    assert serve_curation.maybe_heal(tmp_path) is False
-    report = serve_curation.take_heal_report()
-    assert report is not None and report["healed"] == ["walk"]
-    assert serve_curation.take_heal_report() is None  # 정확히 1회
-
-
 def test_progress_poll_never_steals_the_heal_report(tmp_path: Path, monkeypatch) -> None:
     """validator validator 재현 결함의 회귀 가드: 장기 heal 완료 직후
     /api/progress(또는 다운로드) 역할의 maybe_heal 이 먼저 호출돼도 리포트는
@@ -80,7 +55,10 @@ def test_progress_poll_never_steals_the_heal_report(tmp_path: Path, monkeypatch)
         return _walk_report(run_dir)
 
     monkeypatch.setattr(serve_curation, "heal_run", slow_heal)
+    started = time.monotonic()
     assert serve_curation.maybe_heal(tmp_path) is True  # 장기 heal — busy 즉답
+    # 그레이스(1.5s) + 여유 안에 응답해야 첫 탭이 로딩 UI 를 본다
+    assert time.monotonic() - started < serve_curation._HEAL_GRACE_SECONDS + 1.0
     serve_curation._heal_state["thread"].join(timeout=10)
 
     # 완료 직후: 트리 폴링/다운로드 경로가 먼저 도착하는 시나리오

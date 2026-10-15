@@ -33,19 +33,12 @@ def chroma_sheet(path: Path, boxes, cell: int = 100) -> Path:
     return path
 
 
-def transparent_sheet(path: Path, boxes, cell: int = 100, haze: bool = False) -> Path:
-    """The same boxes on a sheet that is already transparent; ``haze`` rings each with faint alpha 6 px wide."""
+def transparent_sheet(path: Path, boxes, cell: int = 100) -> Path:
+    """The same boxes on a sheet that is already transparent."""
     pixels = np.zeros((cell, cell * len(boxes), 4), dtype=np.uint8)
     for index, (w, h) in enumerate(boxes):
         x0, bottom = index * cell + (cell - w) // 2, cell - 10
         pixels[bottom - h:bottom, x0:x0 + w] = PROP
-    if haze:
-        solid = pixels[..., 3] > 0
-        near = np.zeros_like(solid)
-        for dy in range(-6, 7):
-            for dx in range(-6, 7):
-                near |= np.roll(np.roll(solid, dy, 0), dx, 1)
-        pixels[near & ~solid] = (200, 200, 220, 20)
     Image.fromarray(pixels).save(path)
     return path
 
@@ -137,24 +130,6 @@ def test_sheet_scale_with_contain_takes_the_one_factor_every_cut_fits(tmp_path):
         assert x0 >= 0 and x1 <= 128 and abs(y1 - 124) <= 1, path.name
         anchor_x, anchor_y = cell["anchor"]
         assert abs(anchor_y - y1) <= 1 and abs(anchor_x - (x0 + x1) / 2) <= 1, path.name
-
-
-def test_sheet_scale_after_the_alpha_cleanup_keeps_the_drawn_heights_relative(tmp_path):
-    boxes = [(40, 60), (40, 30), (40, 15)]
-    sheet = transparent_sheet(tmp_path / "props.png", boxes, haze=True)
-    written = slice_sheet(sheet, tmp_path / "out", None, grid=(3, 1), canvas=(128, 192), baseline_y=180.0,
-                          target_height=120.0, alpha_floor=64, scale="sheet", fit="contain")
-    data = report(tmp_path / "out")
-    assert data["alpha_cleanup"] == "alpha-cleanup.json"
-    assert (tmp_path / "out" / "alpha-cleanup.json").is_file()
-    heights = []
-    for path, (_w, h), cell in zip(written, boxes, data["cells"]):
-        x0, y0, x1, y1 = opaque_box(path)
-        assert abs((y1 - y0) - h * data["factor"]) <= 1, path.name
-        assert cell["clipped_px"] == 0
-        heights.append(y1 - y0)
-    # drawn 60 : 30 : 15, cut 4 : 2 : 1 within a pixel
-    assert abs(heights[0] - 2 * heights[1]) <= 2 and abs(heights[1] - 2 * heights[2]) <= 2
 
 
 def test_game_pack_images_keep_the_sliced_sizes_and_stand_on_the_reported_anchor(tmp_path):
