@@ -17,7 +17,8 @@ Parsing is strict and says what it found (`Issue`):
 - recovered issues are code-recoverable and recorded, never silent: the fence tagged otherwise or
   missing, a fence never closed, a single frame written without its `FRAME` line or under another
   name, frames in another order, no `END` line, an answer that wrote its block more than once (the
-  last block that reads whole is read).
+  last block that reads whole is read), and — for a later answer of a set drawn over several, which
+  is given the first answer's palette (`hold_palette`) — a colour it added or changed.
 
 `png_bytes` writes a frame as a PNG whose bytes depend only on its pixels — stored deflate
 blocks, no compressor in the loop — so the same grid gives the same file on any machine and any
@@ -46,6 +47,7 @@ KEYS = string.ascii_lowercase + string.ascii_uppercase + string.digits
 TRANSPARENT_KEY = "."
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PREVIEW_COLUMNS = 8  # frames a preview row holds before the next row
 
 # PICO-8's 16 colours (lexaloffle.com/pico-8.php, the fixed palette of the console).
 PICO8 = ("#000000", "#1D2B53", "#7E2553", "#008751", "#AB5236", "#5F574F", "#C2C3C7", "#FFF1E8",
@@ -59,7 +61,7 @@ STRUCTURAL = frozenset({
 })
 ROW_CODES = frozenset({"row_width", "unknown_symbol", "row_missing"})
 RECOVERED = frozenset({"block_tag", "block_unclosed", "block_many", "frame_header_missing", "frame_renamed",
-                       "frame_order", "no_end"})
+                       "frame_order", "no_end", "palette_added", "palette_changed"})
 
 _PALETTE_LINE = re.compile(r"^(\S)\s+(transparent|#[0-9A-Fa-f]{6})$")
 _ROW_ANSWER = re.compile(r"^\s*`?\s*ROW\s+(\S+)\s+(\d+)\s*:\s*(.*?)\s*`?\s*$", re.M)
@@ -420,6 +422,26 @@ def parse_answer(text: str, fmt: str, width: int, height: int, frames: Sequence[
     return _read_body(body, found, fmt, width, height, frames)
 
 
+def hold_palette(grid: Grid, issues: list[Issue], palette: dict[str, str | None]) -> tuple[Grid, list[Issue]]:
+    """`grid` under the palette it was given — a later answer of a set drawn over several, which writes
+    the first answer's palette again. A key it added is refused, so its rows become row issues for the
+    row repair; a colour it changed is put back. Both are recorded."""
+    found = []
+    for key, color in grid.palette.items():
+        if key not in palette:
+            found.append(Issue("palette_added", None, None, f"{key} {color}"))
+        elif (color or "").lower() != (palette[key] or "").lower():
+            found.append(Issue("palette_changed", None, None, f"{key} {color}, kept {palette[key]}"))
+    held = replace(grid, palette=dict(palette))
+    return held, [i for i in issues if i.code not in ROW_CODES] + found + check_rows(held)
+
+
+def joined(grids: Sequence[Grid]) -> Grid:
+    """The frames of several answers, in order, under the first answer's palette (`hold_palette`)."""
+    frames = {name: rows for grid in grids for name, rows in grid.frames.items()}
+    return replace(grids[0], frames=frames)
+
+
 def read_grid_text(text: str) -> tuple[Grid | None, list[Issue]]:
     """Read a `grid.txt` (the character grid with or without its fence); the frames and the canvas
     size are what it holds — the commonest row length is the width, the commonest row count the
@@ -555,15 +577,18 @@ def preview_scale(size: int) -> int:
     return max(1, 256 // size)
 
 
-def preview_strip(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int) -> Image.Image:
-    """The frames side by side, each enlarged `scale` times, two enlarged pixels apart."""
+def preview_strip(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int,
+                  columns: int = PREVIEW_COLUMNS) -> Image.Image:
+    """The frames side by side, each enlarged `scale` times, two enlarged pixels apart; past `columns`
+    frames they go on in rows, left to right and top to bottom, so a long set stays readable."""
     images = [image_of(f).resize((len(f[0]) * scale, len(f) * scale), Image.NEAREST) for f in frames]
     gap = 2 * scale
-    strip = Image.new("RGBA", (sum(i.width for i in images) + gap * (len(images) - 1), max(i.height for i in images)))
-    x = 0
-    for image in images:
-        strip.paste(image, (x, 0))
-        x += image.width + gap
+    across = min(columns, len(images))
+    down = -(-len(images) // across)
+    width, height = max(i.width for i in images), max(i.height for i in images)
+    strip = Image.new("RGBA", (width * across + gap * (across - 1), height * down + gap * (down - 1)))
+    for number, image in enumerate(images):
+        strip.paste(image, ((number % across) * (width + gap), (number // across) * (height + gap)))
     return strip
 
 

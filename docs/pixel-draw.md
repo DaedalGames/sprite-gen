@@ -4,7 +4,7 @@
 > varies from run to run: expect to compare candidates, re-draw, or touch up `grid.txt` by hand. The numbers below come from a
 > small set of measured runs, not from a benchmark.
 
-> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the run folder and `report.json`, gates G1–G8 and what they take from sprite-gen, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
+> Owns: `sprite-gen pixel-draw`: the inputs, the safe area of a sprite or icon, the style a drawing is asked in, a set of more than four frames drawn four at a time, the run folder and `report.json`, gates G1–G8 and what they take from sprite-gen, the row repair, the one redraw, the pick between candidates, Message Batches and `--resume`, re-rendering an edited `grid.txt` · Index: [docs/README.md](README.md)
 
 The model does not paint an image that is then shrunk to a grid. It writes the grid itself: a
 palette of keys and, per frame, one line of keys per pixel row. Code checks every answer, asks for
@@ -12,8 +12,9 @@ broken rows again one at a time, renders the frames and, among candidates that p
 vision call pick. `grid.txt` — the palette and the rows — is the truth of a run; every PNG is
 derived from it and can be derived again.
 
-Use it for a single small asset: an item icon, a prop, a monster, a character still, four facing
-directions, a draft walk cycle, a grass or water tile. It was measured on `claude-opus-5-5` on
+Use it for a small asset: an item icon, a prop, a monster, a character still, four facing
+directions, a draft walk cycle, a grass or water tile — or a hand-drawn motion of up to 64 frames
+([below](#more-than-four-frames)). It was measured on `claude-opus-5-5` on
 2026-10-12 (250 drawings of 12 subjects at 16–48 px, judged by a vision model against the same
 subjects made with GPT images shrunk by sprite-gen's own functions):
 
@@ -27,8 +28,9 @@ subjects made with GPT images shrunk by sprite-gen's own functions):
   frames: it is a draft for a touch-up, and the run says so (G6 warning). A real loop belongs to the
   [video → loop pipeline](video-pipeline.md);
 - a fixed palette (`pico8`) was kept every time, at a visible cost in material rendering;
-- dense small-pattern tiles (cobblestones) sometimes spent every token thinking and wrote nothing,
-  at effort xhigh only.
+- an answer sometimes spends every token thinking and writes nothing: dense small-pattern tiles
+  (cobblestones) at effort xhigh on 2026-10-12, and a set of four 48 px frames at effort high, all
+  64,000 tokens, on 2026-10-14 — the run draws it once more one effort lower.
 
 It runs on `ANTHROPIC_API_KEY` and **every call is billed per call** against that key; the run
 says so on stderr before the first request leaves, and `report.json` adds up what it cost.
@@ -57,6 +59,26 @@ sprite-gen pixel-draw --out-dir runs/knight-walk --frames walk1,walk2,walk3,walk
 # a repeating tile, twenty of them at half price: --batch
 sprite-gen pixel-draw --out-dir runs/grass --kind tile --batch \
   --subject "A top-down grass ground tile: short green grass with a few lighter blades and small darker tufts."
+
+# one motion of twelve frames, four a call, in a style of its own, at ten frames a second
+sprite-gen pixel-draw --out-dir runs/twirl --spec twirl.json --duration-ms 100
+```
+
+`twirl.json` — a frame is a name, or a name and what that frame shows:
+
+```json
+{
+  "subject": "A small swordsman, side view facing right.",
+  "size": 48,
+  "motion": "he spins the sword once around his hand and catches it",
+  "style": "no outline: selective outlining only where a shape meets its own colour, shadows hue-shifted toward blue",
+  "frames": [
+    {"name": "s01", "pose": "standing, the sword held low"},
+    {"name": "s02", "pose": "the wrist turns, the blade rising"},
+    "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s10", "s11",
+    {"name": "s12", "pose": "the sword caught, back where it started"}
+  ]
+}
 ```
 
 On success the report is printed on stdout and written to `<out-dir>/report.json`; the picked
@@ -67,11 +89,14 @@ candidate's files are at the top of the run folder.
 | Flag | Values (default) | What it does |
 |---|---|---|
 | `--subject TEXT` | words | What to draw. For several frames, say what each one is (the frame names are listed for the model, their meaning comes from your words). |
-| `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette` instead of the flags. A key given both in the file and as a flag takes the flag, said on one stderr line ([run contract](run-contract.md#1-pipeline-stages)). |
+| `--spec FILE` | JSON object | `subject`, `size`, `kind`, `frames`, `walk_cycle`, `palette`, `style`, `motion`, `duration_ms` instead of the flags; a `frames` entry may be `{"name": ..., "pose": ...}`, which puts that pose on the frame's own line of the prompt. A key given both in the file and as a flag takes the flag, said on one stderr line ([run contract](run-contract.md#1-pipeline-stages)). |
 | `--size N` | 8–48 (32) | Canvas side in pixels; every frame is N×N, a sprite's or icon's body about the size of the [safe area](#the-safe-area) (26×26 at 32). Measured best at 32 or less. |
-| `--kind` | `sprite`, `icon`, `tile` (`sprite`) | Sprites and icons have a transparent background, a dark outline and a margin around the body; a tile fills every pixel and repeats seamlessly. |
-| `--frames a,b,…` | 1–4 names (one frame named after `--kind`) | Frames drawn **in one call**, so they share one palette and one design. Names are letters, digits, `_` and `-`. |
-| `--walk-cycle` | flag | The four frames are contact, passing, contact, passing: the prompt says so and G6 checks the legs change sides. |
+| `--kind` | `sprite`, `icon`, `tile` (`sprite`) | Sprites and icons have a transparent background and a margin around the body (and, unless `--style` says otherwise, a dark outline); a tile fills every pixel and repeats seamlessly. |
+| `--frames a,b,…` | 1–64 names (one frame named after `--kind`) | Up to four are drawn **in one call**, so they share one palette and one design; more are drawn four at a time ([below](#more-than-four-frames)). Names are letters, digits, `_` and `-`. |
+| `--walk-cycle` | flag | The four frames are contact, passing, contact, passing: the prompt says so, G6 takes them as one motion and checks the legs change sides. |
+| `--motion TEXT` | words | The frames, in their order, are one motion — the prompt says so in your words, and G6 fails only a frame off the ground row: a height that changes with the pose and a frame held are reported ([gates](#gates)). Not for an effect, whose frames are a lifetime already. |
+| `--style TEXT` | words (the kind's own) | The style to draw in, in place of the kind's style sentence ([below](#the-style)). The pick judges craft against the same words. |
+| `--duration-ms N` | at least 10 (150) | Each frame of `anim.gif` (and an effect's `delay_ms`), in milliseconds; a GIF keeps hundredths of a second. |
 | `--palette` | `free[:N]` (`free:16`), `pico8`, `#RRGGBB,…`, or a file | A free palette allows at most N colours; a fixed one allows only its colours. A file is JSON (a list, or `{"colors": [...]}`) or one colour per line (`RRGGBB` or `#RRGGBB`, `;` comments — Lospec's `.hex`). |
 | `--candidates K` | 1–6 (2) | Answers drawn for the request, each on its own; one is picked (G7). |
 | `--effort` | `medium`, `high`, `xhigh` (`high`) | Thinking effort of each drawing. |
@@ -89,8 +114,10 @@ candidate's files are at the top of the run folder.
 For each candidate, independently (in parallel, or in one batch):
 
 1. **Draw** at `--effort`, with the prompt built from the inputs: the subject, the canvas, the frames
-   (and the walk cycle), the palette rule, the kind's background, [safe area](#the-safe-area) and
-   style rules, and the exact output format.
+   (and the walk cycle or the motion, and what each frame shows), the palette rule, the kind's
+   background, [safe area](#the-safe-area) and [style](#the-style), and the exact output format. A
+   set of more than four frames is drawn four at a time, one call after another
+   ([below](#more-than-four-frames)); steps 2 and 3 are each call's own.
 2. **G1 parse.** The answer is read strictly ([below](#gates)). A row one key too long or short, a
    key that is not in the palette, rows missing at the end — those rows go back to the model on
    their own, each with the rows above and below and a column ruler, and it answers
@@ -99,8 +126,9 @@ For each candidate, independently (in parallel, or in one batch):
 3. **Redraw, once.** An answer still broken after its repairs, or broken beyond its rows (no block,
    a broken palette, a frame missing, too many rows), is drawn again at the same effort. An answer
    that spent all `--max-tokens` thinking and wrote nothing is drawn again **one effort lower**
-   (xhigh → high → medium → low). A candidate is drawn at most twice in all.
-4. **G2–G6 and G8** on the pixels. G2, G3 and G6 fail the candidate; G4, G5, the walk check and G8
+   (xhigh → high → medium → low). A call is drawn at most twice; a call that still fails ends its
+   candidate.
+4. **G2–G6 and G8** on the pixels of every frame, once all are drawn. G2, G3 and G6 fail the candidate; G4, G5, the walk check and G8
    (a frame past the physical cap, feet off the floor row) warn; G8 also notes a frame past the safe
    area within the cap in an info line, which asks for nothing. G3, G4, G5 and G8 are judgments
    sprite-gen already makes elsewhere, asked rather than copied ([below](#what-it-takes-from-sprite-gen)).
@@ -157,16 +185,86 @@ two passing frames alike and failed G6, as walk drafts do. Those seven were draw
 asked for only a thin detail in the margin and the canvas edge clear; the wording that lets a pose go
 past the safe area has not been measured yet.
 
+## The style
+
+Unless `--style` gives one, each kind is asked for a style of its own, in one sentence of the
+prompt:
+
+| Kind | Style sentence |
+|---|---|
+| `sprite`, `icon` | clean, readable pixel art for a 2D RPG: a dark (not pure black) outline around the silhouette, 2-3 shades per material, light from the top-left, no anti-aliasing noise and no stray single pixels |
+| `tile` | clean, readable pixel art for a 2D RPG: 2-3 shades per material, light from the top-left, no noisy single-pixel speckle |
+| `effect` | none (its background line already says no dark outline and no antialiasing) |
+
+`--style TEXT` (spec `style`) takes that sentence's place, in your words, and only that sentence:
+what the kind must be stays — a transparent background, the [safe area](#the-safe-area) and the
+floor row, a tile that fills every pixel and repeats with no border, an effect around a fixed
+centre. The pick judges craft against the same words in place of its fixed "clean silhouette and
+outline". Without `--style` both prompts are byte for byte what they were, so a run started
+before reads its calls back on `--resume`.
+
+Pixel art without a dark outline, for example, is two habits worth naming:
+
+- **selective outlining** (sel-out): the edge of a shape is a darker shade of its own colour, or
+  of the colour it meets, rather than one dark line around everything, and it drops where the lit
+  side meets the background;
+- **hue shifting**: a shadow moves toward a cooler hue (skin toward red-purple, yellow hair toward
+  green or blue) and a highlight toward a warmer one, instead of only darker and lighter.
+
+```bash
+sprite-gen pixel-draw --out-dir runs/knight-soft --size 48 --subject "A small knight, standing." \
+  --style "no outline: selective outlining only where a shape meets its own colour, shadows hue-shifted toward blue, highlights toward yellow"
+```
+
+## More than four frames
+
+One call draws at most four frames: one answer holds one palette and one design, and that is what
+keeps the frames of a set alike. A set of more frames — up to 64, a hand-drawn motion of several
+seconds — is drawn four at a time, one call after another, in order (an effect stays 2–8 frames in
+one call):
+
+- every call's prompt names all the frames, says which answer it is and which frames it draws
+  (`This is answer 3 of 12: it draws s09, s10, s11, s12 (frames 9-12).`), and carries the motion
+  and what each of its own frames shows;
+- each call after the first is given the first call's palette and writes it again unchanged. A key
+  the answer adds is refused, and the rows that use it go to the row repair under the palette it
+  was given; a colour it changes is put back. Both are recorded in G1's `recovered`
+  (`palette_added`, `palette_changed`);
+- each call after the first is shown the first frame and the four frames just before its own, as
+  the grid the answer writes (a ```` ```reference ```` block), so the motion goes on from where it
+  is and the design from where it began. A frame written as keys is about 1,200 tokens at 48 px
+  (Opus's own answers, recorded 2026-10-12 to 14, wrote 2.0 characters a token at 32 px and 2.5 at
+  48 px), so the five add about 6,000 input tokens — about $0.02 at the price below — to a call
+  whose thinking and answer run to tens of thousands of output tokens;
+- the row repair and the one redraw are each call's own (`c1-part2-gen1`, `c1-part2-gen1-fix1`,
+  `c1-part2-gen2`); a call that still fails ends its candidate, and the gates run once every frame
+  is drawn;
+- `--resume` reads every call back by its id: a later call's prompt is built from the answers
+  before it, so it is the same prompt again. With `--batch`, each call is a batch of its own,
+  since the next one needs the frames before it.
+
+Before the first request, the run says on stderr what it is about to draw — `[pixel-draw] 46
+frames (at most 64): 12 calls a candidate of at most 4 frames each, 24 drawings in all; each may
+write up to 64000 output tokens, thinking included, and each call after a candidate's first also
+reads its palette and up to 5 frames already drawn, about 5880 input tokens`.
+
+The previews and the pick sheet put the frames in rows of eight. Claude 4.7 and later models read an
+image unscaled up to 2576 px on its long edge and 4784 patches of 28×28 px; a larger one is scaled
+down, which blurs pixel art ([vision](https://platform.claude.com/docs/en/build-with-claude/vision),
+"Resolution and token cost", read 2026-10-15). A sheet past that is drawn at the largest smaller
+whole enlargement that fits — nearest-neighbour, so every pixel stays a square block (46 frames at
+48 px, two candidates: ×3 instead of ×5).
+
 ## Gates
 
 | Gate | Checks | On failure |
 |---|---|---|
-| G1 parse | One block; palette lines `<key> #RRGGBB` (`.` is transparent and nothing else); the frames asked for, each exactly N rows of N palette keys | Row issues → row repair (two rounds), then one redraw; anything else → one redraw. Recovered by code and recorded: a single frame written without its `FRAME` line or under another name, frames in another order, the fence tagged otherwise, no `END` line; an answer that writes its block more than once — a first try, then "Corrected:" and the block again — is read from the last block that reads whole (when none does, the last whose rows can be repaired), `block_many` saying which |
+| G1 parse | One block; palette lines `<key> #RRGGBB` (`.` is transparent and nothing else); the frames asked for, each exactly N rows of N palette keys | Row issues → row repair (two rounds), then one redraw; anything else → one redraw. Recovered by code and recorded: a single frame written without its `FRAME` line or under another name, frames in another order, the fence tagged otherwise, no `END` line; an answer that writes its block more than once — a first try, then "Corrected:" and the block again — is read from the last block that reads whole (when none does, the last whose rows can be repaired), `block_many` saying which; a later call's palette held to the first call's (`palette_added`, `palette_changed`, [above](#more-than-four-frames)) |
 | G2 palette | Opaque colours used ≤ the limit; a fixed palette's colours only | fails |
 | G3 alpha | Each frame's background by the judgment `gen` reads a generated raw by (`alpha_verdict`, [gen.md](gen.md#transparent-output--strategy-per-provider)): `real-alpha` is at least 5 % of the pixels and half the one-pixel border alpha 0, `no-alpha` none. Sprite/icon: `real-alpha`, something drawn, four transparent corners. Tile: `no-alpha` | fails |
 | G4 tile seam | Each tile frame's join along x and along y, by the measure `background-tile` reports (`inspect_tile`, [asset-tools.md](asset-tools.md#repeating-tiles)): the wrap edge against the tile's own neighbours | warns where it says `needs-review`, with its reasons — a local measure, never proof that the tile repeats cleanly; look at `tiled-3x3.png` |
 | G5 stray pixels | Lone pixels of a sprite/icon by the judgment the matte cleanup erases them by (`isolated_dots`, [chroma-alpha.md](chroma-alpha.md#chromamode-ycbcr--chrominance-plane-matting-opt-in)): opaque, with no opaque pixel among their eight neighbours — a pixel touching another only at a corner, as in a diagonal stroke, is joined | warns |
-| G6 frames | Same bottom row in every frame, heights within one pixel, no two frames the same; a sprite's or icon's rows are measured inside the [safe area](#the-safe-area), so a staff raised or a spark into the margin in one frame is not a taller figure (the margin is G8's). With `--walk-cycle`: the contact frames differ by at least 40% of the mean contact↔passing difference | fails; the walk check warns ("weak leg alternation — touch up the legs") |
+| G6 frames | Same bottom row in every frame, heights within one pixel, no two frames the same; a sprite's or icon's rows are measured inside the [safe area](#the-safe-area), so a staff raised or a spark into the margin in one frame is not a taller figure (the margin is G8's). With `--motion` or `--walk-cycle` the frames are one motion, whose rule is written once, in the header of [`pixel_gates.py`](../sprite_gen/gen/pixel_gates.py): only the ground row fails; a height that changes is asked whether the body changed size or only its pose. With `--walk-cycle`: the contact frames differ by at least 40% of the mean contact↔passing difference | fails; of one motion, a body that changes size warns, and a height that changes with the pose and a frame held are info lines; the walk check warns ("weak leg alternation — touch up the legs") |
 | G8 safe area | Sprite/icon: each frame's opaque box against the [safe area](#the-safe-area) and the physical cap, by the pixel snap's own judgment (`safe_area_fit`, [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode)); a sprite's body box ending on the floor row | never fails: past the physical cap, and feet off the floor row, warn; past the safe area within the cap is an info line (`info`), which asks for nothing. Below 11 px the margin is 0: the safe area and the cap are the canvas |
 | G7 pick | Two or more passed: the vision pick (or a person) | a pick that fails ends the run `pick_failed`, candidates kept |
 
@@ -183,6 +281,10 @@ answers a question the verb asks, it asks that function; a part that is its own 
 | G5 stray pixels | `frames.extract.isolated_dots`, the YCbCr matte cleanup's lone pixels | [chroma-alpha.md](chroma-alpha.md#chromamode-ycbcr--chrominance-plane-matting-opt-in) |
 | G8 safe area | `frames.extract.safe_area_fit`, the pixel snap's judgment; a frame's opaque box, `frames.extract.solid_alpha_bbox` | [pixel-unfake.md](pixel-unfake.md#pixel_unfake-mode) |
 | `--spec` and a flag with the same key | `gen.base.flags_over_spec`, `prepare --request`'s answer: the flag wins, said on one line | [run-contract.md](run-contract.md#1-pipeline-stages) |
+| G6 of one motion: a height that changed — the body's size, or its pose? | `video.gait_fallback.size_change` on `body_size` (height, mass, breadth), the reading `video-loop --body-height` makes of a cut against the clip's first frame, asked of each frame against the first inside the safe area | [video-pipeline.md](video-pipeline.md) (`--body-height`) |
+| `--style`'s name and meaning: a style in the caller's words | `prepare --style` | [run-contract.md](run-contract.md#1-pipeline-stages) |
+| `--motion`'s name and meaning: the motion in the caller's words | `video-prompt --motion` | [prompt-assembly.md](prompt-assembly.md#the-callers-own-words) |
+| `--duration-ms`'s name and meaning: a GIF frame's time in milliseconds | `compose-cycle --duration-ms` | — |
 | A call sent again, and the wait | `gen.retry`, every direct provider call's rule | [gen.md](gen.md#a-refused-request-sent-again) |
 | A palette colour read and written | `util.hexcolor` | — |
 | `run(**kwargs)` | `util.cli_kwargs.namespace_from_kwargs` | — |
@@ -198,7 +300,12 @@ do not), G2's count against the rule, G6 (one pixel of height across a drawn set
 check is for a frame the matte broke, under 35 % or over 275 % of the median frame's area), the walk check (the
 video path's legs read a filmed cycle's steps, not whether two drawn contact frames swap legs), the
 3×3 tiling, the vision pick, Message Batches and `--resume` (`video-resume` asks xAI again by request
-id; a batch is collected, and every answered call read back), and the cost in `report.json`.
+id; a batch is collected, and every answered call read back), the cost in `report.json`, a set drawn
+over several calls with its palette held and its frames shown (nothing else in sprite-gen draws a
+grid in parts), an answer that writes its block more than once, and the pick sheet kept within what
+Claude reads unscaled (no other verb sends Claude a sheet that large). G6's height within one pixel
+stays its own for frames that are not one motion; a motion asks the image path's size reading
+above.
 
 ## The run folder
 
@@ -209,9 +316,9 @@ id; a batch is collected, and every answered call read back), and the cost in `r
   grid.txt                the picked candidate's grid: the truth, editable, diffable
   palette.json            its keys and colours, the rule, the colours used
   frame-<name>.png        each frame at its own size, byte for byte reproducible
-  preview-x<s>.png        the frames side by side, nearest-neighbour ×s (about 256 px a frame)
+  preview-x<s>.png        the frames side by side in rows of eight, nearest-neighbour ×s (about 256 px a frame)
   tiled-3x3.png           a tile repeated 3×3 (×s)
-  anim.gif                two or more frames, 150 ms each (×s)
+  anim.gif                two or more frames, --duration-ms each (150 ms; a frame held is one GIF frame shown as long) (×s)
   candidates/c1/…         the same files for every candidate whose grid parsed whole
   calls/<id>.json         every model call: prompt, answer, thinking summary, usage, request id
   batches/<id>.json       every batch submitted, the moment it was
@@ -230,11 +337,11 @@ zlib build. The previews, the tiling and the GIF are views for the eye.
 | Field | |
 |---|---|
 | `status` | `ok`, `failed` (no candidate passed), `refused` (every candidate refused), `pick_failed`, `unfinished` (a batch not collected yet) |
-| `request` | the resolved inputs (`palette` with its rule and colours) |
+| `request` | the resolved inputs (`palette` with its rule and colours; `style`, `motion`, `poses` and `duration_ms`) |
 | `chosen`, `files`, `warnings`, `info` | the picked candidate, its top-level files, its warnings (worth a look, maybe a redraw) and its info lines (nothing to do) |
 | `pick` | `by` (`vision` / `only` / `human`), `best`, and for the vision pick its `labels`, `sheet` and `verdict` |
-| `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `info`, `files` |
-| `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `pick`), `purpose`, `mode` (`realtime` / `batch`), `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
+| `candidates[]` | per candidate: `status`, `reason`, `effort` of the answer kept, `generations` (call ids), `redraws` (after which call, why, at which effort), `repairs` (rows asked, answered, still broken), `G1` (issues and what was recovered), `gates` (G2–G6 and G8 with their measures), `warnings`, `info`, `files`, and for a set drawn over several calls `parts` (each call's frames and the effort it was drawn at; `effort` is then the lowest) |
+| `calls[]` | per call: `id` (`c1-gen1`, `c1-gen1-fix1`, `c1-part2-gen1` for a set drawn over several calls, `pick`), `purpose`, `mode` (`realtime` / `batch`), `model`, `effort`, `max_tokens`, `request_id`, `message_id`, `batch_id`, `stop_reason`, `stop_details`, `usage` (as the API reported it), `thinking_tokens`, `cost_usd`, `seconds`, and for a failed call `error` and `billed` |
 | `batches[]` | per batch: `id`, `custom_ids`, `submitted_at`, `collected`, `ended_at`, `waited_seconds` |
 | `usage`, `cost_usd`, `seconds` | totals over the calls, and the run's wall time |
 
@@ -284,14 +391,15 @@ request than the one in `request.json` stops the run rather than being reused.
 ## Editing `grid.txt` — `--grid`
 
 ```bash
-sprite-gen pixel-draw --grid runs/slime/grid.txt --out-dir runs/slime-edit [--kind sprite] [--palette free:16] [--walk-cycle]
+sprite-gen pixel-draw --grid runs/slime/grid.txt --out-dir runs/slime-edit [--kind sprite] [--palette free:16] [--walk-cycle] [--motion TEXT] [--duration-ms N]
 ```
 
 Reads a character grid (the frames and size are what it holds), runs G1 (no repair: an issue is
 reported with its frame and row) and G2–G6 and G8 — the safe area of the grid's own size — and writes
 the same files and a report with no calls.
-Pass the `--kind`, `--palette` and `--walk-cycle` the grid was drawn under; the run's
-`request.json` has them.
+Pass the `--kind`, `--palette`, `--walk-cycle` and `--motion` the grid was drawn under; the run's
+`request.json` has them. `--duration-ms` times `anim.gif` anew; `--style` belongs to a drawing and is
+refused here.
 
 ## Model, effort and price
 

@@ -342,3 +342,51 @@ def test_g8_reads_a_frames_opaque_box_off_the_image_paths_judgment(monkeypatch):
     monkeypatch.setattr(extract, "solid_alpha_bbox", lambda image, threshold=128: (0, 3, 16, 13))
     g8 = evaluate({"f": frame}, kind="sprite", rule=FREE16, walk_cycle=False)["G8"]
     assert g8["frames"]["f"]["bbox"] == [0, 3, 15, 12] and g8["frames"]["f"]["size"] == [16, 10]
+
+
+# ----------------------------------------------------------------------------- G6 of one motion
+
+def lifted(frame, rows: int):
+    """`frame` drawn `rows` rows higher."""
+    return frame[rows:] + [[CLEAR] * len(frame[0]) for _ in range(rows)]
+
+
+def test_g6_of_a_motion_lets_a_raised_arm_and_a_hold_through_and_still_fails_the_ground():
+    """One motion (`--motion`, or a walk cycle): the frames must stand on one ground row, but an arm
+    raised over the head changes the height with the pose - its height, mass and breadth part, so the
+    image path's size reading (`gait_fallback.size_change`) says the body did not grow - and a frame
+    drawn twice is a hold."""
+    side = paint(paint(canvas(), 8, 10, 23, 28), 24, 14, 25, 20)  # a body and an arm at its side
+    raised = paint(paint(canvas(), 8, 10, 23, 28), 24, 3, 25, 9)  # the same arm over the head
+    frames = {"a": side, "b": raised, "c": [r[:] for r in raised]}
+    still = evaluate(frames, kind="sprite", rule=FREE16, walk_cycle=False)
+    assert still["failed"] == ["G6"]  # without --motion, as before
+    gates = evaluate(frames, kind="sprite", rule=FREE16, walk_cycle=False, motion=True)
+    g6 = gates["G6"]
+    assert gates["ok"] and g6["ok"] and g6["rule"] == "motion"
+    assert g6["heights"] == {"a": 19, "b": 26, "c": 26} and g6["posed"] == ["b", "c"] and g6["resized"] == []
+    assert g6["size_change"]["b"]["change"] == 0.0 and g6["holds"] == [["b", "c"]]
+    assert not any(w.startswith("G6") for w in gates["warnings"])
+    assert [line for line in gates["info"] if line.startswith("G6")] == [
+        "G6 the height changes with the pose, not the body's size (informational, no action): b 26 px, c 26 px "
+        "against a 19 px",
+        "G6 frames drawn the same, a hold (informational, no action): b=c"]
+    off = evaluate({**frames, "d": lifted(frames["a"], 2)}, kind="sprite", rule=FREE16, walk_cycle=False, motion=True)
+    assert off["failed"] == ["G6"] and off["G6"]["baselines"]["d"] == 26
+
+
+def test_g6_of_a_motion_warns_a_body_drawn_larger():
+    small = paint(canvas(), 10, 12, 21, 28)
+    large = paint(canvas(), 8, 7, 23, 28)
+    gates = evaluate({"a": small, "b": large}, kind="sprite", rule=FREE16, walk_cycle=False, motion=True)
+    g6 = gates["G6"]
+    assert gates["ok"] and g6["resized"] == ["b"] and g6["posed"] == []
+    assert g6["size_change"]["b"]["change"] > 0.25
+    assert [w for w in gates["warnings"] if w.startswith("G6")] == [
+        "G6 the body changes size, not only its pose - its height, mass and breadth all grow or shrink by more "
+        "than a pixel: b +29% against a"]
+
+
+def test_a_walk_cycle_is_a_motion():
+    gates = evaluate(frames_of("walk-32-safe-area-pass.txt", 32, WALK), kind="sprite", rule=FREE16, walk_cycle=True)
+    assert gates["G6"]["rule"] == "motion" and gates["G6"]["walk"]["warn"]

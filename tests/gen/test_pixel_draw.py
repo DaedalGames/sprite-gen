@@ -444,7 +444,10 @@ def test_a_used_folder_is_refused(tmp_path, claude):
 @pytest.mark.parametrize("args,message", [
     (["--size", "7"], "--size is 8..48 pixels, got 7"),
     (["--size", "49"], "--size is 8..48 pixels, got 49"),
-    (["--frames", "a,b,c,d,e"], "at most 4 frames in one call, got 5"),
+    (["--frames", ",".join(f"f{i}" for i in range(65))], "at most 64 frames, got 65"),
+    (["--frames", "a,b", "--duration-ms", "5"], "--duration-ms is at least 10, got 5"),
+    (["--style", " "], "--style is a sentence of words, got ' '"),
+    (["--motion", "a spin"], "--motion is two or more frames"),
     (["--frames", "a b"], "frame names are letters, digits"),
     (["--frames", "a,a"], "frame names must differ"),
     (["--frames", "a,b", "--walk-cycle"], "--walk-cycle is four frames"),
@@ -562,7 +565,8 @@ def test_no_key_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
 def test_the_cli_names_the_verb_and_its_flags():
     flags = help_options("-m", "sprite_gen.cli", "pixel-draw")
     assert {"--subject", "--spec", "--grid", "--size", "--kind", "--frames", "--walk-cycle", "--palette", "--candidates",
-            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume"} <= flags
+            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume",
+            "--style", "--motion", "--duration-ms"} <= flags
 
 
 def pixel_request(**changes) -> pixel_draw.PixelRequest:
