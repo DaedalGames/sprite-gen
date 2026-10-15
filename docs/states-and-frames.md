@@ -10,6 +10,8 @@ Video path defaults apply strictly to the video path, independent of component-r
 
 Six states automatically select `once` across `sprite-gen video-prompt`, `sprite-gen video-set`, and `sprite-gen video-loop --cycle auto`. Defaults for `idle`, `walk`, `run`, `jump`, and `attack` remain unchanged. Cyclic states (`idle`, `walk`, `run`, `talk`, `blink`, `breathe`) reject explicit `--cycle once`, but overrides allow `jump`, `attack`, or custom actions.
 
+These defaults are presets. `--play loop|once-return|once-hold|lifetime` (`video-set`, `video-prompt`) films a motion in the mode the request names — a named state, or a word of your own described with `--motion` (a punch, typing at a desk, a block) — and the end-frame pin, the prompt's ending, the cut and the strip's `loop` follow it. The six states below play once-hold only, `effect` lifetime only, and the cyclic states loop only. See [play modes](video-pipeline.md#play-modes).
+
 Motion prompts request a 0.4 s hold. Anatomy is preserved across body plans (`quadruped`, `legless`). Headroom requires symmetric side margins for `death` and `hurt_hold`, overhead room for `cast` and `transform`, and descent room for `land`; border contact is refused. Candidate end pose geometry requires median end-window height <= 80% of initial height for `death` and `fall`, while other `once` states require changed geometry (conservative geometric screen; inspect semantic pose visually). Root displacement metadata is omitted. See [video-pipeline.md](video-pipeline.md) for gate and metadata details.
 
 | State | End Pose |
