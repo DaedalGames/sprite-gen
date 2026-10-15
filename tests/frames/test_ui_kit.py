@@ -661,10 +661,11 @@ def accepted_drift(rng, size=TALL):
             return float(sx), float(tx), float(sy), float(ty)
 
 
-def assert_cut_as_drawn(report, elements, drawn, size=TALL):
+def assert_cut_as_drawn(report, elements, drawn, drift):
     """Exactly the band elements that were not drawn are missing, and every drawn element is cut whole as itself:
-    its cut is its own drawing to within its 2 px edge, so it holds no neighbour's. A fitted layout lies within the
-    accepted drift and puts each drawing inside its element's fitted box."""
+    its cut is its own drawing to within its 2 px edge, so it holds no neighbour's. A fitted layout is the drift the
+    sheet was drawn with, to within a hundredth in scale and 4 px in offset, and puts each drawing inside its
+    element's fitted box."""
     kept = [name for name in FRAMES + BAND if name in drawn]
     assert report["missing"] == [name for name in BAND if name not in drawn]
     assert list(report["elements"]) == list(elements) == kept
@@ -672,10 +673,9 @@ def assert_cut_as_drawn(report, elements, drawn, size=TALL):
         assert report["elements"][name]["parts"] == 1, name
         assert all(0 <= value <= 2 for value in offset(report, drawn, name)), (name, offset(report, drawn, name))
     if "layout_fit" in report:
-        fit, unit = report["layout_fit"], size[0] / ui_kit.REFERENCE
-        for axis in "xy":
-            assert ACCEPTED_SCALE[0] <= fit["scale"][axis] <= ACCEPTED_SCALE[1], fit
-            assert abs(fit["offset"][axis]) <= ACCEPTED_OFFSET * unit, fit
+        fit = report["layout_fit"]
+        for axis, scale, shift in (("x", *drift[:2]), ("y", *drift[2:])):
+            assert abs(fit["scale"][axis] - scale) <= 0.01 and abs(fit["offset"][axis] - shift) <= 4, (fit, drift)
         for name in kept:
             x, y, w, h = drawn[name]
             box = report["elements"][name]["box"]
@@ -698,7 +698,7 @@ def test_a_squeezed_sheet_missing_several_band_elements_names_those_and_cuts_no_
         ox, oy, ow, oh = boxes[other]
         assert ox - reach <= x + w / 2 < ox + ow + reach and oy - reach <= y + h / 2 < oy + oh + reach, name
     elements, report = ui_kit.split_ui_kit(image)
-    assert_cut_as_drawn(report, elements, drawn)
+    assert_cut_as_drawn(report, elements, drawn, (1, 0, 0.94, 0))
     sheet = tmp_path / "source.png"
     image.save(sheet)
     out, report_path = tmp_path / "parts", tmp_path / "reports" / "kit.json"
@@ -717,7 +717,7 @@ def test_a_squeezed_sheet_missing_several_band_elements_names_those_and_cuts_no_
 def test_a_sheet_squeezed_from_the_top_by_any_accepted_amount_names_the_missing_band_elements(squeeze):
     image, drawn = synthetic_sheet(size=TALL, squeeze=squeeze, missing=PROBE_MISSING)
     elements, report = ui_kit.split_ui_kit(image)
-    assert_cut_as_drawn(report, elements, drawn)
+    assert_cut_as_drawn(report, elements, drawn, (1, 0, squeeze, 0))
 
 
 @pytest.mark.parametrize("subset", range(2 ** len(BAND)))
@@ -729,7 +729,16 @@ def test_every_set_of_missing_band_elements_under_a_random_accepted_drift_is_nam
     drift = accepted_drift(rng)
     image, drawn = synthetic_sheet(size=TALL, drift=drift, missing=missing)
     elements, report = ui_kit.split_ui_kit(image)
-    assert_cut_as_drawn(report, elements, drawn)
+    assert_cut_as_drawn(report, elements, drawn, drift)
+
+
+@pytest.mark.parametrize("name", FRAMES)
+def test_an_empty_frame_box_under_a_random_accepted_drift_still_refuses_the_sheet_by_its_name(name):
+    rng = np.random.default_rng(FRAMES.index(name))
+    missing = [name] + [band for band in BAND if rng.random() < 0.5]
+    image, _ = synthetic_sheet(size=TALL, drift=accepted_drift(rng), missing=missing)
+    with pytest.raises(ValueError, match=f"^{name}: its box holds no element; generate the sheet again$"):
+        ui_kit.split_ui_kit(image)
 
 
 def test_the_accepted_drift_is_the_documented_range():

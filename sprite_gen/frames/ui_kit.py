@@ -6,16 +6,18 @@ draws it (`draw_guide`) and says it (`guide_text`), and the splitter cuts along 
 says which part of the table it holds (`SHEETS`): a square sheet the seven frames, a 2:3 sheet the
 same frames at the same places and the fills, slot, badge, pips and joystick below them. The sheet's
 alpha haze is cleared first (`alpha_floor.clear_haze`), parts are assigned to boxes by centroid
-(when a box is left empty, again to the layout fitted to the drawing, `_fit_layout`), and each
-element's insets and content padding are measured on its own pixels; a fill is fitted to its bar
-frame's content area. The frames are required; an optional element whose box is empty is left out
-and named under `missing`. The report names each element PNG by its path from the report's own
-directory (`report_file`, `element_path`). A kit is written whole into a new or empty output
-directory (`_write_kit`): staged in a hidden directory beside it and renamed into place in one step.
-That rename, or with the report outside the directory the link that names the report, publishes the
-kit: a run that fails or is interrupted before it leaves nothing, one after it the whole kit, and a
-killed run, or one interrupted again while it cleans up, never part of one. A directory that holds
-anything is refused.
+(when a box is left empty or holds parts centred outside it, again to the layout fitted to the
+drawing within the drift a cut accepts, `_search` and `_fit_layout`), and each element's insets and
+content padding are measured on its own pixels; a fill is fitted to its bar frame's content area.
+The frames are required; an optional element whose box is empty is left out and named under
+`missing`. A drawing that drifted further than a cut accepts, or a box whose parts are centred
+outside it, refuses the sheet: no element is cut under a name the drawing does not give it. The
+report names each element PNG by its path from the report's own directory (`report_file`,
+`element_path`). A kit is written whole into a new or empty output directory (`_write_kit`): staged
+in a hidden directory beside it and renamed into place in one step. That rename, or with the report
+outside the directory the link that names the report, publishes the kit: a run that fails or is
+interrupted before it leaves nothing, one after it the whole kit, and a killed run, or one
+interrupted again while it cleans up, never part of one. A directory that holds anything is refused.
 """
 
 from __future__ import annotations
@@ -47,8 +49,14 @@ PADDING_SPAN = 96
 # A round part whose cut is more than this opaque outside the ellipse its bounding box holds was drawn on a
 # square plate, not as a circle (docs/ui-kit.md "Layout").
 ROUND_CORNER_FILL = 0.25
-# Fitting the layout to a drawing that drifted from it (docs/ui-kit.md "Split the sheet"): at most this many
-# rounds of fit and assignment, from at least this many boxes that hold parts.
+# Fitting the layout to a drawing that drifted from it (docs/ui-kit.md "A drawing that drifted from the layout"). The
+# drift a cut accepts: along each axis a scale within DRIFT_SCALE of 1 and an offset within DRIFT_OFFSET px at 1024.
+# The fit starts from the best of DRIFT_STEPS scales by DRIFT_STEPS offsets per axis spread over that range, and runs at
+# most FIT_ROUNDS rounds of fit and assignment, from at least FIT_MIN_BOXES boxes that hold parts. A fit more than a
+# step of that grid outside the range is refused.
+DRIFT_SCALE = 0.1
+DRIFT_OFFSET = 2 * GAP
+DRIFT_STEPS = 9
 FIT_ROUNDS = 8
 FIT_MIN_BOXES = 3
 GUIDE_BACKGROUND = (0xF6, 0xF6, 0xF6)
@@ -378,6 +386,26 @@ def _assign(parts: list[dict[str, Any]], scaled: dict[str, tuple[float, float, f
     return assigned, loose
 
 
+def _bbox(parts: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+    """The bounding box (x0, y0, x1, y1) of ``parts``."""
+    return (min(part["bbox"][0] for part in parts), min(part["bbox"][1] for part in parts),
+            max(part["bbox"][2] for part in parts), max(part["bbox"][3] for part in parts))
+
+
+def _off_centre(assigned: dict[str, list[dict[str, Any]]],
+                scaled: dict[str, tuple[float, float, float, float]]) -> list[str]:
+    """The boxes, in layout order, whose parts are centred outside the box: in the gap beside it or further, where the
+    drawing does not say which element they are."""
+    off = []
+    for name, parts in assigned.items():
+        if parts:
+            x, y, w, h = scaled[name]
+            x0, y0, x1, y1 = _bbox(parts)
+            if not (x <= (x0 + x1) / 2 <= x + w and y <= (y0 + y1) / 2 <= y + h):
+                off.append(name)
+    return off
+
+
 def _fit(assigned: dict[str, list[dict[str, Any]]],
          scaled: dict[str, tuple[float, float, float, float]]) -> tuple[tuple[float, float], ...] | None:
     """The scale and offset along x and y that move the layout's box centres closest (least squares) to the
@@ -386,8 +414,7 @@ def _fit(assigned: dict[str, list[dict[str, Any]]],
     for name, parts in assigned.items():
         if parts:
             x, y, w, h = scaled[name]
-            x0, y0 = min(part["bbox"][0] for part in parts), min(part["bbox"][1] for part in parts)
-            x1, y1 = max(part["bbox"][2] for part in parts), max(part["bbox"][3] for part in parts)
+            x0, y0, x1, y1 = _bbox(parts)
             centres.append((x + w / 2, y + h / 2))
             drawn.append(((x0 + x1) / 2, (y0 + y1) / 2))
     if len(centres) < FIT_MIN_BOXES:
@@ -404,17 +431,75 @@ def _fit(assigned: dict[str, list[dict[str, Any]]],
     return tuple(fit)
 
 
+def _same(one: dict[str, list[dict[str, Any]]], other: dict[str, list[dict[str, Any]]]) -> bool:
+    """Whether two assignments give every box the same parts."""
+    return all(list(map(id, one[name])) == list(map(id, other[name])) for name in one)
+
+
+def _search(parts: list[dict[str, Any]], scaled: dict[str, tuple[float, float, float, float]], reach: float,
+            unit: float) -> dict[str, list[dict[str, Any]]] | None:
+    """The assignment the fit starts from (docs/ui-kit.md "A drawing that drifted from the layout"). The layout's boxes
+    are moved by each drift of a grid over the range a cut accepts (``unit`` sheet pixels to a layout pixel at 1024),
+    the parts assigned to them as `_assign` assigns them, and each assignment fitted as `_fit` fits one; the one whose
+    parts lie nearest the centres of their fitted boxes wins. A box scores 1 for parts centred on its fitted box, down
+    to 0 for parts centred on its edge or outside it, so a box that holds a neighbour's element counts for nothing.
+    None when no drift's boxes hold FIT_MIN_BOXES boxes."""
+    if not parts:
+        return None
+    names = list(scaled)
+    layout = np.asarray([scaled[name] for name in names], dtype=float)  # per box: x, y, w, h
+    centroid = np.asarray([part["centroid"] for part in parts], dtype=float)
+    bbox = np.asarray([part["bbox"] for part in parts], dtype=float)  # per part: x0, y0, x1, y1
+    centre, half = layout[:, :2] + layout[:, 2:] / 2, layout[:, 2:] / 2
+    steps = np.linspace(-1, 1, DRIFT_STEPS)
+    scale = np.repeat(1 + DRIFT_SCALE * steps, DRIFT_STEPS)  # the drifts along one axis
+    offset = np.tile(DRIFT_OFFSET * unit * steps, DRIFT_STEPS)
+    within = []  # per axis, [drift, part, box]: the part's centroid lies in the moved box, widened by the reach
+    for axis in (0, 1):
+        low = (layout[:, axis] - reach) * scale[:, None] + offset[:, None]
+        high = (layout[:, axis] + layout[:, 2 + axis] + reach) * scale[:, None] + offset[:, None]
+        at = centroid[None, :, axis, None]
+        within.append((low[:, None, :] <= at) & (at < high[:, None, :]))
+    best, best_score = None, -np.inf
+    for along_x in within[0]:  # each drift along x, with every drift along y: [drift along y, part, box]
+        both = along_x[None] & within[1]
+        owner = both & (np.cumsum(both, axis=2) == 1)  # each part to the first box that takes it, in layout order
+        held = owner.any(axis=1)
+        count = held.sum(axis=1)
+        valid = count >= FIT_MIN_BOXES
+        off = np.zeros(held.shape)
+        for axis in (0, 1):
+            low = np.where(owner, bbox[None, :, axis, None], np.inf).min(axis=1)
+            high = np.where(owner, bbox[None, :, 2 + axis, None], -np.inf).max(axis=1)
+            drawn = (np.where(held, low, 0.0) + np.where(held, high, 0.0)) / 2
+            box = np.broadcast_to(centre[:, axis], held.shape)
+            n = np.maximum(count, 1)
+            box_mean, drawn_mean = (held * box).sum(axis=1) / n, (held * drawn).sum(axis=1) / n
+            du, dv = held * (box - box_mean[:, None]), held * (drawn - drawn_mean[:, None])
+            spread = np.where(held, box, -np.inf).max(axis=1) - np.where(held, box, np.inf).min(axis=1)
+            suu = (du * du).sum(axis=1)
+            # least squares, or an offset alone when every box that holds parts is centred on one line (`_fit`)
+            s = np.where(spread >= 1, (du * dv).sum(axis=1) / np.where(suu > 0, suu, 1), 1.0)
+            t = drawn_mean - s * box_mean
+            valid &= s > 0
+            safe = np.where(s > 0, s, 1.0)
+            off = np.maximum(off, np.abs(drawn - (safe[:, None] * box + t[:, None])) / (safe[:, None] * half[:, axis]))
+        score = np.where(valid, (held * np.clip(1 - off, 0, None)).sum(axis=1), -np.inf)
+        index = int(np.argmax(score))
+        if score[index] > best_score:
+            best, best_score = owner[index].copy(), score[index]
+    if best is None:
+        return None
+    return {name: [parts[index] for index in np.flatnonzero(best[:, box])] for box, name in enumerate(names)}
+
+
 def _fit_layout(parts: list[dict[str, Any]], scaled: dict[str, tuple[float, float, float, float]], reach: float,
-                assigned: dict[str, list[dict[str, Any]]], required: set[str]) -> tuple[Any, ...] | None:
-    """Fit the layout to a drawing that drifted from it (docs/ui-kit.md "Split the sheet"). Fit the boxes to what
-    they hold, assign the parts to the fitted boxes, and again, until the assignment repeats. Returns the fit,
-    the fitted boxes, and their assignment and loose parts; None unless the fitted boxes leave fewer ``required``
-    boxes empty than the layout's own boxes did, or as many and fewer boxes in all."""
-
-    def empty(held: dict[str, list[dict[str, Any]]]) -> tuple[int, int]:
-        return sum(not held[name] for name in required), sum(not parts for parts in held.values())
-
-    current, found = assigned, None
+                start: dict[str, list[dict[str, Any]]]) -> tuple[Any, ...] | None:
+    """Fit the layout to a drawing that drifted from it (docs/ui-kit.md "A drawing that drifted from the layout"),
+    from the assignment ``start`` (`_search`): fit the boxes to what they hold, assign the parts to the fitted boxes,
+    and again, until the assignment repeats. Returns the fit, the fitted boxes, and their assignment and loose
+    parts; None when ``start`` cannot be fitted."""
+    current, found = start, None
     for _ in range(FIT_ROUNDS):
         fit = _fit(current, scaled)
         if fit is None or min(fit[0][0], fit[1][0]) <= 0:
@@ -423,13 +508,25 @@ def _fit_layout(parts: list[dict[str, Any]], scaled: dict[str, tuple[float, floa
         moved = {name: (x * sx + tx, y * sy + ty, w * sx, h * sy) for name, (x, y, w, h) in scaled.items()}
         following, loose = _assign(parts, moved, (reach * sx, reach * sy))
         found = (fit, moved, following, loose)
-        repeated = all(list(map(id, following[name])) == list(map(id, current[name])) for name in scaled)
-        current = following
-        if repeated:
+        if _same(following, current):
             break
-    if found is None or empty(found[2]) >= empty(assigned):
-        return None
+        current = following
     return found
+
+
+def _drift_refusal(fit: tuple[tuple[float, float], ...], unit: float) -> str | None:
+    """Why a fit lies outside the drift a cut accepts (``unit`` sheet pixels to a layout pixel at 1024), or None. A
+    drawing drawn at the edge of the range, its elements a little off their boxes' centres, is fitted a little to
+    either side of it, so a fit is refused only more than a step of the search's grid outside the range."""
+    (sx, tx), (sy, ty) = fit
+    limit = DRIFT_OFFSET * unit
+    step = 2 / (DRIFT_STEPS - 1)  # a step of the grid, as a share of the range
+    if max(abs(sx - 1), abs(sy - 1)) <= DRIFT_SCALE * (1 + step) and max(abs(tx), abs(ty)) <= limit * (1 + step):
+        return None
+    return (f"the drawing drifted further from the layout than a cut accepts: fitted to it, the layout is scaled "
+            f"{sx:.3f} along x and {sy:.3f} along y and offset {tx:.1f}, {ty:.1f} px, where a cut accepts a scale "
+            f"from {1 - DRIFT_SCALE:g} to {1 + DRIFT_SCALE:g} and an offset of at most {limit:g} px along each axis; "
+            "generate the sheet again")
 
 
 def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
@@ -444,16 +541,25 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
         rgba, cleanup = clear_haze(rgba, floor=alpha_floor, edge=alpha_edge)
     pixels = np.asarray(rgba)
     scaled: dict[str, tuple[float, float, float, float]] = dict(boxes((width, height)))
-    reach = GAP / 2 * width / REFERENCE
+    unit = width / REFERENCE
+    reach = GAP / 2 * unit
     every = _parts(pixels[..., 3] > 0)
     kept = [part for part in every if part["pixels"] >= MIN_PART]
     dropped = len(every) - len(kept)
     assigned, loose = _assign(kept, scaled, (reach, reach))
     required = {slot.name for slot in slots if not slot.optional}
-    fitted = (_fit_layout(kept, scaled, reach, assigned, required) if any(not held for held in assigned.values())
-              else None)
+    fitted = None
+    if any(not held for held in assigned.values()) or _off_centre(assigned, scaled):
+        start = _search(kept, scaled, reach, unit)
+        fitted = None if start is None else _fit_layout(kept, scaled, reach, start)
+        # the layout's own boxes stand when they assign every part as the fitted boxes do, each centred in its box
+        if fitted is not None and _same(fitted[2], assigned) and not _off_centre(assigned, scaled):
+            fitted = None
     if fitted is not None:
         fit, scaled, assigned, loose = fitted
+        drifted = _drift_refusal(fit, unit)
+        if drifted:
+            raise ValueError(drifted)
     unassigned, reasons = [], []
     for part in loose:
         x0, y0, x1, y1 = part["bbox"]
@@ -464,16 +570,20 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
     if refused:
         holds = "its box holds" if len(refused) == 1 else "their boxes hold"
         raise ValueError(f"{', '.join(refused)}: {holds} no element; generate the sheet again")
+    off = _off_centre(assigned, scaled)
+    if off:
+        holds = ("its box holds a part centred outside it (in the gap beside it or further, so the drawing does "
+                 "not say which element it is)" if len(off) == 1 else
+                 "their boxes hold parts centred outside them (in the gap beside them or further, so the drawing "
+                 "does not say which elements they are)")
+        raise ValueError(f"{', '.join(off)}: {holds}; generate the sheet again")
     elements: dict[str, Image.Image] = {}
     records: dict[str, Any] = {}
     for slot in slots:
         parts = assigned[slot.name]
         if not parts:
             continue
-        x0 = min(part["bbox"][0] for part in parts)
-        y0 = min(part["bbox"][1] for part in parts)
-        x1 = max(part["bbox"][2] for part in parts)
-        y1 = max(part["bbox"][3] for part in parts)
+        x0, y0, x1, y1 = _bbox(parts)
         cut = np.zeros((y1 - y0, x1 - x0, 4), dtype=np.uint8)
         for part in parts:
             for y, a, b in part["runs"]:
