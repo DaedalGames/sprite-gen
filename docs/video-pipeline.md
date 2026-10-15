@@ -921,10 +921,12 @@ Gates, all fail-loud: no period (profile flat, below the recorded `periodicity_m
 above `--seam-max` (2.0), GIF/WebP re-opened and checked (frame count, `loop=0`,
 transparent corners, no RGB under alpha 0 in the WebP).
 
-A walk or run loop then has its jump frames repaired before the strip is built: a frame that
-breaks a step 1.4× the loop's median (whole body, or the hair behind it) is replaced by RIFE's
-frame between its two neighbours, at most three and never two side by side (`--repair auto`,
-the default; `--repair off` cuts as filmed). A frame the ghost screen names a filmed ghost, read on
+A walk or run loop then has its jump frames repaired before the strip is built: one or two
+drawings in a row that leave the loop's flow — 3× their region's usual step off the line between
+the frames either side, by direction and speed, not by the size of a step — are taken out and
+made again by RIFE between those frames, each at its own time so the loop keeps its length, at
+most three calls and never made from or beside a frame made (`--repair auto`, the default;
+`--repair off` cuts as filmed). A frame the ghost screen names a filmed ghost, read on
 the cut as filmed, is replaced in the same stage first: by RIFE's frame between the two clean
 frames beside it, else by the clean frame beside it, else kept and named (`ghost_given_way`,
 `ghost_kept`) — a walk of one direction is delivered as cut and never meets the alignment that would

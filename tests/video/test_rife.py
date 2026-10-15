@@ -232,13 +232,13 @@ def test_real_rife_melts_legs_crossing_too_far_and_alignment_takes_the_nearer_fr
 @pytest.mark.real_rife
 def test_real_rife_repair_rejects_outline_loss_and_keeps_the_original_middle(monkeypatch):
     from sprite_gen.video import repair
+    from tests.video.test_loop_repair import forced_flow_group
 
     frames = [_walker(20, -20), _walker(8, -8), _walker(-5, 5), _walker(10, -10)]
     before = [f.tobytes() for f in frames]
     # Isolate adoption from candidate detection: this target spans the wide crossing
     # above, where the actual external RIFE loses an outline the original middle has.
-    scores = np.array([3., 2., 1., 1.])
-    monkeypatch.setattr(repair, "jump_scores", lambda *a, **kw: {k: scores for k in ("whole", "hair", "score")})
+    forced_flow_group(monkeypatch, [1], (0, 2), [0.5])
     interpolate = rife.Rife()
     out, facts = repair.repair_jumps(frames, interpolate)
     assert interpolate.made == facts["attempts"] == 1

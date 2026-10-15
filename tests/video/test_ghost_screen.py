@@ -23,6 +23,7 @@ from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import repair
 from sprite_gen.video.interpolation_quality import GHOST_WARN, faults, ghost_screen
 from tests.video.test_cycle_align import _walker as _block_walker
+from tests.video.test_loop_repair import forced_flow_group
 from tests.video.test_rife import _walker
 
 
@@ -190,11 +191,11 @@ def test_jump_repair_rejects_a_proposal_that_carries_a_ghost(monkeypatch):
     from: the jump repair gives it way first, tests/video/test_ghost_given_way.py.)"""
     frames = [_walker(20, -20), _walker(8, -8), _walker(-5, 5), _walker(10, -10)]
     before = [f.tobytes() for f in frames]
-    scores = np.array([3., 2., 1., 1.])
-    monkeypatch.setattr(repair, "jump_scores", lambda *a, **kw: {k: scores for k in ("whole", "hair", "score")})
+    forced_flow_group(monkeypatch, [1], (0, 2), [0.5])
     out, record = repair.repair_jumps(frames, lambda a, b, t: _band(_walker(8, -8)))
-    assert record["replaced"] == [] and record["rounds"][0]["why"] == "jump" and "ghost" in record["rounds"][0]["faults"]
-    assert record["rounds"][0]["proposal"]["ghost"] > GHOST_WARN and record["rounds"][0]["original"]["ghost"] == 0
+    (round_,) = record["rounds"]
+    assert record["replaced"] == [] and round_["why"] == "flow" and "ghost" in round_["faults"]
+    assert round_["made"][0]["proposal"]["ghost"] > GHOST_WARN and round_["made"][0]["original"]["ghost"] == 0
     assert [f.tobytes() for f in out] == before
 
 

@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Jump frames in a walk loop, found by how much the body's coverage changes, replaced by RIFE.
+"""Frames off a walk loop's flow, found by direction and speed, taken out and made again by RIFE.
 
 A video model redraws thin hair a little differently every frame, and now and then a ponytail
-lands somewhere it was not one frame earlier: one step of the loop changes far more than the
-loop's usual step. That step is a jump; the frame after it is replaced by the frame RIFE makes
-half-way between its two neighbours, and every other frame stays the video's own
-(docs/loop-repair.md section 2). Re-making every frame instead (an offset of half a frame) also
+lands somewhere it was not one frame earlier, or a tail snaps back at a wrap that does not close:
+a frame drawn where the flow does not go. The flow reading (`flow_scores`, `flow_targets`) finds
+it by how far it lies off the line between its neighbours, in the usual steps of the region it is
+read in; the frames off the flow, one or two drawings in a row, are taken out and made again by
+RIFE between the frames either side, each at its own time, and every other frame stays the video's
+own (docs/loop-repair.md section 2). Re-making every frame instead (an offset of half a frame) also
 softens the frames that were fine, and was judged "not corrected" (2026-10-03). A frame the
-ghost screen names a filmed ghost is replaced in the same stage, before the jumps are read: by
+ghost screen names a filmed ghost is replaced in the same stage, before the flow is read: by
 RIFE's frame between its neighbours where both are clean and it has no fault, else by the clean
 frame beside it (docs/loop-repair.md section 4).
 
@@ -15,13 +17,14 @@ Measured on the loop as it plays — cyclic, the last frame followed by the firs
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
 score does not depend on where the canvas put the body.
 
-The flow reading (`flow_scores`, `flow_targets`) reads the same loop by direction and speed
-instead of size: how far each frame lies off the line between its neighbours, in the usual steps
-of the region it is read in (docs/loop-repair.md section 2, "The flow reading").
+The size reading (`jump_scores`) counts how much a step changes, whole body and hair behind it.
+It picked the frames until the flow reading did, and names a fast swing a jump; the jump guard of
+`video-loop-compare` still reads it (docs/loop-comparison.md, "The jump guard").
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from PIL import Image
@@ -31,13 +34,12 @@ from sprite_gen.video import held as held_mod
 from sprite_gen.video.rife import Interpolate, crossfade, ghost, smear
 from sprite_gen.video.interpolation_quality import clean_beside, faults, ghost_screen, looks
 
-# A step this many times the loop's median step (whole body, or the hair behind it) is a jump.
-JUMP_RATIO = 1.4
-# Interpolation calls at most per loop, including rejected proposals. A loop that needs more is jolting everywhere, not jumping
-# once, and a few made frames do not fix it (the jolt index, section 3, says so instead).
+# Interpolation calls at most per loop, a drawing made one call, including rejected proposals. A loop that needs more is
+# jolting everywhere, not jumping once, and a few made frames do not fix it (the jolt index, section 3, says so instead).
 MAX_REPAIRS = 3
 # The hair behind a right-facing body, below the head, as fractions of the union box: where a
-# ponytail cut at the wrong moment jumps. A left-facing body has it on the other side.
+# ponytail cut at the wrong moment jumps (the size reading, and the jolt index's hair). A left-facing
+# body has it on the other side.
 HAIR_BOX_RIGHT = (0.0, 0.30, 0.45, 0.80)
 ALPHA_SOLID = 8  # alpha at or above this is body, as everywhere in video-loop
 BOX_MARGIN = 8  # px around the union box, the strip cells' own side margin
@@ -74,7 +76,8 @@ def steps(alphas: list[np.ndarray], frac: tuple[float, float, float, float] | No
 
 
 def jump_scores(frames: list[Image.Image], *, facing: str = "right", box: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
-    """Per step: the whole body's change and the hair's, each over its own median; the score is the larger."""
+    """The size reading, per step: the whole body's change and the hair's, each over its own median; the score
+    is the larger. The jump guard of `video-loop-compare` reads it (`restoration.jump`); the repair reads the flow."""
     al = coverage(frames, box or union_box(frames))
     whole, hair = steps(al), steps(al, hair_box(facing))
     mw, mh = float(np.median(whole)), float(np.median(hair))
@@ -95,6 +98,9 @@ FLOW_BLUR = 0.03  # the blur's sigma, of the body height: a shape moved one ordi
 FLOW_GRID = 4  # the union box in FLOW_GRID x FLOW_GRID cells, read in windows of 2 x 2 cells at a stride of one cell
 FLOW_LIMIT = 3.0  # a frame this many of its window's usual steps off the line between its neighbours leaves the flow
 FLOW_SPAN = 2  # frames in a row a group takes out at most, to be made again between the frames either side
+# The share of a held loop's runs that show their drawing for the hold, a frame more or less (a slip): under it the
+# runs are not the hold, and the loop is read a drawing a frame (`flow_drawings`).
+HELD_RUNS = 0.75
 _LUMA = np.array([0.299, 0.587, 0.114])
 
 
@@ -168,7 +174,13 @@ def flow_drawings(states: np.ndarray) -> tuple[list[list[int]], int]:
     three frames: the repeat is the same point of the path, and its step of nothing beside the drawing's
     step of two would read as a lurch at every drawing. The hold is `held.measure`'s, read on the steps of
     this path as a ring; a frame whose step from the frame before it is under its boundary repeats that
-    frame's drawing. A loop drawn every frame (hold 1) is a drawing a frame."""
+    frame's drawing. A loop drawn every frame (hold 1) is a drawing a frame.
+
+    A loop whose only large steps are the steps into and out of a few jumps can read as held there: its
+    ordinary steps the repeats, its jumps the drawings. On those drawings its jumps would read as ordinary
+    steps, and a drawing made again would stand for every frame of a run of five. Its runs are not its
+    hold: a hold is taken only where at least HELD_RUNS of the runs are the hold, a frame more or less,
+    and the loop is otherwise read a drawing a frame."""
     n = len(states)
     steps = [float(np.linalg.norm(states[(k + 1) % n] - states[k])) for k in range(n)]
     # The hold is read on the rhythm of the steps; the rate only says how many drawings a second, unused here.
@@ -185,6 +197,8 @@ def flow_drawings(states: np.ndarray) -> tuple[list[list[int]], int]:
             runs[-1].append(t)
         else:
             runs.append([t])
+    if sum(abs(len(run) - hold) <= 1 for run in runs) < HELD_RUNS * len(runs):
+        return [[t] for t in range(n)], 1
     return runs, hold
 
 
@@ -227,24 +241,42 @@ def flow_scores(frames: list[Image.Image], *, box: tuple[int, int, int, int] | N
     return {**{k: v[of] for k, v in per.items()}, "windows": flow["fractions"], "hold": flow["hold"]}
 
 
+def between_time(a: int, frame: int, b: int, count: int) -> float:
+    """The time of `frame` on the way from frame `a` to frame `b` of a loop `count` frames long, 0..1, in play
+    order (the wrap included): a frame made there shows the pose at its own time, so the loop keeps its length,
+    every frame its time, and a drawing held on twos its two frames."""
+    return ((frame - a) % count) / ((b - a) % count)
+
+
 def flow_targets(frames: list[Image.Image], *, limit: float = FLOW_LIMIT, span: int = FLOW_SPAN,
-                 box: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+                 box: tuple[int, int, int, int] | None = None, fixed: Iterable[int] = ()) -> dict[str, Any]:
     """The frames that leave the loop's flow, in groups to take out and make again between the frames either
     side (docs/loop-repair.md section 2, "The flow reading"). Read on the loop's drawings (`flow_drawings`):
     a frame on its own where every frame is a drawing, all the frames that show it on twos or threes.
 
-    The worst drawing at or over `limit` first: the fewest drawings in a row around it (one, then up to
-    `span`) whose straight in-between from the drawing before them to the drawing after brings every drawing
-    it touches under `limit`, the smallest result among the groups that do; the path then reads with that
-    in-between, and the next worst drawing is read. A group never takes, or is made from, a drawing a group
-    before it took. A drawing no group of up to `span` brings under `limit` is `unfixed`. Each group: its
-    `frames` in play order, `off` (the worst of its drawings before) with its `turn`, `into`, `out` and
-    `window`, and `off_after`. The in-between is the straight line of the blurred path, a stand-in for the frames RIFE
-    makes there: it says which frames to take out, not how the made frames will look."""
+    The worst drawing at or over `limit` first. A group is up to `span` drawings in a row that take that
+    drawing or lie beside it; its in-between is the straight line of the path from the drawing before the
+    group to the drawing after, each drawing at its own time (`between_time`). Of the groups whose in-between
+    brings every drawing from the one before them to the one after under `limit`, the one taken is the one
+    whose every drawing the in-between moves furthest (`move`, the least over its drawings of the move in its
+    worst window, in the window's usual steps): the drawings off the flow, not the ones beside them that read
+    off only because a neighbour is, and no drawing the in-between hardly moves. A pair flung together is taken
+    out whole, where an in-between beside it would bring the reading under `limit` by smoothing its edges and
+    leave it standing; a part that snaps back at the wrap is one frame on either side of it, where two would
+    spread the snap over a frame the in-between hardly moves. Ties go to the smaller result, then the fewer
+    drawings. The path then reads with that in-between, and the next worst drawing is read. A group never
+    takes, or is made from, a drawing a group before it took, or a drawing that shows a frame in `fixed`
+    (made, given way or refused already). A drawing no group brings under `limit` is `unfixed`.
+
+    Each group: its `frames` in play order, the `drawings` it takes (the frames that show each), the
+    `neighbours` it is made from (the first frame of the drawing before it and of the drawing after), each
+    drawing's time `t` between them, `off` (the worst of its drawings before) with its `turn`, `into`, `out` and
+    `window`, `move`, and `off_after`. The in-between is the straight line of the blurred path, a stand-in for
+    the frames RIFE makes there: it says which frames to take out, not how the made frames will look."""
     flow = _flow(frames, box)
     first = _drawing_scores(flow)
     runs, windows, scale = flow["runs"], flow["windows"], flow["scale"]
-    n = len(runs)
+    n, count = len(runs), len(frames)
     record: dict[str, Any] = {"limit": limit, "span": span, "blur": FLOW_BLUR, "grid": FLOW_GRID, "hold": flow["hold"],
                               "drawings": n, "off_max_before": round(float(first["off"].max()), 4), "groups": [], "unfixed": []}
     if n < 4:
@@ -254,42 +286,49 @@ def flow_targets(frames: list[Image.Image], *, limit: float = FLOW_LIMIT, span: 
     def reading(path: np.ndarray) -> np.ndarray:
         return (_flow_read(path, windows)[0] / scale).max(axis=1)
 
+    def moved(made: np.ndarray, path: np.ndarray, group: list[int]) -> float:
+        return min(max(float(np.linalg.norm(made[g, y0:y1, x0:x1] - path[g, y0:y1, x0:x1]) / scale[i])
+                       for i, (y0, y1, x0, x1) in enumerate(windows)) for g in group)
+
     def said(d: int) -> dict[str, Any]:
         return {"off": round(float(first["off"][d]), 4), "turn": round(float(first["turn"][d]), 4),
                 "into": round(float(first["into"][d]), 4), "out": round(float(first["out"][d]), 4),
                 "window": [round(v, 4) for v in flow["fractions"][int(first["window"][d])]]}
 
-    path, taken, unfixed = flow["path"].copy(), set(), set()
+    of = {t: d for d, run in enumerate(runs) for t in run}
+    taken = {of[t] for t in fixed}
+    path, unfixed = flow["path"].copy(), set()
     current = reading(path)
     while True:
         open_ = [d for d in np.argsort(-current, kind="stable") if current[d] >= limit and d not in taken and d not in unfixed]
         if not open_:
             break
         d = int(open_[0])
-        tried: list[tuple[float, list[int], np.ndarray]] = []
-        ok: list[tuple[float, list[int], np.ndarray]] = []
+        tried: list[tuple[float, float, list[int], int, int, np.ndarray]] = []
         for size in range(1, min(span, n - 2) + 1):
-            for start in range(d - size + 1, d + 1):
+            # the groups of `size` that take d or lie beside it: d is between the drawing before them and the one after
+            for start in range(d - size, d + 2):
                 group = [(start + i) % n for i in range(size)]
                 a, b = (start - 1) % n, (start + size) % n
                 if {a, b, *group} & taken:
                     continue
                 made = path.copy()
-                for i, g in enumerate(group):
-                    made[g] = path[a] + (i + 1) / (size + 1) * (path[b] - path[a])
+                for g in group:
+                    made[g] = path[a] + between_time(runs[a][0], runs[g][0], runs[b][0], count) * (path[b] - path[a])
                 after = reading(made)
-                tried.append((float(max(after[(a + i) % n] for i in range(size + 2))), group, made))
-            ok = [x for x in tried if x[0] < limit]
-            if ok:
-                break
+                tried.append((float(max(after[(a + i) % n] for i in range(size + 2))), moved(made, path, group), group, a, b, made))
+        ok = [x for x in tried if x[0] < limit]
         if not ok:
             unfixed.add(d)
             record["unfixed"].append({"frames": runs[d], **said(d),
                                       "off_after": round(min((x[0] for x in tried), default=float(current[d])), 4)})
             continue
-        result, group, made = min(ok, key=lambda x: x[0])
+        result, move, group, a, b, made = max(ok, key=lambda x: (round(x[1], 9), -x[0], -len(x[2])))
         worst = max(group, key=lambda g: float(first["off"][g]))
-        record["groups"].append({"frames": [t for g in group for t in runs[g]], **said(worst), "off_after": round(result, 4)})
+        record["groups"].append({"frames": [t for g in group for t in runs[g]], "drawings": [runs[g] for g in group],
+                                 "neighbours": [runs[a][0], runs[b][0]],
+                                 "t": [round(between_time(runs[a][0], runs[g][0], runs[b][0], count), 4) for g in group],
+                                 **said(worst), "move": round(move, 4), "off_after": round(result, 4)})
         taken |= set(group)
         path, current = made, reading(made)
     record["off_max_after"] = round(float(current.max()), 4)
@@ -334,38 +373,41 @@ def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], inter
 
 
 def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, facing: str = "right",
-                 ratio: float = JUMP_RATIO, max_frames: int = MAX_REPAIRS,
+                 limit: float = FLOW_LIMIT, span: int = FLOW_SPAN, max_frames: int = MAX_REPAIRS,
                  screen: dict[str, Any] | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
-    """Replace each filmed ghost the screen names, then the frame that breaks each jump with RIFE's
-    frame between its neighbours, worst jump first.
+    """Replace each filmed ghost the screen names, then take out each group of frames off the loop's flow and
+    make it again with RIFE between the frames either side, worst first (docs/loop-repair.md section 2).
 
     `screen` is the ghost screen of `frames` as filmed (`interpolation_quality.ghost_screen`, read
     here when not given). Each ghost it names is a round of its own (`why` ghost, in frame order,
     outside the call budget): RIFE's frame between its two neighbours where both are clean and the
     frame has no fault, else the clean frame beside it (the frame after it, else the one before it),
-    else, both being filmed ghosts too, the ghost kept (`_give_way`). The jumps are then read on
-    the loop as the ghosts left it (`why` jump): at most `max_frames` calls, and never next to a
-    frame already made or given way: two made frames side by side are made from each other and
-    melt the legs. A proposal with a shared interpolation-quality fault — a ghost too, on its own
-    coverage, where the screen reads the loop — keeps the original middle frame; a proposal that
-    cross-fades two drawings inside its silhouette is still taken, its round naming it (`look`).
-    Blocked and rejected targets do not end the search for independent targets. `interpolate` may
-    be None: a ghost then gives way to the clean frame beside it, and the jump search stops at the
-    first frame it would make, naming it (`unmade`). Scores are re-read after each replacement, on
-    the union box of the original loop."""
+    else, both being filmed ghosts too, the ghost kept (`_give_way`). The flow is then read on the
+    loop as the ghosts left it (`flow_targets`, `why` flow): the worst group first, one call a drawing
+    it takes, each drawing made at its own time between the group's neighbours (`between_time`) and
+    shown on every frame the drawing was — the loop keeps its length, every frame its time, a drawing
+    held on twos its two frames. At most `max_frames` calls; a group the calls left cannot pay for
+    stops the stage (`left`). Never made from or beside a frame already made or given way: two made
+    frames side by side are made from each other and melt the legs. A group whose made drawings carry
+    a shared interpolation-quality fault — a ghost too, on its own coverage, where the screen reads
+    the loop — keeps every frame it would take, as filmed, and nothing is made from or beside them
+    (`refused`); a made drawing that cross-fades two drawings inside its silhouette is still taken,
+    its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
+    beside it, and the flow search stops at the first group it would make, naming it (`unmade`). The
+    flow is read again after each group, on the union box of the original loop. `facing` reads nothing
+    here: it is recorded for the jump guard of `video-loop-compare` (`restoration.jump`)."""
     out = list(frames)
     n = len(out)
     box = union_box(frames)
     screen = screen if screen is not None else ghost_screen(frames)
     reads = bool(screen["reads"])
-    first = jump_scores(out, facing=facing, box=box)
     record: dict[str, Any] = {
-        "ratio": ratio, "max_frames": max_frames, "facing": facing, "hair_box": list(hair_box(facing)),
-        "score_max_before": round(float(first["score"].max()), 4), "replaced": [], "rounds": [],
-        "blocked": [], "attempts": 0,
+        "reading": "flow", "limit": limit, "span": span, "max_frames": max_frames, "facing": facing,
+        "off_max_before": round(float(flow_scores(frames, box=box)["off"].max()), 4), "replaced": [], "rounds": [],
+        "refused": [], "attempts": 0,
     }
     if n < 4:
-        record.update(stopped="loop shorter than 4 frames", score_max_after=record["score_max_before"])
+        record.update(stopped="loop shorter than 4 frames", off_max_after=record["off_max_before"])
         return out, record
     replaced: list[int] = []
     ghosts = {g["frame"]: g["ghost"] for g in screen["ghosts"]}
@@ -374,61 +416,55 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
         record["rounds"].append(round_)
         if "replaced" in round_:
             replaced.append(j)
-    attempted: set[int] = set()
-    blocked: set[int] = set()
-    stopped = f"{max_frames} interpolation calls used"
-    scores = jump_scores(out, facing=facing, box=box) if replaced else first
-    for _ in range(max_frames):
-        selected = None
-        for k0 in np.argsort(-scores["score"], kind="stable"):
-            k = int(k0)
-            score = float(scores["score"][k])
-            if score < ratio:
-                break
-            # Two jumps around a stray frame point back to that frame; a single cut points
-            # to the frame after the step. This is the existing target rule, worst first.
-            before, after = float(scores["score"][(k - 1) % n]), float(scores["score"][(k + 1) % n])
-            j = k if before >= ratio and before > after else (k + 1) % n
-            if j in replaced or (j - 1) % n in replaced or (j + 1) % n in replaced:
-                if j not in blocked:
-                    record["blocked"].append({"target": j, "reason": "already-made-or-adjacent"})
-                    blocked.add(j)
-                continue
-            if j in attempted:
-                continue
-            selected = (k, j, score)
+    refused: list[int] = []
+    calls = 0
+    while True:
+        plan = flow_targets(out, limit=limit, span=span, box=box, fixed=[*replaced, *refused])
+        record.setdefault("hold", plan["hold"])
+        record.setdefault("drawings", plan["drawings"])
+        if not plan["groups"]:
+            stopped = ("no frame off the flow" if not plan["unfixed"] else
+                       f"no group of up to {span} drawings brings the frames left off the flow under {limit:g} (`unfixed`)")
             break
-        if selected is None:
-            stopped = (f"no step at or above {ratio}x the median" if float(scores["score"].max()) < ratio
-                       else "no independent unattempted target; remaining targets rejected or next to a frame already made")
+        group = plan["groups"][0]
+        need = len(group["drawings"])
+        if calls + need > max_frames:
+            stopped = (f"{max_frames} interpolation calls used" if calls >= max_frames else
+                       f"the next group needs {need} interpolation calls, {max_frames - calls} left")
+            record["left"] = [{"frames": g["frames"], "off": g["off"]} for g in plan["groups"]]
             break
-        k, j, score = selected
         if interpolate is None:
-            record["unmade"] = {"step": [k, (k + 1) % n], "target": j, "score": round(score, 4)}
-            stopped = "a frame to make after a jump and no interpolator"
+            record["unmade"] = {k: group[k] for k in ("frames", "neighbours", "off")}
+            stopped = "a frame to make off the flow and no interpolator"
             break
-        a, b = out[(j - 1) % n], out[(j + 1) % n]
-        made = interpolate(a, b, 0.5)
-        if made.mode != "RGBA" or made.size != out[j].size:
-            raise ValueError("repair interpolator must return an RGBA frame of the original size")
-        attempted.add(j)
-        measure = {**smear(made, a, b), "ghost": ghost(made) if reads else None, "crossfade": crossfade(made, a, b, 0.5)}
-        wrong = faults(measure)
-        if not made.getchannel("A").getbbox():
-            wrong.append("empty")
-        record["rounds"].append({"why": "jump", "step": [k, (k + 1) % n], "target": j, "score": round(score, 4),
-                                 "whole": round(float(scores["whole"][k]), 4), "hair": round(float(scores["hair"][k]), 4),
-                                 "original": {**smear(out[j], a, b), "ghost": ghost(out[j]) if reads else None},
-                                 "proposal": measure, "faults": wrong, "look": looks(measure),
-                                 "outcome": "rejected" if wrong else "accepted", **({"replaced": j} if not wrong else {})})
-        if not wrong:
-            out[j] = made
-            replaced.append(j)
-            scores = jump_scores(out, facing=facing, box=box)
-    record["replaced"] = replaced
-    record["attempts"] = len(attempted)
-    record["stopped"] = stopped
-    record["score_max_after"] = round(float(scores["score"].max()), 4)
+        ia, ib = group["neighbours"]
+        a, b = out[ia], out[ib]
+        made: list[tuple[list[int], Image.Image, dict[str, Any]]] = []
+        for drawing in group["drawings"]:
+            t = between_time(ia, drawing[0], ib, n)
+            frame = interpolate(a, b, t)
+            if frame.mode != "RGBA" or frame.size != out[drawing[0]].size:
+                raise ValueError("repair interpolator must return an RGBA frame of the original size")
+            measure = {**smear(frame, a, b), "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, a, b, t)}
+            wrong = faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"])
+            made.append((drawing, frame, {
+                "frames": drawing, "t": round(t, 4), "proposal": measure, "faults": wrong, "look": looks(measure),
+                "original": {**smear(out[drawing[0]], a, b), "ghost": ghost(out[drawing[0]]) if reads else None}}))
+        calls += need
+        wrong = sorted({f for *_, m in made for f in m["faults"]})
+        round_ = {"why": "flow", **group, "made": [m for *_, m in made], "faults": wrong,
+                  "look": sorted({w for *_, m in made for w in m["look"]}), "outcome": "rejected" if wrong else "accepted"}
+        if wrong:
+            refused.extend(group["frames"])
+        else:
+            for drawing, frame, _ in made:
+                for k in drawing:
+                    out[k] = frame
+            replaced.extend(group["frames"])
+            round_["replaced"] = group["frames"]
+        record["rounds"].append(round_)
+    record.update(replaced=replaced, refused=refused, attempts=calls, stopped=stopped, unfixed=plan["unfixed"],
+                  off_max_after=plan["off_max_before"])
     return out, record
 
 

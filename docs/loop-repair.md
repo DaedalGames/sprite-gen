@@ -66,7 +66,7 @@ cut before RIFE existed still cuts — and nothing is left unsaid:
 
 | Where | Default without RIFE | Asked for by name |
 |---|---|---|
-| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the step, target and score the jump search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced | `--repair on`: fails with the install line |
+| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced | `--repair on`: fails with the install line |
 | `video-set` cycle alignment (section 4) | `--align-cycles auto`: the state is skipped and every loop keeps its own length; `cycle_align.<state>` reads `applied: false` with `why`, `rife`, `install`; the set report lists it under `warnings`; one `video-set: warning:` line | `video-cycle-align`: fails with the install line |
 
 A RIFE that is found and then fails (a binary that cannot reach Vulkan, say) is an error in every
@@ -159,18 +159,20 @@ the zip's `LICENSE` with it.
 
 A walk or run loop (`--state walk|run`) is read, after it is cut and anchored, as it will play:
 cyclic, the last frame followed by the first, inside the union box of the body over the loop
-(the strip cells' own crop). For every step k → k+1 two numbers are taken — the mean change of
-coverage over the whole box, and over the hair behind the body, each divided by its own median
-over the loop — and the larger is the step's score.
+(the strip cells' own crop). The frames that leave the loop's flow — one or two drawings in a row
+that lie far off the line between the frames either side of them, by direction and speed, not by
+how much a step changes ([the flow reading](#the-flow-reading--a-frame-off-the-walks-way-not-a-large-step)
+below) — are taken out and made again by RIFE between the frames either side.
 
 | Rule | Value | Why |
 |---|---|---|
-| A jump | a score of at least **1.4** (`JUMP_RATIO`) | the ponytail cuts the experiment found sat at 1.5–2.5; a smooth take's worst step sits near 1.3 |
-| The hair box | (0, 0.30)–(0.45, 0.80) of the union box for a right-facing body; mirrored for `--facing left` | below the head and behind the body, where a ponytail cut at the wrong moment jumps |
-| The frame remade | the frame after the jump; but when the step *into* frame k is a jump too and larger than the step after k+1, frame k itself (a single stray frame breaks two steps) | remaking the frame after a stray frame leaves the stray standing |
-| How | propose RIFE's frame half way between the two neighbours, inspect it, then adopt it only without interpolation faults | a rejected proposal keeps the original middle frame; every other frame stays the video's own |
-| How many | at most **3 calls** (`MAX_REPAIRS`), rejected proposals included, worst eligible target first | a loop that needs more is jolting everywhere, not jumping once |
-| Never | a frame next to one already made | two made frames side by side are made from each other and melt the legs |
+| A frame off the flow | an `off` of at least **3.0** (`FLOW_LIMIT`): that many of its region's usual steps off the line between its neighbours | an ordinary walk reads at most 1.65, a part flung 5 % of the body height against its sway 2.8 to 4.1 (below) |
+| What is taken out | a group of one or two drawings in a row (`FLOW_SPAN`), worst first (`repair.flow_targets`, "Which frames" below); on twos or threes a drawing is every frame that shows it | the drawings off the flow, not the frames beside them that read off only because a neighbour is |
+| What it is made from | the frames either side of the group — the first frame of the drawing before it and of the drawing after it (`neighbours`) | the video's own frames, never a frame made |
+| When each made frame stands | each drawing at its own time between the two: t = (its first frame − the frame before) / (the frame after − the frame before), counted in play order across the wrap (`repair.between_time`) — a half for one frame, a third and two thirds for two in a row, and a half for a drawing on twos whose neighbours show from two frames before it and two after | the loop keeps its length and every frame its time; a drawing made is shown on every frame the drawing was, so a loop held on twos stays held |
+| How | one RIFE call a drawing; the group is taken only when none of its made frames has an interpolation fault (below) | a refused group keeps every frame it would take, as filmed; every other frame stays the video's own |
+| How many | at most **3 calls** (`MAX_REPAIRS`), refused groups included, worst group first; a group the calls left cannot pay for stops the stage (`left`) | a loop that needs more is jolting everywhere, not jumping once |
+| Never | made from or beside a frame already made, given way or refused | two made frames side by side are made from each other and melt the legs; the frames beside a refused group read off only because it does, and an in-between there would smooth toward it |
 
 Re-making every frame (an offset of half a frame) is not offered: it softens the frames that
 were fine, and it was judged "not corrected" (2026-10-03).
@@ -187,22 +189,28 @@ own (`why: "ghost"`), in frame order, before the jumps are read:
 | RIFE's frame has a fault, a frame beside it is a filmed ghost too, or no RIFE is installed | the clean frame beside it: the one after, else the one before (`interpolation_quality.clean_beside`, the alignment's own choice at a time on a ghost) | `{"source": k}` |
 | both frames beside it are filmed ghosts too | nothing: the ghost is kept, named, and the direction is to be filmed again | `null` |
 
-Ghost rounds are outside the three-call budget, which is the jumps'. A cell given way is in
-`replaced` like a jump frame made, so the rule "never next to a frame already made" holds around
-it too, and the jumps are then read on the loop as the ghosts left it. A cell given way to the
+Ghost rounds are outside the three-call budget, which is the flow groups'. A cell given way is in
+`replaced` like a frame made for the flow, so the rule "never made from or beside a frame already
+made" holds around it too, and the flow is then read on the loop as the ghosts left it. A cell given way to the
 frame beside it is that frame shown twice in a row — a step of nothing and a step of two — and the
 jolt index (section 3) measures it as it plays; the GIF and WebP hold it as one frame of twice the
 delay, and are checked for one frame per run of identical cells. The seam gate reads it as filmed
 (below). A loop the screen does not read (drawn part-covered, `reads: false`) has no ghost round.
 
-The report's `jump_repair` carries `replaced` (cycle frame indices, ghost and jump rounds alike), `attempts` (the jumps' calls),
-`blocked` targets, and each round's `why` (`ghost` or `jump`), target, `original` and `proposal`
-measurements (with each one's `ghost`, and the proposal's `crossfade`), `faults`, `look` and
-`outcome`. A jump round adds its step, score and whole/hair parts, its `outcome` `accepted` or
-`rejected`. A ghost round adds its `neighbours`, `taken` and `outcome` (`accepted` for RIFE's
-frame, `given-way` for the frame beside it, `kept`), and `no_proposal` where no frame was made
-("a frame beside it is a filmed ghost too", "no interpolator"); its `original.ghost` is the
-screen's reading. The report and its summary also carry `ghost_given_way` (`frame`, `ghost`,
+The report's `jump_repair` carries `reading` (`flow`), `limit`, `span` and `max_frames`; `facing`,
+recorded for the jump guard of `video-loop-compare`, which reads the size (below; the repair reads
+the flow whichever way the body faces); `hold` and `drawings`, the flow reading's of the loop as the
+ghosts left it; `replaced` (cycle frame indices, ghost and flow rounds alike), `refused` (the frames
+of the groups refused), `attempts` (the flow rounds' calls), `unfixed` and `left`; and each round's
+`why` (`ghost` or `flow`) and `outcome`. A flow round carries its group as `flow_targets` names it —
+`frames`, `drawings`, `neighbours`, `t`, `off`, `turn`, `into`, `out`, `window`, `move` and `off_after`
+(the reading the straight in-between brings it to) — and `made`, per drawing: its `frames`, `t`,
+`original` and `proposal` measurements (with each one's `ghost`, and the proposal's `crossfade`),
+`faults` and `look`. The round's own `faults` and `look` are its drawings' together, its `outcome`
+`accepted` or `rejected`. A ghost round carries its target, `original` and `proposal`, `faults`,
+`look`, `neighbours`, `taken` and `outcome` (`accepted` for RIFE's frame, `given-way` for the frame
+beside it, `kept`), and `no_proposal` where no frame was made ("a frame beside it is a filmed ghost
+too", "no interpolator"); its `original.ghost` is the screen's reading. The report and its summary also carry `ghost_given_way` (`frame`, `ghost`,
 `taken`) and `ghost_kept` (`frame`, `ghost`), and the strip metadata carries each where it is not
 empty: `cycle/` is what `video-cycle-align` reads as `cycle.source/`, and its screen no longer
 sees a ghost given way, so the strip says what the cut gave way, in frames of the cut. A
@@ -213,19 +221,21 @@ made for the source projection and for restoration, which never restores it ([th
 guard](loop-comparison.md#the-ghost-guard)). `--repair off` gives nothing way: the cut's ghosts are
 delivered as filmed, named (section 4).
 
-Blocked targets are skipped while independent candidates remain. Scores are re-read
-after adoption; a rejected target is never retried in that run. The circular last/first
-adjacency rule and call budget still apply. The shared `interpolation_quality` policy
+The flow is read again after each group, on the union box of the loop as filmed; a refused group is
+never tried again in that run, and nothing is made from or beside it. The circular last/first
+adjacency rule and the call budget hold across the wrap. The shared `interpolation_quality` policy
 is the same one used by cycle alignment: `dark_excess > 0.001` or
 `outline_loss > 0.05` rejects a proposal, and so does a proposal that is a ghost on its own
 coverage (`ghost` over 0.003, read where the loop's ghost screen reads it, section 4). An empty
-proposal is also rejected. A proposal that cross-fades two drawings inside its silhouette
-(`crossfade` over 0.015, section 4) is taken all the same and named: its round's `look` says so, and
-a `warning:` line names the frame.
-The original middle frame is retained, not a duplicate of either neighbour.
+proposal is also rejected. One made frame at fault refuses its whole group. A proposal that
+cross-fades two drawings inside its silhouette (`crossfade` over 0.015, section 4) is taken all the
+same and named: its round's `look` says so, and a `warning:` line names the frames.
+A refused group keeps its frames as filmed, not a duplicate of a neighbour.
 
-The jump rounds' record is above; `jump_repair` also records `score_max_before` (the cut as
-filmed) / `score_max_after`, why it stopped, and which interpolator made the proposals. Rejection is not overall quality failure
+`jump_repair` also records `off_max_before` (the flow reading of the cut as filmed) /
+`off_max_after` (of the loop as it now plays), why it stopped (`stopped`: "no frame off the flow",
+the frames left `unfixed`, the calls used, or no interpolator), and which interpolator made the
+proposals. Rejection is not overall quality failure
 or success: original drawing changes and normal gait motion can remain.
 When a frame was made — RIFE's, for a jump or for a filmed ghost — the seam gate measures the
 rendered cells (`seam_measurement: rendered-cells`), because the source frames no longer say what
@@ -241,24 +251,28 @@ that only gave its ghosts way to the frames beside them is gated on its source f
 
 To compare an active result with a final candidate after all processing, use
 [`video-loop-compare`](loop-comparison.md); a seam pass alone is not an improvement.
-A replaced cell restored later from its source frame is compared with these
-same scores around it, with the recorded `facing`: a restoration that brings
+A replaced cell restored later from its source frame is compared with the
+size reading around it (`repair.jump_scores`, the change of coverage over the whole box and the hair
+behind the body, with the recorded `facing`): a restoration that brings
 the jump back is not an improvement ([the jump guard](loop-comparison.md#the-jump-guard)).
 
 RIFE is located only when a frame is to be made. A loop with a jump and no RIFE is cut as filmed
 with a warning under `--repair auto`, and fails under `--repair on` (section 1, "Without RIFE");
 so does a filmed ghost between two clean frames under `--repair on`. Under `--repair auto` each
 filmed ghost then gives way to the clean frame beside it (`no_proposal: "no interpolator"`), and
-only a jump left (`unmade`: the step, target and score the search stopped at) sets `why`, `rife`
-and `install`.
+only a jump left (`unmade`: the `frames`, `neighbours` and `off` of the group the search stopped at)
+sets `why`, `rife` and `install`.
 `--repair off` cuts the loop as filmed and records `jump_repair: {"applied": false, "why":
 "--repair off"}`. Other states are not touched (`"why": "not a gait state (…)"`).
 
-Checked on the 2026-10-03 takes (`retime.py` in the experiment folder is the reference): the
-engine replaces the same frames as the experiment on every take tried — Lite side E1
+Until the flow reading picked the frames, the size reading did: a step whose change of coverage,
+over the whole box or the hair behind the body, was at least 1.4 times the loop's median remade
+the frame after it, half way between its neighbours. Checked on the 2026-10-03 takes with it
+(`retime.py` in the experiment folder is the reference), that engine replaced the same frames as the experiment on every take tried — Lite side E1
 [0, 16, 8] (score 1.75 → 1.42), Lite back-diagonal NE2 [13, 0] (1.60 → 1.43), Pro side E1
 [3, 15, 19], Pro back-diagonal NE2 [9], Lite front S2 [0, 11, 14], and nothing in the smooth
-Lite side E2. About 0.7 s a replaced frame on the Mac's GPU.
+Lite side E2. About 0.7 s a replaced frame on the Mac's GPU. Those takes have not been read with
+the flow reading.
 
 ### The flow reading — a frame off the walk's way, not a large step
 
@@ -267,8 +281,7 @@ amounts — a leg swung through moves far in one frame, a planted foot not at al
 walk the size reading names fast swings as jumps (on the synthetic walks below, five to eighteen
 steps of a loop that has none), and a frame that pops against the way a part is going reads no
 larger than a swing. `repair.flow_scores` and `repair.flow_targets` read the same loop by direction
-and speed instead. They are measured, not yet acted on: `--repair auto` still picks its frames by
-the size reading.
+and speed instead, and `--repair auto` takes out the frames `flow_targets` names (above).
 
 **What is read.** Each frame is a point of the loop's path: its coverage and its shading (luma
 times coverage) inside the union box, averaged down to a grid a third of the blur's size and
@@ -296,23 +309,42 @@ every drawing, read frame by frame, and a median step that falls between the two
 read on the drawings instead (`flow_drawings`): the hold is `held.measure`'s, read on the path's own
 steps as a ring, a frame whose step from the frame before it is under its boundary repeats that
 drawing, and every frame that shows a drawing reads the drawing's values. A loop drawn every frame is
-a drawing a frame.
+a drawing a frame. A loop whose only large steps are the steps into and out of a few jumps can read
+as held to `held.measure` — its ordinary steps the repeats, its jumps the drawings; on those drawings
+its jumps would read as ordinary steps, and a drawing made again would stand for every frame of a
+run of five. Its runs are not its hold, so a hold is taken only where at least three in four runs
+(`HELD_RUNS`) show their drawing for the hold, a frame more or less (a slip); the loop is otherwise
+read a drawing a frame. A held loop's runs are its hold by construction.
 
-**Which frames.** `flow_targets` takes the worst drawing at or over `FLOW_LIMIT` (3.0) first: the
-fewest drawings in a row around it (one, then two, `FLOW_SPAN`) whose straight in-between, from the
-drawing before them to the drawing after, brings every drawing it touches under the limit — the
-smallest result among those that do. The path then reads with that in-between and the next worst
-drawing is read. A group never takes, or is made from, a drawing a group before it took (two made
-frames side by side are made from each other). A drawing no group of up to two brings under the
-limit is `unfixed`. A flung frame is one group of one (on twos, the two frames that show it); a part
-that snaps back at a wrap that does not close is the frame on one side of the wrap, or both. The
-straight line is a stand-in for the frames RIFE makes there: it says which frames to take out, not
-how the made frames will look.
+**Which frames.** `flow_targets` takes the worst drawing at or over `FLOW_LIMIT` (3.0) first. A
+group is one or two drawings in a row (`FLOW_SPAN`) that take it or lie beside it; its in-between is
+the straight line of the path from the drawing before the group to the drawing after, each drawing at
+its own time (the time rule above). Of the groups whose in-between brings every drawing from the one
+before them to the one after under the limit, the one taken is the one whose every drawing the
+in-between moves furthest (`move`: the least, over the group's drawings, of how far the in-between
+moves it in its worst window, in that window's usual steps). Those are the drawings off the flow;
+the drawings beside them read off only because a neighbour does, and a drawing the in-between
+hardly moves is not off at all. Ties go to the smaller result, then to the fewer drawings. The path
+then reads with that in-between and the next worst drawing is read. A group never takes, or is made
+from, a drawing a group before it took (two made frames side by side are made from each other), or
+one that shows a frame `fixed` names (the repair passes the frames already made, given way or
+refused). A drawing no group of up to two brings under the limit is `unfixed`.
 
-Each group records its `frames` in play order, the worst drawing's `off`, `turn`, `into`, `out` and
-`window` (fractions of the box, x0, y0, x1, y1), and `off_after`; an `unfixed` entry the same with the
-best `off_after` a group reached. The record has `limit`, `span`, `blur`, `grid`, `hold`, `drawings`,
-`off_max_before` and `off_max_after`.
+| Off the flow | The group taken | Not |
+|---|---|---|
+| one frame flung | that frame (on twos, the two frames that show it) | two frames with it: the in-between hardly moves the second |
+| two frames in a row flung together | both | the frame on either side of the pair: its in-between can bring the reading under the limit by smoothing the pair's edges, and leaves the pair standing — it moves half as far as the pair's own |
+| a part that snaps back at a wrap that does not close | the frame on one side of the wrap | two frames, which spread the snap over a frame the in-between moves two thirds as far |
+| two frames flung with one frame between them | each its own group, where the frame between reads under the limit once the first is made (flung 8 % of the body height on the synthetic walker) | flung farther (12 %), no group of up to two drawings straightens either while the other stands: the frames around them are `unfixed`, kept and named |
+
+The straight line is a stand-in for the frames RIFE makes there: it says which frames to take out,
+not how the made frames will look.
+
+Each group records its `frames` in play order, the `drawings` it takes (the frames that show each),
+its `neighbours` and each drawing's time `t`, the worst drawing's `off`, `turn`, `into`, `out` and
+`window` (fractions of the box, x0, y0, x1, y1), `move` and `off_after`; an `unfixed` entry its frames,
+the same readings and the best `off_after` a group reached. The record has `limit`, `span`, `blur`,
+`grid`, `hold`, `drawings`, `off_max_before` and `off_max_after`.
 
 **The limit.** On the synthetic walker of `tests/video/test_loop_flow.py` and its variants (measured
 2026-10-15), an ordinary loop reads at most 1.65 — drawn every frame with its quick swing faster or
@@ -1016,7 +1048,10 @@ repaired, aligned), it jumped at all three, so the take — not the resampling �
 The kept picks of both sets (Pro and Lite, five views each) and the refused Lite side take, from
 their keyed frames through `video-loop --state walk --anchor motion-auto --body-height 400
 --strip-height 640` and then `video-cycle-align` per set, on an M4 Max with the Apple GPU. The
-experiment's own scripts (`retime.py`, `finalize.py`) are the reference.
+experiment's own scripts (`retime.py`, `finalize.py`) are the reference. This is the 2.17 engine,
+whose jump repair picked its frames by the size reading (section 2, the end of its rules): the
+"Frames repaired" and "Jump score" columns are that reading's. The flow reading has not been run on
+this set.
 
 | | Cut (start, length) | Frames repaired | Jump score before → after | Jolt index | Head sideways step, % | Warning |
 |---|---|---|---|---|---|---|

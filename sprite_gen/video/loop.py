@@ -893,12 +893,13 @@ def shown_runs(cells: list[Image.Image]) -> int:
 def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, *, facing: str,
                   required: bool, screen: dict[str, Any]) -> tuple[list[Image.Image], dict[str, Any]]:
     """`repair_mod.repair_jumps` on the cut as filmed and its ghost `screen`, with RIFE located only
-    once a frame is to be made: a loop without a jump or a ghost between two clean frames needs no
-    binary. The report names the interpolator that made the frames.
+    once a frame is to be made: a loop with no frame off its flow and no ghost between two clean frames
+    needs no binary. The report names the interpolator that made the frames.
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
-    each filmed ghost gives way to the clean frame beside it, a jump stays as filmed, and the record
-    says why where a jump was left (`rife`, `install`; `applied` false where nothing was replaced)."""
+    each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow) stays as
+    filmed, and the record says why where a jump was left (`rife`, `install`; `applied` false where
+    nothing was replaced)."""
     made_by: list[dict[str, str]] = []
     calls = 0
 
@@ -1441,15 +1442,21 @@ def run_loop(
         for line in _ghost_lines(report_base["jump_repair"]):
             print(f"video-loop: warning: {line}", file=sys.stderr)
         for r in report_base["jump_repair"].get("rounds", []):
-            if r["outcome"] == "accepted" and r["look"]:
-                print(f"video-loop: warning: frame {r['target']} was {'given way for a filmed ghost' if r['why'] == 'ghost' else 'repaired'} "
-                      "with RIFE's frame between its neighbours, which may "
-                      f"cross-fade two drawings inside its outline (crossfade {r['proposal']['crossfade']:.4f}); kept, a reading to "
+            if r["outcome"] != "accepted" or not r["look"]:
+                continue
+            # A ghost round made one frame; a flow round a frame a drawing it took, each read on its own.
+            looked = ([(f"frame {r['target']} was given way for a filmed ghost", r["proposal"])] if r["why"] == "ghost" else
+                      [(f"frame{'s' if len(m['frames']) > 1 else ''} {', '.join(map(str, m['frames']))} "
+                        f"{'were' if len(m['frames']) > 1 else 'was'} repaired", m["proposal"]) for m in r["made"] if m["look"]])
+            for what, proposal in looked:
+                print(f"video-loop: warning: {what} with RIFE's frame between its neighbours, which may "
+                      f"cross-fade two drawings inside its outline (crossfade {proposal['crossfade']:.4f}); kept, a reading to "
                       "look at — see it in the loop, or cut it with --repair off (docs/loop-repair.md section 4)", file=sys.stderr)
         if "rife" in report_base["jump_repair"]:
-            print(f"video-loop: warning: a jump frame was not repaired ({report_base['jump_repair']['score_max_before']:.2f}x "
-                  f"the median step) — RIFE is not installed, so the loop is cut as filmed; run `{rife_mod.INSTALL_COMMAND}` "
-                  "and cut it again (docs/loop-repair.md)", file=sys.stderr)
+            unmade = report_base["jump_repair"]["unmade"]
+            print(f"video-loop: warning: a jump frame was not repaired (frames {unmade['frames']}, {unmade['off']:.2f}x its "
+                  "region's usual step off the line between its neighbours) — RIFE is not installed, so the loop is cut as filmed; "
+                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md)", file=sys.stderr)
     else:
         report_base["jump_repair"] = {"applied": False, "why": "--repair off" if repair == "off" else f"not a gait state ({state})"}
     if prof.gait:
@@ -1672,10 +1679,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--body-height", type=int, help="scale so the STANDING height (the subject in the clip's first frame, i.e. the base still's pose) is this many px — the same value across states gives the same character size; --strip-height stays the cap")
     parser.add_argument("--anchor", choices=ANCHOR_MODES, default=None, help="motion-auto: automatic stable regions, local repeat selection and XY ramp (walk/run); motion: fixed cut with explicit regions; body (default for walk/run): measure the last-to-first head-and-torso offset once and spread it as a ramp over the cycle; feet: remove in-canvas drift (a straight-line trend) so every cell stands on the mean foot line; none: leave placement as filmed (default for other states)")
     parser.add_argument("--anchor-region", type=motion_anchor.parse_region, action="append", help="motion anchor only: repeat twice with head then torso x0,y0,x1,y1 in the first selected frame; requires --cycle fixed and at least 6 frames")
-    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): propose RIFE's frame between the neighbours of a jump (a step 1.4x the median, whole body or the hair behind it); adopt only without smear/outline faults, at most 3 calls and never two adopted frames side by side (docs/loop-repair.md). Rejected proposals keep the original. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
+    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
     parser.add_argument("--head-step-max", type=float, default=None, help=f"walk/run: fail the repaired loop when the head's largest sideways move in one frame exceeds this %% of the body height. Default: no gate — reported, and over {repair_mod.HEAD_STEP_REFERENCE} is a warning line")
-    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the hair the jump search watches is behind it")
+    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the jolt index's hair, and the size reading video-loop-compare's jump guard reads, are behind it; the jump repair reads the flow either way")
     parser.add_argument("--size-hold", choices=SIZE_HOLD_MODES, default="auto", help="--anchor motion-auto: auto (default) scales a clip whose height, read one cycle on (the same pose a cycle later), changes by 1 %% or more over the clip back to its first frame's size before the cycle search, so the loop's last frame is the size of its first (recorded as size_hold, with the evidence); off: search the frames as filmed")
     parser.add_argument("--steps", type=int, choices=STEPS, default=None,
                         help="--anchor motion-auto: how many steps the cut it takes without this holds, as counted by whoever looked "
@@ -1727,7 +1734,7 @@ def run(**kwargs: object) -> int:
         if payload.get(key):
             summary[key] = payload[key]
     if payload.get("jump_repair", {}).get("replaced"):
-        summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "score_max_before", "score_max_after")}
+        summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
     summary["strip"] = {k: payload["strip"][k] for k in ("path", "frames", "w", "h", "body_h", "delay_ms")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

@@ -4,6 +4,8 @@ the path its neighbours draw — against the way a part is going, or a sudden ch
 when its step is large. An ordinary walk, whose legs swing fast and plant slow, has no frame taken; a
 frame whose tail is flung against its sway is the one frame taken; a tail that snaps back at a wrap
 that does not close has the frames at the wrap taken; and which way the body faces does not matter.
+The repair (`repair.repair_jumps`) takes those frames out and makes them again between the frames
+either side, each at its own time: the loop keeps its length, and a loop on twos its hold.
 
 The loops are drawn here: a body, two legs swinging quick through the swing and slow through the
 stance, an arm, and a tail behind that sways once a cycle."""
@@ -12,12 +14,14 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw, ImageOps
 
 from sprite_gen.video import repair
 
 W, H, N = 240, 300, 36
+SIZE_JUMP = 1.4  # a step this many times the loop's median: the size reading's jump, which picked frames before the flow reading
 
 
 def _frame(t: int, n: int, *, tail_off: float = 0.0, tail_lag: float = 0.0) -> Image.Image:
@@ -64,7 +68,7 @@ def test_an_ordinary_walk_has_no_frame_off_its_flow_where_the_size_reading_names
     assert record["groups"] == [] and record["unfixed"] == []
     assert record["off_max_before"] < repair.FLOW_LIMIT
     # The size reading counts how much a step changes: the quick swing reads as a jump to it.
-    assert (repair.jump_scores(frames)["score"] >= repair.JUMP_RATIO).sum() >= 5
+    assert (repair.jump_scores(frames)["score"] >= SIZE_JUMP).sum() >= 5
 
 
 def test_a_frame_flung_against_the_sway_is_the_one_frame_taken():
@@ -112,6 +116,15 @@ def test_two_flung_frames_in_a_row_are_one_group_of_two():
     assert [sorted(g["frames"]) for g in record["groups"]] == [[10, 11]]
 
 
+def test_two_frames_flung_with_one_between_are_two_groups_or_named_unfixed():
+    # One made, the frame between reads under the limit: each its own group. Flung farther, the frame between still
+    # reads over it while the other stands, no group of up to two straightens either, and they are kept, named.
+    record = repair.flow_targets(_loop(flung={12: 20, 14: 20}))
+    assert sorted(g["frames"] for g in record["groups"]) == [[12], [14]] and record["unfixed"] == []
+    record = repair.flow_targets(_loop(flung={12: 30, 14: 30}))
+    assert record["groups"] == [] and {12, 13, 14} <= {t for u in record["unfixed"] for t in u["frames"]}
+
+
 def test_each_flung_frame_is_a_group_of_its_own_never_made_from_a_frame_taken_before():
     record = repair.flow_targets(_loop(flung={4: 20, 14: 20, 24: 20}))
     assert sorted(g["frames"] for g in record["groups"]) == [[4], [14], [24]] and record["unfixed"] == []
@@ -138,3 +151,115 @@ def test_a_loop_too_short_to_read_is_left_alone():
 def test_a_loop_with_no_body_raises():
     with pytest.raises(ValueError, match="fully transparent"):
         repair.flow_states([Image.new("RGBA", (40, 40))] * 6)
+
+
+# --- the repair: the frames off the flow taken out and made again (docs/loop-repair.md section 2) ----------------
+
+
+class Between:
+    """A stand-in RIFE: the walker as drawn at the time t of the way from frame a to frame b of `filmed` (found
+    by identity), with no tail flung. Records each call as (a, b, t) and keeps what it made. (The walker's own
+    frames 10 and 34 read a smear against their neighbours — the arm drawn over the torso's outline — so the
+    frames flung here are others.)"""
+
+    def __init__(self, filmed: list[Image.Image], n: int = N):
+        self.at = {id(f): k for k, f in enumerate(filmed)}
+        self.n = n
+        self.calls: list[tuple[int, int, float]] = []
+        self.made: list[Image.Image] = []
+
+    def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        ka, kb = self.at[id(a)], self.at[id(b)]
+        self.calls.append((ka, kb, round(t, 4)))
+        self.made.append(_frame(ka + t * ((kb - ka) % self.n), self.n))
+        return self.made[-1]
+
+
+def test_the_repair_leaves_an_ordinary_walk_alone_where_the_size_reading_names_jumps():
+    frames = _loop()
+    between = Between(frames)
+    out, record = repair.repair_jumps(frames, between)
+    assert record["replaced"] == [] and between.calls == [] and all(o is f for o, f in zip(out, frames))
+    assert record["off_max_before"] == record["off_max_after"] < repair.FLOW_LIMIT
+    assert (repair.jump_scores(frames)["score"] >= SIZE_JUMP).sum() >= 5
+
+
+def test_the_repair_takes_the_flung_frame_out_and_makes_it_again_between_its_neighbours():
+    frames = _loop(flung={12: 12})
+    between = Between(frames)
+    out, record = repair.repair_jumps(frames, between)
+    assert record["replaced"] == [12] and between.calls == [(11, 13, 0.5)]
+    assert len(out) == N and out[12] is between.made[0]
+    assert all(out[k] is frames[k] for k in range(N) if k != 12)  # every other frame stays the video's own
+    (round_,) = record["rounds"]
+    assert round_["why"] == "flow" and round_["outcome"] == "accepted" and round_["frames"] == [12]
+    assert round_["neighbours"] == [11, 13] and round_["t"] == [0.5] and round_["turn"] < 0
+    assert record["off_max_before"] >= repair.FLOW_LIMIT > record["off_max_after"]
+
+
+def test_two_flung_frames_in_a_row_are_made_again_as_two_each_at_its_own_time():
+    frames = _loop(flung={12: 20, 13: 20})
+    between = Between(frames)
+    out, record = repair.repair_jumps(frames, between)
+    assert record["replaced"] == [12, 13] and record["attempts"] == 2
+    assert between.calls == [(11, 14, 0.3333), (11, 14, 0.6667)]  # a third and two thirds of the way: their own times
+    assert len(out) == N and out[12] is between.made[0] and out[13] is between.made[1]
+
+
+def test_on_twos_a_flung_drawing_is_made_once_and_shown_for_both_its_frames():
+    frames = _loop(flung={12: 20}, hold=2)
+    between = Between(frames)
+    out, record = repair.repair_jumps(frames, between)
+    # The drawing before shows from frame 10, the one after from frame 14: the drawing made is half way, held as filmed.
+    assert record["replaced"] == [12, 13] and between.calls == [(10, 14, 0.5)] and record["attempts"] == 1
+    assert out[12] is out[13] is between.made[0] and len(out) == N
+    assert all(out[k] is frames[k] for k in range(N) if k not in (12, 13))
+    assert record["rounds"][0]["drawings"] == [[12, 13]] and record["hold"] == 2
+
+
+def test_a_group_with_a_frame_at_fault_keeps_every_frame_it_would_take_and_is_not_tried_again():
+    frames = _loop(flung={12: 20, 13: 20})
+    between = Between(frames)
+
+    def melted(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        made = between(a, b, t)
+        if t < 0.5:
+            return made
+        pixels = np.asarray(made).copy()
+        dark = (pixels[..., :3].max(axis=2) < 70) & (pixels[..., 3] > 0)
+        pixels[dark, :3] = (200, 200, 220)  # the outlines melted into the fill
+        return Image.fromarray(pixels, "RGBA")
+
+    out, record = repair.repair_jumps(frames, melted)
+    assert record["replaced"] == [] and all(o is f for o, f in zip(out, frames))
+    (round_,) = record["rounds"]
+    assert round_["outcome"] == "rejected" and "outline" in round_["faults"] and round_["frames"] == [12, 13]
+    assert [m["faults"] for m in round_["made"]][0] == [] and "outline" in round_["made"][1]["faults"]
+    assert record["attempts"] == len(between.calls) == 2  # both calls spent; the group is not made again
+
+
+def test_the_calls_go_to_the_worst_frame_first_and_stop_at_the_budget():
+    frames = _loop(flung={4: 20, 14: 20, 24: 20, 32: 20})
+    between = Between(frames)
+    out, record = repair.repair_jumps(frames, between)
+    assert len(record["replaced"]) == record["attempts"] == repair.MAX_REPAIRS == len(between.calls)
+    assert set(record["replaced"]) < {4, 14, 24, 32} and record["stopped"] == f"{repair.MAX_REPAIRS} interpolation calls used"
+    offs = [r["off"] for r in record["rounds"]]
+    assert offs == sorted(offs, reverse=True)
+    (left,) = record["left"]
+    assert set(left["frames"]) | set(record["replaced"]) == {4, 14, 24, 32}
+
+
+def test_without_an_interpolator_the_first_group_is_named_and_nothing_is_made():
+    frames = _loop(flung={12: 12})
+    out, record = repair.repair_jumps(frames, None)
+    assert record["replaced"] == [] and all(o is f for o, f in zip(out, frames))
+    assert record["unmade"]["frames"] == [12] and record["unmade"]["off"] >= repair.FLOW_LIMIT
+    assert record["stopped"] == "a frame to make off the flow and no interpolator"
+
+
+def test_the_repair_reads_the_same_whichever_way_the_body_faces():
+    frames = [ImageOps.mirror(f) for f in _loop(flung={12: 12})]
+    calls: list[float] = []
+    out, record = repair.repair_jumps(frames, lambda a, b, t: calls.append(t) or ImageOps.mirror(_frame(12, N)))
+    assert record["replaced"] == [12] and calls == [0.5]
