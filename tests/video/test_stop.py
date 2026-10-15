@@ -240,6 +240,9 @@ def test_stop_speed_and_frame_cap(tmp_path):
         make(tmp_path, keyed, meta, name="x", speed=3)
     with pytest.raises(SystemExit, match="--max-frames"):
         make(tmp_path, keyed, meta, name="x", max_frames=1)
+    # An explicit bound is the caller's, never replaced by the default: 0 is refused, not read as 1.4.
+    with pytest.raises(SystemExit, match="--seam-max"):
+        stop.run(frames_dir=keyed, loop=meta, out_dir=tmp_path / "x", seam_max=0.0)
 
 
 def test_stop_names_a_filmed_ghost_and_keeps_it(tmp_path):

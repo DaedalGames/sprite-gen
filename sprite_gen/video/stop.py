@@ -437,7 +437,7 @@ def run(**kwargs: object) -> int:
     payload = make_stop(Path(str(kwargs["frames_dir"])), Path(str(kwargs["loop"])), Path(str(kwargs["out_dir"])),
                         name=str(kwargs.get("name") or "stop"), speed=int(kwargs.get("speed") or 1),  # type: ignore[arg-type]
                         max_frames=kwargs.get("max_frames"), fps=kwargs.get("fps"), report_path=kwargs.get("report"),  # type: ignore[arg-type]
-                        seam_max=float(kwargs.get("seam_max") or JUMP_RATIO),
+                        seam_max=float(JUMP_RATIO if kwargs.get("seam_max") is None else kwargs["seam_max"]),  # type: ignore[arg-type]
                         run_up_max=float(RUN_UP_MAX_CYCLES if kwargs.get("run_up_max") is None else kwargs["run_up_max"]))  # type: ignore[arg-type]
     print(json.dumps({"strip": payload["strip"]["path"], "frames": payload["strip"]["frames"], "seconds": payload["seconds"],
                       "from_cell": payload["entry"]["from_cell"], "entry": payload["entry"]["frame"], "rest_end": payload["rest"]["end"],
