@@ -105,6 +105,52 @@ def test_once_hold_is_cut_at_its_held_pose() -> None:
         clip_prompt.plan_prompt(direction="side", state="block", play="once-return", end_frame=Path("blocked.png"))
 
 
+def shield_frames(root: Path, *, back: bool = False, slide: int = 0) -> Path:
+    """Keyed frames of a figure seen from the front, 48 at 24 fps, whose head, torso and feet fix its body box: a
+    shield inside that box rises once from the waist to the chest and is held still for the last second. `back`
+    brings it down again before the hold and `slide` moves the whole figure that many px sideways on the way, so the
+    clip ends in its first drawing, slid."""
+    root.mkdir(parents=True)
+    for k in range(48):
+        raised = (1 - abs(k - 12) / 12 if k < 24 else 0) if back else min(k, 23) / 23
+        x, y = round(slide * min(k, 23) / 23), 55 - round(22 * raised)
+        im = Image.new("RGBA", (96, 96))
+        draw = ImageDraw.Draw(im)
+        draw.ellipse((40 + x, 12, 56 + x, 28), fill=(235, 180, 130, 255))
+        draw.rectangle((36 + x, 28, 60 + x, 62), fill=(110, 80, 160, 255))
+        draw.rectangle((36 + x, 62, 44 + x, 82), fill=(80, 50, 110, 255))
+        draw.rectangle((52 + x, 62, 60 + x, 82), fill=(80, 50, 110, 255))
+        draw.rectangle((38 + x, y, 58 + x, y + 15), fill=(30, 190, 225, 255))
+        im.save(root / f"frame-{k:04d}.png")
+    return root
+
+
+def cut_once_hold(tmp_path: Path, frames: Path, state: str) -> dict:
+    """`frames` cut as `video-set` cuts an item of `state` played once-hold."""
+    return loop.run_loop(frames, tmp_path / state, fps=24, state=state, min_len=None, max_len=None, n_out=None,
+                         seam_max=loop.SEAM_RATIO_MAX, name=state, report_path=None,
+                         cycle_mode=batch.cycle_for(state, "front", "once-hold"))
+
+
+def test_a_once_hold_of_your_own_ends_on_a_new_drawing_inside_the_same_body_box(tmp_path) -> None:
+    frames = shield_frames(tmp_path / "frames")
+    first, last = Image.open(frames / "frame-0000.png"), Image.open(frames / "frame-0047.png")
+    assert first.getbbox() == last.getbbox() and first.tobytes() != last.tobytes()
+    report = cut_once_hold(tmp_path, frames, "shield_block")
+    pose = report["cycle"]["terminal"]["pose"]
+    assert report["cycle"]["kind"] == "once" and pose["profile"] == "drawing" and pose["departure"] > pose["departure_min"]
+    assert report["strip"]["loop"] is False and report["strip"]["hold_last"] is True
+    # a named terminal state keeps its own screen: the same clip as a cast has not changed its body geometry
+    with pytest.raises(SystemExit, match="body height, aspect and floor position have returned"):
+        cut_once_hold(tmp_path, frames, "cast")
+
+
+@pytest.mark.parametrize("slide", [0, 4])
+def test_a_once_hold_that_comes_back_to_its_first_drawing_is_refused(tmp_path, slide) -> None:
+    with pytest.raises(SystemExit, match="ends in the starting pose"):
+        cut_once_hold(tmp_path, shield_frames(tmp_path / "frames", back=True, slide=slide), "shield_block")
+
+
 def test_lifetime_is_filmed_as_an_effect_whatever_its_name() -> None:
     text = "A white crescent arcs from left to right."
     record = clip_prompt.plan_prompt(direction="front", state="slash", play="lifetime", motion=text, character="A white slash")
