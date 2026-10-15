@@ -10,9 +10,11 @@ pushed out from inside its outline (`bleed`): a disagreement there reads as the 
 black a frame premultiplied over black put under it (2.24 and before: a black smear between
 crossing legs). Inside the coverage the colour is the frame's own, outline included.
 `smear` measures what a made frame has that neither neighbour has, and the outline it lost where
-the flow failed and melted a limb into the fill; `ghost` reads a band of part coverage on a frame
-alone, filmed or made; `crossfade` reads two drawings cross-faded inside a whole silhouette, a
-reading to look at, not a fault (docs/loop-repair.md section 4).
+the flow failed and melted a limb into the fill; `outline_shift` reads that edge against the
+neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost; `ghost`
+reads a band of part coverage on a frame alone, filmed or made; `crossfade` reads two drawings
+cross-faded inside a whole silhouette, a reading to look at, not a fault (docs/loop-repair.md
+section 4).
 
 The binary's own CPU path (`-g -1`) returns a wrong frame with rife-v4.6 on both macOS and
 Linux (measured 2026-10-03: mean error 39 against 3.3 through Vulkan), so it is never passed;
@@ -66,6 +68,10 @@ PARTIAL_ALPHA = (0.1, 0.9)
 # when a dark solid pixel lies within this many pixels of it. A drawn outline sits on the edge, under
 # an antialiased pixel or two, whatever the frame's size.
 OUTLINE_REACH = 2
+# `outline_shift`: a pixel of the made frame's edge is lost where its darkest solid pixel within OUTLINE_REACH is
+# lighter than the lighter neighbour's at the same rank by more than this (luma, 0..1). A line the flow keeps
+# and softens comes out lighter by less; a line gone to the fill beside it, by the line's own contrast.
+OUTLINE_SHIFT = 50 / 255
 # `ghost`: part-covered pixels count where they make a region at least this many pixels thick. An
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
@@ -263,6 +269,36 @@ def smear(made: Image.Image, a: Image.Image, b: Image.Image) -> dict[str, float]
     solid = max(1, sm)
     return {"dark_excess": round((dm - max(da, db)) / solid, 5), "partial_excess": round((pm - max(pa, pb)) / solid, 5),
             "outline_loss": round((um - max(ua, ub)) / max(1, em), 5)}
+
+
+def _edge_darkness(frame: Image.Image) -> np.ndarray:
+    """Per pixel of the coverage edge (alpha from PARTIAL_ALPHA's floor, as `smear` reads it), the luma of the
+    darkest solid pixel within OUTLINE_REACH of it, 1 where there is none."""
+    x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+    covered = x[..., 3] >= PARTIAL_ALPHA[0]
+    edge = covered & ~_mask(covered, 3, ImageFilter.MinFilter)
+    luma = x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
+    near = np.pad(np.where(x[..., 3] >= 0.5, luma, 1.0), OUTLINE_REACH, constant_values=1.0)
+    width = 2 * OUTLINE_REACH + 1
+    for axis in (0, 1):  # a square window's minimum, one axis at a time
+        near = np.lib.stride_tricks.sliding_window_view(near, width, axis=axis).min(axis=-1)
+    return near[edge]
+
+
+def outline_shift(made: Image.Image, a: Image.Image, b: Image.Image) -> float:
+    """The edge of a made frame that lost its line, read against its two neighbours rank by rank: each pixel
+    of its coverage edge by how dark the darkest solid pixel within OUTLINE_REACH is, in order, against the
+    lighter of the two neighbours' edges at the same rank (their quantiles), and counted where it is lighter
+    by more than OUTLINE_SHIFT — as a fraction of its edge. A line drawn in a mid tone and softened by the
+    flow reads lighter by less at every rank and is not counted, whatever tone the art outlines in; a line
+    gone to the fill beside it (legs melted into one shape, a pale ghost limb) is. 0 where nothing is lighter
+    (docs/loop-repair.md section 4)."""
+    dm, da, db = (_edge_darkness(f) for f in (made, a, b))
+    if not (dm.size and da.size and db.size):
+        return 0.0
+    rank = (np.arange(dm.size) + 0.5) / dm.size
+    lighter = np.maximum(np.quantile(da, rank), np.quantile(db, rank))
+    return round(float(np.mean(np.sort(dm) > lighter + OUTLINE_SHIFT)), 5)
 
 
 def ghost(frame: Image.Image) -> float:

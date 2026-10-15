@@ -31,7 +31,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.video import held as held_mod
-from sprite_gen.video.rife import Interpolate, crossfade, ghost, smear
+from sprite_gen.video.rife import Interpolate, crossfade, ghost, outline_shift, smear
 from sprite_gen.video.interpolation_quality import clean_beside, faults, ghost_screen, looks
 
 # Interpolation calls at most per loop, a drawing made one call, including rejected proposals. A loop that needs more is
@@ -354,7 +354,8 @@ def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], inter
         made = interpolate(frames[a], frames[b], 0.5)
         if made.mode != "RGBA" or made.size != frames[j].size:
             raise ValueError("repair interpolator must return an RGBA frame of the original size")
-        measure = {**smear(made, frames[a], frames[b]), "ghost": ghost(made), "crossfade": crossfade(made, frames[a], frames[b], 0.5)}
+        measure = {**smear(made, frames[a], frames[b]), "outline_shift": outline_shift(made, frames[a], frames[b]),
+                   "ghost": ghost(made), "crossfade": crossfade(made, frames[a], frames[b], 0.5)}
         wrong = faults(measure)
         if not made.getchannel("A").getbbox():
             wrong.append("empty")
@@ -445,7 +446,8 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
             frame = interpolate(a, b, t)
             if frame.mode != "RGBA" or frame.size != out[drawing[0]].size:
                 raise ValueError("repair interpolator must return an RGBA frame of the original size")
-            measure = {**smear(frame, a, b), "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, a, b, t)}
+            measure = {**smear(frame, a, b), "outline_shift": outline_shift(frame, a, b),
+                       "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, a, b, t)}
             wrong = faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"])
             made.append((drawing, frame, {
                 "frames": drawing, "t": round(t, 4), "proposal": measure, "faults": wrong, "look": looks(measure),

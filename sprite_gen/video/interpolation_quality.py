@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The shared acceptance policy for the frames repair and cycle alignment deliver.
 
-Measurements live in ``rife`` (``smear``, ``ghost``, ``crossfade``); these are the existing alignment
+Measurements live in ``rife`` (``smear``, ``outline_shift``, ``ghost``, ``crossfade``); these are the existing alignment
 bounds, also applied before replacing a filmed middle frame during jump repair, the ghost screen
 every frame a loop path delivers passes, filmed or made, the clean frame a filmed ghost gives way
 to, and the cross-fade a made frame is named for, kept (docs/loop-repair.md section 4).
@@ -31,9 +31,15 @@ CROSSFADE_LOOK = 0.015
 def faults(measure: dict[str, float | None]) -> list[str]:
     """Smear inside the body or outline loss beyond both neighbours, and a ghost on the frame's
     own coverage where the measure carries its reading (`ghost`; None where the screen does not
-    read the loop, `ghost_screen`)."""
+    read the loop, `ghost_screen`). Where the measure also carries `outline_shift` (the frames the
+    jump repair and the cycle alignment make), an outline is lost only where both readings say so:
+    a line outlined in a mid tone, which the dark line (`rife.DARK_LUMA`) reads as lost wherever the
+    flow softened it, is kept unless its edge went lighter than the neighbours' by more than
+    `rife.OUTLINE_SHIFT` (docs/loop-repair.md section 4). The versioned measures of
+    `video-loop-compare` and `video-loop-repair` carry `rife.smear` alone and judge as before."""
+    outline = min(measure["outline_loss"], measure.get("outline_shift", measure["outline_loss"]))
     return ([*(["smear"] if measure["dark_excess"] > SMEAR_WARN else []),
-             *(["outline"] if measure["outline_loss"] > OUTLINE_WARN else []),
+             *(["outline"] if outline > OUTLINE_WARN else []),
              *(["ghost"] if (measure.get("ghost") or 0.0) > GHOST_WARN else [])])
 
 

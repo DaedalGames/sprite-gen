@@ -282,8 +282,9 @@ delivered as filmed, named (section 4).
 The flow is read again after each group, on the union box of the loop as filmed; a refused group is
 never tried again in that run, and nothing is made from or beside it. The circular last/first
 adjacency rule and the call budget hold across the wrap. The shared `interpolation_quality` policy
-is the same one used by cycle alignment: `dark_excess > 0.001` or
-`outline_loss > 0.05` rejects a proposal, and so does a proposal that is a ghost on its own
+is the same one used by cycle alignment: `dark_excess > 0.001`, or `outline_loss` and
+`outline_shift` both over 0.05 (an outline lost by the dark line and lighter than the neighbours'
+edge rank by rank, section 4), rejects a proposal, and so does a proposal that is a ghost on its own
 coverage (`ghost` over 0.003, read where the loop's ghost screen reads it, section 4). An empty
 proposal is also rejected. One made frame at fault refuses its whole group. A proposal that
 cross-fades two drawings inside its silhouette (`crossfade` over 0.015, section 4) is taken all the
@@ -793,8 +794,32 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     counts), the share with no dark solid pixel within 2 px, beyond the less outlined
     neighbour's, as a fraction of its edge. Legs that crossed too far for the flow melt into one
     shape of fill and lose their outline where they meet the air; a limb left as a ghost has none.
-    Over 5 % it is the fault `outline`. A step the flow follows keeps its outline; a figure drawn
-    without outlines loses none against neighbours that have none, and is not judged by it.
+    Over 5 % it is the fault `outline` — where `outline_shift` is over 5 % too (below). A step the
+    flow follows keeps its outline; a figure drawn without outlines loses none against neighbours
+    that have none, and is not judged by it.
+  - `outline_shift` (`rife.outline_shift`): the same edge read against the neighbours rank by rank —
+    each pixel of the frame's coverage edge by how dark the darkest solid pixel within 2 px of it is,
+    in order, against the lighter neighbour's edge at the same rank, counted where it is lighter by
+    more than **50/255** (`rife.OUTLINE_SHIFT`), as a fraction of its edge. The fault `outline` needs
+    both readings over 5 %. The dark line alone reads an art outlined in a mid tone — a brown or a
+    painted line whose tone lies about 70/255 — as lost wherever the flow softened it: a line a few
+    tones lighter falls on the far side of 70/255 all along the figure, and a frame made between two
+    such drawings reads as melted however cleanly the flow followed them. Rank by rank the softened line is lighter by less than 50/255
+    and is kept, whatever tone the art outlines in; a line gone to the fill beside it is lighter by the
+    line's whole contrast and is lost. Art outlined near-black reads the same on both, and the fault
+    is the dark line's as before; art outlined lighter than 70/255 is still not judged by the outline
+    (the cross-fade reading below names what it hides). On the synthetic walker of
+    `tests/video/test_outline_shift.py`, outlined in two tones either side of 70/255 (luma 57 and 77),
+    the drawing between with its line drawn 20 to 45 tones lighter reads `outline_loss` 57 % and
+    `outline_shift` 0; the same drawing with its legs' line turned to fill reads 24 % and 48 %.
+    The 50/255 is a reference, like the 5 %, not a measured optimum: it lies between the lift a
+    softened line takes and the lift of a line gone to fill, and a frame near either is worth a look.
+    What it does not see: a line less than 50/255 darker than the fill it melts into (a dark grey
+    shoe on a mid blue) is no further from its neighbours' than a softened line, and is not read as
+    lost.
+    The jump repair (section 2) and the alignment read it on every frame they make; the versioned
+    measures of `video-loop-compare` and `video-loop-repair` do not, and judge the outline on the
+    dark line alone, as before.
   - `partial_excess`: part-covered pixels beyond the more ragged neighbour's, as a fraction of
     its solid pixels. Reported, not judged: a melted frame and a clean one read alike on it, and a
     frame made beside a filmed ghost carries the ghost without adding to it — the ghost screen

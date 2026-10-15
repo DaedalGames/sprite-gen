@@ -374,10 +374,12 @@ def test_a_made_frame_darker_than_both_neighbours_is_named_in_the_warnings(tmp_p
 
 def _melt(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
     """A stand-in RIFE that lost the dark foot: the frame between drawn whole, its dark grey taken
-    into the body's blue — the outline around the foot gone, nothing darker added."""
+    into a pale fill — the outline around the foot gone, nothing darker added. (Taken into the body's
+    blue, 42/255 lighter than the grey, it would be no further from the grey than a softened line and
+    not read as lost, `rife.OUTLINE_SHIFT`.)"""
     made = np.asarray(Image.blend(a, b, t)).copy()
     made[..., 3] = np.where(made[..., 3] >= 64, 255, 0)
-    made[(made[..., 3] > 0) & (made[..., :3].max(axis=-1) < 130)] = (90, 90, 200, 255)
+    made[(made[..., 3] > 0) & (made[..., :3].max(axis=-1) < 130)] = (200, 200, 235, 255)
     return Image.fromarray(made, "RGBA")
 
 
