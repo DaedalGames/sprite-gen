@@ -107,14 +107,17 @@ def test_end_pose_input_is_distinct_from_first_frame_pin():
 
 
 def test_terminal_gate_rejects_still_and_accumulated_drift():
+    from functools import partial
     import numpy as np
-    from sprite_gen.video.nonloop import select_cut
+    from sprite_gen.video.nonloop import hold_ending, select_cut
+    # both are refused before any window's pose is judged, so a judge that takes every pose changes nothing
+    ending = partial(hold_ending, pose=lambda first, end, mass: {})
     with pytest.raises(ValueError, match="performed action"):
-        select_cut(np.zeros((30, 30)), np.ones(30), fps=24)
+        select_cut(np.zeros((30, 30)), np.ones(30), fps=24, ending=ending)
     # Every tail step is under 2.5%, but five steps slowly drift by 4%.
     values = np.r_[np.linspace(0, 1, 25), np.linspace(1, 1.04, 5)]
     with pytest.raises(ValueError, match="stable"):
-        select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24)
+        select_cut(np.abs(values[:, None] - values[None, :]), np.ones(30), fps=24, ending=ending)
 
 
 @pytest.mark.parametrize("after", ["standing", "shaking", "clipped"])
