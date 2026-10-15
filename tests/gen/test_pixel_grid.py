@@ -250,3 +250,74 @@ def test_palette_rules(tmp_path):
     for bad in ("free:0", "free:63", "free:x", "#12345", "#aabbcc,#AABBCC", str(tmp_path / "missing.hex")):
         with pytest.raises(ValueError):
             pg.palette_rule(bad)
+
+
+# ----------------------------------------------------------------------------- several blocks in one answer
+
+def test_several_blocks_read_the_last_one_that_reads_whole():
+    """An answer that writes a block, then 'Corrected:' and the block again: the last block that reads
+    whole is the answer, recorded. Seen 2026-10-15 on a 16 px icon - a first block of the palette alone
+    and END, then the whole block."""
+    half = _block(". transparent\na #112233", {})
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    text = "Here:\n" + half + "\nWait, the frame belongs inside the block. Corrected:\n\n" + whole
+    grid, issues = pg.parse_answer(text, "chargrid", 8, 8, ("icon",))
+    assert grid.frames["icon"] == [list(row) for row in ROWS8]
+    assert [i.to_dict() for i in issues] == [{"code": "block_many", "detail": "2 blocks, read block 2"}]
+    assert pg.recovered(issues) == issues
+
+
+def test_a_whole_block_before_a_broken_one_is_the_one_read():
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    cut = "```pixels\nPALETTE\n. transparent\na #112233\nFRAME icon\n........\n.aaa"
+    grid, issues = pg.parse_answer(whole + "\nLet me redo it:\n" + cut, "chargrid", 8, 8, ("icon",))
+    assert codes(issues) == ["block_many"] and issues[0].detail == "2 blocks, read block 1"
+    assert grid.frames["icon"] == [list(row) for row in ROWS8]
+
+
+def test_of_several_broken_blocks_the_last_with_rows_to_repair_is_read():
+    first = _block(". transparent\nEND_PALETTE_PLACEHOLDER", {"icon": ROWS8})
+    second = _block(". transparent\na #112233", {"icon": ROWS8[:7] + [".aaaaaaa."]})
+    grid, issues = pg.parse_answer(first + second, "chargrid", 8, 8, ("icon",))
+    assert codes(issues) == ["block_many", "row_width"] and grid is not None
+    assert [(i.code, i.row) for i in pg.row_issues(issues)] == [("row_width", 8)]
+
+
+def test_one_block_reads_as_it_always_did():
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    assert pg.parse_answer(whole, "chargrid", 8, 8, ("icon",))[1] == []
+    assert pg.parse_answer("text then " + whole + " and a note", "chargrid", 8, 8, ("icon",))[1] == []
+
+
+# ----------------------------------------------------------------------------- the palette held across answers
+
+def test_a_later_answer_keeps_the_palette_it_was_given():
+    """A later answer of a set larger than one call writes the first answer's palette again: a key it
+    adds is refused (its rows go to the row repair) and a colour it changes is put back, both recorded."""
+    held = {".": None, "a": "#2a1f2e", "b": "#c8a040"}
+    rows = ["........", ".aaaaaa.", ".abbbba.", ".acccca.", ".aaaaaa.", ".aaaaaa.", ".aaaaaa.", "........"]
+    text = _block(". transparent\na #2a1f2e\nb #ffffff\nc #ff0000", {"f5": rows})
+    grid, issues = pg.parse_answer(text, "chargrid", 8, 8, ("f5",))
+    assert issues == []
+    grid, issues = pg.hold_palette(grid, issues, held)
+    assert grid.palette == held
+    assert [i.to_dict() for i in pg.recovered(issues)] == [
+        {"code": "palette_changed", "detail": "b #ffffff, kept #c8a040"}, {"code": "palette_added", "detail": "c #ff0000"}]
+    assert [(i.code, i.frame, i.row) for i in pg.row_issues(issues)] == [("unknown_symbol", "f5", 4)]
+
+
+def test_parts_are_joined_in_order_under_the_first_palette():
+    one, _ = pg.parse_answer(_block(". transparent\na #112233", {"f1": ROWS8, "f2": ROWS8}), "chargrid", 8, 8, ("f1", "f2"))
+    two, _ = pg.parse_answer(_block(". transparent\na #112233", {"f3": ROWS8}), "chargrid", 8, 8, ("f3",))
+    joined = pg.joined([one, two])
+    assert list(joined.frames) == ["f1", "f2", "f3"] and joined.palette == one.palette
+    assert pg.to_text(joined).count("FRAME ") == 3
+
+
+def test_a_preview_of_more_than_eight_frames_wraps_into_rows():
+    frame = [[(17, 34, 51, 255)] * 8 for _ in range(8)]
+    four = pg.preview_strip([frame] * 4, 2)
+    assert four.size == (4 * 16 + 3 * 4, 16)  # one row, as before
+    ten = pg.preview_strip([frame] * 10, 2)
+    assert ten.size == (8 * 16 + 7 * 4, 2 * 16 + 4)
+    assert ten.getpixel((0, 20)) == (17, 34, 51, 255) and ten.getpixel((40, 20)) == (0, 0, 0, 0)  # the third place of the second row is empty

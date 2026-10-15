@@ -266,6 +266,19 @@ def test_a_candidate_is_drawn_twice_at_most(tmp_path, claude):
     assert asked(fake) == ["c1-gen1", "c1-gen2"]
 
 
+def test_an_answer_that_writes_its_block_again_is_read_from_the_last_whole_block(tmp_path, claude):
+    """A block, then 'Corrected:' and the block again (seen on the subscription, 2026-10-15): the last
+    block that reads whole is the answer - recorded, not drawn again."""
+    half = SPRITE16[:SPRITE16.index("FRAME sprite")] + "END\n```"
+    fake = claude({"c1-gen1": reply(half + "\n\nWait, the frame belongs inside the block. Corrected:\n\n" + SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    assert asked(fake) == ["c1-gen1"]
+    (candidate,) = report_of(out)["candidates"]
+    assert candidate["status"] == "passed" and candidate["redraws"] == []
+    assert candidate["G1"] == {"ok": True, "issues": [], "recovered": [{"code": "block_many", "detail": "2 blocks, read block 2"}]}
+
+
 def test_a_refusal_is_reported_as_it_came(tmp_path, claude):
     fake = claude({"c1-gen1": reply("", stop="refusal", details={"type": "refusal", "category": "cyber", "explanation": "x"})})
     out = tmp_path / "run"
@@ -431,7 +444,10 @@ def test_a_used_folder_is_refused(tmp_path, claude):
 @pytest.mark.parametrize("args,message", [
     (["--size", "7"], "--size is 8..48 pixels, got 7"),
     (["--size", "49"], "--size is 8..48 pixels, got 49"),
-    (["--frames", "a,b,c,d,e"], "at most 4 frames in one call, got 5"),
+    (["--frames", ",".join(f"f{i}" for i in range(65))], "at most 64 frames, got 65"),
+    (["--frames", "a,b", "--duration-ms", "5"], "--duration-ms is at least 10, got 5"),
+    (["--style", " "], "--style is a sentence of words, got ' '"),
+    (["--motion", "a spin"], "--motion is two or more frames"),
     (["--frames", "a b"], "frame names are letters, digits"),
     (["--frames", "a,a"], "frame names must differ"),
     (["--frames", "a,b", "--walk-cycle"], "--walk-cycle is four frames"),
@@ -549,7 +565,8 @@ def test_no_key_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
 def test_the_cli_names_the_verb_and_its_flags():
     flags = help_options("-m", "sprite_gen.cli", "pixel-draw")
     assert {"--subject", "--spec", "--grid", "--size", "--kind", "--frames", "--walk-cycle", "--palette", "--candidates",
-            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume"} <= flags
+            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume",
+            "--style", "--motion", "--duration-ms"} <= flags
 
 
 def pixel_request(**changes) -> pixel_draw.PixelRequest:
