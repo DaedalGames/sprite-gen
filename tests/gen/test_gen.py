@@ -331,6 +331,7 @@ def test_codex_empty_rollout_fails_loud_on_tool_non_exposure(tmp_path: Path, mon
         stderr = ""
 
     monkeypatch.setattr(codex_provider.subprocess, "run", lambda cmd, **kwargs: _Completed())
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     monkeypatch.setattr(
         codex_provider,
         "_resolve_rollout",
@@ -371,6 +372,7 @@ def test_codex_prompt_reaches_the_child_process(tmp_path: Path, monkeypatch) -> 
         return _Completed()
 
     monkeypatch.setattr(codex_provider.subprocess, "run", _fake_run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     monkeypatch.setattr(
         codex_provider,
         "_resolve_rollout",
@@ -1050,6 +1052,7 @@ def test_codex_generate_reports_transparent_background_claim(tmp_path: Path, mon
         return _Completed()
 
     monkeypatch.setattr(codex_provider.subprocess, "run", _fake_run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     monkeypatch.setattr(
         codex_provider, "_resolve_rollout", lambda sid, root, *, preexisting: tmp_path / "x.jsonl"
     )

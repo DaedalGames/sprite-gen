@@ -95,17 +95,18 @@ def provider_subprocess_env(env: Mapping[str, str] | None = None) -> dict[str, s
     }
 
 
-def env_api_key(name: str, env: Mapping[str, str] | None = None, *, who: str) -> str | None:
+def env_api_key(name: str, env: Mapping[str, str] | None = None, *, who: str, also: str = "") -> str | None:
     """The API key in the environment variable `name` (`env`, default `os.environ`),
     None when it is not set. Set but empty is refused, naming it: an empty key is a
-    mistake to show, not an absence to route around. The one reading of a provider
-    key; what a missing key means (another route, or a refusal) is the caller's."""
+    mistake to show, not an absence to route around; `also` is said after it. The one
+    reading of a provider key; what a missing key means (another route, or a refusal)
+    is the caller's."""
     source = os.environ if env is None else env
     key = (source.get(name) or "").strip()
     if key:
         return key
     if name in source:
-        raise SystemExit(f"{who}: {name} is set but empty; give it a value or unset it")
+        raise SystemExit(f"{who}: {name} is set but empty; give it a value or unset it{also}")
     return None
 
 

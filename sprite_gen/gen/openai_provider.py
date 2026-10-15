@@ -108,7 +108,8 @@ def resolve_credential(env: dict[str, str] | None = None) -> str:
     """Return the OpenAI API key (`base.env_api_key`), or fail loud naming the variable that is missing.
     This provider never falls back to the codex ChatGPT login: that is `codex`'s route, and it needs
     an interactive browser sign-in that a container does not have."""
-    key = env_api_key(AUTH_ENV, env, who="openai-gen")
+    key = env_api_key(AUTH_ENV, env, who="openai-gen",
+                      also=". This provider never falls back to the codex ChatGPT login.")
     if key:
         return key
     raise SystemExit(
