@@ -82,10 +82,20 @@ its text could not be checked); `refused` (with `refused_at`: `mood-check`, `mat
 The provider that drew the images reads them back, once each, through the same vision call
 the facing check uses (`inspect_image`; codex `exec` read-only and ephemeral, or the xAI or
 OpenAI Responses API on the same credential). It is asked to return the lines of text as
-spelled, without being told what they should say. The comparison folds case and
-compatibility forms and keeps only letters and digits, so `Hero's Quest` matches
-`HERO’S QUEST!` and `I O N` matches `ION`; the subtitle may be read before or after the
-title. The verdict is one of:
+spelled, without being told what they should say. Both checks compare by one rule
+(`logo.normalize`), what the text spells:
+
+- **kept** — every letter and digit, and every mark written on one: an accent, a vowel
+  sign, a virama, a nukta, a tone mark, a voiced mark. `किला` read as `कला` (the vowel sign
+  `ि` gone) is a mismatch, and so is `Café` read as `CAFE`. An accent counts on a capital
+  too: for lettering in capitals that go without their accents (as Greek capitals do), give
+  the title that way. Hangul is compared by its syllables, so `별` written as jamo is `별`;
+- **folded away** — case, compatibility forms (full-width letters, ligatures, `Ⅳ` and
+  `IV`), the characters drawn as nothing (joiners, variation selectors), enclosing marks (a
+  keycap), and spaces, punctuation and symbols, with any mark written on them. So `Hero's
+  Quest` matches `HERO’S QUEST!` and `I O N` matches `ION`.
+
+The subtitle may be read before or after the title. The verdict is one of:
 
 | Verdict | At the mood image | At the logo |
 |---|---|---|

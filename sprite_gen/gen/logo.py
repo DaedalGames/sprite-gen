@@ -116,16 +116,49 @@ def lettering_prompt(text: str, *, subtitle: str | None = None, composition: str
     return " ".join(parts)
 
 
+# Unicode's Default_Ignorable_Code_Point (DerivedCoreProperties.txt 16.0.0, adjacent ranges joined): the
+# characters drawn as nothing — joiners, variation selectors, fillers, bidi and tag controls.
+DEFAULT_IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
+    (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
+)
+
+
 def normalize(text: str) -> str:
-    """Letters and digits only, compatibility-folded and case-folded: what a reader of the logo spells."""
-    folded = unicodedata.normalize("NFKC", text).casefold()
-    return "".join(ch for ch in folded if unicodedata.category(ch)[0] in "LN")
+    """What the text spells, the one rule both text checks compare by (docs/logo.md, the text check).
+
+    Kept, in order: every letter and digit, and every mark written on one — an accent, a vowel sign, a virama,
+    a nukta, a tone mark, a voiced mark — so किला is not कला; Hangul by its syllables, so 별 written as jamo is
+    별. Folded away, where readings of the same letters differ: case (full case folding), compatibility forms
+    (NFKC: width, ligatures, circled and styled letters, Ⅳ as IV), the characters drawn as nothing, enclosing
+    marks (a keycap, a circle), and every other character — spaces, punctuation, symbols — with the marks
+    written on it.
+    """
+    folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    kept: list[str] = []
+    on_kept = False  # whether the character a mark is written on was kept
+    for ch in folded:
+        point = ord(ch)
+        if any(low <= point <= high for low, high in DEFAULT_IGNORABLE):
+            continue
+        kind = unicodedata.category(ch)
+        if kind[0] in "LN":
+            kept.append(ch)
+            on_kept = True
+        elif kind[0] == "M":
+            if on_kept and kind != "Me":
+                kept.append(ch)
+        else:
+            on_kept = False
+    return unicodedata.normalize("NFC", "".join(kept))  # a mark a dropped joiner held apart joins its letter
 
 
 def compare_text(lines: list[str], text: str, subtitle: str | None) -> dict[str, Any]:
-    """The lines read off an image against the text asked, letter for letter (the subtitle before or after)."""
+    """The lines read off an image against the text asked, by what each spells (`normalize`), the subtitle
+    before or after the title: the verdict of both text checks."""
     asked_title, asked_subtitle = normalize(text), normalize(subtitle or "")
-    read = normalize("".join(lines))
+    read = normalize("\n".join(lines))  # a mark that starts a line is not written on the line above
     if not read:
         verdict = "no-text"
     elif read in (asked_title + asked_subtitle, asked_subtitle + asked_title):
