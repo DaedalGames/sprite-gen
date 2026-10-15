@@ -890,6 +890,28 @@ def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_named_exactl
         assert report["elements"][name]["rect"] == {"x": x, "y": y, "w": w, "h": h}, name
 
 
+@pytest.mark.timeout(10)
+def test_a_sheet_of_many_small_parts_is_cut_or_refused_in_seconds():
+    # Every element a 4 px square (16 px, the smallest part kept) anywhere inside its moved box, with about half the
+    # band left out, and sixty more such squares scattered over the sheet: the search for another reading branches on
+    # the parts that name the cut's boxes, not on every square, so the sheet is cut or refused at once.
+    rng = np.random.default_rng(47)
+    sx, tx, sy, ty = accepted_drift(rng)
+    pixels = np.zeros((TALL[1], TALL[0], 4), dtype=np.uint8)
+    for name, (bx, by, bw, bh) in ui_kit.boxes(TALL).items():
+        if name in BAND and rng.random() < 0.5:
+            continue
+        x0, x1, y0, y1 = bx * sx + tx, (bx + bw) * sx + tx, by * sy + ty, (by + bh) * sy + ty
+        x = int(rng.integers(math.ceil(x0) + 1, math.floor(x1) - 5))
+        y = int(rng.integers(math.ceil(y0) + 1, math.floor(y1) - 5))
+        fill(pixels, x, y, x + 4, y + 4, BORDER)
+    for _ in range(60):
+        x, y = rng.integers(0, TALL[0] - 4), rng.integers(0, TALL[1] - 4)
+        fill(pixels, x, y, x + 4, y + 4, BORDER)
+    with contextlib.suppress(ValueError):
+        ui_kit.split_ui_kit(Image.fromarray(pixels))
+
+
 def test_the_cli_names_the_missing_elements_and_writes_no_png_for_them(tmp_path, capsys):
     image, _ = synthetic_sheet(size=TALL, missing=("pip_off", "joystick_knob"))
     sheet = tmp_path / "uikit.png"
