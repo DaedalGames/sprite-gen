@@ -22,7 +22,10 @@ With any set of band elements left out, under any drift within the accepted rang
 axis a scale within a tenth of 1 and an offset within 96 px at 1024), exactly the elements not
 drawn are named missing and every drawn one is cut as itself, never a neighbour under its name;
 an element drawn in the gap between two boxes, or a drawing that drifted further, refuses the
-sheet with its own reason.
+sheet with its own reason. So does a drawing that fits the layout as well under two drifts that
+name its elements differently (small frames that lie inside their boxes either way, and one dot on
+either pip's centre), while one that fits one drift clearly better is named by it; and a sheet of
+small drawings anywhere inside their boxes, under any accepted drift, is named exactly or refused.
 
 A kit is written whole into a new or empty directory: one that holds anything is refused and left as
 it was. The kit is published at one step, the rename that gives it the out-dir's name or, with the
@@ -761,6 +764,130 @@ def test_a_sheet_drawn_further_off_its_guide_than_a_cut_accepts_is_refused_with_
     image, _ = synthetic_sheet(size=TALL, squeeze=0.8)
     with pytest.raises(ValueError, match="^the drawing drifted further from the layout than a cut accepts"):
         ui_kit.split_ui_kit(image)
+
+
+def draw_ellipse(pixels, cx, cy, w, h, color):
+    """An ellipse ``w`` x ``h`` px whose bounding box is centred on (cx, cy)."""
+    yy, xx = np.indices((h, w))
+    region = pixels[cy - h // 2:cy - h // 2 + h, cx - w // 2:cx - w // 2 + w]
+    region[((xx - w / 2 + 0.5) / (w / 2)) ** 2 + ((yy - h / 2 + 0.5) / (h / 2)) ** 2 <= 1] = color
+
+
+def two_way_sheet(dot):
+    """A sheet that fits the layout two ways (the counterexample to PR #125's cut): the seven frames drawn small, 20 x 8
+    px, each inside its own box both where the layout puts the box and with the layout squeezed to 0.9 from the top
+    edge, and one dot, ``dot`` px wide and tall, centred on pip_off's box so squeezed, which is the centre of pip_on's
+    own box. The sheet, and the frames' rects and the dot's."""
+    boxes = ui_kit.boxes(TALL)
+    pixels = np.zeros((TALL[1], TALL[0], 4), dtype=np.uint8)
+    drawn = {}
+    for name in FRAMES:
+        x, y, w, h = boxes[name]
+        cx, cy = x + w // 2, min(y + h // 2, int(0.9 * (y + h)) - 6)
+        fill(pixels, cx - 10, cy - 4, cx + 10, cy + 4, BORDER)
+        drawn[name] = (cx - 10, cy - 4, 20, 8)
+    x, y, w, h = boxes["pip_off"]
+    cx, cy = x + w // 2, round(0.9 * (y + h / 2))
+    draw_ellipse(pixels, cx, cy, *dot, PIP_OFF)
+    drawn["dot"] = (cx - dot[0] // 2, cy - dot[1] // 2, *dot)
+    return Image.fromarray(pixels), drawn
+
+
+@pytest.mark.parametrize("dot", [(18, 18), (60, 18)])
+def test_a_drawing_that_fits_the_layout_two_ways_is_refused_with_its_own_reason(tmp_path, dot):
+    # Where the layout puts the boxes, and with the layout squeezed to 0.9, every frame lies inside its own box, clear
+    # of its edges, and the dot is centred on pip_on's box in the first and on pip_off's in the second: the drawing says
+    # neither which drift it was drawn with nor which dot it is. A dot 60 px wide overflows either box alike. The sheet
+    # is refused with its own reason, by the CLI too, which writes nothing.
+    image, drawn = two_way_sheet(dot)
+    boxes = ui_kit.boxes(TALL)
+    for sy, pip in ((1.0, "pip_on"), (0.9, "pip_off")):
+        for name in FRAMES:
+            x, y, w, h = drawn[name]
+            bx, by, bw, bh = boxes[name]
+            assert bx + 1 <= x and x + w <= bx + bw - 1, (sy, name)
+            assert sy * by + 1 <= y and y + h <= sy * (by + bh) - 1, (sy, name)
+        x, y, w, h = drawn["dot"]
+        bx, by, bw, bh = boxes[pip]
+        assert x + w / 2 == bx + bw / 2 and y + h / 2 == pytest.approx(sy * (by + bh / 2)), (sy, pip)
+    refusal = ("^pip_on, pip_off: under another drift the cut accepts, the drawing fits the layout at least as well "
+               r"\(to within 1 px\) with these elements named differently, so it does not say which elements they "
+               "are; generate the sheet again$")
+    with pytest.raises(ValueError, match=refusal):
+        ui_kit.split_ui_kit(image)
+    sheet, out = tmp_path / "uikit.png", tmp_path / "ui"
+    image.save(sheet)
+    with pytest.raises(SystemExit, match="^ui-kit: pip_on, pip_off: under another drift the cut accepts"):
+        ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out)])
+    assert not out.exists()
+
+
+def squeezed_sheet():
+    """A model's drawing of the layout squeezed to 0.9 from the top edge with pip_off alone in the band: each frame 96 %
+    as wide and 55 % as tall as its squeezed box (the timer badge round), inside that box and as near its own box's
+    centre as that allows, and the dot 72 % as wide as its box, on pip_off's squeezed centre."""
+    boxes = ui_kit.boxes(TALL)
+    pixels = np.zeros((TALL[1], TALL[0], 4), dtype=np.uint8)
+    for name in FRAMES:
+        x, y, w, h = boxes[name]
+        rw, rh = 0.96 * w, 0.55 * 0.9 * h
+        if name == "timer_badge":
+            rw = rh = 0.55 * 0.9 * min(w, h)
+        cx, cy = x + w / 2, min(max(y + h / 2, 0.9 * y + rh / 2 + 1), 0.9 * (y + h) - rh / 2 - 1)
+        fill(pixels, round(cx - rw / 2), round(cy - rh / 2), round(cx + rw / 2) + 1, round(cy + rh / 2) + 1, BORDER)
+    x, y, w, h = boxes["pip_off"]
+    r, cx, cy = 0.4 * 0.9 * min(w, h), x + w / 2, 0.9 * (y + h / 2)
+    draw_disc(pixels, round(cx - r), round(cy - r), round(cx + r) - round(cx - r) + 1, PIP_OFF)
+    return Image.fromarray(pixels)
+
+
+def test_a_drawing_that_fits_one_drift_better_is_named_by_it():
+    # Squeezed to 0.9, the layout holds every frame clear of its box's edges and the dot on pip_off's centre. The dot
+    # would be pip_on under a layout stretched a little and moved up, but no such drift keeps the frames and the dot
+    # clear of the edges: the nearest leaves them more than a pixel short of it. The dot is pip_off.
+    elements, report = ui_kit.split_ui_kit(squeezed_sheet())
+    assert report["missing"] == [name for name in BAND if name != "pip_off"]
+    assert list(elements) == FRAMES + ["pip_off"]
+
+
+def scattered_sheet(seed):
+    """A 2:3 sheet drawn under a drift picked at random within the accepted range, with a random set of band elements
+    left out, each element a rectangle a random share of its box across (from a twentieth to nine tenths) anywhere
+    inside its moved box, at least 1 px clear of the edges. The sheet, and each element's rect by name."""
+    rng = np.random.default_rng(seed)
+    sx, tx, sy, ty = accepted_drift(rng)
+    share = rng.choice([0.05, 0.1, 0.2, 0.4, 0.7, 0.9])
+    missing = [name for name in BAND if rng.random() < 0.6]
+    pixels = np.zeros((TALL[1], TALL[0], 4), dtype=np.uint8)
+    drawn = {}
+    for name, (bx, by, bw, bh) in ui_kit.boxes(TALL).items():
+        if name in missing:
+            continue
+        x0, x1, y0, y1 = bx * sx + tx, (bx + bw) * sx + tx, by * sy + ty, (by + bh) * sy + ty
+        w = max(5, int((x1 - x0) * share * rng.uniform(0.5, 1)))
+        h = max(5, int((y1 - y0) * share * rng.uniform(0.5, 1)))
+        w, h = min(w, int(x1 - x0) - 4), min(h, int(y1 - y0) - 4)
+        x = int(rng.integers(math.ceil(x0) + 1, math.floor(x1) - w))
+        y = int(rng.integers(math.ceil(y0) + 1, math.floor(y1) - h))
+        fill(pixels, x, y, x + w, y + h, BORDER)
+        drawn[name] = (x, y, w, h)
+    return Image.fromarray(pixels), drawn
+
+
+@pytest.mark.parametrize("seed", range(512))
+def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_named_exactly_or_refused(seed):
+    # Small drawings anywhere inside their boxes leave the drift less certain, so a sheet may fit the layout under two
+    # drifts that name its elements differently, and is then refused. Whenever it is cut, exactly the band elements not
+    # drawn are missing and every element drawn is cut as its own drawing, never under another's name.
+    image, drawn = scattered_sheet(seed)
+    try:
+        elements, report = ui_kit.split_ui_kit(image)
+    except ValueError:
+        return
+    assert report["missing"] == [name for name in BAND if name not in drawn]
+    assert list(elements) == list(drawn)
+    for name, (x, y, w, h) in drawn.items():
+        assert report["elements"][name]["rect"] == {"x": x, "y": y, "w": w, "h": h}, name
 
 
 def test_the_cli_names_the_missing_elements_and_writes_no_png_for_them(tmp_path, capsys):
