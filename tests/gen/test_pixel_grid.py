@@ -250,3 +250,41 @@ def test_palette_rules(tmp_path):
     for bad in ("free:0", "free:63", "free:x", "#12345", "#aabbcc,#AABBCC", str(tmp_path / "missing.hex")):
         with pytest.raises(ValueError):
             pg.palette_rule(bad)
+
+
+# ----------------------------------------------------------------------------- several blocks in one answer
+
+def test_several_blocks_read_the_last_one_that_reads_whole():
+    """An answer that writes a block, then 'Corrected:' and the block again: the last block that reads
+    whole is the answer, recorded. Seen 2026-10-15 on a 16 px icon - a first block of the palette alone
+    and END, then the whole block."""
+    half = _block(". transparent\na #112233", {})
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    text = "Here:\n" + half + "\nWait, the frame belongs inside the block. Corrected:\n\n" + whole
+    grid, issues = pg.parse_answer(text, "chargrid", 8, 8, ("icon",))
+    assert grid.frames["icon"] == [list(row) for row in ROWS8]
+    assert [i.to_dict() for i in issues] == [{"code": "block_many", "detail": "2 blocks, read block 2"}]
+    assert pg.recovered(issues) == issues
+
+
+def test_a_whole_block_before_a_broken_one_is_the_one_read():
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    cut = "```pixels\nPALETTE\n. transparent\na #112233\nFRAME icon\n........\n.aaa"
+    grid, issues = pg.parse_answer(whole + "\nLet me redo it:\n" + cut, "chargrid", 8, 8, ("icon",))
+    assert codes(issues) == ["block_many"] and issues[0].detail == "2 blocks, read block 1"
+    assert grid.frames["icon"] == [list(row) for row in ROWS8]
+
+
+def test_of_several_broken_blocks_the_last_with_rows_to_repair_is_read():
+    first = _block(". transparent\nEND_PALETTE_PLACEHOLDER", {"icon": ROWS8})
+    second = _block(". transparent\na #112233", {"icon": ROWS8[:7] + [".aaaaaaa."]})
+    grid, issues = pg.parse_answer(first + second, "chargrid", 8, 8, ("icon",))
+    assert codes(issues) == ["block_many", "row_width"] and grid is not None
+    assert [(i.code, i.row) for i in pg.row_issues(issues)] == [("row_width", 8)]
+
+
+def test_one_block_reads_as_it_always_did():
+    whole = _block(". transparent\na #112233", {"icon": ROWS8})
+    assert pg.parse_answer(whole, "chargrid", 8, 8, ("icon",))[1] == []
+    assert pg.parse_answer("text then " + whole + " and a note", "chargrid", 8, 8, ("icon",))[1] == []
+

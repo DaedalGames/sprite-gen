@@ -266,6 +266,19 @@ def test_a_candidate_is_drawn_twice_at_most(tmp_path, claude):
     assert asked(fake) == ["c1-gen1", "c1-gen2"]
 
 
+def test_an_answer_that_writes_its_block_again_is_read_from_the_last_whole_block(tmp_path, claude):
+    """A block, then 'Corrected:' and the block again (seen on the subscription, 2026-10-15): the last
+    block that reads whole is the answer - recorded, not drawn again."""
+    half = SPRITE16[:SPRITE16.index("FRAME sprite")] + "END\n```"
+    fake = claude({"c1-gen1": reply(half + "\n\nWait, the frame belongs inside the block. Corrected:\n\n" + SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    assert asked(fake) == ["c1-gen1"]
+    (candidate,) = report_of(out)["candidates"]
+    assert candidate["status"] == "passed" and candidate["redraws"] == []
+    assert candidate["G1"] == {"ok": True, "issues": [], "recovered": [{"code": "block_many", "detail": "2 blocks, read block 2"}]}
+
+
 def test_a_refusal_is_reported_as_it_came(tmp_path, claude):
     fake = claude({"c1-gen1": reply("", stop="refusal", details={"type": "refusal", "category": "cyber", "explanation": "x"})})
     out = tmp_path / "run"

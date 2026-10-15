@@ -16,7 +16,8 @@ Parsing is strict and says what it found (`Issue`):
   are what the row repair asks for, one row at a time, and `splice` puts the answers in;
 - recovered issues are code-recoverable and recorded, never silent: the fence tagged otherwise or
   missing, a fence never closed, a single frame written without its `FRAME` line or under another
-  name, frames in another order, no `END` line.
+  name, frames in another order, no `END` line, an answer that wrote its block more than once (the
+  last block that reads whole is read).
 
 `png_bytes` writes a frame as a PNG whose bytes depend only on its pixels — stored deflate
 blocks, no compressor in the loop — so the same grid gives the same file on any machine and any
@@ -57,8 +58,8 @@ STRUCTURAL = frozenset({
     "frame_duplicate", "row_count_over", "stray_line",
 })
 ROW_CODES = frozenset({"row_width", "unknown_symbol", "row_missing"})
-RECOVERED = frozenset({"block_tag", "block_unclosed", "frame_header_missing", "frame_renamed", "frame_order",
-                       "no_end"})
+RECOVERED = frozenset({"block_tag", "block_unclosed", "block_many", "frame_header_missing", "frame_renamed",
+                       "frame_order", "no_end"})
 
 _PALETTE_LINE = re.compile(r"^(\S)\s+(transparent|#[0-9A-Fa-f]{6})$")
 _ROW_ANSWER = re.compile(r"^\s*`?\s*ROW\s+(\S+)\s+(\d+)\s*:\s*(.*?)\s*`?\s*$", re.M)
@@ -365,28 +366,58 @@ def _json_row(row: object) -> list[str]:
     return [_json_token(v) for v in row] if isinstance(row, list) else []
 
 
-def parse_answer(text: str, fmt: str, width: int, height: int, frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
-    """Read a model's answer. Returns the grid (None when nothing could be read) and every issue."""
-    issues: list[Issue] = []
-    if fmt == "chargrid":
-        body, found = _fenced(text, "pixels")
-    elif fmt == "json":
-        body, found = _fenced(text, "json")
-        if body is None:
-            start, end = text.find("{"), text.rfind("}")
-            body, found = (text[start:end + 1], "block_tag") if 0 <= start < end else (None, None)
-    else:
-        raise ValueError(f"unknown format {fmt!r}")
-    if body is None:
-        issues.append(Issue("no_block", None, None, f"no ```{'pixels' if fmt == 'chargrid' else 'json'} block"))
-        return None, issues
-    if found:
-        issues.append(Issue(found))
+def _blocks(text: str, tag: str) -> list[tuple[str, str | None]]:
+    """Every ```<tag> block of an answer, in order, and how each was found: as asked (None), or never
+    closed before the next block or the end of the answer (`block_unclosed`)."""
+    openers = list(re.finditer(r"```" + re.escape(tag) + r"[ \t]*\r?\n", text))
+    out: list[tuple[str, str | None]] = []
+    for number, opener in enumerate(openers):
+        end = openers[number + 1].start() if number + 1 < len(openers) else len(text)
+        close = text.find("```", opener.end(), end)
+        out.append((text[opener.end():close], None) if close >= 0 else (text[opener.end():end], "block_unclosed"))
+    return out
+
+
+def _read_body(body: str, found: str | None, fmt: str, width: int, height: int,
+               frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    issues = [Issue(found)] if found else []
     parse = _parse_chargrid_body if fmt == "chargrid" else _parse_json_body
     grid = parse(body, width, height, frames, issues)
     if grid is not None and not structural(issues):
         issues.extend(check_rows(grid))
     return grid, issues
+
+
+def _last_whole(blocks: list[tuple[str, str | None]], fmt: str, width: int, height: int,
+                frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    """An answer that wrote its block more than once — a first try, then "Corrected:" and the block
+    again: the last block that reads whole is the answer; when none does, the last whose rows the
+    row repair can fix; when none can, the last. Which one was read is recorded (`block_many`)."""
+    read = [_read_body(body, found, fmt, width, height, frames) for body, found in blocks]
+    numbers = range(len(read) - 1, -1, -1)
+    chosen = next((n for n in numbers if read[n][0] is not None and not structural(read[n][1])
+                   and not row_issues(read[n][1])), None)
+    if chosen is None:
+        chosen = next((n for n in numbers if read[n][0] is not None and not structural(read[n][1])), len(read) - 1)
+    grid, issues = read[chosen]
+    return grid, [Issue("block_many", None, None, f"{len(read)} blocks, read block {chosen + 1}"), *issues]
+
+
+def parse_answer(text: str, fmt: str, width: int, height: int, frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    """Read a model's answer. Returns the grid (None when nothing could be read) and every issue."""
+    if fmt not in FORMATS:
+        raise ValueError(f"unknown format {fmt!r}")
+    tag = "pixels" if fmt == "chargrid" else "json"
+    blocks = _blocks(text, tag)
+    if len(blocks) > 1:
+        return _last_whole(blocks, fmt, width, height, frames)
+    body, found = _fenced(text, tag)
+    if body is None and fmt == "json":
+        start, end = text.find("{"), text.rfind("}")
+        body, found = (text[start:end + 1], "block_tag") if 0 <= start < end else (None, None)
+    if body is None:
+        return None, [Issue("no_block", None, None, f"no ```{tag} block")]
+    return _read_body(body, found, fmt, width, height, frames)
 
 
 def read_grid_text(text: str) -> tuple[Grid | None, list[Issue]]:
