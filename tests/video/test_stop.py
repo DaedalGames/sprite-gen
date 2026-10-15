@@ -4,7 +4,7 @@
 A synthetic clip opens on a standing runner, sets it off (its stride grows over a few frames) and runs it
 in place; `video-loop --cycle fixed` cuts a later cycle. The stop must leave the loop where the clip
 reaches it, play the start backwards to the clip's first frame without sliding, and refuse a start that
-reaches the loop by a jump or holds another motion before it.
+reaches the loop by a jump, holds another motion before it, or runs on longer than a setting-off.
 """
 from __future__ import annotations
 
@@ -68,13 +68,13 @@ def runner(*, run: float, phase: float, dx: float = 0.0, dy: float = 0.0, arm_up
 
 
 def clip(tmp_path: Path, *, cycles: int = 3, drift: tuple[float, float] = (0.0, 0.0), other: int = 0,
-         instant: bool = False, ghost_at: int | None = None) -> tuple[Path, int]:
-    """Keyed frames of a clip: REST standing frames, a setting-off of SET_OFF frames (none when `instant`: the stride
-    is there at once), `other` frames of another motion (arm raised and waved, legs crouched, no stride), then the
-    run, `cycles` cycles of PERIOD frames. `drift` moves the body across the frame while it sets off. Returns the
-    folder and the first frame of the run."""
+         instant: bool = False, ghost_at: int | None = None, set_off: int = SET_OFF) -> tuple[Path, int]:
+    """Keyed frames of a clip: REST standing frames, `other` frames of another motion (arm raised and waved, legs
+    crouched, no stride), a setting-off of `set_off` frames from standing (none when `instant`: the stride is there at
+    once), then the run, `cycles` cycles of PERIOD frames. `drift` moves the body across the frame while it sets off.
+    Returns the folder and the first frame of the run."""
     frames = [runner(run=0.0, phase=0.0) for _ in range(REST)]
-    ramp = 0 if instant else SET_OFF
+    ramp = 0 if instant else set_off
     for k in range(other):
         frames.append(runner(run=0.0, phase=0.0, arm_up=0.5 + 0.5 * abs(math.sin(k * math.pi / 5)), crouch=0.4 + 0.3 * math.sin(k * 0.7)))
 
@@ -181,18 +181,55 @@ def test_stop_does_not_slide_when_the_body_drifts_as_it_sets_off(tmp_path):
     assert max(abs(a - b) for a, b in zip(still_hips, drift_hips)) <= 0.1 * 36 + 0.5
 
 
+@pytest.mark.parametrize("other", [2, PERIOD // 2])
+def test_stop_refuses_a_short_other_motion(tmp_path, other):
+    """Another motion between the still and the run (an arm waved high, the body crouched) that ends standing, the run
+    setting off from there: two frames of it, or half a cycle, the run-up well inside a setting-off's length. The clip
+    comes back to the still it had left, and the stop would play the motion backwards: refused by name, the frame that
+    turns back, the pose it is back at and the farthest frame between named in the report, no strip written."""
+    keyed, run_from = clip(tmp_path, other=other)
+    meta = cut(tmp_path, keyed, run_from + PERIOD)
+    with pytest.raises(SystemExit, match="another motion"):
+        make(tmp_path, keyed, meta)
+    report = json.loads((tmp_path / "stop" / "stop.stop.report.json").read_text())
+    assert report["status"] == "failed" and report["run_up"]["cycles"] <= stop.RUN_UP_MAX_CYCLES
+    turn = report["turn_back"]
+    # Back at a standing frame where the motion has ended and the setting-off starts, a step and more after leaving it.
+    assert turn["frame"] == REST + other and turn["back_to"] < REST and turn["steps"] <= stop.SAME_POSE
+    assert REST <= turn["away_frame"] < REST + other and turn["away_steps"] >= stop.TURN_BACK_AWAY
+    assert not (tmp_path / "stop" / "stop.strip.png").exists()
+
+
 def test_stop_refuses_a_start_that_holds_another_motion(tmp_path):
-    """Two and a half cycles of another motion (an arm waved high, the body crouched) between the still and the run:
-    the stop would play it backwards. Refused by name, the report written; an explicit --run-up-max lets it through."""
+    """Two and a half cycles of another motion between the still and the run: it turns back again and again, and the
+    run-up is past the run-up bound too. Refused as another motion, the report written; the run-up bound, which only
+    bounds the run-up's length, is not what refuses it: an explicit --run-up-max does not let it through."""
     keyed, run_from = clip(tmp_path, other=2 * PERIOD + PERIOD // 2)
     meta = cut(tmp_path, keyed, run_from + PERIOD)
     with pytest.raises(SystemExit, match="another motion"):
         make(tmp_path, keyed, meta)
     report = json.loads((tmp_path / "stop" / "stop.stop.report.json").read_text())
-    assert report["status"] == "failed" and report["run_up"]["cycles"] > stop.RUN_UP_MAX_CYCLES
+    assert report["status"] == "failed" and report["turn_back"]["steps"] <= stop.SAME_POSE
+    assert report["run_up"]["cycles"] > stop.RUN_UP_MAX_CYCLES
     assert not (tmp_path / "stop" / "stop.strip.png").exists()
+    with pytest.raises(SystemExit, match="another motion"):
+        make(tmp_path, keyed, meta, run_up_max=4.0)
+
+
+def test_stop_refuses_a_run_up_longer_than_a_setting_off(tmp_path):
+    """A start whose stride grows over two and a half cycles goes one way into the run — nothing in it turns back — and
+    plays strides unlike the loop's for longer than a setting-off: refused by its length, not as another motion, the
+    report written; an explicit --run-up-max lets it through, ending on the still."""
+    keyed, run_from = clip(tmp_path, set_off=2 * PERIOD + PERIOD // 2)
+    meta = cut(tmp_path, keyed, run_from + PERIOD)
+    with pytest.raises(SystemExit, match="strides unlike the loop's") as refusal:
+        make(tmp_path, keyed, meta)
+    assert "another motion" not in str(refusal.value)
+    report = json.loads((tmp_path / "stop" / "stop.stop.report.json").read_text())
+    assert report["status"] == "failed" and report["run_up"]["cycles"] > stop.RUN_UP_MAX_CYCLES
+    assert report["turn_back"]["steps"] > stop.SAME_POSE
     out = make(tmp_path, keyed, meta, run_up_max=4.0)
-    assert out["status"] == "passed" and out["run_up_max_cycles"] == 4.0
+    assert out["status"] == "passed" and out["run_up_max_cycles"] == 4.0 and out["shown"][-1] == 0
 
 
 def test_stop_refuses_a_seam_past_the_jump_line(tmp_path):
