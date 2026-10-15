@@ -63,6 +63,18 @@ def test_provider_subprocess_env_scrubs_orchestrator_session_env(monkeypatch) ->
     assert env.get("PATH") == "/usr/bin"  # 일반 env 는 유지
 
 
+def test_provider_subprocess_env_reads_a_given_environment() -> None:
+    env = gen_base.provider_subprocess_env({"PATH": "/bin", "ORCHESTRATOR_MEMBER_ID": "w"})
+    assert env == {"PATH": "/bin"}
+
+
+def test_env_api_key_is_the_key_none_or_a_refusal_of_an_empty_one() -> None:
+    assert gen_base.env_api_key("SOME_API_KEY", {"SOME_API_KEY": " k "}, who="v") == "k"
+    assert gen_base.env_api_key("SOME_API_KEY", {}, who="v") is None
+    with pytest.raises(SystemExit, match="v: SOME_API_KEY is set but empty; give it a value or unset it"):
+        gen_base.env_api_key("SOME_API_KEY", {"SOME_API_KEY": " "}, who="v")
+
+
 def test_provider_binary_resolves_windows_style_path_shims(monkeypatch) -> None:
     monkeypatch.setattr(gen_base.shutil, "which", lambda name: f"C:/tools/{name}.CMD")
     assert gen_base.provider_binary("codex") == "C:/tools/codex.CMD"
