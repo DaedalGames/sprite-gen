@@ -10,8 +10,9 @@ alpha haze is cleared first (`alpha_floor.clear_haze`), parts are assigned to bo
 drawing within the drift a cut accepts, `_search` and `_fit_layout`), and each element's insets and
 content padding are measured on its own pixels; a fill is fitted to its bar frame's content area.
 The frames are required; an optional element whose box is empty is left out and named under
-`missing`. A drawing that drifted further than a cut accepts, or a box whose parts are centred
-outside it, refuses the sheet: no element is cut under a name the drawing does not give it. The
+`missing`. A drawing that drifted further than a cut accepts, a box whose parts are centred outside
+it, or a drawing that fits the layout as well under another drift that names its elements otherwise
+(`_ambiguity`) refuses the sheet: no element is cut under a name the drawing does not give it. The
 report names each element PNG by its path from the report's own directory (`report_file`,
 `element_path`). A kit is written whole into a new or empty output directory (`_write_kit`): staged
 in a hidden directory beside it and renamed into place in one step. That rename, or with the report
@@ -59,6 +60,11 @@ DRIFT_OFFSET = 2 * GAP
 DRIFT_STEPS = 9
 FIT_ROUNDS = 8
 FIT_MIN_BOXES = 3
+# A drawing that fits the layout in two ways (docs/ui-kit.md "A drawing that fits the layout in two ways"): a part
+# keeps clear of its box's edges, as the guide asks, when it lies CLEARANCE px inside them, and two readings of a
+# drawing whose shortfalls from that differ by no more than TIE px fit it equally well.
+CLEARANCE = 1.0
+TIE = 1.0
 GUIDE_BACKGROUND = (0xF6, 0xF6, 0xF6)
 GUIDE_BOX = (0x2F, 0x80, 0xED)
 STRETCHES = ("xy", "x", "none")
@@ -514,19 +520,129 @@ def _fit_layout(parts: list[dict[str, Any]], scaled: dict[str, tuple[float, floa
     return found
 
 
-def _drift_refusal(fit: tuple[tuple[float, float], ...], unit: float) -> str | None:
-    """Why a fit lies outside the drift a cut accepts (``unit`` sheet pixels to a layout pixel at 1024), or None. A
-    drawing drawn at the edge of the range, its elements a little off their boxes' centres, is fitted a little to
-    either side of it, so a fit is refused only more than a step of the search's grid outside the range."""
-    (sx, tx), (sy, ty) = fit
-    limit = DRIFT_OFFSET * unit
+def _drift_limits(unit: float) -> tuple[float, float]:
+    """How far a fit's scale may lie from 1 and its offset from 0 along each axis (``unit`` sheet pixels to a layout
+    pixel at 1024). A drawing drawn at the edge of the range, its elements a little off their boxes' centres, is fitted
+    a little to either side of it, so the limits lie a step of the search's grid outside the range."""
     step = 2 / (DRIFT_STEPS - 1)  # a step of the grid, as a share of the range
-    if max(abs(sx - 1), abs(sy - 1)) <= DRIFT_SCALE * (1 + step) and max(abs(tx), abs(ty)) <= limit * (1 + step):
+    return DRIFT_SCALE * (1 + step), DRIFT_OFFSET * unit * (1 + step)
+
+
+def _drift_refusal(fit: tuple[tuple[float, float], ...], unit: float) -> str | None:
+    """Why a fit lies outside the drift a cut accepts (`_drift_limits`), or None."""
+    (sx, tx), (sy, ty) = fit
+    scale, offset = _drift_limits(unit)
+    if max(abs(sx - 1), abs(sy - 1)) <= scale and max(abs(tx), abs(ty)) <= offset:
         return None
+    limit = DRIFT_OFFSET * unit
     return (f"the drawing drifted further from the layout than a cut accepts: fitted to it, the layout is scaled "
             f"{sx:.3f} along x and {sy:.3f} along y and offset {tx:.1f}, {ty:.1f} px, where a cut accepts a scale "
             f"from {1 - DRIFT_SCALE:g} to {1 + DRIFT_SCALE:g} and an offset of at most {limit:g} px along each axis; "
             "generate the sheet again")
+
+
+def _least(bounds: Any, hinges: Any) -> float:
+    """The least, over the drifts (s, t) along one axis with a s + b t <= c for each row (a, b, c) of ``bounds``, of
+    the sum over the rows (p, q, r) of ``hinges`` of max(0, p s + q t + r); inf when no drift keeps every bound. The
+    sum is linear between the lines on which a bound or a hinge turns, so it is least where two of them cross."""
+    lines = np.concatenate((bounds, hinges * (1, 1, -1)))
+    a, b, c = lines.T
+    i, j = np.triu_indices(len(lines), 1)
+    det = a[i] * b[j] - a[j] * b[i]
+    crossing = np.abs(det) > 1e-12
+    i, j, det = i[crossing], j[crossing], det[crossing]
+    s, t = (c[i] * b[j] - c[j] * b[i]) / det, (a[i] * c[j] - a[j] * c[i]) / det
+    kept = (bounds[:, :1] * s + bounds[:, 1:2] * t <= bounds[:, 2:] + 1e-6).all(axis=0)
+    if not kept.any():
+        return np.inf
+    return float(np.maximum(0, hinges[:, :1] * s[kept] + hinges[:, 1:2] * t[kept] + hinges[:, 2:]).sum(axis=0).min())
+
+
+def _ambiguity(parts: list[dict[str, Any]], assigned: dict[str, list[dict[str, Any]]],
+               layout: dict[str, tuple[int, int, int, int]], unit: float, reach: float,
+               required: set[str]) -> str | None:
+    """Why the drawing does not say which element is which, or None (docs/ui-kit.md "A drawing that fits the layout in
+    two ways").
+
+    A reading of the drawing puts parts in the layout's boxes moved by one drift within `_drift_limits`, each part's
+    centroid in its box widened by ``reach`` (the widening moved with the box), and names each box that holds parts by
+    the largest. Its shortfall is the least, over the drifts that keep every centroid so, of how far the sides of its
+    parts are from lying CLEARANCE px inside their boxes, added up. The cut (``assigned``) names each box by its largest
+    part, and the least shortfall of a reading that names the boxes so is that of those parts alone. A reading that
+    names them otherwise (a box held in one and empty in the other, or held by another part) puts each part the cut
+    names a box by in a box, empty or with a larger part, and leaves out any other part or makes it the largest part of
+    an empty box. When one comes within TIE of the cut's shortfall, the drawing is refused.
+
+    The search is exact: parts are taken largest first, and a placement is kept while some drift keeps every centroid
+    in its box with a shortfall within that. Once the names differ, they cannot become the cut's again, so a part the
+    cut names no box by stays out, unless a box that must hold an element is empty."""
+    names = list(layout)
+    scale, offset = _drift_limits(unit)
+    limits = np.array([(-1, 0, scale - 1), (1, 0, 1 + scale), (0, -1, offset), (0, 1, offset)], dtype=float)
+    order = sorted(range(len(parts)), key=lambda k: -parts[k]["pixels"])  # largest first, ties in part order
+    rank = {k: n for n, k in enumerate(order)}
+    box = np.asarray([layout[name] for name in names], dtype=float)  # per box: x, y, w, h
+    bbox = np.asarray([part["bbox"] for part in parts], dtype=float).reshape(-1, 4)  # per part: x0, y0, x1, y1
+    centroid = np.asarray([part["centroid"] for part in parts], dtype=float).reshape(-1, 2)
+
+    def rows(a: Any, b: float, c: Any) -> Any:
+        """A row (a, b, c) for each part and box, from values by box (a), and by part (c)."""
+        return np.stack(np.broadcast_arrays(a, b, c), axis=-1)
+
+    bounds, hinges, reachable = [], [], np.ones((len(parts), len(names)), dtype=bool)
+    for axis in (0, 1):
+        low, high = box[:, axis], box[:, axis] + box[:, 2 + axis]
+        at, lo, hi = centroid[:, axis, None], bbox[:, axis, None], bbox[:, 2 + axis, None]
+        # per part and box, the rows that keep the centroid in the box widened and moved by (s, t), a s + b t <= c,
+        # and the shortfall of each side, max(0, p s + q t + r)
+        bounds.append(np.stack((rows(low - reach, 1, at), rows(-(high + reach), -1, -at)), axis=2))
+        hinges.append(np.stack((rows(low, 1, CLEARANCE - lo), rows(-high, -1, CLEARANCE + hi)), axis=2))
+        # some drift within the limits keeps the centroid in the widened box: the scales from (at - offset) / (high +
+        # reach) to (at + offset) / (low - reach) meet theirs (low > reach: every box lies a gap in from the edges)
+        reachable &= (np.maximum(1 - scale, (at - offset) / (high + reach))
+                      <= np.minimum(1 + scale, (at + offset) / (low - reach)))
+
+    def shortfall(placed: tuple[tuple[int, int], ...]) -> float:
+        """The least shortfall of the (part, box) pairs ``placed``; inf when no drift keeps each centroid in its box."""
+        pairs = ([k for k, _ in placed], [i for _, i in placed])
+        return sum(_least(np.concatenate((limits, bounds[axis][pairs].reshape(-1, 3))),
+                          hinges[axis][pairs].reshape(-1, 3)) for axis in (0, 1))
+
+    index = {id(part): k for k, part in enumerate(parts)}
+    cut = {min((index[id(part)] for part in assigned[name]), key=rank.__getitem__): i
+           for i, name in enumerate(names) if assigned[name]}  # each box's largest part -> the box
+    within = shortfall(tuple(cut.items())) + TIE
+    needed = {names.index(name) for name in required}
+    # depth first over the parts in order: how many are taken, the (part, box) pairs placed, the largest part of each
+    # box that holds one, and whether the names already differ from the cut's
+    stack: list[tuple[int, tuple[tuple[int, int], ...], dict[int, int], bool]] = [(0, (), {}, False)]
+    other = None
+    while stack and other is None:
+        depth, placed, largest, differs = stack.pop()
+        if depth == len(order):
+            if differs and needed <= largest.keys():
+                other = largest
+            continue
+        k = order[depth]
+        in_reach = [int(i) for i in np.flatnonzero(reachable[k])]
+        if k in cut:  # in a box: its largest part when it is empty, else with a larger part
+            options = [(i, i != cut[k] or i in largest) for i in in_reach]
+        else:  # left out, or the largest part of an empty box
+            options = [(None, False)] + [(i, True) for i in in_reach
+                                         if i not in largest and (not differs or i in needed)]
+        for i, deviates in sorted(options, key=lambda option: option[1], reverse=True):  # the cut's own on top
+            if i is None:
+                stack.append((depth + 1, placed, largest, differs))
+            elif shortfall(more := placed + ((k, i),)) <= within:
+                stack.append((depth + 1, more, largest if i in largest else {**largest, i: k}, differs or deviates))
+    if other is None:
+        return None
+    named = {i: k for k, i in cut.items()}
+    changed = [name for i, name in enumerate(names) if named.get(i) != other.get(i)]
+    one = len(changed) == 1
+    return (f"{', '.join(changed)}: under another drift the cut accepts, the drawing fits the layout at least as "
+            f"well (to within {TIE:g} px) with {'this element' if one else 'these elements'} named differently, so "
+            f"it does not say which {'element it is' if one else 'elements they are'}; generate the sheet again")
 
 
 def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
@@ -540,7 +656,8 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
     if alpha_floor:
         rgba, cleanup = clear_haze(rgba, floor=alpha_floor, edge=alpha_edge)
     pixels = np.asarray(rgba)
-    scaled: dict[str, tuple[float, float, float, float]] = dict(boxes((width, height)))
+    layout = boxes((width, height))
+    scaled: dict[str, tuple[float, float, float, float]] = dict(layout)
     unit = width / REFERENCE
     reach = GAP / 2 * unit
     every = _parts(pixels[..., 3] > 0)
@@ -577,6 +694,9 @@ def split_ui_kit(image: Image.Image, *, alpha_floor: int = 64,
                  "their boxes hold parts centred outside them (in the gap beside them or further, so the drawing "
                  "does not say which elements they are)")
         raise ValueError(f"{', '.join(off)}: {holds}; generate the sheet again")
+    ambiguous = _ambiguity(kept, assigned, layout, unit, reach, required)
+    if ambiguous:
+        raise ValueError(ambiguous)
     elements: dict[str, Image.Image] = {}
     records: dict[str, Any] = {}
     for slot in slots:
