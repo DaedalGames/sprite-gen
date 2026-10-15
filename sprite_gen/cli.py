@@ -16,7 +16,7 @@ from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
 from sprite_gen.frames import cutout, extract, slice_sheet, ui_kit, unpack_atlas
-from sprite_gen.gen import gen_set, pixel_draw, prepare, video
+from sprite_gen.gen import gen_set, logo, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
@@ -296,6 +296,12 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Generate every state row of a prepared run, N at a time — one report per row, table.md, non-zero exit on any failure.",
         gen_set.add_arguments,
         gen_set.run,
+    ),
+    # Same declaration-once rule (docs/logo.md): a mood image with the title in it, its lettering redrawn on a key, the key removed.
+    "logo": (
+        "Typography logo: a title screen or poster with the title lettered in it, only its lettering redrawn on a chroma key, the key removed with glows and partial alpha kept; the text is read back and a misspelt logo refused.",
+        logo.add_arguments,
+        logo.run,
     ),
     # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
     "pixel-draw": (
