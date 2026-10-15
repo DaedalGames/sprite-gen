@@ -10,8 +10,8 @@ checked here against what is actually on disk instead.
 Checked against the build, not against the declaration string: reading the patterns and
 asking "does this asset look like one of them" is how the first version of this guard passed
 while the wheel was already dropping files (`fnmatch`'s `*` crosses `/`, setuptools' does
-not). Both tests below therefore go through an expansion that packaging actually performs —
-`glob(recursive=True)` for the always-on one, a real wheel build for the other.
+not). The tests below therefore read a real wheel built from this tree. setuptools is a
+declared test dependency, so the wheel fixture skipping fails the lane rather than passing it.
 
 The same reasoning covers the subprocess routes (`/api/compose`, `/api/interpolate`,
 `/api/reroll`, `/api/export`, `/api/export-gif`): naming `scripts/<tool>.py` there would
@@ -23,9 +23,7 @@ to it.
 from __future__ import annotations
 
 import ast
-import glob
 import importlib.util
-import os
 import re
 import shutil
 import subprocess
@@ -39,43 +37,13 @@ from sprite_gen.serve.serve_curation import CURATOR_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 PACKAGE_DIR = ROOT / "sprite_gen"
-PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
 # `scripts/<anything>.py` named as a path, not as prose.
 SCRIPT_PATH = re.compile(r"(?:^|/)scripts/[^/]+\.py$")
 
 
-def _declared_package_data() -> list[str]:
-    """The `sprite_gen = [...]` patterns under `[tool.setuptools.package-data]`.
-
-    Read the package-data declaration directly, without importing the package.
-    """
-    section = re.search(
-        r"(?ms)^\[tool\.setuptools\.package-data\]\s*$(.*?)(?=^\[|\Z)", PYPROJECT)
-    assert section, "pyproject.toml is missing [tool.setuptools.package-data]"
-    entry = re.search(r"(?ms)^sprite_gen\s*=\s*\[(.*?)\]", section.group(1))
-    assert entry, "[tool.setuptools.package-data] declares nothing for sprite_gen"
-    return re.findall(r'"([^"]+)"', entry.group(1))
-
-
 def _curator_assets() -> list[Path]:
     return sorted(p for p in CURATOR_DIR.rglob("*") if p.is_file())
-
-
-def _collected_package_data() -> set[str]:
-    """The files the declared patterns actually collect, expanded the way the build does.
-
-    setuptools' `build_py.find_data_files` runs each pattern through `glob(..., recursive=True)`
-    rooted at the package source dir and keeps the regular files. That expansion is the whole
-    contract: in it a lone `*` stops at a directory boundary (`**` is what descends), which is
-    exactly where a hand-listed pattern silently loses a nested asset.
-    """
-    collected: set[str] = set()
-    for pattern in _declared_package_data():
-        for hit in glob.glob(os.path.join(glob.escape(str(PACKAGE_DIR)), pattern), recursive=True):
-            if os.path.isfile(hit):
-                collected.add(Path(hit).relative_to(PACKAGE_DIR).as_posix())
-    return collected
 
 
 _BUILD_WHEEL = (
@@ -144,17 +112,6 @@ def test_the_spa_has_exactly_one_home() -> None:
         "two curator trees exist — whichever one the server does not read will rot silently")
 
 
-def test_the_package_data_patterns_collect_every_curator_asset() -> None:
-    """Not "does the asset look declared" but "does the declaration pick it up"."""
-    on_disk = {p.relative_to(PACKAGE_DIR).as_posix() for p in _curator_assets()}
-    missing = sorted(on_disk - _collected_package_data())
-
-    assert not missing, (
-        f"{len(missing)} SPA asset(s) survive no package-data pattern "
-        f"{_declared_package_data()} — {missing[:5]} — so they are absent from the wheel and "
-        f"404 for anyone who installed sprite-gen instead of cloning it")
-
-
 def test_the_built_wheel_carries_every_curator_asset(wheel_names: set[str]) -> None:
     """The declaration is a claim; the wheel is the fact. Compare the fact to the disk."""
     on_disk = {f"sprite_gen/serve/curator/{p.relative_to(CURATOR_DIR).as_posix()}"
@@ -199,16 +156,20 @@ def test_the_spa_asks_only_for_assets_that_exist() -> None:
     assert not missing, f"index.html references assets that are not in the SPA tree: {missing}"
 
 
-@pytest.mark.parametrize("module", sorted(p.relative_to(ROOT).as_posix()
-                                          for p in PACKAGE_DIR.rglob("*.py")))
-def test_the_package_never_reaches_into_the_scripts_wrappers(module: str) -> None:
-    tree = ast.parse((ROOT / module).read_text(encoding="utf-8"))
-    offenders = [s for s in _string_constants(tree) if s == "scripts" or SCRIPT_PATH.search(s)]
+def test_the_package_never_reaches_into_the_scripts_wrappers() -> None:
+    modules = sorted(PACKAGE_DIR.rglob("*.py"))
+    assert modules, f"no package modules found under {PACKAGE_DIR} — the scan would pass vacuously"
+    offenders: list[str] = []
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        hits = [s for s in _string_constants(tree) if s == "scripts" or SCRIPT_PATH.search(s)]
+        if hits:
+            offenders.append(f"{path.relative_to(ROOT).as_posix()}: {hits}")
 
     assert not offenders, (
-        f"{module} builds a path into scripts/ ({offenders}) — those wrappers are not "
-        f"installed, so this works in a checkout and fails in an install. Shell out with "
-        f"`-m sprite_gen.<module>` instead.")
+        "these modules build a path into scripts/ — those wrappers are not installed, so this "
+        "works in a checkout and fails in an install. Shell out with `-m sprite_gen.<module>` "
+        "instead:\n" + "\n".join(offenders))
 
 
 def test_built_wheel_carries_browser_audio_player(wheel_names: set[str]) -> None:

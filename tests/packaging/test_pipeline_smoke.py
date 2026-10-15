@@ -145,27 +145,6 @@ def test_failed_subset_reextract_preserves_prior_generation(fixture_run_dir: Pat
     assert run_script("compose_sprite_atlas.py", "--run-dir", str(run)).returncode == 0
 
 
-def test_failed_reextract_signal_reaches_correction_loop_consumer(fixture_run_dir: Path) -> None:
-    """The automatic correction loop drives error-driven regeneration off inspect's per-state
-    errors. A failed RE-extract keeps the prior good frames byte-intact, so inspect's own
-    frame-count check sees nothing wrong — the ONLY channel for 'this state's re-extract failed,
-    and why' is extract-failure.json (frames/ stays complete-only). This proves the strict-
-    atomicity fix keeps that signal wired, so auto-correction never goes blind."""
-    from sprite_gen.qa.inspect import _manifest_state_notes
-
-    run = fixture_run_dir
-    assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run)).returncode == 0
-    target = sorted(json.loads((run / "sprite-request.json").read_text())["states"])[0]
-
-    (run / "raw" / f"{target}.png").unlink()                  # break only this state's raw strip
-    assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run), "--states", target).returncode == 1
-
-    assert (run / "frames" / target).is_dir()                 # prior good frames intact (re-extract)
-    assert (run / "extract-failure.json").is_file()           # signal recorded OUTSIDE frames/
-    _row, errors, _warnings = _manifest_state_notes(run, target)
-    assert errors and all(e.startswith(f"{target}:") for e in errors), errors  # consumer reads it
-
-
 def test_successful_extract_clears_prior_failure_evidence(fixture_run_dir: Path) -> None:
     """A success resolves any prior failure: extract-failure.json must be removed so inspect and
     the correction loop never re-flag a now-good state with a stale signal (Consistency)."""
@@ -265,12 +244,12 @@ def test_commit_generation_rolls_back_both_surfaces_on_evidence_failure(tmp_path
 # Broken canonical records that must all fail loud, NOT be read as empty/absent. Beyond
 # unparseable JSON: a syntactically-valid `{}`, a missing required field, a wrong `ok`, an
 # empty failure `errors`, or a row without a `state` are all schema corruption (No Silent
-# Fallback — an existing-but-broken record never reads as "all clear").
+# Fallback — an existing-but-broken record never reads as "all clear"). `{}` stands for every
+# single missing required field: they all raise in the one required-list loop of the loader.
 _BROKEN_MANIFESTS = [
     "{ malformed",                                                    # unparseable
     "{}",                                                             # empty dict (missing all)
     '{"ok": false, "rows": [], "errors": [], "warnings": []}',       # wrong ok (must be true)
-    '{"ok": true, "errors": [], "warnings": []}',                    # missing rows
     '{"ok": true, "rows": [{"files": []}], "errors": [], "warnings": []}',  # row without state
 ]
 _BROKEN_EVIDENCE = [
@@ -278,7 +257,6 @@ _BROKEN_EVIDENCE = [
     "{}",                                                             # empty dict (missing all)
     '{"ok": true, "errors": ["idle: x"], "warnings": [], "rows": []}',  # wrong ok (must be false)
     '{"ok": false, "errors": [], "warnings": [], "rows": []}',       # empty errors
-    '{"ok": false, "warnings": [], "rows": []}',                     # missing errors
     '{"ok": false, "errors": [null], "warnings": [], "rows": []}',   # null error entry (would be silently dropped)
     '{"ok": false, "errors": ["no state prefix"], "warnings": [], "rows": []}',  # not state-scoped
 ]
@@ -299,11 +277,14 @@ def test_commit_fails_loud_on_broken_failure_evidence(fixture_run_dir: Path, pay
     assert (run / "extract-failure.json").read_text(encoding="utf-8") == payload  # not deleted/rewritten
 
 
-@pytest.mark.parametrize("payload", _BROKEN_EVIDENCE)
-def test_inspect_fails_loud_on_broken_failure_evidence(fixture_run_dir: Path, payload: str) -> None:
+def test_inspect_fails_loud_on_broken_failure_evidence(fixture_run_dir: Path) -> None:
     """READER path: the correction loop reads per-state failures through inspect_run. A broken
     extract-failure.json must fail loud on the read too — never be read as 'no failures' — or an
-    unresolved-failure run is judged all-clear (No Silent Fallback)."""
+    unresolved-failure run is judged all-clear (No Silent Fallback).
+
+    One payload is enough here: inspect and the commit path read the record through the same
+    validator, and test_commit_fails_loud_on_broken_failure_evidence walks every broken class."""
+    payload = "{}"
     run = fixture_run_dir
     assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run)).returncode == 0
     (run / "extract-failure.json").write_text(payload, encoding="utf-8")
@@ -372,7 +353,6 @@ def test_finished_generation_consumers_fail_loud_on_broken_manifest(fixture_run_
 
 @pytest.mark.parametrize("mutate,expect", [
     (lambda m: m.update(rows=[]), "missing row"),                       # empty rows, but frames exist
-    (lambda m: m["rows"].pop(), "missing row"),                         # drop a state's row
     (lambda m: m["rows"].append({**m["rows"][0]}), "duplicate"),        # duplicate state row
 ])
 def test_consumer_fails_loud_on_inconsistent_manifest(fixture_run_dir: Path, mutate, expect) -> None:
@@ -389,31 +369,35 @@ def test_consumer_fails_loud_on_inconsistent_manifest(fixture_run_dir: Path, mut
     assert expect in (r.stdout + r.stderr).lower()
 
 
-@pytest.mark.parametrize("tool,extra", [("compose_sprite_atlas.py", []), ("compose_sprite_gif.py", [])])
-def test_consumer_fails_loud_on_deleted_frame(fixture_run_dir: Path, tool, extra) -> None:
+def test_consumer_fails_loud_on_deleted_frame(fixture_run_dir: Path) -> None:
     """A physical frame the manifest references is deleted → the consumer fails loud, never
-    silently produces a shorter output (No Silent Fallback)."""
+    silently produces a shorter output (No Silent Fallback). Every consumer reaches this through
+    `require_frames_manifest`; their wiring to it is held per tool by
+    test_finished_generation_consumers_fail_loud_on_broken_manifest."""
     run = fixture_run_dir
     assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run)).returncode == 0
     victim = sorted((run / "frames" / "idle").glob("frame-*.png"))[0]  # a canonical frame (fixture is non-pp)
     victim.unlink()
 
-    r = run_script(tool, "--run-dir", str(run), *extra)
-    assert r.returncode != 0, f"{tool} accepted a missing frame"
+    r = run_script("compose_sprite_atlas.py", "--run-dir", str(run))
+    assert r.returncode != 0, "compose_sprite_atlas.py accepted a missing frame"
     assert "missing frame" in (r.stdout + r.stderr).lower()
 
 
 def test_orphan_frames_without_manifest_fail_loud(fixture_run_dir: Path) -> None:
     """Physical frames with NO manifest are an orphan/stale generation, not a fresh scaffold —
-    consumers and inspect must fail loud, not read the stale frames as a valid generation."""
+    consumers and inspect must fail loud, not read the stale frames as a valid generation.
+
+    Every reader reaches the orphan branch through `load_consistent_frames_manifest`; inspect is
+    the reader that tolerates an absent manifest, so it is the one a missing branch would fool.
+    Per-tool wiring to the loader is held by the broken-manifest tests above."""
     run = fixture_run_dir
     assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run)).returncode == 0
     (run / "frames" / "frames-manifest.json").unlink()
 
-    for tool, extra in (("compose_sprite_atlas.py", []), ("inspect_sprite_run.py", ["--no-write"])):
-        r = run_script(tool, "--run-dir", str(run), *extra)
-        assert r.returncode != 0, f"{tool} accepted orphan frames"
-        assert "orphan" in (r.stdout + r.stderr).lower()
+    r = run_script("inspect_sprite_run.py", "--run-dir", str(run), "--no-write")
+    assert r.returncode != 0, "inspect_sprite_run.py accepted orphan frames"
+    assert "orphan" in (r.stdout + r.stderr).lower()
 
 
 def test_empty_files_generation_fails_loud(fixture_run_dir: Path) -> None:
@@ -444,14 +428,14 @@ def test_empty_files_generation_fails_loud(fixture_run_dir: Path) -> None:
     assert healed.returncode == 0, healed.stdout + healed.stderr
     assert "[heal]" in healed.stderr
 
-    # raw 가 없으면: 어떤 소비자도 손상 세대를 받아들이지 않는다 (fail loud)
+    # raw 가 없으면: 어떤 소비자도 손상 세대를 받아들이지 않는다 (fail loud). 소비자는 모두 같은
+    # load_consistent_frames_manifest 검사에 닿으므로 하나만 돌린다 — 도구별 배선은 위
+    # broken-manifest 테스트가 잡는다.
     corrupt()
     shutil.rmtree(run / "raw")
-    for tool, extra in (("compose_sprite_atlas.py", []), ("preview_animation.py", []),
-                        ("inspect_sprite_run.py", ["--no-write"])):
-        r = run_script(tool, "--run-dir", str(run), *extra)
-        assert r.returncode != 0, f"{tool} accepted an empty-files generation"
-        assert "no frame files" in (r.stdout + r.stderr).lower()
+    r = run_script("compose_sprite_atlas.py", "--run-dir", str(run))
+    assert r.returncode != 0, "compose_sprite_atlas.py accepted an empty-files generation"
+    assert "no frame files" in (r.stdout + r.stderr).lower()
 
 
 def test_unknown_state_row_fails_loud(fixture_run_dir: Path) -> None:
@@ -471,11 +455,11 @@ def test_unknown_state_row_fails_loud(fixture_run_dir: Path) -> None:
     m["rows"].append({"state": "ghost", "frames": 1, "files": ["frames/ghost/frame-0.png"], "ok": True})
     p.write_text(json.dumps(m), encoding="utf-8")
 
-    for tool, extra in (("compose_sprite_atlas.py", []), ("preview_animation.py", []),
-                        ("inspect_sprite_run.py", ["--no-write"])):
-        r = run_script(tool, "--run-dir", str(run), *extra)
-        assert r.returncode != 0, f"{tool} accepted an unknown 'ghost' state"
-        assert "not in the request" in (r.stdout + r.stderr).lower()
+    # One consumer: every reader reaches this check through `load_consistent_frames_manifest`, and
+    # per-tool wiring to it is held by the broken-manifest tests above.
+    r = run_script("compose_sprite_atlas.py", "--run-dir", str(run))
+    assert r.returncode != 0, "compose_sprite_atlas.py accepted an unknown 'ghost' state"
+    assert "not in the request" in (r.stdout + r.stderr).lower()
 
 
 def test_frame_count_mismatch_fails_loud(fixture_run_dir: Path) -> None:

@@ -20,10 +20,11 @@ def test_six_hex_digits_are_a_colour(text, rgb):
     assert parse_hex(text) == rgb
 
 
-@pytest.mark.parametrize("text", ["#-1-1-1", "+f+f+f", "#1_0_00", "-0-0-0", "#12345", "#1234567", "zzzzzz", "##112233", ""])
+@pytest.mark.parametrize("text", ["#-1-1-1", "#1_0_00", "#1234567", ""])
 def test_anything_else_is_not(text):
     """`int(…, 16)` alone takes `-1`, `+f` and `1_0`: three of the copies this replaced read `#-1-1-1`
-    as the colour (-1, -1, -1)."""
+    as the colour (-1, -1, -1). One `fullmatch` refuses them all, so one case per class of refusal:
+    a sign, an underscore, the wrong length, nothing."""
     with pytest.raises(ValueError, match="expected #RRGGBB"):
         parse_hex(text)
 

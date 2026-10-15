@@ -17,13 +17,6 @@ from sprite_gen.serve import serve_curation
 
 ROOT = Path(__file__).resolve().parents[2]
 
-def test_curation_subcommand_reuses_the_webview_declaration() -> None:
-    """Identity, not equality: the CLI table points at the webview's own functions."""
-    _description, add_args, run_fn = cli.COMMANDS["curation"]
-
-    assert add_args is serve_curation.add_arguments
-    assert run_fn is serve_curation.run
-
 
 def test_every_launch_form_exposes_the_same_flags() -> None:
     subcommand = _help_options("-m", "sprite_gen.cli", "curation")

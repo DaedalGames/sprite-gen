@@ -110,8 +110,16 @@ def test_first_sprite_request_and_existing_base(ready_login, tmp_path):
     assert "extract" in view["pipeline"]["steps"]
 
 
-@pytest.mark.parametrize("base_provider", ["codex", "grok"])
-@pytest.mark.parametrize("method", MOTION_METHODS)
+def _crossed_pairs() -> list[tuple[str, str]]:
+    """Each motion method with the base provider it does not use itself, so two swapped fields show.
+
+    `guide.py` copies and reads each field on its own and nothing branches on the pair, so the matched
+    pairs (codex × gpt-rows, grok × grok-video) add nothing the crossed ones do not."""
+    return [(next(p for p in ("codex", "grok") if p != spec["provider"]), method)
+            for method, spec in MOTION_METHODS.items()]
+
+
+@pytest.mark.parametrize("base_provider,method", _crossed_pairs())
 def test_every_sprite_combination_keeps_base_and_motion_distinct(ready_login, base_provider, method):
     view = guide.guide("sprite", choices={"image_provider": base_provider, "motion_method": method}, confirmed_access=("codex", "grok"))
     assert view["status"] == "ready"

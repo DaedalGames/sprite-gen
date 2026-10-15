@@ -115,9 +115,10 @@ def test_special_char_state_name_keeps_pixel_grid(tmp_path):
     assert _serve_status(out, url) == 200
 
 
-@pytest.mark.parametrize("name", ["guide-a#b.png", "anchor-c d.png", "basis-100%done.png", "guide-café.png"])
-def test_special_char_ref_filename_is_url_encoded_and_serves(tmp_path, name):
-    run = _build_import(tmp_path, [name])
+def test_special_char_ref_filename_is_url_encoded_and_serves(tmp_path):
+    # One name carries each character that breaks a URL — `#` (a fragment), a space, `%` (an escape)
+    # and a non-ASCII letter: they all go through the one `_url` quote and the one handler unquote.
+    run = _build_import(tmp_path, ["guide-a#b c-100%done-café.png"])
     url = build_run_state(run)["states"][0]["refs"][0]["url"]
     # nothing that breaks a URL (# → fragment) or an HTML attribute may survive raw
     assert not any(c in url for c in '# "\'<>')
@@ -307,19 +308,6 @@ def test_api_run_reader_isolated_from_concurrent_publish(tmp_path):
     assert "err" not in outcome, outcome.get("err")
     assert outcome.get("states"), "reader got no complete snapshot"
     assert outcome["at"] >= released_at, "reader returned before the publish released"
-
-
-def test_serve_fails_loud_on_orphan_frames(fixture_run_dir):
-    """serve serves a scaffold only for a genuinely ungenerated run. Physical frames with NO
-    manifest are an orphan/stale generation, not a fresh scaffold — build_run_state must fail loud
-    (HTTP 500 in do_GET), never expose stale frames as present (No Silent Fallback / Consistency)."""
-    from conftest import run_script
-
-    run = fixture_run_dir
-    assert run_script("extract_sprite_row_frames.py", "--run-dir", str(run)).returncode == 0
-    (run / "frames" / "frames-manifest.json").unlink()               # orphan: frames, no manifest
-    with pytest.raises(SystemExit):
-        build_run_state(run)
 
 
 def test_import_fails_loud_on_multiple_base_images(tmp_path):

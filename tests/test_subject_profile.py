@@ -82,15 +82,13 @@ def test_profile_resolves_floor_and_rejects_unknown_kinds() -> None:
         subject_kind({**request, "subject": "creature"})
 
 
+# One formula with one branch: a square and a rect cell pin its values; the 64² case is in
+# test_profile_resolves_floor_and_rejects_unknown_kinds and every square size from 16 to 512 is walked
+# by test_floor_is_monotone_across_every_square_size_from_16_to_512.
 @pytest.mark.parametrize(
     ("width", "height", "margin_x", "margin_y", "character", "effect"),
     [
         (16, 16, 1, 1, 16, 8),
-        (32, 32, 2, 2, 32, 16),
-        (64, 64, 6, 6, 64, 32),
-        (128, 128, 12, 12, 128, 64),
-        (256, 256, 24, 24, 256, 128),
-        (512, 512, 48, 48, 512, 256),
         (192, 208, 18, 19, 200, 100),
     ],
 )
@@ -163,6 +161,14 @@ def test_effect_profile_passes_a_sparse_synthetic_effect(tmp_path: Path) -> None
     assert doc["ok"] is True
     px = [r["nontransparent_pixels"] for r in doc["rows"][0]["frame_records"]]
     assert all(32 <= p < 64 for p in px)
+    # A profile-derived floor is not stamped into extract_args (an explicit flag is, below):
+    # frames are a derived cache of (raw + request + engine), so heal must re-resolve from the request.
+    assert "min_used_pixels" not in doc["extract_args"]
+    # compose follows the same profile floor.
+    compose = run_script("compose_sprite_atlas.py", "--run-dir", str(run))
+    assert compose.returncode == 0, compose.stdout + compose.stderr
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["frame_layout"]["rows"]["burst"]
 
 
 def test_effect_profile_still_catches_debris(tmp_path: Path) -> None:
@@ -177,25 +183,9 @@ def test_explicit_flag_beats_the_profile_and_is_stamped(tmp_path: Path) -> None:
     proc = _extract(run, "--min-used-pixels", "12")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     doc = _manifest(run)
-    # explicit flag is recorded for heal reproduction...
+    # explicit flag is recorded for heal reproduction (a profile-derived floor is not; see
+    # test_effect_profile_passes_a_sparse_synthetic_effect)
     assert doc["extract_args"].get("min_used_pixels") == 12
-
-
-def test_profile_derived_floor_is_not_stamped_into_extract_args(tmp_path: Path) -> None:
-    # ...but a profile-derived floor is not: frames are a derived cache of
-    # (raw + request + engine), so heal must re-resolve from the request.
-    run = _make_run(tmp_path / "run", 40, subject="effect")
-    assert _extract(run).returncode == 0
-    assert "min_used_pixels" not in _manifest(run)["extract_args"]
-
-
-def test_compose_floor_follows_the_profile(tmp_path: Path) -> None:
-    run = _make_run(tmp_path / "run", 40, subject="effect")
-    assert _extract(run).returncode == 0
-    proc = run_script("compose_sprite_atlas.py", "--run-dir", str(run))
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["frame_layout"]["rows"]["burst"]
 
 
 def test_prepare_writes_the_subject_field_only_when_declared(tmp_path: Path) -> None:
