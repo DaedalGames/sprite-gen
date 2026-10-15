@@ -571,11 +571,13 @@ def _ambiguity(parts: list[dict[str, Any]], assigned: dict[str, list[dict[str, A
     part, and the least shortfall of a reading that names the boxes so is that of those parts alone. A reading that
     names them otherwise (a box held in one and empty in the other, or held by another part) puts each part the cut
     names a box by in a box, empty or with a larger part, and leaves out any other part or makes it the largest part of
-    an empty box. When one comes within TIE of the cut's shortfall, the drawing is refused.
+    a box. When one comes within TIE of the cut's shortfall, the drawing is refused.
 
-    The search is exact: parts are taken largest first, and a placement is kept while some drift keeps every centroid
-    in its box with a shortfall within that. Once the names differ, they cannot become the cut's again, so a part the
-    cut names no box by stays out, unless a box that must hold an element is empty."""
+    The search is exact. With the cut's largest parts in their boxes, the names differ only where another part is the
+    largest of a box, an empty one or one whose largest part it outweighs: one bound for each such placement. Else one
+    of the cut's largest parts, at most one a box, lies elsewhere: they are placed largest first, each placement kept
+    while some drift keeps every centroid in its box within the shortfall, and the other parts stay out (leaving one out
+    never adds to a shortfall), but where a box that must hold an element is left empty."""
     names = list(layout)
     scale, offset = _drift_limits(unit)
     limits = np.array([(-1, 0, scale - 1), (1, 0, 1 + scale), (0, -1, offset), (0, 1, offset)], dtype=float)
@@ -611,33 +613,56 @@ def _ambiguity(parts: list[dict[str, Any]], assigned: dict[str, list[dict[str, A
     index = {id(part): k for k, part in enumerate(parts)}
     cut = {min((index[id(part)] for part in assigned[name]), key=rank.__getitem__): i
            for i, name in enumerate(names) if assigned[name]}  # each box's largest part -> the box
+    named = {i: k for k, i in cut.items()}  # the box -> its largest part
     within = shortfall(tuple(cut.items())) + TIE
     needed = {names.index(name) for name in required}
-    # depth first over the parts in order: how many are taken, the (part, box) pairs placed, the largest part of each
-    # box that holds one, and whether the names already differ from the cut's
-    stack: list[tuple[int, tuple[tuple[int, int], ...], dict[int, int], bool]] = [(0, (), {}, False)]
-    other = None
-    while stack and other is None:
-        depth, placed, largest, differs = stack.pop()
-        if depth == len(order):
-            if differs and needed <= largest.keys():
-                other = largest
-            continue
-        k = order[depth]
-        in_reach = [int(i) for i in np.flatnonzero(reachable[k])]
-        if k in cut:  # in a box: its largest part when it is empty, else with a larger part
-            options = [(i, i != cut[k] or i in largest) for i in in_reach]
-        else:  # left out, or the largest part of an empty box
-            options = [(None, False)] + [(i, True) for i in in_reach
-                                         if i not in largest and (not differs or i in needed)]
-        for i, deviates in sorted(options, key=lambda option: option[1], reverse=True):  # the cut's own on top
-            if i is None:
-                stack.append((depth + 1, placed, largest, differs))
-            elif shortfall(more := placed + ((k, i),)) <= within:
-                stack.append((depth + 1, more, largest if i in largest else {**largest, i: k}, differs or deviates))
+    others = [k for k in order if k not in cut]
+
+    def fill(placed: tuple[tuple[int, int], ...], largest: dict[int, int], empty: set[int]) -> dict[int, int] | None:
+        """``largest`` with each box of ``empty`` the largest part of one of the other parts within the shortfall, or
+        None."""
+        if not empty:
+            return largest
+        i = min(empty)
+        taken = {k for k, _ in placed}
+        for k in others:
+            if k not in taken and reachable[k, i] and shortfall(more := placed + ((k, i),)) <= within:
+                filled = fill(more, {**largest, i: k}, empty - {i})
+                if filled is not None:
+                    return filled
+        return None
+
+    def otherwise() -> dict[int, int] | None:
+        """The largest part of each box under a reading within the shortfall that names the boxes otherwise, or None."""
+        # The cut's largest parts in their boxes, and another part the largest of a box: an empty one, or one whose
+        # largest part it outweighs.
+        for k in others:
+            for i in map(int, np.flatnonzero(reachable[k])):
+                if (i not in named or rank[k] < rank[named[i]]) and shortfall((*cut.items(), (k, i))) <= within:
+                    return {**named, i: k}
+        # One of the cut's largest parts elsewhere: in another box, or with a larger part. Those parts are placed
+        # largest first, depth first, each in its own box first; the other parts stay out, but where a box that must
+        # hold an element is left empty.
+        mains = sorted(cut, key=rank.__getitem__)
+        stack: list[tuple[int, tuple[tuple[int, int], ...], dict[int, int], bool]] = [(0, (), {}, False)]
+        while stack:
+            depth, placed, largest, differs = stack.pop()
+            if depth == len(mains):
+                filled = fill(placed, largest, needed - largest.keys()) if differs else None
+                if filled is not None:
+                    return filled
+                continue
+            k = mains[depth]
+            own = cut[k] not in largest
+            for i in sorted(map(int, np.flatnonzero(reachable[k])), key=lambda i: own and i == cut[k]):  # own on top
+                if shortfall(more := placed + ((k, i),)) <= within:
+                    stack.append((depth + 1, more, largest if i in largest else {**largest, i: k},
+                                  differs or not (own and i == cut[k])))
+        return None
+
+    other = otherwise()
     if other is None:
         return None
-    named = {i: k for k, i in cut.items()}
     changed = [name for i, name in enumerate(names) if named.get(i) != other.get(i)]
     one = len(changed) == 1
     return (f"{', '.join(changed)}: under another drift the cut accepts, the drawing fits the layout at least as "
