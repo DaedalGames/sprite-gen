@@ -22,6 +22,11 @@ import pytest
 from PIL import Image, ImageDraw
 
 from sprite_gen.video import align, batch, loop, period
+from tests.video.test_video_pipeline import HAS_IMG2WEBP
+
+# Every test here cuts a loop, and a loop is written with img2webp: without it they skip, as the
+# other loop tests do, rather than fail.
+pytestmark = pytest.mark.skipif(not HAS_IMG2WEBP, reason="img2webp not installed")
 
 CYCLE, FRAMES = 42, 73
 
