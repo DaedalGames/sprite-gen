@@ -16,16 +16,21 @@ sheet existed.
 
 The seven frames are the kit: an empty frame box refuses the sheet. The band's elements are
 optional: an empty band box leaves that element out of the report and the pack and names it under
-`missing`. A sheet drawn a few percent shorter than the guide, so that the lower elements'
-centres lie in the boxes above theirs, is fitted to the drawing before its parts are assigned.
-With any set of band elements left out, under any drift within the accepted range (along each
-axis a scale within a tenth of 1 and an offset within 96 px at 1024), exactly the elements not
-drawn are named missing and every drawn one is cut as itself, never a neighbour under its name;
-an element drawn in the gap between two boxes, or a drawing that drifted further, refuses the
-sheet with its own reason. So does a drawing that fits the layout as well under two drifts that
-name its elements differently (small frames that lie inside their boxes either way, and one dot on
-either pip's centre), while one that fits one drift clearly better is named by it; and a sheet of
-small drawings anywhere inside their boxes, under any accepted drift, is named exactly or refused.
+`missing`. The cut reads the drawing once, exactly: the reading that keeps the parts clearest of
+their boxes' edges under any drift it considers, cut when no other reading comes within 1 px of
+it. A sheet drawn a few percent shorter than the guide, so that the lower elements' centres lie in
+the boxes above theirs, is read under its drift. With any set of band elements left out, under any
+drift within the accepted range (along each axis a scale within a tenth of 1 and an offset within
+96 px at 1024), exactly the elements not drawn are named missing and every drawn one is cut as
+itself, never a neighbour under its name; an element drawn in the gap between two boxes, or a
+drawing that drifted further, refuses the sheet with its own reason. So does a drawing that fits
+the layout as well under two drifts that read it differently (small frames that lie inside their
+boxes either way, and one dot on either pip's centre), while one that fits one drift clearly
+better is named by it. A sheet whose every part lies inside its box under an accepted drift (small
+drawings anywhere inside their boxes, or full-size frames with small band drawings) is cut
+exactly as drawn, or refused as fitting the layout two ways, with two readings this file checks
+by its own evaluation of the reading; and no drift sampled at random reads a drawing better than
+the least cost the cut found, nor reads a cut sheet otherwise as well.
 
 A kit is written whole into a new or empty directory: one that holds anything is refused and left as
 it was. The kit is published at one step, the rename that gives it the out-dir's name or, with the
@@ -647,7 +652,7 @@ def test_a_squeezed_sheet_with_an_empty_frame_box_still_refuses_it(name):
         ui_kit.split_ui_kit(image)
 
 
-# The drift a cut accepts (docs/ui-kit.md "A drawing that drifted from the layout"): along each axis a scale within a
+# The drift a cut accepts (docs/ui-kit.md "Reading the drawing"): along each axis a scale within a
 # tenth of 1 and an offset within 96 px at 1024.
 ACCEPTED_SCALE = (0.9, 1.1)
 ACCEPTED_OFFSET = 96
@@ -874,27 +879,202 @@ def scattered_sheet(seed):
     return Image.fromarray(pixels), drawn
 
 
-@pytest.mark.parametrize("seed", range(512))
-def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_named_exactly_or_refused(seed):
-    # Small drawings anywhere inside their boxes leave the drift less certain, so a sheet may fit the layout under two
-    # drifts that name its elements differently, and is then refused. Whenever it is cut, exactly the band elements not
-    # drawn are missing and every element drawn is cut as its own drawing, never under another's name.
-    image, drawn = scattered_sheet(seed)
+def anchored_sheet(seed):
+    """A 2:3 sheet drawn under a drift picked at random within the accepted range: the seven frames full size, as
+    `synthetic_sheet` draws them, and a random half of the band elements, each a rectangle a random share of its box
+    across (from a twentieth to seven tenths) anywhere inside its moved box, at least 1 px clear of the edges. The sheet,
+    and each element's rect by name."""
+    rng = np.random.default_rng(100_000 + seed)
+    drift = accepted_drift(rng)
+    sx, tx, sy, ty = drift
+    image, drawn = synthetic_sheet(size=TALL, drift=drift, missing=BAND, haze=False, noise=False)
+    pixels = np.asarray(image).copy()
+    share = rng.choice([0.05, 0.1, 0.2, 0.4, 0.7])
+    for name in BAND:
+        if rng.random() < 0.5:
+            continue
+        bx, by, bw, bh = ui_kit.boxes(TALL)[name]
+        x0, x1, y0, y1 = bx * sx + tx, (bx + bw) * sx + tx, by * sy + ty, (by + bh) * sy + ty
+        w = max(5, int((x1 - x0) * share * rng.uniform(0.5, 1)))
+        h = max(5, int((y1 - y0) * share * rng.uniform(0.5, 1)))
+        w, h = min(w, int(x1 - x0) - 4), min(h, int(y1 - y0) - 4)
+        x = int(rng.integers(math.ceil(x0) + 1, math.floor(x1) - w))
+        y = int(rng.integers(math.ceil(y0) + 1, math.floor(y1) - h))
+        fill(pixels, x, y, x + w, y + h, BORDER)
+        drawn[name] = (x, y, w, h)
+    return Image.fromarray(pixels), drawn
+
+
+# The reading of a drawing (docs/ui-kit.md "Reading the drawing"), evaluated here at given drifts, apart from the cut's
+# own search. A drift (sx, tx, sy, ty) moves each layout box (x, y, w, h) to (x sx + tx, y sy + ty, w sx, h sy). Each
+# part goes to the first box, in layout order, whose moved box widened by half the gap (the widening scaled with it)
+# holds its centroid, or to none. A part in a box costs how far each of its four sides falls short of lying CLEARANCE px
+# inside the moved box; a part in no box costs half the gap, CLEARANCE and half its smaller extent. A reading's cost is
+# the sum. The cut considers the drifts within READ_SCALE and READ_OFFSET (px at 1024) along each axis, and two readings
+# whose costs differ by at most TIE px fit the drawing equally well.
+CLEARANCE = TIE = 1
+READ_SCALE = (0.875, 1.125)
+READ_OFFSET = 120
+
+
+def read_at(parts, size, drifts):
+    """At each of ``drifts``: the reading's cost, and each part's box (its index in layout order, -1 for none)."""
+    layout = np.asarray(list(ui_kit.boxes(size).values()), dtype=float)
+    reach = ui_kit.GAP / 2 * size[0] / ui_kit.REFERENCE
+    centroid = np.asarray([part["centroid"] for part in parts], dtype=float).reshape(-1, 2)
+    bbox = np.asarray([part["bbox"] for part in parts], dtype=float).reshape(-1, 4)
+    drifts = np.asarray(drifts, dtype=float).reshape(-1, 4)
+    held = np.ones((len(drifts), len(parts), len(layout)), dtype=bool)  # [drift, part, box]
+    short = np.zeros(held.shape)
+    for axis in (0, 1):
+        s, t = drifts[:, 2 * axis, None, None], drifts[:, 2 * axis + 1, None, None]
+        low, high = layout[:, axis], layout[:, axis] + layout[:, 2 + axis]
+        at = centroid[None, :, axis, None]
+        held &= ((low - reach) * s + t <= at) & (at < (high + reach) * s + t)
+        short += np.maximum(0, low * s + t + CLEARANCE - bbox[None, :, axis, None])
+        short += np.maximum(0, bbox[None, :, 2 + axis, None] - (high * s + t) + CLEARANCE)
+    placed = held.any(axis=2)
+    box = np.where(placed, held.argmax(axis=2), -1)
+    loose = reach + CLEARANCE + np.minimum(bbox[:, 2] - bbox[:, 0], bbox[:, 3] - bbox[:, 1]) / 2
+    inside = np.take_along_axis(short, np.maximum(box, 0)[..., None], axis=2)[..., 0]
+    return np.where(placed, inside, loose).sum(axis=1), box
+
+
+def assert_two_readings(refusal, size):
+    """The two readings an ambiguity refusal names, each evaluated here at its drift: it reads the drawing as the
+    refusal says, every frame holds a part, it costs at most TIE px (the drawing lies inside its boxes, so the least
+    cost is 0), and the two read the drawing differently."""
+    assert refusal.reason == "ambiguous", str(refusal)
+    names = list(ui_kit.boxes(size))
+    one, other = refusal.witnesses
+    for reading in (one, other):
+        cost, box = read_at(refusal.parts, size, [reading.drift])
+        assert [names[i] if i >= 0 else None for i in box[0]] == list(reading.boxes), (reading, str(refusal))
+        assert set(FRAMES) <= set(reading.boxes), reading
+        assert cost[0] <= TIE + 1e-6, (reading, cost[0])
+    assert one.boxes != other.boxes
+
+
+def assert_read_as_drawn(image, drawn, edge=0):
+    """The sheet, every part of it inside its box under the drift it was drawn with, is cut as drawn or refused as
+    fitting the layout two ways (`assert_two_readings`), never refused otherwise. Cut as drawn: exactly the band
+    elements not drawn are missing, and each drawn element is cut as its own drawing, its rect within ``edge`` px of the
+    drawn one on every side, inside its element's box (the layout's, moved by `layout_fit`) to within a pixel."""
     try:
         elements, report = ui_kit.split_ui_kit(image)
-    except ValueError:
+    except ui_kit.Refusal as refusal:
+        assert_two_readings(refusal, image.size)
         return
+    assert report["missing"] == [name for name in BAND if name not in drawn]
+    assert list(elements) == list(report["elements"]) == [name for name in FRAMES + BAND if name in drawn]
+    for name, (x, y, w, h) in drawn.items():
+        rect, box = report["elements"][name]["rect"], report["elements"][name]["box"]
+        assert all(abs(value) <= edge for value in offset(report, drawn, name)), (name, rect, drawn[name])
+        assert box["x"] - 1 <= rect["x"] and rect["x"] + rect["w"] <= box["x"] + box["w"] + 1, (name, rect, box)
+        assert box["y"] - 1 <= rect["y"] and rect["y"] + rect["h"] <= box["y"] + box["h"] + 1, (name, rect, box)
+
+
+@pytest.mark.parametrize("seed", [2, 5, 6])
+def test_a_sheet_of_small_drawings_that_fits_the_layout_one_way_is_cut_as_drawn(tmp_path, seed):
+    # Drawn wholly inside their boxes under a drift within the accepted range, with no other reading within 1 px: these
+    # sheets were refused as drifted further than a cut accepts (fitted at a scale of 0.758, 1.371 and 0.798), the
+    # least-squares fit of box centres dragged by small drawings placed off their boxes' centres. They are cut as drawn,
+    # by the CLI too.
+    image, drawn = scattered_sheet(seed)
+    elements, report = ui_kit.split_ui_kit(image)
     assert report["missing"] == [name for name in BAND if name not in drawn]
     assert list(elements) == list(drawn)
     for name, (x, y, w, h) in drawn.items():
         assert report["elements"][name]["rect"] == {"x": x, "y": y, "w": w, "h": h}, name
+    sheet, out = tmp_path / "uikit.png", tmp_path / "ui"
+    image.save(sheet)
+    assert ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out)]) == 0
+    written = json.loads((out / "ui-kit.json").read_text())
+    assert written["missing"] == report["missing"] and written["elements"] == report["elements"]
+    assert sorted(p.name for p in out.iterdir()) == sorted([f"{name}.png" for name in drawn] + ["ui-kit.json"])
+
+
+@pytest.mark.parametrize("seed", range(512))
+def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_cut_as_drawn_or_refused_as_two_readings(seed):
+    # Small drawings anywhere inside their boxes leave the drift less certain, so a sheet may fit the layout under two
+    # drifts that read it differently, and is then refused, naming both readings. It is never refused for another
+    # reason, and whenever it is cut, exactly the band elements not drawn are missing and every element drawn is cut as
+    # its own drawing, never under another's name.
+    image, drawn = scattered_sheet(seed)
+    assert_read_as_drawn(image, drawn)
+
+
+@pytest.mark.parametrize("seed", range(256))
+def test_full_size_frames_and_small_band_drawings_are_cut_as_drawn_or_refused_as_two_readings(seed):
+    # The full-size frames pin the drift; the band's small drawings lie anywhere inside their boxes, off their centres.
+    image, drawn = anchored_sheet(seed)
+    assert_read_as_drawn(image, drawn, edge=2)
+
+
+def sampled_drifts(rng, size, around):
+    """Drifts at random within the drifts the cut considers: uniform, and near each drift of ``around``."""
+    unit = size[0] / ui_kit.REFERENCE
+    low = np.array([READ_SCALE[0], -READ_OFFSET * unit] * 2)
+    high = np.array([READ_SCALE[1], READ_OFFSET * unit] * 2)
+    near = [np.asarray(drift) + rng.normal(0, [0.004, 2.0, 0.004, 2.0], (2000, 4)) for drift in around]
+    drifts = np.concatenate([rng.uniform(low, high, (4000, 4))] + near)
+    return drifts[((drifts >= low) & (drifts <= high)).all(axis=1)]
+
+
+COUNTEREXAMPLE_SHEETS = ([f"scattered-{seed}" for seed in range(1, 9)] + [f"anchored-{seed}" for seed in range(4)]
+                         + ["two-way-18", "two-way-60", "squeezed", "nudged", "stray"])
+
+
+def counterexample_sheet(label):
+    """A sheet for the counterexample search, and the drift it was drawn with."""
+    number = int(label.rpartition("-")[2]) if label[-1].isdigit() else None
+    if label.startswith("scattered"):
+        return scattered_sheet(number)[0], accepted_drift(np.random.default_rng(number))
+    if label.startswith("anchored"):
+        return anchored_sheet(number)[0], accepted_drift(np.random.default_rng(100_000 + number))
+    if label.startswith("two-way"):
+        return two_way_sheet((number, 18))[0], (1, 0, 1, 0)
+    if label == "squeezed":
+        return squeezed_sheet(), (1, 0, 0.9, 0)
+    if label == "nudged":
+        return synthetic_sheet(size=TALL, missing="pip_off", nudge={"pip_on": (0, 30)})[0], (1, 0, 1, 0)
+    return synthetic_sheet(size=TALL, stray=True)[0], (1, 0, 1, 0)
+
+
+@pytest.mark.parametrize("label", COUNTEREXAMPLE_SHEETS)
+def test_no_sampled_drift_reads_the_drawing_better_than_the_cut_found(label):
+    # A search for counterexamples, which proves nothing when it finds none: thousands of drifts at random, uniform over
+    # the drifts the cut considers and near the drift the sheet was drawn with and the cut's, evaluated here. None reads
+    # the drawing at a lower cost than the least the cut's search found (`_read`, the judgment `split_ui_kit` decides
+    # by); and when the sheet is cut, no reading that holds every frame, within TIE of the least such cost, reads it
+    # otherwise than the cut.
+    image, drawn_drift = counterexample_sheet(label)
+    judgment = ui_kit._read(image)
+    try:
+        ui_kit.split_ui_kit(image)
+    except ui_kit.Refusal:
+        cut = None
+    else:
+        (cut,) = judgment.candidates
+    around = [drawn_drift] + ([cut.drift] if cut is not None else [])
+    drifts = sampled_drifts(np.random.default_rng(COUNTEREXAMPLE_SHEETS.index(label)), image.size, around)
+    cost, box = read_at(judgment.parts, image.size, drifts)
+    assert cost.min() >= judgment.least - 1e-6, (label, cost.min(), judgment.least)
+    if cut is not None:
+        names = list(ui_kit.boxes(image.size))
+        valid = np.all([(box == names.index(name)).any(axis=1) for name in FRAMES], axis=0)
+        near = valid & (cost <= judgment.least_valid + TIE - 1e-6)
+        assert near.any(), label
+        want = np.array([names.index(name) if name is not None else -1 for name in cut.boxes])
+        assert (box[near] == want).all(), label
 
 
 @pytest.mark.timeout(10)
 def test_a_sheet_of_many_small_parts_is_cut_or_refused_in_seconds():
     # Every element a 4 px square (16 px, the smallest part kept) anywhere inside its moved box, with about half the
-    # band left out, and sixty more such squares scattered over the sheet: the search for another reading branches on
-    # the parts that name the cut's boxes, not on every square, so the sheet is cut or refused at once.
+    # band left out, and sixty more such squares scattered over the sheet: most squares lie in no box under any drift,
+    # so no reading keeps the drawing clear of its boxes' edges; the search proves that within its work bound, and the
+    # sheet is decided or refused as off the layout within seconds.
     rng = np.random.default_rng(47)
     sx, tx, sy, ty = accepted_drift(rng)
     pixels = np.zeros((TALL[1], TALL[0], 4), dtype=np.uint8)
