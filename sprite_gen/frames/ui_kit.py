@@ -513,9 +513,9 @@ class _Axis:
                 + np.maximum(0, self.p1 - (self.e1 * s + t) + CLEARANCE))
 
     def status(self, span: Span, rows: Any) -> tuple[Any, Any]:
-        """[part, box] for the parts ``rows``: the widened box holds the centroid at every drift of ``span``, and at
-        none. Every box lies more than the reach in from the sheet's edges, so its widened edges are positive: least at
-        (s0, t0) and greatest at (s1, t1)."""
+        """[part, box] for the parts ``rows`` (with ends one a span, [span, part, box]): the widened box holds the
+        centroid at every drift of ``span``, and at none. Every box lies more than the reach in from the sheet's edges,
+        so its widened edges are positive: least at (s0, t0) and greatest at (s1, t1)."""
         s0, s1, t0, t1 = span
         c = self.c[rows]
         return ((self.lo * s1 + t1 <= c) & (c < self.hi * s0 + t0),
@@ -523,7 +523,7 @@ class _Axis:
 
     def least_short(self, span: Span, rows: Any, boxes: Any = None) -> Any:
         """A lower bound, over the drifts of ``span``, of `short_at` (each side at its own corner): [part, box] for the
-        parts ``rows``, or, given each one's box (``boxes``), [part]."""
+        parts ``rows``, or, given each one's box (``boxes``), [part]; with ends one a span, a span axis first."""
         s0, s1, t0, t1 = span
         if boxes is None:
             e0, e1, p0, p1 = self.e0, self.e1, self.p0[rows], self.p1[rows]
@@ -661,26 +661,44 @@ class _Drawing:
                 assigned[self.names[box]].append(part)
         return assigned
 
-    def bound(self, span: tuple[float, ...], open_: Any, fixed: Any) -> tuple[float, dict[str, Any]]:
-        """A lower bound of the cost of every reading at the drifts of ``span``, and what the span decides of the parts
-        still open (``open_``; ``fixed`` gives every other part's box, -1 for none and -2 for an open part). For each
-        open part, the least it can cost (``least``): in a box that may hold its centroid somewhere in the span, each of
-        its sides at its own corner, or in no box when no box holds it everywhere (``free``). A box after one that holds
-        it everywhere never holds it."""
-        sx, sy = span[:4], span[4:]
+    def bound(self, spans: list[tuple[float, ...]], open_: Any, fixed: Any) -> tuple[Any, dict[str, Any]]:
+        """For each span of ``spans``, a lower bound of the cost of every reading at its drifts, and what the span
+        decides of the parts still open (``open_``; ``fixed`` gives every other part's box, -1 for none and -2 for an
+        open part), one row a span. For each open part, the least it can cost (``least``): in a box that may hold its
+        centroid somewhere in the span, each of its sides at its own corner, or in no box when no box holds it
+        everywhere (``free``). A box after one that holds it everywhere never holds it. Several spans are bounded in
+        one pass over the arrays."""
+        ends = np.asarray(spans, dtype=float)[:, :, None, None]  # [span, end, part, box]
+        sx, sy = tuple(ends[:, k] for k in range(4)), tuple(ends[:, k] for k in range(4, 8))
         inx, outx = self.x.status(sx, open_)
         iny, outy = self.y.status(sy, open_)
         held = inx & iny
-        may = ~(outx | outy) & ~((np.cumsum(held, axis=1) - held) > 0)
-        free = ~held.any(axis=1)
+        may = ~(outx | outy) & ~((np.cumsum(held, axis=-1) - held) > 0)
+        free = ~held.any(axis=-1)
         short = self.x.least_short(sx, open_) + self.y.least_short(sy, open_)
-        least = np.where(may, short, np.inf).min(axis=1, initial=np.inf)
+        least = np.where(may, short, np.inf).min(axis=-1, initial=np.inf)
         least = np.where(free, np.minimum(least, self.loose[open_]), least)
         placed = np.flatnonzero(fixed >= 0)
-        settled = (self.x.least_short(sx, placed, fixed[placed]).sum()
-                   + self.y.least_short(sy, placed, fixed[placed]).sum() + self.loose[fixed == -1].sum())
-        return float(least.sum() + settled), {"inx": inx, "iny": iny, "may": may, "free": free, "short": short,
+        settled = ((self.x.least_short(sx, placed, fixed[placed]) + self.y.least_short(sy, placed, fixed[placed]))
+                   .sum(axis=(-2, -1)) + self.loose[fixed == -1].sum())
+        return least.sum(axis=-1) + settled, {"inx": inx, "iny": iny, "may": may, "free": free, "short": short,
                                               "least": least}
+
+    def count(self, span: tuple[float, ...], parts: Any, rows: Any, info: dict[str, Any]) -> float:
+        """How many ways the span may read the undecided ``parts`` (``rows`` of the open parts `bound` gave ``info``
+        of): the product of the lengths of their `outcomes`, counted without listing them."""
+        may, free = info["may"][rows], info["free"][rows]
+        out = np.zeros(may.shape)  # [part, box]: the ways its centroid lies out of the widened box
+        for axis, side, inside in ((self.x, span[:4], info["inx"][rows]), (self.y, span[4:], info["iny"][rows])):
+            s0, s1, t0, t1 = side
+            c = axis.c[parts]
+            out += ~inside * ((axis.lo * s1 + t1 >= c).astype(float) + (axis.hi * s0 + t0 <= c))
+        loose = np.where(may, out, 1.0).prod(axis=1)
+        if self.earlier.any():
+            held = (np.where(may[:, :, None] & self.earlier[None], out[:, :, None], 1.0).prod(axis=1) * may).sum(axis=1)
+        else:
+            held = may.sum(axis=1)
+        return float(np.prod(held + np.where(free, loose, 0.0)))
 
     def outcomes(self, span: tuple[float, ...], part: int, row: int,
                  info: dict[str, Any]) -> list[tuple[int, list[Row], list[Row]]]:
@@ -794,7 +812,7 @@ class _Search:
             self.read(drift)
         open_, fixed = np.arange(count), np.full(count, -2)
         tick = itertools.count()
-        heap = [(drawing.bound(region, open_, fixed)[0], 0, next(tick), region, open_, fixed)]
+        heap = [(float(drawing.bound([region], open_, fixed)[0][0]), 0, next(tick), region, open_, fixed)]
         proven = None
         while heap and len(self.close) < 2:
             floor = min(heap[0][0], self.exact)
@@ -805,7 +823,8 @@ class _Search:
             if bound > self.best + 2 * TIE:
                 break
             self.nodes += 1
-            bound, info = drawing.bound(span, open_, fixed)
+            bounds, info = drawing.bound([span], open_, fixed)
+            bound, info = float(bounds[0]), {name: value[0] for name, value in info.items()}
             may, free = info["may"], info["free"]
             number = may.sum(axis=1)
             decided = (number == 0) | ((number == 1) & ~free)
@@ -813,17 +832,16 @@ class _Search:
             fixed[open_[decided]] = np.where(number[decided] == 0, -1, may[decided].argmax(axis=1))
             rows = np.flatnonzero(~decided)
             undecided = open_[rows]
-            ways = [drawing.outcomes(span, int(part), int(row), info) for part, row in zip(undecided, rows)]
             low, high, width = _split(span, drawing)
-            if math.prod(len(each) for each in ways) <= LEAF_WAYS or width < LEAF_WIDTH:
+            if drawing.count(span, undecided, rows, info) <= LEAF_WAYS or width < LEAF_WIDTH:
+                ways = [drawing.outcomes(span, int(part), int(row), info) for part, row in zip(undecided, rows)]
                 # the bound of each way of reading a part: its least in each box, or in none
                 floors = [{**dict(zip(map(int, np.flatnonzero(may[row])), info["short"][row, may[row]].tolist())),
                            -1: float(drawing.loose[part])} for part, row in zip(undecided, rows)]
                 self.solve(span, fixed, undecided, ways, floors, bound - float(info["least"][rows].sum()))
                 continue
             self.read(_centre(span))
-            for half in (low, high):
-                half_bound = drawing.bound(half, undecided, fixed)[0]
+            for half, half_bound in zip((low, high), drawing.bound([low, high], undecided, fixed)[0].tolist()):
                 if half_bound <= self.best + 2 * TIE:
                     heapq.heappush(heap, (half_bound, depth - 1, next(tick), half, undecided, fixed))
         lower = min(heap[0][0] if heap else math.inf, self.exact, self.best)
