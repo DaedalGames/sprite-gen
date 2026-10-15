@@ -752,7 +752,8 @@ def test_a_band_element_drawn_in_the_gap_between_two_boxes_refuses_the_sheet_wit
     # (left empty): either dot could be meant, so the sheet is refused, naming the box that holds it, and never cut
     # under a guessed name.
     image, _ = synthetic_sheet(size=TALL, missing="pip_off", nudge={"pip_on": (0, nudge)})
-    with pytest.raises(ValueError, match=f"^{name}: its box holds a part centred outside it .*; generate the sheet again$"):
+    refusal = f"^{name}: its box holds a part centred outside it .*; generate the sheet again$"
+    with pytest.raises(ValueError, match=refusal):
         ui_kit.split_ui_kit(image)
 
 
