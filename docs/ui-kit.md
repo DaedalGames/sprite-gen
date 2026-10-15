@@ -220,7 +220,7 @@ Solid pixels and edge pixels are never changed, so a stroke stays whole as long 
 A 2:3 report also has `missing`, the optional elements whose boxes were empty, in layout order ([missing elements](#missing-elements)). When the layout was moved to read the drawing ([reading the drawing](#reading-the-drawing)), the report has `layout_fit`, after `missing` and before `elements`; for a synthetic 1024 × 1536 sheet drawn 7 % shorter than its guide:
 
 ```json
-"layout_fit": { "scale": { "x": 0.9969, "y": 0.9301 }, "offset": { "x": -0.2, "y": 0.0 } }
+"layout_fit": { "scale": { "x": 1.0, "y": 0.9298 }, "offset": { "x": 1.0, "y": 0.7 } }
 ```
 
 A layout box at (x, y, w, h), scaled to the sheet, is moved to (x · scale.x + offset.x, y · scale.y + offset.y, w · scale.x, h · scale.y). `offset` is in sheet pixels, rounded to a tenth; `scale` is rounded to four decimals.
