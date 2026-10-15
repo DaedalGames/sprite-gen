@@ -18,6 +18,11 @@ The seven frames are the kit: an empty frame box refuses the sheet. The band's e
 optional: an empty band box leaves that element out of the report and the pack and names it under
 `missing`. A sheet drawn a few percent shorter than the guide, so that the lower elements'
 centres lie in the boxes above theirs, is fitted to the drawing before its parts are assigned.
+With any set of band elements left out, under any drift within the accepted range (along each
+axis a scale within a tenth of 1 and an offset within 96 px at 1024), exactly the elements not
+drawn are named missing and every drawn one is cut as itself, never a neighbour under its name;
+an element drawn in the gap between two boxes, or a drawing that drifted further, refuses the
+sheet with its own reason.
 
 A kit is written whole into a new or empty directory: one that holds anything is refused and left as
 it was. The kit is published at one step, the rename that gives it the out-dir's name or, with the
@@ -126,17 +131,23 @@ PLAN = {"panel": dict(k=18, flourish=60), "button": dict(k=12), "button_pressed"
 
 
 def synthetic_sheet(*, size=(SIZE, SIZE), haze=True, noise=True, stray=False, missing=(), crest=False,
-                    squeeze=1.0):
+                    squeeze=1.0, drift=None, nudge=None):
     """The sheet, and where each element was drawn. `missing` names the boxes left empty; `squeeze` draws
-    the layout that much shorter, from the top edge down, as image models draw it."""
+    the layout that much shorter, from the top edge down, as image models draw it; `drift`, a scale and an
+    offset along x and then along y (offsets in sheet pixels), draws every box moved that way instead; `nudge`
+    moves single elements off their boxes by (dx, dy) sheet pixels."""
     missing = {missing} if isinstance(missing, str) else set(missing)
+    sx, tx, sy, ty = drift if drift is not None else (1, 0, squeeze, 0)
+    nudge = nudge or {}
     pixels = np.zeros((size[1], size[0], 4), dtype=np.uint8)
     drawn = {}
     for name, (bx, by, bw, bh) in ui_kit.boxes(size).items():
         if name in missing:
             continue
-        by, bh = round(by * squeeze), round(bh * squeeze)
-        x, y, w, h = bx + 4, by + 4, bw - 8, bh - 8
+        bx, bw = round(bx * sx + tx), round(bw * sx)
+        by, bh = round(by * sy + ty), round(bh * sy)
+        dx, dy = nudge.get(name, (0, 0))
+        x, y, w, h = bx + 4 + dx, by + 4 + dy, bw - 8, bh - 8
         params = PLAN[name]
         if name.endswith("bar_frame"):
             draw_bar(pixels, x, y, w, h, **params)
@@ -630,6 +641,115 @@ def test_a_squeezed_sheet_with_an_empty_frame_box_still_refuses_it(name):
     # by that frame's own name
     image, _ = synthetic_sheet(size=TALL, squeeze=SQUEEZE, missing=name)
     with pytest.raises(ValueError, match=f"^{name}: its box holds no element; generate the sheet again$"):
+        ui_kit.split_ui_kit(image)
+
+
+# The drift a cut accepts (docs/ui-kit.md "A drawing that drifted from the layout"): along each axis a scale within a
+# tenth of 1 and an offset within 96 px at 1024.
+ACCEPTED_SCALE = (0.9, 1.1)
+ACCEPTED_OFFSET = 96
+
+
+def accepted_drift(rng, size=TALL):
+    """A drift drawn at random within the accepted range, among those that keep every box 8 px inside the sheet."""
+    unit = size[0] / ui_kit.REFERENCE
+    while True:
+        sx, sy = rng.uniform(*ACCEPTED_SCALE, size=2)
+        tx, ty = rng.uniform(-ACCEPTED_OFFSET, ACCEPTED_OFFSET, size=2) * unit
+        if all(8 <= x * sx + tx and (x + w) * sx + tx <= size[0] - 8 and 8 <= y * sy + ty
+               and (y + h) * sy + ty <= size[1] - 8 for x, y, w, h in ui_kit.boxes(size).values()):
+            return float(sx), float(tx), float(sy), float(ty)
+
+
+def assert_cut_as_drawn(report, elements, drawn, size=TALL):
+    """Exactly the band elements that were not drawn are missing, and every drawn element is cut whole as itself:
+    its cut is its own drawing to within its 2 px edge, so it holds no neighbour's. A fitted layout lies within the
+    accepted drift and puts each drawing inside its element's fitted box."""
+    kept = [name for name in FRAMES + BAND if name in drawn]
+    assert report["missing"] == [name for name in BAND if name not in drawn]
+    assert list(report["elements"]) == list(elements) == kept
+    for name in kept:
+        assert report["elements"][name]["parts"] == 1, name
+        assert all(0 <= value <= 2 for value in offset(report, drawn, name)), (name, offset(report, drawn, name))
+    if "layout_fit" in report:
+        fit, unit = report["layout_fit"], size[0] / ui_kit.REFERENCE
+        for axis in "xy":
+            assert ACCEPTED_SCALE[0] <= fit["scale"][axis] <= ACCEPTED_SCALE[1], fit
+            assert abs(fit["offset"][axis]) <= ACCEPTED_OFFSET * unit, fit
+        for name in kept:
+            x, y, w, h = drawn[name]
+            box = report["elements"][name]["box"]
+            assert box["x"] - 2 <= x and x + w <= box["x"] + box["w"] + 2, name
+            assert box["y"] - 2 <= y and y + h <= box["y"] + box["h"] + 2, name
+
+
+PROBE_MISSING = ["hp_bar_fill", "pip_off", "joystick_knob"]
+
+
+def test_a_squeezed_sheet_missing_several_band_elements_names_those_and_cuts_no_neighbour_under_their_names(tmp_path):
+    # Drawn 6 % shorter with three band elements left out, the lower fill's centre lies in the empty upper fill's
+    # widened box and the lit dot's in the lower fill's: assigned by the layout's own boxes, the lower fill would be
+    # cut as `hp_bar_fill`, the lit dot as `xp_bar_fill`, and the lit dot named missing. The CLI, an outside report
+    # and the pack name exactly the elements drawn.
+    image, drawn = synthetic_sheet(size=TALL, squeeze=0.94, missing=PROBE_MISSING)
+    boxes, reach = ui_kit.boxes(TALL), 12
+    for name, other in (("xp_bar_fill", "hp_bar_fill"), ("pip_on", "xp_bar_fill")):
+        x, y, w, h = drawn[name]
+        ox, oy, ow, oh = boxes[other]
+        assert ox - reach <= x + w / 2 < ox + ow + reach and oy - reach <= y + h / 2 < oy + oh + reach, name
+    elements, report = ui_kit.split_ui_kit(image)
+    assert_cut_as_drawn(report, elements, drawn)
+    sheet = tmp_path / "source.png"
+    image.save(sheet)
+    out, report_path = tmp_path / "parts", tmp_path / "reports" / "kit.json"
+    assert ui_kit.main(["--sheet", str(sheet), "--out-dir", str(out), "--report", str(report_path)]) == 0
+    written = json.loads(report_path.read_text())
+    assert written["missing"] == PROBE_MISSING
+    kept = [name for name in FRAMES + BAND if name not in PROBE_MISSING]
+    assert sorted(p.stem for p in out.glob("*.png")) == sorted(kept)
+    request = tmp_path / "game.json"
+    request.write_text(json.dumps({"version": 2, "ui": {"kit": "reports/kit.json", "scale": 0.5}}))
+    packed = game_pack.pack(request, tmp_path / "pack")
+    assert sorted(packed["ui"]["nine_slice"]) == sorted(kept)
+
+
+@pytest.mark.parametrize("squeeze", [0.9, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99])
+def test_a_sheet_squeezed_from_the_top_by_any_accepted_amount_names_the_missing_band_elements(squeeze):
+    image, drawn = synthetic_sheet(size=TALL, squeeze=squeeze, missing=PROBE_MISSING)
+    elements, report = ui_kit.split_ui_kit(image)
+    assert_cut_as_drawn(report, elements, drawn)
+
+
+@pytest.mark.parametrize("subset", range(2 ** len(BAND)))
+def test_every_set_of_missing_band_elements_under_a_random_accepted_drift_is_named_and_the_rest_cut_as_drawn(subset):
+    # Each of the 256 sets of band elements left out, on a sheet drawn under a drift picked at random (seeded by the
+    # set) within the accepted range: a scale and an offset along x and along y.
+    rng = np.random.default_rng(subset)
+    missing = [name for bit, name in enumerate(BAND) if subset >> bit & 1]
+    drift = accepted_drift(rng)
+    image, drawn = synthetic_sheet(size=TALL, drift=drift, missing=missing)
+    elements, report = ui_kit.split_ui_kit(image)
+    assert_cut_as_drawn(report, elements, drawn)
+
+
+def test_the_accepted_drift_is_the_documented_range():
+    assert (1 - ui_kit.DRIFT_SCALE, 1 + ui_kit.DRIFT_SCALE) == ACCEPTED_SCALE
+    assert ui_kit.DRIFT_OFFSET == ACCEPTED_OFFSET
+
+
+@pytest.mark.parametrize("nudge, name", [(30, "pip_on"), (42, "pip_off")])
+def test_a_band_element_drawn_in_the_gap_between_two_boxes_refuses_the_sheet_with_its_own_reason(nudge, name):
+    # The lit dot drawn so far below its box that its centre lies in the gap between its box and the unlit dot's
+    # (left empty): either dot could be meant, so the sheet is refused, naming the box that holds it, and never cut
+    # under a guessed name.
+    image, _ = synthetic_sheet(size=TALL, missing="pip_off", nudge={"pip_on": (0, nudge)})
+    with pytest.raises(ValueError, match=f"^{name}: its box holds a part centred outside it .*; generate the sheet again$"):
+        ui_kit.split_ui_kit(image)
+
+
+def test_a_sheet_drawn_further_off_its_guide_than_a_cut_accepts_is_refused_with_its_own_reason():
+    image, _ = synthetic_sheet(size=TALL, squeeze=0.8)
+    with pytest.raises(ValueError, match="^the drawing drifted further from the layout than a cut accepts"):
         ui_kit.split_ui_kit(image)
 
 
