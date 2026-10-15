@@ -77,21 +77,35 @@ class GenTimeoutError(SystemExit):
     """생성 서브프로세스가 GEN_TIMEOUT_SECONDS 안에 끝나지 않아 킬됨 (관측 가능)."""
 
 
-def provider_subprocess_env() -> dict[str, str]:
+def provider_subprocess_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Environment for a headless generation subprocess.
 
-    The parent environment minus known orchestrator session env families, so a
-    spawned engine (`codex exec`) is a clean standalone process — it
-    neither impersonates the spawning agent nor gets strangled by the
-    orchestrator's hooks. SSoT for every provider's `subprocess.run` env —
-    providers must not spawn with the inherited env directly.
+    The parent environment (`env`, default `os.environ`) minus known orchestrator
+    session env families, so a spawned engine (`codex exec`, `claude -p`) is a clean
+    standalone process — it neither impersonates the spawning agent nor gets
+    strangled by the orchestrator's hooks. SSoT for every provider's
+    `subprocess.run` env — providers must not spawn with the inherited env directly.
     """
-    env = {
+    source = os.environ if env is None else env
+    return {
         key: value
-        for key, value in os.environ.items()
+        for key, value in source.items()
         if not key.endswith(_ORCHESTRATOR_SESSION_ENV_SUFFIXES)
     }
-    return env
+
+
+def env_api_key(name: str, env: Mapping[str, str] | None = None, *, who: str) -> str | None:
+    """The API key in the environment variable `name` (`env`, default `os.environ`),
+    None when it is not set. Set but empty is refused, naming it: an empty key is a
+    mistake to show, not an absence to route around. The one reading of a provider
+    key; what a missing key means (another route, or a refusal) is the caller's."""
+    source = os.environ if env is None else env
+    key = (source.get(name) or "").strip()
+    if key:
+        return key
+    if name in source:
+        raise SystemExit(f"{who}: {name} is set but empty; give it a value or unset it")
+    return None
 
 
 def provider_binary(name: str) -> str:

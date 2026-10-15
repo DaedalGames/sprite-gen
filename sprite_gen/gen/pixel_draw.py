@@ -53,7 +53,7 @@ from sprite_gen.qa.preview import checker
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import anthropic_api as api
-from . import refusal
+from . import claude_login, refusal
 from .anthropic_api import ApiError, Reply
 from .base import announce_api_billing, flags_over_spec, print_json
 from .pixel_gates import colors_used, evaluate, safe_area
@@ -439,14 +439,20 @@ class Unfinished(Exception):
 
 
 class Calls:
-    """Every model call of a run: asked, or read back from `calls/<id>.json` on --resume."""
+    """Every model call of a run: asked on `credential` (`claude_login.resolve_credential`), or read back
+    from `calls/<id>.json` on --resume. `announce` runs once, before the first request that leaves —
+    a run read back whole asks nothing and says nothing."""
 
-    def __init__(self, run_dir: Path, token: str, *, sleep: Callable[[float], None], note: Callable[[str], None]) -> None:
+    def __init__(self, run_dir: Path, credential: claude_login.Credential, *, sleep: Callable[[float], None],
+                 note: Callable[[str], None], announce: Callable[[], None] = lambda: None) -> None:
         self.dir = run_dir / "calls"
         self.batch_dir = run_dir / "batches"
-        self.token = token
+        self.credential = credential
+        self.token = credential.token
         self.sleep = sleep
         self.note = note
+        self.announce = announce
+        self.announced = False
         self.lock = threading.Lock()
         self.summaries: dict[str, dict[str, Any]] = {}
         self.batches: dict[str, dict[str, Any]] = {}
@@ -457,6 +463,13 @@ class Calls:
 
     def _path(self, call_id: str) -> Path:
         return self.dir / f"{call_id}.json"
+
+    def _leaving(self) -> None:
+        with self.lock:
+            if self.announced:
+                return
+            self.announced = True
+        self.announce()
 
     def cached(self, call_id: str, body: dict[str, Any]) -> Reply | None:
         path = self._path(call_id)
@@ -479,12 +492,13 @@ class Calls:
     def save(self, call_id: str, purpose: str, candidate: str | None, body: dict[str, Any],
              outcome: Reply | ApiError, *, image: str | None = None) -> None:
         reply = outcome if isinstance(outcome, Reply) else outcome.partial
-        batch = reply is not None and reply.mode == "batch"
+        subscription = self.credential.source == claude_login.AUTH_SOURCE_LOGIN
+        mode = reply.mode if reply is not None else ("subscription" if subscription else "realtime")
         usage = reply.usage if reply is not None else {}
         record: dict[str, Any] = {
             "id": call_id, "purpose": purpose, "candidate": candidate,
             "outcome": "reply" if isinstance(outcome, Reply) else "error",
-            "mode": "batch" if batch else "realtime", "model": body["model"],
+            "mode": mode, "auth_source": self.credential.source, "model": body["model"],
             "effort": body["output_config"]["effort"], "max_tokens": body["max_tokens"],
             "request_id": reply.request_id if reply else getattr(outcome, "request_id", None),
             "message_id": reply.message_id if reply else None,
@@ -493,7 +507,7 @@ class Calls:
             "stop_details": reply.stop_details if reply else None,
             "usage": usage or None,
             "thinking_tokens": api.thinking_tokens(usage) if usage else None,
-            "cost_usd": api.cost_usd(usage, batch=batch) if usage else 0.0,
+            "cost_usd": _cost_usd(usage, mode),
             "seconds": reply.seconds if reply else None,
             "finished_at": _now(),
         }
@@ -515,8 +529,12 @@ class Calls:
         if cached is not None:
             self.note(f"{call_id}: read back from calls/{call_id}.json (not asked again)")
             return cached
+        self._leaving()
         try:
-            outcome: Reply | ApiError = api.stream_message(self.token, body, sleep=self.sleep, label=f"{VERB} {call_id}")
+            if self.credential.source == claude_login.AUTH_SOURCE_LOGIN:
+                outcome: Reply | ApiError = claude_login.send_message(body, label=f"{VERB} {call_id}")
+            else:
+                outcome = api.stream_message(self.token, body, sleep=self.sleep, label=f"{VERB} {call_id}")
         except ApiError as exc:
             outcome = exc
         self.save(call_id, purpose, candidate, body, outcome, image=image)
@@ -548,6 +566,7 @@ class Calls:
                 out.update(self._collect(record, need, wait))
         need = {cid: ask for cid, ask in need.items() if cid not in out}
         if need:
+            self._leaving()
             try:
                 batch = api.submit_batch(self.token, [(cid, ask.body) for cid, ask in need.items()],
                                          sleep=self.sleep, label=VERB)
@@ -595,14 +614,22 @@ class Calls:
         return out
 
 
+def _cost_usd(usage: dict[str, Any], mode: str) -> float:
+    """What one call charged: nothing on the subscription (it counts against the plan's usage limits
+    instead), the published price on the API key, half of it in a Message Batch."""
+    if not usage or mode == "subscription":
+        return 0.0
+    return api.cost_usd(usage, batch=mode == "batch")
+
+
 def _call_line(call_id: str, outcome: Reply | ApiError) -> str:
     if isinstance(outcome, ApiError):
         return f"{call_id}: {outcome.line}"
     usage = outcome.usage
-    cost = api.cost_usd(usage, batch=outcome.mode == "batch")
+    paid = "subscription" if outcome.mode == "subscription" else f"${_cost_usd(usage, outcome.mode):.4f}"
     took = f" {outcome.seconds:.0f}s" if outcome.seconds is not None else ""
     return (f"{call_id}: {outcome.stop_reason} — {usage.get('output_tokens')} output tokens "
-            f"({api.thinking_tokens(usage)} thinking), ${cost:.4f}{took}")
+            f"({api.thinking_tokens(usage)} thinking), {paid}{took}")
 
 
 # ----------------------------------------------------------------------------- candidates
@@ -1027,19 +1054,25 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
     batch_wait = BATCH_WAIT_DEFAULT if args.batch_wait is None else args.batch_wait
     if batch_wait < 0:
         raise _refuse(f"--batch-wait is seconds, at least 0, got {batch_wait:g}")
-    token = api.resolve_credential()
+    credential = claude_login.resolve_credential(batch=request.batch)
     if not args.resume:
         _fresh_dir(out_dir)
         atomic_write_text(out_dir / "request.json", json.dumps(request.to_dict(), ensure_ascii=False, indent=1) + "\n")
     note = _note_printer()
-    announce_api_billing("claude", api.AUTH_ENV,
-                         f" (model={api.MODEL}, effort={request.effort}, candidates={request.candidates}, "
-                         f"{'Message Batches at half price' if request.batch else 'realtime'}).")
+
+    def announce() -> None:
+        if credential.source == claude_login.AUTH_SOURCE_API_KEY:
+            announce_api_billing("claude", api.AUTH_ENV,
+                                 f" (model={api.MODEL}, effort={request.effort}, candidates={request.candidates}, "
+                                 f"{'Message Batches at half price' if request.batch else 'realtime'})"
+                                 + ("." if request.batch else f" — {claude_login.LOGIN_HINT}."))
+
     started = time.monotonic()
-    calls = Calls(out_dir, token, sleep=sleep, note=note)
+    calls = Calls(out_dir, credential, sleep=sleep, note=note, announce=announce)
     run = Run(request, out_dir, calls, batch_wait=batch_wait, note=note)
     report: dict[str, Any] = {"kind": REPORT_KIND, "status": None, "out_dir": str(out_dir), "source": "model",
-                              "model": api.MODEL, "request": request.to_dict(), "chosen": None, "files": {},
+                              "model": api.MODEL, "auth_source": credential.source, "request": request.to_dict(),
+                              "chosen": None, "files": {},
                               "pick": None, "candidates": [], "warnings": [], "info": []}
     try:
         candidates = run.candidates()
