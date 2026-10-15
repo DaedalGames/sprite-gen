@@ -596,6 +596,20 @@ def _middle(span: Span, rows: list[Row]) -> tuple[float, float] | None:
     return (float(s[kept].mean()), float(t[kept].mean())) if kept.any() else None
 
 
+def _room(span: Span, rows: list[Row]) -> bool:
+    """Whether the drifts of ``span`` that keep ``rows`` leave room: one drift keeps every row with a margin. The rows'
+    edges are taken closed so that a reading's least cost is reached, but a box's high edge, and its low edge for a part
+    kept out of it, are open: rows that leave room only on an edge, such as a part kept out of two widened boxes that
+    touch, give a reading no drift reads."""
+    middle = _middle(span, rows)
+    if middle is None:
+        return False
+    if not rows:
+        return True
+    a, b, c = np.array(rows).T
+    return bool((c - a * middle[0] - b * middle[1]).min() > 1e-9)
+
+
 class _Drawing:
     """The parts and the layout's boxes of a sheet, as arrays: the reading at a drift, and the bounds the search takes
     over a box of drifts (``span``: sx0, sx1, tx0, tx1, sy0, sy1, ty0, ty1)."""
@@ -737,7 +751,8 @@ class _Search:
     def solve(self, span: tuple[float, ...], fixed: Any, undecided: Any,
               ways: list[list[tuple[int, list[Row], list[Row]]]], floors: Any, rest: float) -> None:
         """Every reading of a span solved whole: for each way of reading its undecided parts whose bound may still come
-        within 2 TIE of the least cost, its least cost along each axis (`_least_on_axis`)."""
+        within 2 TIE of the least cost, its least cost along each axis (`_least_on_axis`). A way whose rows leave no
+        room (`_room`) is read at no drift and is not a reading."""
         drawing = self.drawing
         sx, sy = span[:4], span[4:]
         least: dict[Any, tuple[float, Any]] = {}
@@ -765,6 +780,9 @@ class _Search:
                 cost += value
                 point += at
             else:
+                # a way that could change what the search keeps must be one some drift reads
+                if cost <= self.best + 2 * TIE and not (_room(sx, rows_x) and _room(sy, rows_y)):
+                    continue
                 self.exact = min(self.exact, cost)
                 self.note(tuple(key.tolist()), cost, tuple(point), (sx, rows_x, sy, rows_y))
 
