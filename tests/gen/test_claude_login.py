@@ -158,6 +158,19 @@ def test_a_text_prompt_becomes_one_text_block():
     assert reply.text == "```pixels\n...```" and reply.stop_reason == "end_turn"
 
 
+def test_an_answer_the_binary_continued_past_the_cap_is_read_whole():
+    """Past the output cap the binary asks for a continuation and the answer goes on in a second
+    message; `result` then holds only that last part (claude 2.1.300, 2026-10-15: a 48 px drawing whose
+    thinking took 63,092 tokens of a 64,000 cap came back as its last 40 rows, fence and palette gone)."""
+    body = api.message_body(system="s", content="Draw", effort="high", max_tokens=64000)
+    first = "```pixels\nPALETTE\n. transparent\na #ff0000\nFRAME f01\n..a\n"
+    rest = ".a.\na..\nEND\n```"
+    reply = claude_login.send_message(body, label="c1-part1-gen1", run=Run(stream(
+        INIT, assistant({"type": "thinking", "thinking": "plan"}, {"type": "text", "text": first}, message_id="msg_1"),
+        assistant({"type": "text", "text": rest}, message_id="msg_2"), result(result=rest))))
+    assert reply.text == first + rest and reply.stop_reason == "end_turn"
+
+
 def test_an_answer_cut_at_the_cap_is_max_tokens_with_what_was_written():
     body = api.message_body(system="s", content="Draw", effort="high", max_tokens=64000)
     cut = result(is_error=True, stop_reason="stop_sequence", terminal_reason="api_error",
