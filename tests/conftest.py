@@ -94,6 +94,13 @@ def _fail_unmeasured_skip(report: pytest.TestReport | pytest.CollectReport, node
     )
 
 
+@pytest.fixture(autouse=True)
+def _engine_tta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs the augmentation the engine ships (`rife.TTA`): a SPRITE_GEN_RIFE_TTA left in the
+    calling shell would change what the real-RIFE tests measure."""
+    monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report = yield

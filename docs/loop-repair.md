@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -19,7 +19,10 @@ where the appearance does not change and only the motion does — the case optic
 
 [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan) release **20221029**, model
 **`rife-v4.6`** (shipped inside the release zip). The engine calls the binary as an external
-tool, like `ffmpeg` and `img2webp`; nothing is vendored into the package.
+tool, like `ffmpeg` and `img2webp`; nothing is vendored into the package. Every call asks for
+the binary's test-time augmentation, spatial and temporal (`-x -z`, `rife.TTA`;
+[Which setting](#which-setting--measured-2026-10-15) below); `SPRITE_GEN_RIFE_TTA` names another —
+`-x`, `-z`, both, or empty for none — and anything else is refused.
 
 | Release zip | SHA-256 (measured 2026-10-03) |
 |---|---|
@@ -118,6 +121,58 @@ Read:
 - More cores barely help (8 cores: 2.7 s against 2.8–3.0 s), so the default reservation is
   the right size.
 
+### Which setting — measured 2026-10-15
+
+What there is to choose (read 2026-10-15):
+
+| Source | Newest | What it offers |
+|---|---|---|
+| [nihui/rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan/releases) | release 20221029, the one above | models up to `rife-v4.6`; `-x`, spatial test-time augmentation (the pair run as its eight flips and transposes, the results averaged); `-z`, temporal (the pair run both ways in time as well); `-u`, a mode for 4K frames |
+| [TNTwise/rife-ncnn-vulkan](https://github.com/TNTwise/rife-ncnn-vulkan/releases) (a fork) | release 20250112 (an 830 MB zip) | adds `rife-v4.25`, `rife-v4.25-lite` and `rife-v4.26` (and `-v4.25-heavy`, `-v4.26-large`, which Practical-RIFE does not list); its README marks `-x` and `-z` "deprecated with rife-v4.25" |
+| [hzwer/Practical-RIFE](https://github.com/hzwer/Practical-RIFE) (the weights) | 4.26 (2024-09-21) and 4.25.lite (2024-10-20); no model since | "recommended to choose 4.25 by default for most scenes" |
+
+Chosen: **`rife-v4.6`, the model above, with `-x -z`**: the pair is run as its eight flips and
+transposes and both ways in time, and the results are averaged, so a frame made from a to b is the
+one made from b to a. The fork's models are not used.
+
+What each setting makes of the synthetic pairs of `tests/video/test_rife.py`: every setting through
+the engine's own `rife.between`, named by `SPRITE_GEN_RIFE_TTA`, read with its own measures
+(`rife.smear`, `rife.ghost`, `interpolation_quality.faults`), on a Radeon Pro 570 (an Apple M4 Max
+gives the same within three percentage points):
+
+| `rife-v4.6` with | legs crossing far (`_walker` 20/−20 and −5/5, t 0.5): outline lost a→b, b→a; ghost | a short step (10/−10 and 4/−4, t 0.5): outline lost, worse way | legs walking through each other (`_legs`): dark added at t 0.25 / 0.5 / 0.75 |
+|---|---|---|---|
+| nothing | 29 %, 24 %; 0.0096 a→b (a ghost) | 3.6 % | −1.0 / −2.0 / −0.9 % |
+| `-x` | 28 %, 25 %; none | **5.3 %** (over the 5 % bar) | −2.6 / −2.3 / +1.4 % |
+| `-z` | 29 %, the same both ways; 0.021 (a ghost) | 4.0 % | −1.4 / −2.6 / +0.4 % |
+| **`-x -z`** | **26 %, the same both ways; none** | **1.7 %** | +1.3 / −2.2 / +2.1 % |
+
+Only `-x -z` makes the frame between legs that cross far the same both ways and leaves no ghost
+there, and it loses the least of a short step's outline: `-x` alone is not symmetric and loses 5.3 %
+of the short step's outline one way, over the 5 % bar, and `-z` alone leaves a ghost band where legs
+cross far. Where the legs cross (t 0.5) none adds dark. Either side, the flips keep the near leg's
+outline whole over the far one — a line each neighbour draws in another place, not the black fill
+2.24 left (6 % of the body at t 0.5, `test_real_rife_between_crossing_legs_adds_no_black`).
+
+Time per frame made (two calls, wall clock, process start included; the CPU seconds, all cores,
+after it), on the walker of those pairs — legs crossing far and the short step, t 0.5 — drawn
+280 × 520, and drawn 520 × 900 on a 960 × 960 frame (the size of a 720p clip's frame):
+
+| `rife-v4.6` with | Mac M4 Max, GPU, 280 × 520 / 960 × 960 | Modal `cpu=2` (`run_job`), 280 × 520 | Modal `cpu=2`, 960 × 960 | Modal default request (`run_align`), 960 × 960 |
+|---|---|---|---|---|
+| nothing | 0.64 / 1.06 s | 2.2–3.7 s (8–24 CPU s) | 4.3–6.2 s (32–46) | 4.6–4.8 s (33–35) |
+| `-x` | 0.70 / 1.29 s | 7.1–15.8 s (59–184) | 22.7–31.4 s (296–436) | 26.3–26.5 s (327–328) |
+| `-z` | 0.65 / 1.08 s | 2.7–5.4 s (17–47) | 7.3–10.3 s (76–111) | 8.0–8.5 s (80–84) |
+| **`-x -z`** | **0.76 / 1.59 s** | **11.7–29.8 s (120–366)** | **44.0–60.5 s (596–874)** | **49.2–50.6 s (635–650)** |
+
+On the Mac's GPU the augmentation adds a tenth of a second a frame at 280 × 520 and half a second at
+960 × 960: the process start is most of a call. On Modal's CPU it is 15 to 19 times the plain call's
+CPU. Each Modal range is two runs, and hosts differ: the same 280 × 520 frame took 11.7 s on one and
+29.8 s on the other. llvmpipe gives the Mac's frame there as before (a mean difference of 0.006 to
+0.76 of 255 a byte, every setting; the outline reading within two percentage points). The first
+frame in a container takes longer (llvmpipe compiles its shaders). One call is stopped at 600 s
+(`rife.CALL_TIMEOUT_SECONDS`) and reported as a RIFE that failed.
+
 ### Decision
 
 **RIFE runs where the engine runs.** On a Mac that is the Apple GPU. In the app it is the
@@ -134,11 +189,14 @@ unzip -q /tmp/rife.zip -d /opt && ln -s /opt/rife-ncnn-vulkan-20221029-ubuntu/ri
 hash and unpack, and adds the check frame; CI installs RIFE that way.
 
 Cost on Modal (prices read from modal.com/pricing on 2026-10-03: CPU $0.0000131 per core per
-second, memory $0.00000222 per GiB per second): one repaired frame is two calls, about 6 s; a
-loop repairs at most three frames, so at most about 20 s of one container — well under a cent.
-Aligning a set's cycles (section 4) makes more frames: about 6 s per frame RIFE makes, so a
-view that needs 20 made frames adds about two minutes on Modal and a few seconds on a Mac.
-That is the reason section 4 keeps every frame that lands on a source frame.
+second, memory $0.00000222 per GiB per second), with the augmentation ("Which setting" above): one
+repaired frame of 280 × 520 is 12 to 30 s and 120 to 370 CPU seconds, a fifth of a cent to half a
+cent; a loop makes at most three, so at most about a minute and a half of one container — under two
+cents. Aligning a set's cycles (section 4) makes more frames, and larger: 44 to 61 s and 600 to 870
+CPU seconds a 960 × 960 frame, about a cent, so a view that needs 20 made frames takes 15 to 20
+minutes. A deployment that aligns on a CPU names a lighter augmentation for that job:
+`SPRITE_GEN_RIFE_TTA=` (none) is 4 to 6 s a 960 × 960 frame, `-z` 7 to 10 s. On a Mac it is under
+two seconds either way. That is the reason section 4 keeps every frame that lands on a source frame.
 
 A PyTorch RIFE was not chosen: it would add a framework of hundreds of megabytes to the image
 for the same model, and llvmpipe already gives the GPU's frame.

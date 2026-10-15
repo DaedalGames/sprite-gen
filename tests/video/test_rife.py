@@ -90,6 +90,61 @@ def test_missing_model_is_refused(monkeypatch, tmp_path):
         rife.locate()
 
 
+def _recording_binary(tmp_path: Path) -> tuple[Path, Path]:
+    """A stand-in binary that logs its arguments and returns its first frame: (binary, log)."""
+    log = tmp_path / "argv.txt"
+    binary = tmp_path / rife.BINARY
+    binary.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n'
+                      'while [ $# -gt 0 ]; do case "$1" in -0) a="$2"; shift;; -o) o="$2"; shift;; esac; shift; done\n'
+                      'cp "$a" "$o"\n')
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    return binary, log
+
+
+def _modes_asked(monkeypatch, tmp_path: Path, named: str | None) -> tuple[list[list[str]], dict[str, str]]:
+    """The augmentation flags of each call one made frame sends, and the interpolator's record."""
+    if named is None:
+        monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
+    else:
+        monkeypatch.setenv("SPRITE_GEN_RIFE_TTA", named)
+    binary, log = _recording_binary(tmp_path)
+    interpolate = rife.Rife(binary, tmp_path / rife.MODEL)
+    interpolate(_disc(40), _disc(72), 0.5)
+    calls = [line.split() for line in log.read_text().splitlines()]
+    return [[a for a in argv if a in ("-x", "-z", "-u", "-g")] for argv in calls], interpolate.describe()
+
+
+def test_every_call_asks_for_both_augmentations_and_never_the_cpu_path(monkeypatch, tmp_path):
+    """The colour run and the coverage run both go out with `-x -z` (docs/loop-repair.md section 1,
+    "Which setting"), and with no `-g`: the binary's own CPU path is wrong with this model."""
+    modes, record = _modes_asked(monkeypatch, tmp_path, None)
+    assert modes == [["-x", "-z"], ["-x", "-z"]] and record["tta"] == "-x -z"
+
+
+@pytest.mark.parametrize("named, flags", [("", []), ("-x", ["-x"]), ("-z", ["-z"]), (" -z  -x ", ["-z", "-x"])])
+def test_sprite_gen_rife_tta_names_another_augmentation_or_none(monkeypatch, tmp_path, named, flags):
+    modes, record = _modes_asked(monkeypatch, tmp_path, named)
+    assert modes == [flags, flags] and record["tta"] == " ".join(flags)
+
+
+def test_a_call_past_its_time_is_a_rife_that_failed(monkeypatch, tmp_path):
+    binary = tmp_path / rife.BINARY
+    binary.write_text("#!/bin/sh\nexec sleep 5\n")  # exec: the stopped process is the one holding the pipes
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(rife, "CALL_TIMEOUT_SECONDS", 0.2)
+    with pytest.raises(rife.RifeUnavailable, match=r"made no frame in 0.2 s .*augmentation -x -z"):
+        rife.Rife(binary, tmp_path / rife.MODEL)(_disc(40), _disc(72), 0.5)
+
+
+@pytest.mark.parametrize("named", ["-g -1", "x", "-x -x", "-u"])
+def test_sprite_gen_rife_tta_refuses_anything_but_the_two_modes(monkeypatch, tmp_path, named):
+    monkeypatch.setenv("SPRITE_GEN_RIFE_TTA", named)
+    binary, log = _recording_binary(tmp_path)
+    with pytest.raises(rife.RifeUnavailable, match="SPRITE_GEN_RIFE_TTA"):
+        rife.Rife(binary, tmp_path / rife.MODEL)
+    assert not log.exists()
+
+
 def _disc(cx: int) -> Image.Image:
     im = np.zeros((96, 128, 4), dtype=np.uint8)
     yy, xx = np.mgrid[:96, :128]
@@ -113,13 +168,16 @@ def test_real_rife_makes_the_frame_between_in_colour_and_alpha():
 
 @pytest.mark.real_rife
 def test_real_rife_between_crossing_legs_adds_no_black():
-    """Two outlined legs walk through each other (the near one forward, the far one back): the frame
-    between must not be darker inside the body than either neighbour. 2.24 premultiplied the colour
-    over black and left 6 % of the body dark at t=0.5 here."""
+    """Two outlined legs walk through each other (the near one forward, the far one back): where they
+    cross (t=0.5) the frame between is no darker inside the body than either neighbour. 2.24
+    premultiplied the colour over black and left 6 % of the body dark there. Either side of the crossing
+    the flips of `-x` keep the near leg's outline whole over the far one, a line each neighbour draws in
+    another place: 1.3 % and 2.1 % of the body at t=0.25 and 0.75, the same on two GPUs — a line, not
+    the black fill."""
     interpolate = rife.Rife()
     a, b = _legs(36, 70), _legs(60, 46)
-    for t in (0.25, 0.5, 0.75):
-        assert rife.smear(interpolate(a, b, t), a, b)["dark_excess"] <= 0
+    dark = [rife.smear(interpolate(a, b, t), a, b)["dark_excess"] for t in (0.25, 0.5, 0.75)]
+    assert dark[1] <= 0 and max(dark) < 0.03
 
 
 def _legs(x_near: int, x_far: int) -> Image.Image:
@@ -205,7 +263,7 @@ def test_outline_loss_reads_a_melted_limb_and_not_a_moved_one():
 @pytest.mark.real_rife
 def test_real_rife_melts_legs_crossing_too_far_and_alignment_takes_the_nearer_frame_there():
     """Outlined legs that cross a long way between two drawings (a clip drawn on twos) come out of
-    RIFE as one shape with no outline where they meet the air (measured 32 % of the edge at t=0.5);
+    RIFE as one shape with no outline where they meet the air (measured 26 % of the edge at t=0.5);
     a short step comes out outlined (under 3 % at any t). `--between auto` takes the nearer source
     frame for the first and keeps RIFE's for the second; `rife` keeps both and names the first."""
     from sprite_gen.video import align
@@ -218,12 +276,13 @@ def test_real_rife_melts_legs_crossing_too_far_and_alignment_takes_the_nearer_fr
     out, facts = align.resample(list(far), 4, interpolate)  # times 0, 0.5, 1, 1.5: both made at t=0.5
     assert facts["between"] == "auto" and facts["made_by_rife"] == 0 and facts["nearest_at"] == [1, 3]
     assert out[1] is far[1] and out[3] is far[0]
-    # the melt made a to b is left part-covered too, a ghost on its own coverage as well; the one made
-    # b to a is not (RIFE is not symmetric); neither is a cross-fade of two drawings (section 4)
-    assert [(m["method"], m["faults"], m["look"]) for m in facts["smear"]] == [("nearest", ["outline", "ghost"], []),
+    # the two melts are one frame, made both ways in time (`-z`), and neither is left part-covered: the
+    # augmentation takes away the ghost band the one made a to b carried without it (docs/loop-repair.md
+    # section 1, "Which setting"); neither is a cross-fade of two drawings (section 4)
+    assert [(m["method"], m["faults"], m["look"]) for m in facts["smear"]] == [("nearest", ["outline"], []),
                                                                                ("nearest", ["outline"], [])]
     kept, facts = align.resample(list(far), 4, interpolate, between="rife")
-    assert facts["made_at"] == [1, 3] and [(m["method"], m["faults"]) for m in facts["smear"]] == [("rife", ["outline", "ghost"]),
+    assert facts["made_at"] == [1, 3] and [(m["method"], m["faults"]) for m in facts["smear"]] == [("rife", ["outline"]),
                                                                                                   ("rife", ["outline"])]
     out, facts = align.resample(list(near), 4, interpolate)
     assert facts["made_at"] == [1, 3] and facts["nearest_at"] == [] and all(not m["faults"] for m in facts["smear"])
@@ -242,5 +301,5 @@ def test_real_rife_repair_rejects_outline_loss_and_keeps_the_original_middle(mon
     interpolate = rife.Rife()
     out, facts = repair.repair_jumps(frames, interpolate)
     assert interpolate.made == facts["attempts"] == 1
-    assert facts["replaced"] == [] and facts["rounds"][0]["faults"][0] == "outline"
+    assert facts["replaced"] == [] and facts["rounds"][0]["faults"] == ["outline"]
     assert [f.tobytes() for f in out] == before == [f.tobytes() for f in frames]

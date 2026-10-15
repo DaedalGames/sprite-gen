@@ -17,6 +17,8 @@ reading to look at, not a fault (docs/loop-repair.md section 4).
 The binary's own CPU path (`-g -1`) returns a wrong frame with rife-v4.6 on both macOS and
 Linux (measured 2026-10-03: mean error 39 against 3.3 through Vulkan), so it is never passed;
 a machine without a GPU runs the Vulkan path on Mesa's llvmpipe, which gives the GPU's frame.
+Every call asks for the binary's test-time augmentation, spatial and temporal (`-x -z`, `TTA`;
+docs/loop-repair.md section 1, "Which setting"); SPRITE_GEN_RIFE_TTA names another (`tta()`).
 
 The binary is found by SPRITE_GEN_RIFE, then on PATH, then where `sprite-gen rife install`
 puts it (`install_root()`, docs/loop-repair.md section 1). A RIFE that cannot be found is
@@ -44,6 +46,13 @@ from sprite_gen._deps import np
 BINARY = "rife-ncnn-vulkan"
 MODEL = "rife-v4.6"
 RELEASE = "20221029"
+# The binary's test-time augmentation, passed on every call: `-x` runs the pair as its eight flips and
+# transposes, `-z` runs it both ways in time as well, and what comes back is averaged — so a frame made
+# from a to b is the one made from b to a (docs/loop-repair.md section 1, "Which setting"). On a machine
+# without a GPU it costs 15 to 19 times the CPU of a plain call. SPRITE_GEN_RIFE_TTA names another
+# (`tta()`): either mode, or none.
+TTA = ("-x", "-z")
+TTA_MODES = ("-x", "-z")
 # Coverage RIFE leaves under this is its own blur, not body: dropped so no halo is invented.
 ALPHA_FLOOR = 2 / 255
 # The colour pushed out around the body is read this far inside its solid edge (a fraction of the
@@ -68,7 +77,10 @@ GHOST_THICK = 5
 CROSSFADE_RANGE = 7
 CROSSFADE_WINDOW = 0.08
 CROSSFADE_KEEP = 0.6
-CALL_TIMEOUT_SECONDS = 120
+# One call past this is stopped and reported as a RIFE that failed. TTA's slowest call measured, on a
+# 960 x 960 frame on Modal's CPU, took about 30 s, and Modal's hosts differ by up to 2.5 times on one frame
+# (2026-10-15, docs/loop-repair.md section 1).
+CALL_TIMEOUT_SECONDS = 600
 
 Interpolate = Callable[[Image.Image, Image.Image, float], Image.Image]
 
@@ -142,15 +154,32 @@ def locate() -> tuple[Path, Path]:
     return binary, model
 
 
+def tta() -> tuple[str, ...]:
+    """The test-time augmentation every call asks for: SPRITE_GEN_RIFE_TTA when it is set (`-x`, `-z`
+    or both, space-separated; empty for none), else TTA. Anything else is refused: a flag passed
+    through unread could be the binary's CPU path, which is wrong with this model."""
+    named = os.environ.get("SPRITE_GEN_RIFE_TTA")
+    if named is None:
+        return TTA
+    modes = tuple(named.split())
+    if any(m not in TTA_MODES for m in modes) or len(set(modes)) < len(modes):
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_TTA={named!r}: name -x, -z or both, space-separated, or leave it empty for none")
+    return modes
+
+
 def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path) -> Image.Image:
     a.save(tmp / "a.png")
     b.save(tmp / "b.png")
     out = tmp / "o.png"
     out.unlink(missing_ok=True)
-    proc = subprocess.run(
-        [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model)],
-        capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS,
-    )
+    try:
+        proc = subprocess.run(
+            [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model), *tta()],
+            capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RifeUnavailable(f"{binary.name} made no frame in {CALL_TIMEOUT_SECONDS} s and was stopped "
+                              f"(augmentation {' '.join(tta()) or 'none'}, SPRITE_GEN_RIFE_TTA)") from exc
     if proc.returncode != 0 or not out.is_file():
         raise RifeUnavailable(f"{binary.name} failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[-300:]}")
     with Image.open(out) as im:
@@ -315,6 +344,7 @@ class Rife:
         if binary is None or model is None:
             binary, model = locate()
         self.binary, self.model = binary, model
+        self.tta = tta()  # refused here, before a frame is asked for
         self.made = 0
 
     def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
@@ -324,4 +354,4 @@ class Rife:
         return frame
 
     def describe(self) -> dict[str, str]:
-        return {"binary": str(self.binary), "model": self.model.name}
+        return {"binary": str(self.binary), "model": self.model.name, "tta": " ".join(self.tta)}
