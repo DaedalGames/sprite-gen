@@ -101,7 +101,7 @@ def test_a_batch_runs_on_the_key_and_does_not_ask_the_login():
     run = Run()
     credential = claude_login.resolve_credential(batch=True, env={"ANTHROPIC_API_KEY": KEY}, run=run)
     assert credential.source == "ANTHROPIC_API_KEY" and run.calls == []
-    with pytest.raises(SystemExit, match="--batch is Anthropic's Message Batches API.*drop --batch"):
+    with pytest.raises(SystemExit, match=r"(?s)--batch is Anthropic's Message Batches API.*drop --batch"):
         claude_login.resolve_credential(batch=True, env={}, run=run)
 
 
