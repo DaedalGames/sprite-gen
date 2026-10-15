@@ -19,9 +19,11 @@ claude 2.1.300 the same day:
 - `-p --input-format stream-json --output-format stream-json --verbose` takes one user message of
   content blocks (text, a base64 image) on stdin and ends with a `result` event: `result` (the text),
   `structured_output` (with `--json-schema`), `usage` (the Messages API's), `stop_reason`, `is_error`,
-  `subtype`, `api_error_status`. An answer cut at the output cap is not returned as a cut answer: the
-  binary asks for a continuation a few times and then ends `is_error` with "exceeded the N output token
-  maximum" (`OUTPUT_CAP_ERROR`); that is the API's `stop_reason: max_tokens`.
+  `subtype`, `api_error_status`. An answer that reaches the output cap is not returned as a cut answer:
+  the binary asks for a continuation, which goes on in another assistant message (so the answer is every
+  assistant text in order — `result` holds only the last part), and when continuations do not finish it
+  ends `is_error` with "exceeded the N output token maximum" (`OUTPUT_CAP_ERROR`); that is the API's
+  `stop_reason: max_tokens`.
 - `--system-prompt` replaces Claude Code's own prompt (an empty one is accepted), `--tools ""` and
   `--strict-mcp-config` leave no tool, `--safe-mode` loads no CLAUDE.md, hook, skill, plugin or MCP
   server while the login still works, `--no-session-persistence` writes no session, `--effort` sets the
@@ -204,7 +206,9 @@ def send_message(body: dict[str, Any], *, label: str, env: Mapping[str, str] | N
                            f"{f', HTTP {status}' if status else ''}): {said[:300]}",
                            status=status if isinstance(status, int) else None,
                            billed=bool(usage.get("output_tokens")))
+    # The answer is every text the assistant wrote, in order: past the output cap the binary asks for a
+    # continuation and `result` holds only the last part (2026-10-15: fence and palette lost).
     structured = result.get("structured_output")
-    text = json.dumps(structured, ensure_ascii=False) if structured is not None else said
+    text = json.dumps(structured, ensure_ascii=False) if structured is not None else ("".join(texts) or said)
     return api.Reply(text=text, thinking="\n".join(thinking), stop_reason=result.get("stop_reason"), usage=usage,
                      model=body["model"], message_id=message_id, mode="subscription", seconds=seconds)

@@ -434,9 +434,11 @@ and the login is not asked. One call through the binary may take up to
 socket read of the stream may wait `SPRITE_GEN_CLAUDE_READ_TIMEOUT_SECONDS` (300) — the API sends
 `ping`s while the model thinks, so a stream silent that long is stalled.
 
-The binary answers an answer cut at the output cap by asking for a continuation a few times and then
-failing with "exceeded the N output token maximum"; that is read as the API's `stop_reason:
-max_tokens`, so the one redraw one effort lower happens on either route.
+An answer that reaches the output cap is not cut by the binary: it asks for a continuation, which goes
+on in another message, and the answer is read whole from every message in order (the binary's own
+`result` holds only the last part). When the continuations do not finish it fails with "exceeded the N
+output token maximum"; that is read as the API's `stop_reason: max_tokens`, so the one redraw one
+effort lower happens on either route.
 
 The subscription route is for the person running sprite-gen on their own machine, signed in to their
 own plan. Anthropic permits an end user signing in to the unmodified Claude Code binary with their
