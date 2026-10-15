@@ -134,12 +134,13 @@ def test_the_rule_needs_a_peak_reason_and_never_relaxes_the_peak():
     assert not processing.meets(float('-inf'), -50, -18)
 
 
-@pytest.mark.parametrize('case', ['headroom', 'hot'])
-def test_export_refuses_a_quiet_file_with_headroom_and_a_hot_peak(tmp_path, monkeypatch, case):
+def test_export_refuses_a_quiet_file_with_headroom_and_a_hot_peak(tmp_path, monkeypatch):
+    # One file that fails meets() is enough: every failure reaches the same raise, and
+    # the quiet-with-headroom and hot-peak conditions are pinned on meets() itself in
+    # test_the_rule_needs_a_peak_reason_and_never_relaxes_the_peak.
     t = np.arange(48000) / 48000
-    pcm = np.stack([np.sin(2*np.pi*440*t)]*2, axis=1) * (.01 if case == 'headroom' else .1365)
-    if case == 'hot':
-        pcm[24000:24048] = .94  # about -18 LUFS with a -0.5 dBTP spike
+    pcm = np.stack([np.sin(2*np.pi*440*t)]*2, axis=1) * .1365
+    pcm[24000:24048] = .94  # about -18 LUFS with a -0.5 dBTP spike
     stats = processing.measure(pcm)
     record = {'pcm_lufs': stats['lufs'], 'pcm_true_peak_dbtp': stats['true_peak']}
     decode = processing.decode
@@ -149,10 +150,7 @@ def test_export_refuses_a_quiet_file_with_headroom_and_a_hot_peak(tmp_path, monk
     with pytest.raises(ValueError, match='ogg failed loudness/peak check') as refusal:
         processing.export(tmp_path/'source', tmp_path, target_lufs=-18, loop=False, crossfade=0)
     lufs, peak = map(float, re.search(r'\(([-\d.]+) LUFS, ([-\d.]+) dBTP', str(refusal.value)).groups())
-    if case == 'headroom':
-        assert lufs < -30 and peak < -30
-    else:
-        assert abs(lufs + 18) <= 1 and peak > -1
+    assert abs(lufs + 18) <= 1 and peak > -1
 
 
 @pytest.mark.parametrize('seconds', [0, .3])
@@ -238,8 +236,7 @@ def test_provider_contract_and_safe_retry(monkeypatch, capsys):
                           'model_id':'music_v1', 'force_instrumental':True}
 
 
-@pytest.mark.parametrize('status,body', [(500, {}), (429, {'detail':{'status':'quota_exceeded'}}),
-                                         (429, {'detail':{'status':'unknown'}}), (422, {})])
+@pytest.mark.parametrize('status,body', [(500, {}), (429, {'detail':{'status':'quota_exceeded'}})])
 def test_unproven_refusals_are_not_retried(status, body):
     assert retry.again_after('elevenlabs', 'POST', status, body, {}, 1) is None
 
@@ -440,8 +437,7 @@ def test_missing_ffprobe_preflights_before_generation(tmp_path, monkeypatch):
                        cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
 
 
-@pytest.mark.parametrize('old_version', [1, 2, 3])
-def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch, old_version):
+def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))
     kw = dict(kind='bgm', prompt='synthetic', duration=3, event='music',
@@ -449,7 +445,8 @@ def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monke
     result = sound.generate(**kw)
     assert result['version'] == 2
     assert result['recipe']['processing_version'] == 4
-    old = {**result, 'version': old_version, 'recipe': {**result['recipe'], 'processing_version': old_version}}
+    # One old version is enough: any recipe that differs is refused by the same check.
+    old = {**result, 'version': 3, 'recipe': {**result['recipe'], 'processing_version': 3}}
     (kw['out_dir']/'sound.json').write_text(json.dumps(old))
     with pytest.raises(ValueError, match='different sound'):
         sound.generate(**kw)

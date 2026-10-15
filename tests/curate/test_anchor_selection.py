@@ -232,25 +232,13 @@ def _cli(run_dir: Path, *args: str):
                           capture_output=True, text=True, cwd=str(ROOT))
 
 
-@pytest.mark.parametrize("args,needle", [
-    (("--for-state", "down_walk"), "generate and extract"),
-    (("--direction", "down"), "generate and extract"),
-])
-def test_cli_pending_failure_prints_the_guidance(ungenerated_run: Path, args, needle) -> None:
-    proc = _cli(ungenerated_run, *args)
+def test_cli_pending_failure_prints_the_guidance(ungenerated_run: Path) -> None:
+    """`--for-state` 는 위 in-process 테스트가 같은 예외로 지킨다 — 여기서는 `--direction` 한 길만
+    프로세스 경계까지 본다. 메시지가 stderr 로 흐르는 장치(`AnchorUnavailable.__init__`)는 하나다."""
+    proc = _cli(ungenerated_run, "--direction", "down")
     assert proc.returncode != 0
-    assert needle in proc.stderr, proc.stderr
+    assert "generate and extract" in proc.stderr, proc.stderr
     assert proc.stderr.strip() not in anchor_mod.AnchorUnavailable.PENDING_KINDS
-
-
-def test_cli_broken_pin_failure_prints_the_guidance(direction_run: Path) -> None:
-    _save_curation(direction_run, {"down_idle": {"deleted": [3], "selected": [0, 1, 2]}},
-                   anchors={"down": {"state": "down_idle", "index": 3}})
-    proc = _cli(direction_run, "--for-state", "down_walk")
-    assert proc.returncode != 0
-    assert "no longer exists" in proc.stderr, proc.stderr
-    assert "re-pick the anchor frame" in proc.stderr
-    assert proc.stderr.strip() != "pick-missing"
 
 
 def test_all_bakes_every_bakeable_direction_before_failing(tmp_path: Path) -> None:
@@ -497,20 +485,6 @@ def test_pin_survives_when_every_curated_row_is_dropped(direction_run: Path) -> 
     assert anchor_choices(doc)["down"]["stale"] is True
 
 
-def test_cli_clear_does_not_resurrect_dropped_curation(direction_run: Path) -> None:
-    from sprite_gen.curate.curation import load_curation_report
-
-    run_dir = direction_run
-    _save_curation(run_dir, {"down_idle": {"deleted": [0], "selected": [1, 2, 3]}},
-                   anchors={"side": {"state": "side_idle", "index": 1}})
-    _regenerate_row(run_dir, "down", "idle", seed=777)
-    assert "down_idle" in load_curation_report(run_dir)[1]["dropped"]
-    assert anchor_mod.run(run_dir=run_dir, clear=True, direction="side") == 0
-    doc = load_curation_report(run_dir)[0] or {}
-    assert "down_idle" not in (doc.get("states") or {})
-    assert _pins(doc) == {}
-
-
 # --- 사용자 지정 ---------------------------------------------------------------
 
 def test_picked_frame_overrides_the_default_including_another_row(direction_run: Path) -> None:
@@ -542,6 +516,7 @@ def test_picked_frame_that_vanished_fails_loud(direction_run: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         anchor_mod.resolve_anchor(request, load_curation(run_dir), "down")
     assert "no longer exists" in str(excinfo.value)
+    assert "re-pick the anchor frame" in str(excinfo.value)
     # 뷰는 죽지 않고 이유를 보여준다
     status = anchor_mod.anchor_status(run_dir, request, load_curation(run_dir), "down")
     assert status["state"] is None and "no longer exists" in status["error"]

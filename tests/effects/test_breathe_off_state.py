@@ -36,8 +36,6 @@ validator 검증 2026-07-25).
 import re
 from pathlib import Path
 
-import pytest
-
 from sprite_gen.serve.serve_curation import CURATOR_DIR
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -248,21 +246,18 @@ def _call_sites():
                 yield name, lineno, text
 
 
-def test_there_are_call_sites_to_guard():
-    """호출부 **인벤토리**가 그대로여야 한다.
+def test_every_breathe_composite_call_is_gated_on_enabled():
+    """호출부 **인벤토리**가 그대로이고, 그 호출부가 **전부** 켜짐 여부로 게이트돼 있다.
 
     "비어있지 않다" 만 보면 한 자리가 줄바꿈 한 번으로 증발해도 통과한다 — 신호는
-    "테스트가 하나 줄었다" 뿐이고, 그건 이 플랜이 두 번 1급 계약으로 올린 실패 모드다."""
-    _assert_inventory("breatheComposite 호출부", _inventory(_call_sites()), EXPECTED_CALL_SITES)
-
-
-@pytest.mark.parametrize("site", list(_call_sites()), ids=lambda s: f"{s[0]}:{s[1]}")
-def test_every_breathe_composite_call_is_gated_on_enabled(site):
-    name, lineno, line = site
-    assert any(guard in line for guard in GUARDS), (
-        f"{name}:{lineno} 가 켜짐 여부로 게이트되지 않았다 — 꺼진 줄이 워프된다.\n"
-        f"  {line}\n"
-        f"  허용 형태: {', '.join(GUARDS)}")
+    "테스트가 하나 줄었다" 뿐이고, 그건 이 플랜이 두 번 1급 계약으로 올린 실패 모드다.
+    게이트가 빠진 자리는 `파일:줄` 로 전부 보고한다."""
+    sites = list(_call_sites())
+    _assert_inventory("breatheComposite 호출부", _inventory(sites), EXPECTED_CALL_SITES)
+    ungated = [f"{name}:{lineno} 가 켜짐 여부로 게이트되지 않았다 — 꺼진 줄이 워프된다.\n"
+               f"  {line}"
+               for name, lineno, line in sites if not any(guard in line for guard in GUARDS)]
+    assert not ungated, "\n".join(ungated) + f"\n  허용 형태: {', '.join(GUARDS)}"
 
 
 # ── 파이썬 굽기 소비자 ──────────────────────────────────────────────
@@ -291,12 +286,7 @@ def _py_call_sites():
                 yield rel, lineno, line.strip(), guard
 
 
-def test_there_are_python_bake_call_sites():
-    assert list(_py_call_sites()), "굽기 소비자에서 호흡 호출부가 사라졌다 — 계약 위치 확인"
-
-
-@pytest.mark.parametrize("site", list(_py_call_sites()), ids=lambda s: f"{s[0].split('/')[-1]}:{s[1]}")
-def test_python_bake_never_skips_a_phase(site):
+def test_python_bake_never_skips_a_phase():
     """굽기가 **위상 값으로** 워프 여부를 가르면 안 된다.
 
     `if breathe_cfg and breathe_phase:` 는 위상 0 슬롯을 건너뛰어 그 칸만 원본이 되고,
@@ -306,10 +296,13 @@ def test_python_bake_never_skips_a_phase(site):
     이 그물이 필요한 이유: validator가 변이 테스트로 확인했다 — `compose_atlas` 의 가드를
     옛 형태로 되돌려도 `pytest -k "atlas or breathe"` 40개가 **전부 통과**했다.
     JS 쪽엔 그물이 있었고 파이썬 쪽만 비어 있었다 (2026-07-25)."""
-    rel, lineno, line, guard = site
-    assert "phase" not in guard.replace("breathe_cfg", ""), (
-        f"{rel}:{lineno} 의 가드가 위상 값을 본다 — 위상 0 이 안 구워진다.\n"
-        f"  가드: {guard}\n  호출: {line}")
+    sites = list(_py_call_sites())
+    assert sites, "굽기 소비자에서 호흡 호출부가 사라졌다 — 계약 위치 확인"
+    phase_gated = [f"{rel}:{lineno} 의 가드가 위상 값을 본다 — 위상 0 이 안 구워진다.\n"
+                   f"  가드: {guard}\n  호출: {line}"
+                   for rel, lineno, line, guard in sites
+                   if "phase" in guard.replace("breathe_cfg", "")]
+    assert not phase_gated, "\n".join(phase_gated)
 
 
 # ── 줄 단위 신선도 검사가 실제로 걸리는가 ──────────────────────────
@@ -329,36 +322,36 @@ def _preview_call_sites():
                 yield name, lineno, text, m.group(1)
 
 
-def test_there_are_preview_call_sites():
-    _assert_inventory("프리뷰 호출부",
-                      _inventory(_preview_call_sites()), EXPECTED_PREVIEW_SITES)
-
-
-@pytest.mark.parametrize("site", list(_preview_call_sites()), ids=lambda s: f"{s[0]}:{s[1]}")
-def test_every_preview_call_passes_a_freshness_reference(site):
+def test_every_preview_call_passes_a_freshness_reference():
     """프리뷰 호출부는 **전부** 기준 프레임을 넘겨야 한다.
 
     round-7 은 `reference` 를 선택 인자로 뒀고 5곳 중 2곳만 넘겼다. 나머지 3곳은
     `if (reference)` 를 통째로 건너뛰어, 같은 웹뷰의 두 화면이 정반대로 행동했다 —
     줄 카드는 거부하는데 호흡 편집 모달은 낡은 숫자로 조용히 그렸다 (validator 실측
     2026-07-26: 12/12 위상 갈림, 알림 0건). round-2 가 켜짐 게이트를 호출부 전수
-    파라미터화로 고정한 것과 같은 형태의 그물이다."""
-    name, lineno, line, args = site
-    # `breatheComposeForPreview(a, b, c, ref)` — 인자 4개여야 한다
-    depth = 0
-    parts, cur = [], ""
-    for ch in args:
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-        if ch == "," and depth == 0:
-            parts.append(cur.strip()); cur = ""
-        else:
-            cur += ch
-    parts.append(cur.strip())
-    assert len(parts) >= 4 and parts[3], (
-        f"{name}:{lineno} 가 기준 프레임을 안 넘긴다 — 신선도 검사가 건너뛰어진다.\n  {line}")
+    파라미터화로 고정한 것과 같은 형태의 그물이다. 호출부 인벤토리도 여기서 못박고,
+    기준 프레임을 안 넘기는 자리는 `파일:줄` 로 전부 보고한다."""
+    sites = list(_preview_call_sites())
+    _assert_inventory("프리뷰 호출부", _inventory(sites), EXPECTED_PREVIEW_SITES)
+    unreferenced = []
+    for name, lineno, line, args in sites:
+        # `breatheComposeForPreview(a, b, c, ref)` — 인자 4개여야 한다
+        depth = 0
+        parts, cur = [], ""
+        for ch in args:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append(cur.strip()); cur = ""
+            else:
+                cur += ch
+        parts.append(cur.strip())
+        if not (len(parts) >= 4 and parts[3]):
+            unreferenced.append(
+                f"{name}:{lineno} 가 기준 프레임을 안 넘긴다 — 신선도 검사가 건너뛰어진다.\n  {line}")
+    assert not unreferenced, "\n".join(unreferenced)
 
 
 # ── 파일을 만드는 자리는 전부 신선도를 본다 ────────────────────────
@@ -450,18 +443,31 @@ def _file_producing_functions():
 EXPECTED_FILE_PRODUCERS = {"compare.js": 1, "row-export.js": 1}
 
 
+RESAMPLE_NOTICE = re.compile(r"breatheResamplesDifferently\s*\(")
+
+
 def test_every_file_producing_path_checks_freshness():
     """파일을 만드는 자리는 **전부** 기준 프레임 신선도를 확인해야 한다.
 
     `row-export` 는 예외를 올려 파일 생성 전에 멈췄는데 `compare.js` 의 영상
     다운로드는 프리뷰 래퍼를 거쳐 거부를 삼켰다 — 같은 조건에서 두 내보내기가
-    **정반대로** 행동했고, 호흡 없는 파일이 나간 뒤 초록 "완료" 알림까지 떴다."""
+    **정반대로** 행동했고, 호흡 없는 파일이 나간 뒤 초록 "완료" 알림까지 떴다.
+
+    같은 자리는 **고칠 수 없는 차이도 말해야** 한다. 회전·확대가 걸린 줄은 프리뷰와
+    굽기의 픽셀이 다르다: 굽기는 `apply_transform` 에서 BICUBIC(`snap_scale` 없는 런 =
+    기본 런 전부), 웹뷰는 `imageSmoothingEnabled=false` 캔버스라 NEAREST 다. 실측
+    (validator 2026-07-26, 96px 픽스처, 신선도는 통과시킨 상태): rotate 3° 에서 12/12 위상
+    최대 1803px 상이, scale 1.03 에서 최대 1699px. 원인은 표시 파이프라인이라 호흡이 고칠
+    수 있는 게 아니지만, `row-export` 와 비교뷰 다운로드는 **이 캔버스로 파일을 굽는다** —
+    조용히 두면 사용자는 GIF 와 다른 파일을 받고도 모른다 (원칙 6). "고칠 수 없으니
+    말하지 않는다" 는 이 플랜에서 금지된 형태다."""
     sites = _file_producing_functions()
     _assert_inventory("파일 생성 경로", _inventory(sites), EXPECTED_FILE_PRODUCERS)
-    missing = [(n, ln) for n, ln, body in sites if not FRESH.search(body)]
-    assert not missing, (
-        "파일을 만드는데 신선도를 안 본다 — 낡은 해부로 구운 파일이 사용자에게 간다:\n"
-        + "\n".join(f"  {n}:{ln}" for n, ln in missing))
+    broken = [f"  {n}:{ln} 신선도를 안 본다 — 낡은 해부로 구운 파일이 사용자에게 간다"
+              for n, ln, body in sites if not FRESH.search(body)]
+    broken += [f"  {n}:{ln} 리샘플러 차이를 안 알린다 — 사용자는 GIF 와 다른 파일을 받고도 모른다"
+               for n, ln, body in sites if not RESAMPLE_NOTICE.search(body)]
+    assert not broken, "파일을 만드는 자리가 계약을 어긴다:\n" + "\n".join(broken)
 
 
 # ── 호흡은 굽기가 읽는 파일로 그린다 ───────────────────────────────
@@ -744,21 +750,7 @@ def _breathe_image_sites():
 EXPECTED_IMAGE_SITES = {"cards.js": 1, "compare.js": 1, "zoom-editor.js": 4, "row-export.js": 1}
 
 
-def test_there_are_breathe_image_sites():
-    sites = list(_breathe_image_sites())
-    assert sites, "호흡 이미지 소스 지점이 사라졌다 — 계약 위치 확인"
-    got = {}
-    for name, _, _ in sites:
-        got[name] = got.get(name, 0) + 1
-    assert got == EXPECTED_IMAGE_SITES, (
-        f"호흡 이미지 사이트 인벤토리가 달라졌다.\n  기대: {EXPECTED_IMAGE_SITES}\n"
-        f"  실제: {got}\n"
-        "  선언 키워드·대입 모양을 바꾸면 사이트가 조용히 증발한다 — 파일 존재만 보면 "
-        "여러 사이트를 가진 파일의 상실을 못 본다(워프 base 스캐너가 그렇게 뚫렸다).")
-
-
-@pytest.mark.parametrize("site", list(_breathe_image_sites()), ids=lambda s: f"{s[0]}:{s[1]}")
-def test_breathe_draws_from_the_file_the_bake_reads(site):
+def test_breathe_draws_from_the_file_the_bake_reads():
     """워프 base 도 신선도 기준도 **굽기가 읽는 파일**에서 와야 한다.
 
     `frameUrl` 은 표시용이라 pp OFF 에서 `orig/` 고해상 트윈을 준다 — 굽기(`row_frame_rel`)
@@ -767,8 +759,18 @@ def test_breathe_draws_from_the_file_the_bake_reads(site):
     그리면 pp OFF 줄에서 굽기와 다른 그림이 나간다 (validator 2026-07-26: 같은 캔버스를
     다른 해부로 워프해 4위상에서 최대 114바이트).
 
-    이 그물이 없던 동안 `frameUrl` → `f.url` 로 되돌려도 111개 테스트가 전부 통과했다."""
-    name, lineno, line = site
+    이 그물이 없던 동안 `frameUrl` → `f.url` 로 되돌려도 111개 테스트가 전부 통과했다.
+
+    사이트 인벤토리도 여기서 못박고, 굽기 파일이 아닌 분기를 가진 자리는 `파일:줄` 로
+    전부 보고한다."""
+    sites = list(_breathe_image_sites())
+    assert sites, "호흡 이미지 소스 지점이 사라졌다 — 계약 위치 확인"
+    got = _inventory(sites)
+    assert got == EXPECTED_IMAGE_SITES, (
+        f"호흡 이미지 사이트 인벤토리가 달라졌다.\n  기대: {EXPECTED_IMAGE_SITES}\n"
+        f"  실제: {got}\n"
+        "  선언 키워드·대입 모양을 바꾸면 사이트가 조용히 증발한다 — 파일 존재만 보면 "
+        "여러 사이트를 가진 파일의 상실을 못 본다(워프 base 스캐너가 그렇게 뚫렸다).")
     # 판정은 **`_bake_only` 하나**가 소유한다 — 형제 스캐너(워프 base)와 같은 판정기다.
     #
     # 앞선 판은 여기서만 옛 관대함을 들고 있었다: (a) 줄에서 첫 `img(` 인자 **한 심볼**만
@@ -779,34 +781,19 @@ def test_breathe_draws_from_the_file_the_bake_reads(site):
     #
     # 판정기를 좁히면 **모든 호출부가 같이 좁아져야** 한다. 한 곳만 고치면 다음 우회가
     # 안 고친 쪽으로 간다 — 이 플랜에서 여섯 라운드 반복된 형태다.
-    rhs = line.split("=", 1)[1].strip().rstrip(";") if "=" in line else line
-    assert _bake_only(name, lineno, rhs), (
-        f"{name}:{lineno} 의 어떤 분기가 굽기 파일이 아니다.\n  {line}\n"
-        f"  `bakeFrameUrl(state, frame)` 또는 그걸 거치는 store 헬퍼를 써라 "
-        f"(frameUrl 은 표시용, f.url 은 캐노니컬).")
+    not_bake = []
+    for name, lineno, line in sites:
+        rhs = line.split("=", 1)[1].strip().rstrip(";") if "=" in line else line
+        if not _bake_only(name, lineno, rhs):
+            not_bake.append(f"{name}:{lineno} 의 어떤 분기가 굽기 파일이 아니다.\n  {line}")
+    assert not not_bake, (
+        "\n".join(not_bake) + "\n"
+        "  `bakeFrameUrl(state, frame)` 또는 그걸 거치는 store 헬퍼를 써라 "
+        "(frameUrl 은 표시용, f.url 은 캐노니컬).")
 
 
 # ── 고칠 수 없는 차이도 관측 가능해야 한다 ──────────────────────────
-
-RESAMPLE_NOTICE = re.compile(r"breatheResamplesDifferently\s*\(")
-
-
-def test_file_producing_paths_report_the_resampler_gap():
-    """회전·확대가 걸린 줄은 프리뷰와 굽기의 **픽셀이 다르다** — 말은 해야 한다.
-
-    굽기는 `apply_transform` 에서 BICUBIC(`snap_scale` 없는 런 = 기본 런 전부),
-    웹뷰는 `imageSmoothingEnabled=false` 캔버스라 NEAREST 다. 실측 (validator 2026-07-26,
-    96px 픽스처, 신선도는 통과시킨 상태): rotate 3° 에서 12/12 위상 최대 1803px 상이,
-    scale 1.03 에서 최대 1699px. 원인은 표시 파이프라인이라 호흡이 고칠 수 있는 게
-    아니지만, `row-export` 와 비교뷰 다운로드는 **이 캔버스로 파일을 굽는다** —
-    조용히 두면 사용자는 GIF 와 다른 파일을 받고도 모른다 (원칙 6).
-
-    "고칠 수 없으니 말하지 않는다" 는 이 플랜에서 금지된 형태다."""
-    for name, line, body in _file_producing_functions():
-        assert RESAMPLE_NOTICE.search(body), (
-            f"{name}:{line} 이 파일을 만들면서 리샘플러 차이를 안 알린다 — "
-            "사용자는 GIF 와 다른 파일을 받고도 모른다")
-
+# (파일 생성 경로의 리샘플러 알림은 `test_every_file_producing_path_checks_freshness` 가 본다)
 
 def test_the_warn_notice_has_a_visible_style():
     """`warn` 알림이 스타일 없이 나가면 '알렸다' 가 사실상 거짓이 된다."""
@@ -854,24 +841,6 @@ def _warp_base_sites():
                 yield name, lineno, m.group(2).strip()
 
 
-def test_the_warp_base_inventory_is_intact():
-    """워프 base 사이트가 **파일마다 몇 곳인지까지** 그대로여야 한다.
-
-    존재만 보는 못은 사이트가 여럿인 파일에서 상실을 못 본다 — 하나가 사라져도 나머지가
-    파일을 커버한다. 조용한 커버리지 상실은 이 플랜이 이미 두 번 1급 계약으로 올린
-    실패 모드이고, 이건 그 다음 granularity 다.
-
-    개수가 바뀌면 실패하는 게 **의도다**: 워프 base 를 늘리거나 줄이는 변경은 사람이
-    한 번 보고 이 표를 같이 고쳐야 한다."""
-    got = {}
-    for name, _, _ in _warp_base_sites():
-        got[name] = got.get(name, 0) + 1
-    assert got == EXPECTED_WARP_BASES, (
-        f"워프 base 인벤토리가 달라졌다.\n  기대: {EXPECTED_WARP_BASES}\n  실제: {got}\n"
-        "  줄었으면 사이트가 조용히 증발한 것이고(캔버스·ctx·호출 이름 변경), "
-        "늘었으면 새 워프 base 가 계약에 들어온 것이다 — 어느 쪽이든 표를 같이 고쳐라.")
-
-
 def test_the_warp_base_never_falls_back_to_a_display_file():
     """호흡 워프의 base 는 **굽기가 읽는 파일 하나**다 — 폴백을 두지 않는다.
 
@@ -882,9 +851,20 @@ def test_the_warp_base_never_falls_back_to_a_display_file():
     준비 안 됐으면 워프하지 않는다(`zoom-editor`·`compare`·`row-export` 가 쓰는 형태).
 
     판정은 도달도 선언도 아닌 **분기 전수 + 재대입 금지**다 (`_bake_only`): 세 번의 탈출이
-    각각 분기·흐름·사이트 수집을 노렸다."""
+    각각 분기·흐름·사이트 수집을 노렸다.
+
+    워프 base 사이트는 **파일마다 몇 곳인지까지** 그대로여야 한다. 존재만 보는 못은
+    사이트가 여럿인 파일에서 상실을 못 본다 — 하나가 사라져도 나머지가 파일을 커버한다.
+    조용한 커버리지 상실은 이 플랜이 이미 두 번 1급 계약으로 올린 실패 모드이고, 이건
+    그 다음 granularity 다. 개수가 바뀌면 실패하는 게 **의도다**: 워프 base 를 늘리거나
+    줄이는 변경은 사람이 한 번 보고 이 표를 같이 고쳐야 한다."""
     sites = list(_warp_base_sites())
     assert sites, "워프 base 자리를 하나도 못 찾았다 — 스캐너가 고장났다"
+    got = _inventory(sites)
+    assert got == EXPECTED_WARP_BASES, (
+        f"워프 base 인벤토리가 달라졌다.\n  기대: {EXPECTED_WARP_BASES}\n  실제: {got}\n"
+        "  줄었으면 사이트가 조용히 증발한 것이고(캔버스·ctx·호출 이름 변경), "
+        "늘었으면 새 워프 base 가 계약에 들어온 것이다 — 어느 쪽이든 표를 같이 고쳐라.")
     for name, line, arg in sites:
         assert _bake_only(name, line, arg), (
             f"{name}:{line} 워프 base {arg!r} 의 어떤 분기가 굽기 파일이 아니다.\n"

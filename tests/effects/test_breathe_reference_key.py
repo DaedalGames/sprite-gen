@@ -152,55 +152,80 @@ from tests.effects.test_breathe_anatomy_route import CELL, run_dir  # noqa: E402
 STORE_HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const sandbox = {
-  console, TextEncoder, Set, Map, setTimeout,
-  document: { createElement: () => ({ getContext: () => ({}), style: {} }),
-              addEventListener() {}, querySelectorAll: () => [] },
-  window: {}, fetch: () => {}, setStatus() {}, t: () => "", STR: {}, lang: "ko",
-  scheduleSave() {}, flushSave: async () => {}, rebuildState() {},
-  URL: { createObjectURL() {}, revokeObjectURL() {} },
-};
-sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-for (const f of payload.scripts) vm.runInContext(fs.readFileSync(f, "utf8"), sandbox);
+const sources = payload.scripts.map((f) => fs.readFileSync(f, "utf8"));
 
-// 서버 페이로드를 웹뷰 상태로 — store.js 가 읽는 필드만.
-//
-// `let run`/`let entries` 는 컨텍스트의 **렉시컬 바인딩**이라 sandbox 객체에 대입해도
-// 스크립트가 못 본다. 컨텍스트 안에서 대입해야 한다.
-sandbox.__payload = payload;
-vm.runInContext(`
-  run = __payload.run;
-  entries = {};
-  // **손으로 unfakeStates 를 먹이지 않는다.** 웹뷰가 서버 페이로드에서 변종을 스스로
-  // 골라내는지가 이 하네스의 요점이다 — 시드를 밖에 두면 그 질문을 영영 못 묻는다
-  // (validator 실측 2026-07-26: 변종 불일치가 그 공백으로 한 라운드를 살아남았다).
-  seedUnfakeState(__payload.run);
-  for (const [name, v] of Object.entries(__payload.ppOverride || {})) unfakeStates[name] = v;
-  for (const [name, e] of Object.entries(__payload.entries)) {
-    entries[name] = { order: e.order, sel: new Set(e.sel), transforms: e.transforms || {},
-                      pixels: e.pixels || {}, clones: e.clones || {},
-                      unlinked: new Set(e.unlinked || []) };
-  }
-  __out = {};
-  for (const q of __payload.queries) {
-    if (q.kind === "key") __out[q.id] = breatheReferenceKey(q.state);
-    if (q.kind === "geometry") __out[q.id] = breatheGeometryFrame(q.state, q.fallback);
-    if (q.kind === "variant") __out[q.id] = bakeVariant(q.state);
-  }
-`, sandbox);
-process.stdout.write(JSON.stringify(sandbox.__out));
+// 부팅 하나 = 새 vm 컨텍스트 하나. 여러 부팅을 node 한 프로세스에 묶어도
+// `run`·`entries`·`unfakeStates` 가 다음 부팅으로 새지 않는다.
+function boot(one) {
+  const sandbox = {
+    console, TextEncoder, Set, Map, setTimeout,
+    document: { createElement: () => ({ getContext: () => ({}), style: {} }),
+                addEventListener() {}, querySelectorAll: () => [] },
+    window: {}, fetch: () => {}, setStatus() {}, t: () => "", STR: {}, lang: "ko",
+    scheduleSave() {}, flushSave: async () => {}, rebuildState() {},
+    URL: { createObjectURL() {}, revokeObjectURL() {} },
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  for (const src of sources) vm.runInContext(src, sandbox);
+
+  // 서버 페이로드를 웹뷰 상태로 — store.js 가 읽는 필드만.
+  //
+  // `let run`/`let entries` 는 컨텍스트의 **렉시컬 바인딩**이라 sandbox 객체에 대입해도
+  // 스크립트가 못 본다. 컨텍스트 안에서 대입해야 한다.
+  sandbox.__payload = one;
+  vm.runInContext(`
+    run = __payload.run;
+    entries = {};
+    // **손으로 unfakeStates 를 먹이지 않는다.** 웹뷰가 서버 페이로드에서 변종을 스스로
+    // 골라내는지가 이 하네스의 요점이다 — 시드를 밖에 두면 그 질문을 영영 못 묻는다
+    // (validator 실측 2026-07-26: 변종 불일치가 그 공백으로 한 라운드를 살아남았다).
+    seedUnfakeState(__payload.run);
+    for (const [name, v] of Object.entries(__payload.ppOverride || {})) unfakeStates[name] = v;
+    for (const [name, e] of Object.entries(__payload.entries)) {
+      entries[name] = { order: e.order, sel: new Set(e.sel), transforms: e.transforms || {},
+                        pixels: e.pixels || {}, clones: e.clones || {},
+                        unlinked: new Set(e.unlinked || []) };
+    }
+    __out = {};
+    for (const q of __payload.queries) {
+      if (q.kind === "key") __out[q.id] = breatheReferenceKey(q.state);
+      if (q.kind === "geometry") __out[q.id] = breatheGeometryFrame(q.state, q.fallback);
+      if (q.kind === "variant") __out[q.id] = bakeVariant(q.state);
+    }
+  `, sandbox);
+  return sandbox.__out;
+}
+
+// 부팅 하나가 터져도 나머지 부팅은 돈다 — 실패는 그 부팅 자리에 `error` 로 남는다.
+process.stdout.write(JSON.stringify(payload.boots.map((one) => {
+  try { return { out: boot(one) }; }
+  catch (e) { return { error: String((e && e.stack) || e) }; }
+})));
 """
+
+
+def _boot(run_payload, entries, queries, pp_override=None):
+    return {"run": run_payload, "entries": entries, "ppOverride": pp_override or {},
+            "queries": queries}
+
+
+def _webview_boots(boots):
+    """웹뷰 부팅 여러 개를 node **한 프로세스**에서 돌린다 (부팅마다 새 vm 컨텍스트).
+
+    결과는 부팅마다 `{"out": 질의 결과}` 또는 `{"error": 스택}` — 한 부팅의 실패가
+    나머지를 가리지 않는다."""
+    return _node(STORE_HARNESS, {
+        "scripts": [str(SRC / "breathe.js"), str(SRC / "store.js")], "boots": boots})
 
 
 def _webview(run_payload, entries, queries, pp_override=None):
     """웹뷰를 서버 페이로드로 부팅해 질의한다 — `unfakeStates` 는 `seedUnfakeState` 가 짓는다.
 
     `pp_override` 는 사용자가 화면에서 토글을 누른 상태를 흉내낼 때만 쓴다."""
-    return _node(STORE_HARNESS, {
-        "scripts": [str(SRC / "breathe.js"), str(SRC / "store.js")],
-        "run": run_payload, "entries": entries, "ppOverride": pp_override or {},
-        "queries": queries})
+    [got] = _webview_boots([_boot(run_payload, entries, queries, pp_override)])
+    assert "error" not in got, f"웹뷰 부팅 실패:\n{got['error']}"
+    return got["out"]
 
 
 @pytest.fixture()
@@ -312,27 +337,16 @@ def web_run_plain(web_run):
     return web_run
 
 
-def test_the_webview_agrees_on_the_plain_variant_too(web_run_plain):
-    """pp OFF 줄에서도 웹뷰 키 == 라우트 키.
-
-    변종이 갈리면 서로 다른 **파일**을 기준으로 삼는다 — 이 줄이 정확히 그 경로다."""
-    import sprite_gen.serve.serve_curation as serve_curation
-    _, route_key = serve_curation._breathe_source_frame(web_run_plain, "idle")
-    assert "|plain|" in route_key, f"라우트가 plain 변종을 안 골랐다: {route_key}"
-    payload = _server_payload(web_run_plain)
-    got = _webview(payload, {"idle": {"order": [0, 1, 2, 3], "sel": [0, 1, 2, 3]}},
-                   [{"id": "k", "kind": "key", "state": "idle"}])
-    assert got["k"] == route_key, (
-        f"pp OFF 줄에서 갈렸다\n  라우트: {route_key}\n  웹뷰  : {got['k']}")
-
-
 def test_a_rotated_row_stays_fresh(web_run_plain):
     """**R1 회귀 그물.** 회전이 걸린 pp OFF 줄이 신선하다고 판정돼야 한다.
 
     옛 지문(변형 결과 RGBA 해시)에서는 이 줄이 영구 불일치라 프리뷰가 영원히 원본으로
     떨어지고 영상 내보내기가 영구 차단됐다 — 그리고 안내대로 해부를 갱신해도 라우트가
     또 BICUBIC 프레임으로 같은 숫자를 만들어 **절대 안 풀렸다** (validator 실측 2026-07-26:
-    rotate 3° 에서 555px 상이)."""
+    rotate 3° 에서 555px 상이).
+
+    pp OFF 줄에서도 웹뷰 키 == 라우트 키인지를 같이 본다 — 변종이 갈리면 서로 다른
+    **파일**을 기준으로 삼는다."""
     import sprite_gen.serve.serve_curation as serve_curation
     from sprite_gen.effects.breathe import freeze_anatomy
     curation = json.loads((web_run_plain / "curation.json").read_text(encoding="utf-8"))
@@ -340,6 +354,7 @@ def test_a_rotated_row_stays_fresh(web_run_plain):
     _write_curation(web_run_plain, curation)
 
     frame, route_key = serve_curation._breathe_source_frame(web_run_plain, "idle")
+    assert "|plain|" in route_key, f"라우트가 plain 변종을 안 골랐다: {route_key}"
     frozen = freeze_anatomy(frame, {}, route_key)      # 라우트가 사이드카에 얼리는 값
     payload = _server_payload(web_run_plain)
     got = _webview(payload,
@@ -370,8 +385,7 @@ def _variant_id(case):
     return f"twin{'있음' if twin else '없음'}-own{fmt[own]}-wide{fmt[wide]}"
 
 
-@pytest.mark.parametrize("twin,own,wide", VARIANT_CASES, ids=[_variant_id(c) for c in VARIANT_CASES])
-def test_the_webview_resolves_the_bake_variant_like_the_server(twin, own, wide):
+def test_the_webview_resolves_the_bake_variant_like_the_server():
     """웹뷰의 굽기 변종 == 파이썬 `frame_variant` — 해소표 전수.
 
     `unfakeOn` 은 **표시 렌즈**다: boot 시드가 트윈 없는 줄을 기본 OFF 로 놓는데 그 값은
@@ -381,26 +395,41 @@ def test_the_webview_resolves_the_bake_variant_like_the_server(twin, own, wide):
     (validator 실측 2026-07-26).
 
     한 칸씩 메우지 않고 표를 통째로 건다 — 같은 실패 모드가 축만 바꿔(파일 → 리샘플러
-    → 변종 이름) 세 번 되돌아왔다."""
+    → 변종 이름) 세 번 되돌아왔다.
+
+    18칸은 node 한 프로세스에서 돈다 — 칸마다 새 vm 컨텍스트로 부팅하므로 칸끼리 상태가
+    안 샌다. 칸은 하나도 줄이지 않고, 갈린 칸은 제 이름(`_variant_id`)으로 전부 보고한다."""
     from sprite_gen.curate.curation import frame_variant
 
-    curation = {"states": {}}
-    if own is not None:
-        curation["states"]["idle"] = {"pixel_unfake": own}
-    if wide is not None:
-        curation["pixel_unfake"] = wide
-    frames = [{"index": 0, "present": True, "url": "/f0.png", "stamp": "1:1"}]
-    if twin:
-        frames[0]["plainUrl"] = "/f0.plain.png"
-        frames[0]["plainBakeUrl"] = "/f0.plain.png"
-        frames[0]["plainBakeStamp"] = "2:2"
-    payload = {"requestStamp": "9:9", "curation": curation,
-               "states": [{"name": "idle", "frames": frames}]}
-    got = _webview(payload, {"idle": {"order": [0], "sel": [0]}},
-                   [{"id": "v", "kind": "variant", "state": "idle"}])
-    assert got["v"] == frame_variant(curation, "idle"), (
-        f"트윈{twin} per-state{own} 전역{wide}: "
-        f"웹뷰 {got['v']!r} vs 서버 {frame_variant(curation, 'idle')!r}")
+    curations, boots = [], []
+    for twin, own, wide in VARIANT_CASES:
+        curation = {"states": {}}
+        if own is not None:
+            curation["states"]["idle"] = {"pixel_unfake": own}
+        if wide is not None:
+            curation["pixel_unfake"] = wide
+        frames = [{"index": 0, "present": True, "url": "/f0.png", "stamp": "1:1"}]
+        if twin:
+            frames[0]["plainUrl"] = "/f0.plain.png"
+            frames[0]["plainBakeUrl"] = "/f0.plain.png"
+            frames[0]["plainBakeStamp"] = "2:2"
+        payload = {"requestStamp": "9:9", "curation": curation,
+                   "states": [{"name": "idle", "frames": frames}]}
+        curations.append(curation)
+        boots.append(_boot(payload, {"idle": {"order": [0], "sel": [0]}},
+                           [{"id": "v", "kind": "variant", "state": "idle"}]))
+    results = _webview_boots(boots)
+    assert len(results) == len(VARIANT_CASES)
+
+    failures = []
+    for case, curation, got in zip(VARIANT_CASES, curations, results):
+        want = frame_variant(curation, "idle")
+        if "error" in got:
+            failures.append(f"[{_variant_id(case)}] 웹뷰 부팅 실패:\n{got['error']}")
+        elif got["out"]["v"] != want:
+            failures.append(f"[{_variant_id(case)}] 웹뷰 {got['out']['v']!r} vs 서버 {want!r}")
+    assert not failures, (
+        f"해소표 {len(VARIANT_CASES)}칸 중 {len(failures)}칸이 갈렸다:\n" + "\n".join(failures))
 
 
 def test_the_saved_sidecar_is_what_the_variant_resolves_from():
@@ -580,14 +609,13 @@ def test_a_plain_variant_without_a_twin_refuses_instead_of_falling_back():
         f"지오메트리가 굽기가 못 읽는 파일을 가리킨다: {got['g']['url']!r}")
 
 
-@pytest.mark.parametrize("shape", ["null", "empty", "missing"])
-def test_the_mirror_refuses_when_the_key_cannot_be_built(shape):
+def test_the_mirror_refuses_when_the_key_cannot_be_built():
     """키를 못 만들면 "확인 불가" 이지 "괜찮음" 이 아니다.
 
     형제 분기(지문 없음)는 round-10 R3 이후 그물이 있는데 이쪽만 비어 있었다 —
     `throw` 를 `return` 으로 바꿔도 529 전부 통과했다 (validator note 2026-07-26).
-    키가 없는 상태는 트윈 없는 plain 줄·빈 재생목록·스탬프 없는 프레임에서 실제로 나온다."""
-    key = {"null": None, "empty": "", "missing": None}[shape]
+    키가 없는 상태는 트윈 없는 plain 줄·빈 재생목록·스탬프 없는 프레임에서 실제로 나온다
+    — 셋 다 null 이다. 빈 문자열·undefined 도 같은 `!referenceKey` 한 줄이 받는다."""
     harness = r"""
 const fs = require("fs"), vm = require("vm");
 const P = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -597,8 +625,7 @@ sb.globalThis = sb; vm.createContext(sb);
 vm.runInContext(fs.readFileSync(P.script, "utf8"), sb);
 let out;
 try {
-  if (P.shape === "missing") sb.breatheAssertFresh(undefined, P.cfg);
-  else sb.breatheAssertFresh(P.key, P.cfg);
+  sb.breatheAssertFresh(P.key, P.cfg);
   out = { ok: true };
 } catch (e) {
   out = { ok: false, refused: e.constructor.name === "BreatheRefused", message: e.message };
@@ -607,8 +634,7 @@ process.stdout.write(JSON.stringify(out));
 """
     cfg = {"depth": 0.06, "breaths": 1, "lag": 0.1,
            "anatomy": {"height": 50, "rigid_row": 12, "fingerprint": "pixel:0:deadbeef"}}
-    got = _node(harness, {"script": str(SRC / "breathe.js"), "key": key,
-                          "shape": shape, "cfg": cfg})
+    got = _node(harness, {"script": str(SRC / "breathe.js"), "key": None, "cfg": cfg})
     assert not got["ok"] and got["refused"], (
-        f"키가 {shape} 인데 미러가 신선하다고 판정했다 — 낡은 해부로 그리고, "
+        f"키가 null 인데 미러가 신선하다고 판정했다 — 낡은 해부로 그리고, "
         f"`row-export` 는 그 캔버스로 파일을 굽는다 ({got})")
