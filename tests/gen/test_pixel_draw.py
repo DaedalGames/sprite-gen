@@ -731,3 +731,50 @@ def test_one_candidate_past_the_safe_area_is_the_pick(tmp_path, claude, answer, 
     assert report["pick"]["by"] == "only" and (out / f"frame-{frame}.png").is_file()
     assert report["warnings"] == candidate["warnings"] == warnings
     assert report["info"] == candidate["info"] == info
+
+
+def test_the_charge_is_said_before_any_request_leaves_even_from_another_thread(tmp_path):
+    """Two candidates ask at once: the second must not send before the first has said the charge."""
+    import threading
+    said, order = threading.Event(), []
+
+    def announce():
+        order.append("announce-start")
+        assert gate.wait(5)
+        said.set()
+        order.append("announced")
+
+    gate = threading.Event()
+    calls = pixel_draw.Calls(tmp_path, claude_login.Credential("ANTHROPIC_API_KEY", token=KEY), sleep=lambda s: None,
+                             note=lambda line: None, announce=announce)
+    first = threading.Thread(target=calls._leaving)
+    first.start()
+    while "announce-start" not in order:
+        pass
+    second = threading.Thread(target=lambda: (calls._leaving(), order.append(f"second-leaves said={said.is_set()}")))
+    second.start()
+    second.join(0.2)
+    assert second.is_alive(), "the second request left before the charge was said"
+    gate.set()
+    first.join(5)
+    second.join(5)
+    assert order == ["announce-start", "announced", "second-leaves said=True"]
+
+
+def test_a_resume_reports_the_route_its_calls_ran_on(tmp_path, claude, monkeypatch):
+    claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    FakeLogin(monkeypatch, {})  # signed in now; every call is read back, none is asked
+    assert pixel_draw.main(["--out-dir", str(out), "--resume"]) == 0
+    report = report_of(out)
+    assert report["auth_source"] == "ANTHROPIC_API_KEY" and "auth_sources" not in report
+    assert [c["auth_source"] for c in report["calls"]] == ["ANTHROPIC_API_KEY"] and report["cost_usd"] > 0
+
+
+def test_a_run_whose_calls_ran_on_both_routes_says_so():
+    calls = [{"auth_source": "ANTHROPIC_API_KEY"}, {"auth_source": "claude-login"}, {"auth_source": "claude-login"}]
+    assert pixel_draw.run_auth_source(calls, "claude-login") == {"auth_source": "mixed",
+                                                                 "auth_sources": ["ANTHROPIC_API_KEY", "claude-login"]}
+    assert pixel_draw.run_auth_source(calls[1:], "ANTHROPIC_API_KEY") == {"auth_source": "claude-login"}
+    assert pixel_draw.run_auth_source([], "claude-login") == {"auth_source": "claude-login"}
