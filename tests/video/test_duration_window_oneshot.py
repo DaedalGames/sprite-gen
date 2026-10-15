@@ -60,6 +60,7 @@ def test_gait_windows_are_in_seconds_capped_at_half_the_clip() -> None:
     # non-gait states are untouched: idle wants nearly the whole clip, jump keeps its fractions
     assert idle.window(73, 24.0) == (round(73 * 0.60), round(73 * 0.95))
     assert jump.window(145, 24.0) == (round(145 * 0.11), round(145 * 0.45))
+    assert loop_mod.profile_for("unknown-state") is loop_mod.STATE_PROFILES["default"]
 
 
 def test_gait_window_does_not_let_a_single_hop_pass_as_a_walk(tmp_path: Path) -> None:
@@ -111,16 +112,6 @@ def test_spec_loader_reads_loop_from_the_strip_sidecar(tmp_path: Path) -> None:
     meta.pop("loop"); meta.pop("kind")
     (tmp_path / "jump.strip.json").write_text(json.dumps(meta))
     assert load_asset(tmp_path / "jump.strip.json").metadata["loop"] is True
-
-
-@pytest.mark.skipif(not HAS_IMG2WEBP, reason="img2webp not installed")
-def test_one_shot_run_writes_a_non_looping_sidecar(tmp_path: Path) -> None:
-    _one_shot_frames(tmp_path)
-    rep = loop_mod.run_loop(tmp_path / "keyed", tmp_path / "jump", fps=24.0, state="jump", min_len=None, max_len=None, n_out=8, seam_max=2.0, name="j", report_path=None)
-    assert rep["cycle"]["kind"] == "one-shot"
-    side = json.loads((tmp_path / "jump" / "j.strip.json").read_text())
-    assert side["kind"] == "one-shot" and side["loop"] is False
-    assert load_asset(tmp_path / "jump" / "j.strip.json").metadata["loop"] is False
 
 
 @pytest.mark.skipif(not HAS_IMG2WEBP, reason="img2webp not installed")

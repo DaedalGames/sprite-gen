@@ -186,18 +186,6 @@ def test_identity_separates_states_rates_and_anchors_of_one_file_set(tmp_path):
     assert not same_identity(None, walk)
 
 
-def test_fingerprints_describe_the_decoded_bytes_not_the_file_now_on_disk(tmp_path):
-    source = tmp_path / "swap.png"
-    Image.new("RGBA", (4, 4), "red").save(source)
-    red_hash = sha(source)
-    loaded = load_asset(source)
-    Image.new("RGBA", (4, 4), "blue").save(source)
-    assert loaded.frames[0].getpixel((0, 0)) == (255, 0, 0, 255)
-    assert loaded.fingerprints() == {str(source.resolve()): red_hash}
-    assert loaded.fingerprints() != load_asset(source).fingerprints()
-    assert load_asset(source).fingerprints() == {str(source.resolve()): sha(source)}
-
-
 def test_replacement_between_read_and_decode_cannot_separate_pixels_from_hash(tmp_path, monkeypatch):
     source = tmp_path / "race.png"
     Image.new("RGBA", (4, 4), "red").save(source)

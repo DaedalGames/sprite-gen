@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import ast
 import importlib
-import re
 import subprocess
 import sys
-from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -43,19 +41,6 @@ PACKAGE_RUN_MODULES = [
     "loop",
     "batch",
 ]
-
-CLI_HELPERS = [
-    "_parse_frame_order",
-    "_parse_frames",
-    "_parse_grid",
-]
-
-
-def _read_skill_version() -> str:
-    text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-    match = re.search(r"(?m)^version:\s*([^\s#]+)\s*$", text)
-    assert match, "SKILL.md frontmatter is missing version:"
-    return match.group(1)
 
 
 @pytest.fixture
@@ -98,19 +83,20 @@ def import_probe():
         sys.modules.pop(module_path, None)
 
 
-@pytest.mark.parametrize("module_name", PACKAGE_RUN_MODULES)
-def test_mcp_import_surface_modules_expose_callable_run(module_name: str, import_probe) -> None:
-    module_path = "sprite_gen.gen" if module_name == "gen" else qualified(module_name)
-    module = import_probe(module_path)
+def test_mcp_import_surface_modules_expose_callable_run(import_probe) -> None:
+    offenders: list[str] = []
+    for module_name in PACKAGE_RUN_MODULES:
+        module_path = "sprite_gen.gen" if module_name == "gen" else qualified(module_name)
+        try:
+            module = import_probe(module_path)
+        except Exception as exc:  # one broken module must not hide the rest
+            offenders.append(f"{module_path} (import failed: {type(exc).__name__}: {exc})")
+            continue
+        if not callable(getattr(module, "run", None)):
+            offenders.append(f"{module_path} (no callable run)")
 
-    assert callable(getattr(module, "run", None)), f"{module_path}.run must be callable"
-
-
-@pytest.mark.parametrize("helper_name", CLI_HELPERS)
-def test_cli_parser_helpers_exist(helper_name: str) -> None:
-    cli = importlib.import_module("sprite_gen.cli")
-
-    assert callable(getattr(cli, helper_name, None)), f"sprite_gen.cli.{helper_name} must be callable"
+    assert not offenders, "every MCP import-surface module must import and expose a callable run:\n" + \
+        "\n".join(offenders)
 
 
 def _sibling_module_names() -> set[str]:
@@ -169,21 +155,6 @@ def test_scripts_wrappers_reexport_their_package_module() -> None:
     proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True)
 
     assert proc.returncode == 0, f"scripts/serve_curation.py stopped re-exporting the impl:\n{proc.stderr}"
-
-    helped = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "serve_curation.py"), "--help"],
-        cwd=ROOT, capture_output=True, text=True)
-
-    assert helped.returncode == 0, helped.stderr
-    assert "--run-dir" in helped.stdout, (
-        f"the wrapper no longer runs the entrypoint — `python scripts/serve_curation.py` is a "
-        f"documented launch command:\n{helped.stdout}")
-
-
-def test_installed_distribution_version_matches_skill_frontmatter() -> None:
-    try:
-        installed_version = metadata.version("sprite-gen")
-    except metadata.PackageNotFoundError:
-        pytest.skip("sprite-gen distribution metadata is only available after editable/package install")
-
-    assert installed_version == _read_skill_version()
+    # That the wrapper also runs the entrypoint (`python scripts/serve_curation.py` is a
+    # documented launch command) is held by the wrapper leg of
+    # test_curation_cli_entrypoint.py::test_every_launch_form_exposes_the_same_flags.

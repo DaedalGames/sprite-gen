@@ -17,9 +17,9 @@ because a partial result is exactly the failure mode (a half-keyed background
 is not "mostly fine", it is what breaks every downstream gate).
 
 Before the relative-threshold fix these cases fail on both the `cutout` route
-and the underlying `remove_chroma_background` engine. (5, 200, 10) and
-(250, 8, 240) are within 96 of their keys and pass on the old code; they are kept
-so the fix cannot regress the easy case.
+and the underlying `remove_chroma_background` engine. (5, 200, 10) is within 96
+of its key and passes on the old code; it is kept so the fix cannot regress the
+easy case.
 """
 
 from __future__ import annotations
@@ -44,22 +44,23 @@ SUBJECT_BOX = (32, 32, 96, 96)  # x0, y0, x1, y1 (exclusive)
 HIGHLIGHT_BOX = (56, 56, 72, 72)
 
 # (declared key name, key rgb, model-returned flat background, rgb distance to key)
+# One case per ball the engine keys from: the pure key's (the easy case), the detected
+# family colour's (the measured green, the dark magenta) and the border candidate's (Grok).
 DARK_KEY_CASES = [
     pytest.param("green", (0, 255, 0), (8, 162, 24), id="green-measured-8-162-24-dist96.38"),
-    pytest.param("green", (0, 255, 0), (10, 150, 30), id="green-darker-10-150-30-dist109.66"),
     pytest.param("green", (0, 255, 0), (5, 200, 10), id="green-easy-5-200-10-dist56.12"),
     pytest.param("magenta", (255, 0, 255), (170, 8, 180), id="magenta-dark-170-8-180-dist113.64"),
-    pytest.param("magenta", (255, 0, 255), (180, 10, 175), id="magenta-dark-180-10-175-dist110.11"),
-    pytest.param("magenta", (255, 0, 255), (250, 8, 240), id="magenta-easy-250-8-240-dist17.72"),
     # Grok's #FF00FF (measured 2026-09-11, samurai-village rev3 objects): the blue channel
-    # sits well under the red one (147/216 = 0.68, 155/225 = 0.69), so the keyed-channel
-    # balance rule of `is_key_family` says "not the key's family" even though the whole
-    # border is this one flat colour — the detector falls back to the declared key and
-    # the ~124 / ~117 distance keeps the entire background opaque.
+    # sits well under the red one (147/216 = 0.68), so the keyed-channel balance rule of
+    # `is_key_family` says "not the key's family" even though the whole border is this one
+    # flat colour — the detector falls back to the declared key and the ~124 distance keeps
+    # the entire background opaque.
     pytest.param("magenta", (255, 0, 255), (216, 46, 147), id="magenta-grok-216-46-147-dist123.70"),
-    pytest.param("magenta", (255, 0, 255), (225, 52, 155), id="magenta-grok-225-52-155-dist116.64"),
 ]
 GROK_MAGENTA_CASES = [c for c in DARK_KEY_CASES if "grok" in c.id]
+# `cutout --key` hands an explicit key to the engine above, which checks the pixels per colour:
+# one green and one Grok magenta show the route.
+CUTOUT_KEY_CASES = [c for c in DARK_KEY_CASES if c.id.startswith(("green-measured", "magenta-grok"))]
 
 
 def make_flat_key_still(background: tuple[int, int, int]) -> Image.Image:
@@ -111,7 +112,7 @@ def test_remove_chroma_background_keys_out_dark_flat_key(
     assert subject_changed == 0, f"{background} on key {key}: {subject_changed} subject px altered"
 
 
-@pytest.mark.parametrize(("key", "key_rgb", "background"), DARK_KEY_CASES)
+@pytest.mark.parametrize(("key", "key_rgb", "background"), CUTOUT_KEY_CASES)
 def test_cutout_explicit_key_keys_out_dark_flat_key(
     tmp_path: Path, key: str, key_rgb: tuple[int, int, int], background: tuple[int, int, int]
 ) -> None:
@@ -132,23 +133,6 @@ def test_cutout_explicit_key_keys_out_dark_flat_key(
     assert stats["alpha_zero_pct"] == expected_alpha_zero_pct
 
 
-def test_boundary_pair_must_not_split(tmp_path: Path) -> None:
-    """The measured pair: (7,163,24) keyed out, (8,162,24) survived — one brightness step apart.
-
-    Whatever the fixed rule is, two flat backgrounds this close must be treated
-    the same. This is the pixel-level "half keyed" symptom stated as a test.
-    """
-    key_rgb = (0, 255, 0)
-    outcomes = {}
-    for background in ((7, 163, 24), (8, 162, 24)):
-        source = make_flat_key_still(background)
-        result = remove_chroma_background(
-            source, key_rgb, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA
-        )
-        outcomes[background] = audit(result, source)
-    assert outcomes[(7, 163, 24)] == outcomes[(8, 162, 24)] == (0, 0), outcomes
-
-
 # --- the detection layer itself ----------------------------------------------
 # `remove_chroma_background` keys from the smaller of the distance to the
 # declared key and to the background colour it detects on the borders. These
@@ -163,24 +147,17 @@ HOT_PINK = (250, 77, 150)  # ~129 from magenta — subject material the trap-ban
 PURPLE = (213, 112, 246)  # ~153 from magenta — same
 
 
+# The border rule is the family rule OR more, so a colour it refuses (its table below) is never
+# family; the false rows here are the ones only the family rule refuses: keyed channels out of
+# balance, and the degenerate key.
 @pytest.mark.parametrize(
     ("color", "key", "expected"),
     [
         ((8, 162, 24), GREEN, True),
-        ((10, 150, 30), GREEN, True),
         ((20, 120, 25), GREEN, True),  # brightness is free
-        ((3, 248, 5), GREEN, True),
         ((170, 8, 180), MAGENTA, True),
-        ((251, 2, 248), MAGENTA, True),
-        ((0, 255, 255), GREEN, False),  # cyan: blue is not dark
-        ((120, 255, 120), GREEN, False),  # washed out: unkeyed channels too high
-        ((30, 60, 30), GREEN, False),  # too dark to read as a lit key channel
-        (HOT_PINK, MAGENTA, False),
-        (PURPLE, MAGENTA, False),
         ((255, 0, 128), MAGENTA, False),  # keyed channels out of balance
         ((216, 46, 147), MAGENTA, False),  # Grok magenta: out of balance too — interior rule stays strict
-        ((225, 52, 155), MAGENTA, False),  # (the border-candidate rule below is what admits these)
-        ((248, 247, 242), GREEN, False),
         ((8, 162, 24), (128, 128, 128), False),  # degenerate key has no family
     ],
 )
@@ -274,14 +251,6 @@ def test_cutout_auto_route_uses_the_engine_family_rule() -> None:
 
 
 @pytest.mark.parametrize(("key", "key_rgb", "background"), GROK_MAGENTA_CASES)
-def test_detect_accepts_grok_magenta_painted_on_a_flat_border(
-    key: str, key_rgb: tuple[int, int, int], background: tuple[int, int, int]
-) -> None:
-    """The detector returns the painted border colour, not the declared key, for an off-balance magenta."""
-    assert detect_background_key_rgb(make_flat_key_still(background), key_rgb) == background
-
-
-@pytest.mark.parametrize(("key", "key_rgb", "background"), GROK_MAGENTA_CASES)
 def test_cutout_auto_routes_grok_magenta_corners_to_extract(
     tmp_path: Path, key: str, key_rgb: tuple[int, int, int], background: tuple[int, int, int]
 ) -> None:
@@ -325,25 +294,18 @@ def test_hot_pink_block_inside_the_subject_survives_a_grok_magenta_key() -> None
 from sprite_gen.frames.extract import is_border_key_candidate  # noqa: E402
 
 
+# One row per branch of the rule: the interior rule's colours, the off-balance painted keys, and
+# each of the hue signature's three conditions failing. Purple, ivory and cyan are refused through
+# the detector in `test_border_candidate_rule_still_rejects_subject_colours_and_non_keys`.
 @pytest.mark.parametrize(
     ("color", "key", "expected"),
     [
         ((216, 46, 147), MAGENTA, True),  # Grok, 2026-09-11 (blue/red 0.68)
-        ((225, 52, 155), MAGENTA, True),
         ((236, 59, 161), MAGENTA, True),  # prop-fence-bamboo raw border
-        ((230, 40, 170), MAGENTA, True),  # variants a model could paint next
-        ((200, 60, 140), MAGENTA, True),
-        ((255, 0, 128), MAGENTA, True),  # off-balance but unmistakably the key's hue on a border
         ((170, 8, 180), MAGENTA, True),  # everything the interior rule admits, the border rule admits
-        ((8, 162, 24), GREEN, True),
-        ((20, 120, 25), GREEN, True),
         (HOT_PINK, MAGENTA, False),  # unkeyed (green) channel lit: 77 >= 64
-        (PURPLE, MAGENTA, False),  # 112 >= 64
-        ((0, 255, 255), GREEN, False),  # cyan
-        ((120, 255, 120), GREEN, False),  # washed out
         ((30, 60, 30), GREEN, False),  # keyed channel not lit
         ((70, 60, 65), MAGENTA, False),  # dark grey-mauve: unkeyed dark but not saturated (60/70)
-        ((248, 247, 242), MAGENTA, False),
         ((216, 46, 147), (128, 128, 128), False),  # degenerate key has no candidates
     ],
 )

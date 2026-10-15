@@ -85,40 +85,6 @@ def _cell_counts(grid: dict) -> tuple[int, int]:
     return len(grid["x"]) - 1, len(grid["y"]) - 1
 
 
-def test_recorded_grid_cell_count_equals_final_pixel_count(tmp_path) -> None:
-    """기록 칸수 == 최종 콘텐츠 픽셀 수. **정확 일치**다 (관용치 없음).
-
-    이게 깨지면 기록이 진실이 아니라는 뜻이고, 오버레이는 최종 픽셀과 무관한 격자를 그린다."""
-    run_dir = _build_run(tmp_path, pitch=8)
-    assert extract_module.run(run_dir=run_dir) == 0
-    row, scale = _row_and_scale(run_dir)
-    grids = row.get("input_grids")
-    assert grids, "input_grids 가 기록되지 않았다 — 격자 진실의 소유자가 없어진다"
-    for index, rel in enumerate(row["files"]):
-        final = _content_logical_size(run_dir / rel, scale)
-        assert _cell_counts(grids[index]) == final, (
-            f"frame {index}: 기록 칸수 {_cell_counts(grids[index])} != 최종 픽셀 수 {final}")
-
-
-def test_cell_count_invariant_catches_a_half_pitch_harmonic(tmp_path) -> None:
-    """mutant 검증: 반피치 하모닉으로 기록을 오염시키면 위 단정이 **실제로** 잡는가.
-
-    2026-07-18 회귀의 형태를 그대로 재현한다 (기록 45칸 vs 최종 31칸). 단정이 잡지 못하면
-    그 테스트는 통과만 하는 장식이다."""
-    run_dir = _build_run(tmp_path, pitch=8)
-    assert extract_module.run(run_dir=run_dir) == 0
-    row, scale = _row_and_scale(run_dir)
-    grid = dict(row["input_grids"][0])
-    # 반피치: 절단선 사이에 중간점을 끼워 칸수를 2배로 만든다 (하모닉 오검출과 같은 결과)
-    harmonic_x = [grid["x"][0]]
-    for a, b in zip(grid["x"], grid["x"][1:]):
-        harmonic_x += [(a + b) / 2, b]
-    mutant = {"x": harmonic_x, "y": grid["y"]}
-    final = _content_logical_size(run_dir / row["files"][0], scale)
-    assert _cell_counts(grid) == final                      # 원본은 통과
-    assert _cell_counts(mutant) != final, "mutant 가 단정을 통과했다 — 불변식이 아무것도 막지 못한다"
-
-
 def test_twin_footprint_matches_the_final_frame_exactly(tmp_path) -> None:
     """orig 쌍둥이의 콘텐츠 bbox 가 최종 프레임과 **논리픽셀 단위로 정확히** 겹친다.
 

@@ -59,28 +59,6 @@ def synthetic_fixture_a_run(tmp_path: Path) -> Path:
     return run_dir
 
 
-def test_state_revision_does_not_rewrite_the_request(synthetic_fixture_a_run: Path) -> None:
-    """사고 재현 고정: 조회 한 번이 canonical 런 파일을 바꾸지 않는다."""
-    path = synthetic_fixture_a_run / REQUEST_FILENAME
-    before = sha256_of(path)
-
-    assert state_revision(synthetic_fixture_a_run, "walk") is not None
-
-    assert sha256_of(path) == before, (
-        "state_revision() 이 sprite-request.json 을 재기록했다 — 조회가 canonical 런을 "
-        "오염시킨다 (합성 조회 회귀)")
-    assert "pixel_perfect" in json.loads(path.read_text(encoding="utf-8"))["fit"]
-
-
-def test_state_revision_does_not_move_the_generation_fingerprint(synthetic_fixture_a_run: Path) -> None:
-    """`run_revision` 은 request 바이트를 해싱한다 — 읽기가 파일을 쓰면 조회만으로 세대
-    지문이 움직여, 그 런의 큐레이션 사이드카가 stale 로 떨어진다. 읽기는 세대를 흔들지
-    않는다."""
-    before = curation_mod.run_revision(synthetic_fixture_a_run)
-    state_revision(synthetic_fixture_a_run, "walk")
-    assert curation_mod.run_revision(synthetic_fixture_a_run) == before
-
-
 def read_everything(run_dir: Path) -> None:
     """조회 API 전수 — 어느 진입점으로 읽어도 런 디렉터리는 바이트 불변이어야 한다."""
     from sprite_gen.curate import anchor as anchor_mod
@@ -103,10 +81,17 @@ def test_read_api_surface_is_byte_stable(synthetic_fixture_a_run: Path) -> None:
     """조회 API 전수: 어느 진입점으로 읽어도 런 디렉터리 바이트가 불변이다.
 
     한 진입점만 잠그면 다음 진입점이 같은 병을 다시 만든다 — 계약은 "이 함수" 가 아니라
-    "읽는 쪽" 전체다."""
+    "읽는 쪽" 전체다.
+
+    `state_revision()` 조회 사고(request 재기록)의 재현 고정도 여기다: request 바이트가 그대로면
+    그 바이트를 해싱하는 `run_revision` 세대 지문도 움직이지 않는다."""
     before = run_dir_sha256(synthetic_fixture_a_run)
     read_everything(synthetic_fixture_a_run)
-    assert run_dir_sha256(synthetic_fixture_a_run) == before
+    # 반공허 단정: manifest row 가 없으면 state_revision 은 None 으로 조기 반환해 로더를 밟지 않는다.
+    assert state_revision(synthetic_fixture_a_run, "walk") is not None
+    assert run_dir_sha256(synthetic_fixture_a_run) == before, (
+        "조회가 런 디렉터리를 바꿨다 — state_revision() 등이 sprite-request.json 을 재기록하면 "
+        "canonical 런이 오염되고 세대 지문이 움직인다 (합성 조회 회귀)")
 
 
 def test_read_api_surface_is_byte_stable_when_the_sidecar_is_stale(synthetic_fixture_a_run: Path) -> None:

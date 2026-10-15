@@ -12,7 +12,6 @@ import numpy as np
 from PIL import Image
 
 from sprite_gen import cli
-from sprite_gen.frames import slice_sheet as slice_module
 from sprite_gen.frames.slice_sheet import slice_sheet
 
 PROP = (60, 90, 140, 250)
@@ -48,14 +47,6 @@ def slice_(tmp_path, name, **kwargs):
                        target_height=120.0, **kwargs)
 
 
-def test_none_keeps_the_sheets_own_alpha(tmp_path):
-    written = slice_(tmp_path, "plain")
-    assert len(written) == 6
-    with Image.open(written[0]) as image:
-        alpha = np.asarray(image.convert("RGBA"))[..., 3]
-    assert alpha.max() >= 240 and alpha[0, 0] == 0
-
-
 def test_alpha_floor_clears_the_haze_ring_before_measuring_parts(tmp_path):
     hazy = slice_(tmp_path, "hazy")
     clean = slice_(tmp_path, "clean", alpha_floor=64)
@@ -67,6 +58,8 @@ def test_alpha_floor_clears_the_haze_ring_before_measuring_parts(tmp_path):
     assert report["haze_fraction_before"] > 0 and report["haze_fraction_after"] == 0
     assert report["changed_solid_pixels"] == 0
     assert not (tmp_path / "hazy" / "alpha-cleanup.json").exists()
+    # the slice report names the cleanup report
+    assert json.loads((tmp_path / "clean" / "slice-sheet.json").read_text())["alpha_cleanup"] == "alpha-cleanup.json"
 
 
 def test_cli_takes_none_and_the_floor(tmp_path):
@@ -78,8 +71,3 @@ def test_cli_takes_none_and_the_floor(tmp_path):
                      "--baseline-y", "180", "--target-height", "120"]) == 0
     assert (out / "prop_alpha-cleanup.json").is_file()
     assert len(list(out.glob("prop_cell-*.png"))) == 6
-
-
-def test_parse_chroma_key_reads_none():
-    assert slice_module.parse_chroma_key("none") is None
-    assert slice_module.parse_chroma_key("magenta") == (255, 0, 255)

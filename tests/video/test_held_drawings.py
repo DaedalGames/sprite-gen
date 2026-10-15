@@ -115,7 +115,7 @@ def _cut(tmp_path: Path, name: str, cycle: int, hold: int) -> Path:
     return out
 
 
-@pytest.mark.parametrize("hold, per_second", [(1, 24.0), (2, 12.0), (3, 8.0)])
+@pytest.mark.parametrize("hold, per_second", [(3, 8.0)])  # plumbing: the unit grid above reads every hold
 def test_video_loop_records_the_clips_drawings_a_second(tmp_path, hold, per_second):
     d = _cut(tmp_path, "S", 24, hold)
     report = json.loads((d / "walk.loop.report.json").read_text())

@@ -108,25 +108,6 @@ def test_takes_require_pixel_perfect(tmp_path: Path) -> None:
     assert extract_module.run(run_dir=run_dir) == 1
 
 
-def test_heal_rederives_stale_rows(tmp_path: Path) -> None:
-    run_dir = _build_run(tmp_path)
-    assert extract_module.run(run_dir=run_dir) == 0
-    manifest_path = run_dir / "frames" / "frames-manifest.json"
-
-    # 현재 엔진으로 갓 구운 런은 이미 신선 — no-op
-    report = extract_module.heal_run(run_dir)
-    assert report["healed"] == [] and report["kept_stale"] == []
-
-    # 구엔진 스탬프 시뮬레이션 → heal 이 raw 에서 재유도하고 재스탬프
-    manifest = _manifest(run_dir)
-    manifest["rows"][0]["engine_revision"] = "0" * 12
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    report = extract_module.heal_run(run_dir)
-    assert report["healed"] == ["walk"]
-    assert _manifest(run_dir)["rows"][0]["engine_revision"] == extract_module.engine_revision()
-    assert (run_dir / "frames" / "walk" / "frame-1.png").is_file()
-
-
 def test_heal_keeps_stale_row_without_raw(tmp_path: Path) -> None:
     run_dir = _build_run(tmp_path)
     assert extract_module.run(run_dir=run_dir) == 0

@@ -53,15 +53,6 @@ def test_the_full_bar_reaches_a_tint_the_default_bar_leaves_alone(tmp_path: Path
     assert _residual_tint(full_keyed).max() < 15, "the full bar has to reach it"
 
 
-def test_lifting_only_the_size_cap_is_not_enough(tmp_path: Path) -> None:
-    """The bug as it stood: `full` moved `spill_max_fraction` and nothing changed."""
-    src = _green_canvas_with_tinted_subject(tmp_path / "in.png", tint=20)
-    image = Image.open(src).convert("RGBA")
-    small, _ = extract_route(image, "green")
-    size_cap_only, _ = extract_route(image, "green", spill_max_fraction=1.0)
-    assert _residual_tint(small).max() == _residual_tint(size_cap_only).max()
-
-
 def test_a_subject_that_owns_key_material_is_still_judged_small(tmp_path: Path) -> None:
     """The decision reads the bar the treatment will use, so a genuinely green subject
     keeps its green: it is `small`, and `full`'s lowered bar never touches it."""

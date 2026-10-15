@@ -74,7 +74,8 @@ def test_generation_decodes_jpeg_to_png_without_agent(tmp_path, api):
     assert "synthetic-secret" not in json.dumps(report)
 
 
-@pytest.mark.parametrize("count", [1, 2, 5])
+# `count == 1` sends `image`, more send `images`.
+@pytest.mark.parametrize("count", [1, 5])
 def test_reference_edit_preserves_order_and_model(tmp_path, api, count):
     refs = []
     for i in range(count):
@@ -104,7 +105,8 @@ def test_direct_output_keeps_chroma_pipeline(tmp_path, api):
         assert image.getpixel((6, 4))[3] == 255
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 500, 503])
+# Two branches: 401/403 the credential, the rest a refusal; which are sent again is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [401, 503])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": "synthetic-secret https://signed.invalid/private?sig=abc"})
     out = tmp_path / "existing.png"
@@ -136,7 +138,7 @@ def test_a_rate_limit_still_there_after_two_more_sends_ends_the_call(tmp_path, a
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
-@pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
+@pytest.mark.parametrize("body", [{}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
                                   {"data": [{"url": "https://signed.invalid/private"}]}])
@@ -202,7 +204,8 @@ def _subscription_login(tmp_path, monkeypatch):
         "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
 
 
-@pytest.mark.parametrize("status", [200, 403, 503])
+# 403 and 503 both end on the first call, on the subscription token.
+@pytest.mark.parametrize("status", [200, 403])
 def test_images_use_subscription_even_with_api_key(tmp_path, api, monkeypatch, status):
     _subscription_login(tmp_path, monkeypatch)
     api["status"] = status
@@ -236,8 +239,8 @@ def _sent(api, index=0):
     return json.loads(api["calls"][index][0].data)
 
 
-@pytest.mark.parametrize("resolution", grok.SUPPORTED_RESOLUTIONS)
-@pytest.mark.parametrize("quality", grok.SUPPORTED_QUALITIES)
+# A level is checked against the declared subset, then passed on with no branch on its value.
+@pytest.mark.parametrize(("quality", "resolution"), [("auto", "1k")])
 def test_every_priced_level_reaches_the_request_and_the_report(tmp_path, api, quality, resolution):
     """The two knobs Imagine prices on arrive verbatim — no normalising, no default."""
     result = gen.generate_image("grok", "x", tmp_path / f"{quality}-{resolution}.png",
@@ -256,14 +259,10 @@ def test_asking_for_neither_leaves_the_request_and_report_as_they_were(tmp_path,
     assert "quality" not in result.extra and "resolution" not in result.extra
 
 
+# One `not in` per knob.
 @pytest.mark.parametrize("options, expected", [
     ({"quality": "high"}, "openai"),
-    ({"quality": "xhigh"}, "openai"),
-    ({"quality": "max"}, "openai"),
-    ({"quality": "bogus"}, "openai"),
     ({"resolution": "4k"}, "1.5k"),
-    ({"resolution": "1024"}, "1.5k"),
-    ({"resolution": "1K"}, "1.5k"),
 ])
 def test_a_level_grok_cannot_serve_fails_before_upload(tmp_path, api, options, expected):
     with pytest.raises(SystemExit) as error:

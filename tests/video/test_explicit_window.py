@@ -59,15 +59,11 @@ ROWS = [
      lambda r: r["cycle"]["seam_pop"]["held_edge"]["two_step"]["lengths"] == [47, 47]
      and r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"] == {"max_len": 47, "lengths_over": [48, 49]}, True),
     ("two-step", _held, ("--state", "walk", *MOTION, "--min-len", "20"), lambda r: r["cycle"]["seam_pop"]["applied"], True),
-    ("counted", _slow, ("--state", "walk", *MOTION, "--max-len", "25", "--steps", "1"),
-     lambda r: r["cycle"]["steps"]["refused"] == "outside --max-len 25", False),
     ("counted", _short, ("--state", "walk", *MOTION, "--max-len", "42", "--steps", "1"),
      lambda r: r["cycle"]["steps"]["window"] == [41, 42] and r["cycle"]["steps"]["counted_window"] == [41, 43], True),
     ("counted", _slow, ("--state", "walk", *MOTION, "--min-len", "18", "--steps", "1"), lambda r: r["cycle"]["steps"]["by"] == "given", True),
     ("fallback", _slow_front, ("--state", "walk", *MOTION, "--max-len", "36"), lambda r: r["gait_fallback"]["window"] == [12, 36], False),
     ("fallback", _slow_front, ("--state", "walk", *MOTION, "--min-len", "30"), lambda r: r["gait_fallback"]["window"][0] == 30, True),
-    ("one-shot", _hop, ("--state", "jump", "--min-len", "8", "--max-len", "14"),  # the hop is 16 frames: no one-shot that short
-     lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", False),
     ("one-shot", _hop, ("--state", "jump", "--max-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True),
     ("one-shot", _hop, ("--state", "jump", "--min-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True),
     ("fixed", _hop, ("--state", "jump", "--cycle", "fixed", "--start", "50", "--length", "40", "--max-len", "30"),
@@ -108,12 +104,15 @@ def test_a_count_the_window_leaves_no_room_for_fails_and_says_both(tmp_path):
     report = json.loads((tmp_path / "out" / "loop.loop.report.json").read_text())
     assert report["status"] == "failed" and report["error"] in said
     assert report["cycle"]["steps"]["counted_window"] == [41, 43] and report["cycle"]["steps"]["window"] is None
+    assert report["cycle"]["steps"]["refused"] == "outside --max-len 25"
 
 
 def test_a_one_shot_the_window_leaves_no_room_for_says_the_window(tmp_path):
-    keyed = _hop(tmp_path / "clip")
+    keyed = _hop(tmp_path / "clip")  # the hop is 16 frames: no one-shot that short
     with pytest.raises(SystemExit, match=r"no complete one-shot return .* — in 8-14 frames, inside --min-len 8 --max-len 14"):
         loop.main(["--frames-dir", str(keyed), "--out-dir", str(tmp_path / "out"), "--state", "jump", "--min-len", "8", "--max-len", "14"])
+    report = json.loads((tmp_path / "out" / "loop.loop.report.json").read_text())
+    assert report["status"] == "failed" and report["periodic_attempt"] is not None and report["cycle"]["kind"] == "one-shot"
 
 
 def test_the_cut_window_is_worked_out_once():

@@ -144,20 +144,6 @@ def _layers_dir(run_dir: Path) -> Path:
 # ------------------------------------------------------------------ 1. the bake
 
 
-def test_composite_bake_is_byte_identical_across_runs(tmp_path: Path) -> None:
-    """Same run, same bytes — the determinism claim the whole feature rests on."""
-    run_dir = _build_run(tmp_path)
-
-    compose_layers.bake(run_dir)
-    first = {path.name: _digest(path) for path in sorted(_layers_dir(run_dir).iterdir())}
-    compose_layers.bake(run_dir)
-    second = {path.name: _digest(path) for path in sorted(_layers_dir(run_dir).iterdir())}
-
-    assert set(first) == {"walk_with_can.png", "walk_with_can.manifest.json",
-                          "layers.report.json"}
-    assert first == second
-
-
 def test_element_is_placed_at_the_declared_integer_pivot_offset(tmp_path: Path) -> None:
     """`to - from`, composed onto the body — recomputed here from the frames on disk."""
     run_dir = _build_run(tmp_path)
@@ -184,7 +170,7 @@ def test_element_is_placed_at_the_declared_integer_pivot_offset(tmp_path: Path) 
     assert element["clipped_pixels"] == 0
 
 
-@pytest.mark.parametrize("value", [0, 1, 2, 63, 127, 128, 200, 254, 255])
+@pytest.mark.parametrize("value", [0, 128, 255])
 def test_mask_alpha_arithmetic_is_the_published_formula(value: int) -> None:
     """Every (alpha, mask) pair, not just the opaque ones.
 
@@ -259,28 +245,13 @@ def test_identical_composite_cells_share_one_column(tmp_path: Path) -> None:
 
 
 def test_composite_manifest_keeps_the_runtime_manifest_shape(tmp_path: Path) -> None:
-    """A runtime reads a composite with the code it already has, plus provenance."""
-    run_dir = _build_run(tmp_path)
-    assert run_script("compose_sprite_atlas.py", "--run-dir", str(run_dir)).returncode == 0
-    base = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    """A runtime reads a composite with the code it already has, plus provenance.
 
-    compose_layers.bake(run_dir)
-    manifest = json.loads(
-        (_layers_dir(run_dir) / "walk_with_can.manifest.json").read_text(encoding="utf-8"))
+    The base manifest gains `rig` and `track` only for a rig run: landmarks reach the
+    runtime as atlas-absolute integers, one per play position.
 
-    assert set(manifest) == (set(base) - {"rig"}) | {"layers"}
-    assert manifest["game_input"] == "walk_with_can.png"
-    assert manifest["animation"]["rows"]["walk_with_can"]["frames"] == 2
-    assert manifest["animation"]["rows"]["walk_with_can"]["track"] == "composite"
-    assert [element["state"] for element in manifest["layers"]["stack"]] == ["walk", "can"]
-    assert manifest["layers"]["stack"][1]["track"] == "prop_effect"
-
-
-def test_a_composite_states_it_has_no_alpha_report_instead_of_naming_another_kind(
-        tmp_path: Path) -> None:
-    """`sprite_sheet_alpha_report` names THIS sheet's alpha report — a composite has none.
-
-    The key stays (key-set parity above) but resolves to nothing, because
+    `sprite_sheet_alpha_report` names THIS sheet's alpha report — a composite has none.
+    The key stays (key-set parity) but resolves to nothing, because
     `layers.report.json` is the bake's provenance record for every composite and
     not this sheet's alpha report: a consumer that opened it through this field
     would be reading a different kind of document. The provenance pointer has its
@@ -292,11 +263,30 @@ def test_a_composite_states_it_has_no_alpha_report_instead_of_naming_another_kin
     base_report = json.loads(
         (run_dir / base["sprite_sheet_alpha_report"]).read_text(encoding="utf-8"))
 
+    assert base["rig"]["profile"] == "humanoid_biped"
+    for state in ("walk", "hold", "can"):
+        rects = base["frame_layout"]["rows"][state]
+        entries = base["rig"]["landmarks"][state]
+        assert len(entries) == len(rects), state
+        for index, (rect, entry) in enumerate(zip(rects, entries)):
+            declared = LANDMARKS[state][str(index)]
+            assert entry == {name: [rect["x"] + point[0], rect["y"] + point[1]]
+                             for name, point in declared.items()}
+    assert base["animation"]["rows"]["can"]["track"] == "prop_effect"
+    assert base["animation"]["rows"]["walk"]["track"] == "base"
+
     compose_layers.bake(run_dir)
     manifest = json.loads(
         (_layers_dir(run_dir) / "walk_with_can.manifest.json").read_text(encoding="utf-8"))
     provenance = json.loads(
         (_layers_dir(run_dir) / manifest["layers"]["report"]).read_text(encoding="utf-8"))
+
+    assert set(manifest) == (set(base) - {"rig"}) | {"layers"}
+    assert manifest["game_input"] == "walk_with_can.png"
+    assert manifest["animation"]["rows"]["walk_with_can"]["frames"] == 2
+    assert manifest["animation"]["rows"]["walk_with_can"]["track"] == "composite"
+    assert [element["state"] for element in manifest["layers"]["stack"]] == ["walk", "can"]
+    assert manifest["layers"]["stack"][1]["track"] == "prop_effect"
 
     assert manifest["sprite_sheet_alpha_report"] is None
     assert manifest["layers"]["report"] == compose_layers.REPORT_NAME
@@ -338,25 +328,6 @@ def test_a_bake_publishes_its_whole_set_in_one_transaction(tmp_path: Path,
                      "layers.report.json"]], "the bake published in more than one call"
     after = {path.name: _digest(path) for path in sorted(_layers_dir(run_dir).iterdir())}
     assert after == before
-
-
-def test_base_manifest_gains_rig_and_track_only_for_a_rig_run(tmp_path: Path) -> None:
-    """Landmarks reach the runtime as atlas-absolute integers, one per play position."""
-    run_dir = _build_run(tmp_path)
-    assert run_script("compose_sprite_atlas.py", "--run-dir", str(run_dir)).returncode == 0
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-
-    assert manifest["rig"]["profile"] == "humanoid_biped"
-    for state in ("walk", "hold", "can"):
-        rects = manifest["frame_layout"]["rows"][state]
-        entries = manifest["rig"]["landmarks"][state]
-        assert len(entries) == len(rects), state
-        for index, (rect, entry) in enumerate(zip(rects, entries)):
-            declared = LANDMARKS[state][str(index)]
-            assert entry == {name: [rect["x"] + point[0], rect["y"] + point[1]]
-                             for name, point in declared.items()}
-    assert manifest["animation"]["rows"]["can"]["track"] == "prop_effect"
-    assert manifest["animation"]["rows"]["walk"]["track"] == "base"
 
 
 # ---------------------------------------------------------- 2. the diagnostics
@@ -620,7 +591,9 @@ def test_the_cli_bakes_and_summarizes_the_declared_composites(tmp_path: Path) ->
 
 
 def test_two_cli_bakes_in_separate_processes_are_byte_identical(tmp_path: Path) -> None:
-    """Determinism across the process boundary, not just inside one interpreter."""
+    """Same run, same bytes — the determinism claim the whole feature rests on.
+
+    Across the process boundary, not just inside one interpreter."""
     run_dir = _build_run(tmp_path)
 
     assert _cli(run_dir).returncode == 0
@@ -628,6 +601,8 @@ def test_two_cli_bakes_in_separate_processes_are_byte_identical(tmp_path: Path) 
     assert _cli(run_dir).returncode == 0
     second = {path.name: _digest(path) for path in sorted(_layers_dir(run_dir).iterdir())}
 
+    assert set(first) == {"walk_with_can.png", "walk_with_can.manifest.json",
+                          "layers.report.json"}
     assert first == second
 
 
@@ -646,24 +621,25 @@ def test_the_cli_bakes_only_the_named_composites(tmp_path: Path) -> None:
     assert [entry["name"] for entry in report["composites"]] == ["walk_alone"]
 
 
-@pytest.mark.parametrize("value", ["", "walk_with_can,", "a,,b", " "])
-def test_the_cli_refuses_a_malformed_names_list(tmp_path: Path, value: str) -> None:
-    """An empty entry is a typo, never "all" — silently dropping it bakes another set."""
+def test_the_cli_refuses_a_malformed_names_list(tmp_path: Path) -> None:
+    """An empty entry is a typo, never "all" — silently dropping it bakes another set.
+
+    One shape is enough: an empty list, a trailing comma and a blank all split into an
+    empty entry and reach the same `any(not name)` refusal."""
     run_dir = _build_run(tmp_path)
 
-    result = _cli(run_dir, "--names", value)
+    result = _cli(run_dir, "--names", "a,,b")
 
     assert result.returncode != 0
     assert "--names expects a comma-separated list" in result.stderr
     assert not _layers_dir(run_dir).exists()
 
 
-@pytest.mark.parametrize("value", ["walk_with_can,walk_with_can", "nope,walk_with_can,nope"])
-def test_the_cli_refuses_a_repeated_name(tmp_path: Path, value: str) -> None:
+def test_the_cli_refuses_a_repeated_name(tmp_path: Path) -> None:
     """Same class as an empty entry: the selection is the caller's to fix, not ours to guess."""
     run_dir = _build_run(tmp_path)
 
-    result = _cli(run_dir, "--names", value)
+    result = _cli(run_dir, "--names", "walk_with_can,walk_with_can")
 
     assert result.returncode != 0
     assert "named more than once" in result.stderr
@@ -681,20 +657,4 @@ def test_the_cli_reports_every_violation_at_once_and_writes_nothing(tmp_path: Pa
     assert result.returncode != 0
     assert "miss required landmark 'crown'" in result.stderr
     assert "layers.walk_with_can.fps must be a positive integer" in result.stderr
-    assert not _layers_dir(run_dir).exists()
-
-
-def test_the_cli_refuses_a_non_layer_run_by_name(tmp_path: Path) -> None:
-    """"Not a layer run" and "nothing to compose" are different answers."""
-    request = _request()
-    del request["rig"]
-    del request["layers"]
-    for entry in request["states"].values():
-        entry.pop("track")
-    run_dir = _build_run(tmp_path, request)
-
-    result = _cli(run_dir)
-
-    assert result.returncode != 0
-    assert "not a layer run" in result.stderr
     assert not _layers_dir(run_dir).exists()

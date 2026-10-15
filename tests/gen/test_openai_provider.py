@@ -20,7 +20,7 @@ from PIL import Image
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import retry, xai
+from sprite_gen.gen import retry
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -40,24 +40,6 @@ def encoded_image(fmt="PNG", *, alpha=False, key=False):
     buf = io.BytesIO()
     image.save(buf, format=fmt)
     return base64.b64encode(buf.getvalue()).decode()
-
-
-class _GrokResponse:
-    """Minimal 200 answer for the xai transport (a PNG, so chroma stays untouched)."""
-
-    def __init__(self, request, api):
-        api["calls"].append((request, None))
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    status = 200
-
-    def read(self):
-        return json.dumps({"data": [{"b64_json": encoded_image()}]}).encode()
 
 
 @pytest.fixture
@@ -144,24 +126,17 @@ def test_a_response_without_rate_limit_headers_reports_that_none_came(tmp_path, 
     assert gen.generate_image("openai", "x", tmp_path / "out.png").to_dict()["extra"]["rate_limit"] == {}
 
 
-@pytest.mark.parametrize("quality", openai.SUPPORTED_QUALITIES)
-def test_every_quality_level_reaches_the_request_verbatim(tmp_path, api, quality):
-    gen.generate_image("openai", "x", tmp_path / f"{quality}.png", quality=quality)
-    assert _body(api["calls"][0][0])["quality"] == quality
-
-
-@pytest.mark.parametrize("ratio,size", sorted(openai.SIZES.items()))
-def test_aspect_ratio_maps_to_a_legal_gpt_image_size(tmp_path, api, ratio, size):
-    gen.generate_image("openai", "x", tmp_path / "out.png", aspect_ratio=ratio)
-    assert _body(api["calls"][0][0])["size"] == size
-    if size == "auto":
-        return
-    width, height = (int(side) for side in size.split("x"))
-    # The documented custom-size constraints, checked on the table itself.
-    assert width % 16 == 0 and height % 16 == 0
-    assert max(width, height) <= 3840
-    assert 1 / 3 <= width / height <= 3
-    assert 655_360 <= width * height <= 8_294_400
+def test_aspect_ratio_maps_to_a_legal_gpt_image_size():
+    # The lookup is one `SIZES[ratio]` (sent end to end in test_cli_accepts_provider_and_quality).
+    for ratio, size in sorted(openai.SIZES.items()):
+        if size == "auto":
+            continue
+        width, height = (int(side) for side in size.split("x"))
+        # The documented custom-size constraints, checked on the table itself.
+        assert width % 16 == 0 and height % 16 == 0, ratio
+        assert max(width, height) <= 3840, ratio
+        assert 1 / 3 <= width / height <= 3, ratio
+        assert 655_360 <= width * height <= 8_294_400, ratio
 
 
 def test_model_and_quality_overrides_are_not_second_guessed(tmp_path, api):
@@ -200,7 +175,8 @@ def test_reference_edit_posts_multipart_images_in_order(tmp_path, api):
     assert positions == sorted(positions), "reference images are read positionally; order must survive"
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 500, 502])
+# Two branches: 401/403 the credential, the rest a refusal; which are sent again is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [401, 500])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": {"message": f"{KEY} https://signed.invalid/private?sig=abc"}})
     out = tmp_path / "existing.png"
@@ -216,9 +192,8 @@ def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, sta
 
 @pytest.mark.parametrize(("refused", "slept"), [
     ((429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {"retry-after": "2"}), [2.0]),
-    ((429, {"error": {"type": "rate_limit_error", "code": "slow_down"}}, {}), [8.0]),
     ((503, {"error": {"type": "service_unavailable_error", "code": "server_is_overloaded"}}, {}), [8.0]),
-], ids=["rate-limit", "slow-down", "overloaded"])
+], ids=["rate-limit", "overloaded"])
 def test_a_refusal_openai_documents_as_not_taken_is_sent_again(tmp_path, api, capsys, refused, slept):
     """429 (a rate limit) and 503 (overloaded) are the two the error-codes guide and the SDKs retry
     (gen.retry, read 2026-10-13): the image is asked for again after the answer's retry-after or the
@@ -230,8 +205,8 @@ def test_a_refusal_openai_documents_as_not_taken_is_sent_again(tmp_path, api, ca
     assert f"[gen] openai refused the request ({refused[0]} {refused[1]['error']['code']}); nothing was made" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("code", ["credit_balance_exhausted", "organization_spend_limit_exceeded",
-                                  "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota"])
+# Which billing codes are not sent again is tests/gen/test_retry.py's table; the line is the same for each.
+@pytest.mark.parametrize("code", ["insufficient_quota"])
 def test_a_billing_429_asks_the_caller_to_act_and_is_not_sent_again(tmp_path, api, code):
     api.update(status=429, body={"error": {"type": "insufficient_quota", "code": code}})
     with pytest.raises(SystemExit, match=f"HTTP 429.*code={code}; no retry or provider fallback"):
@@ -247,7 +222,7 @@ def test_a_refusal_still_there_after_two_more_sends_ends_the_call(tmp_path, api)
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
-@pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
+@pytest.mark.parametrize("body", [{}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
                                   {"data": [{"url": "https://signed.invalid/private"}]}])
@@ -326,7 +301,8 @@ def test_provider_is_registered_everywhere_a_provider_must_be(api):
 # --- 구독 우선 불변식 (수홍 2026-09-20) --------------------------------------
 # sprite-gen runs on subscriptions people already pay for. The API-key backend is
 # for servers and SaaS and is billed per call, so nothing may route to it on its
-# own. These three tests are the guard rails for invariants 1, 2 and 3.
+# own. These two tests are the guard rails for invariants 1 and 2; invariant 3 (the
+# Grok login wins over XAI_API_KEY) is tests/gen/test_grok_provider.py's.
 
 
 def test_openai_is_explicit_only_and_never_a_default(monkeypatch, api):
@@ -362,37 +338,12 @@ def test_an_api_key_in_the_environment_reroutes_nothing(monkeypatch, api, config
     assert api["calls"] == []
 
 
-def test_grok_login_still_outranks_its_api_key(tmp_path, api, monkeypatch, capsys):
-    """불변식 3: the Grok subscription login wins over XAI_API_KEY."""
-    monkeypatch.setenv("XAI_API_KEY", "xai-api-secret")
-    monkeypatch.setenv("GROK_HOME", str(tmp_path))
-    (tmp_path / "auth.json").write_text(json.dumps({"account": {
-        "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
-    assert xai.resolve_credential().source == xai.AUTH_SOURCE_GROK_LOGIN
-    monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
-    result = gen.generate_image("grok", "x", tmp_path / "grok.png")
-    assert result.extra["auth_source"] == xai.AUTH_SOURCE_GROK_LOGIN
-    # A subscription call says nothing about API billing; only the key route does.
-    assert "per-call API charge" not in capsys.readouterr().err
-
-
 def test_every_api_key_call_announces_the_charge_before_it_leaves(tmp_path, api, capsys):
     """불변식 5: one stderr line, before the request, naming the billing route."""
     gen.generate_image("openai", "x", tmp_path / "out.png", quality="low")
     notice = [line for line in capsys.readouterr().err.splitlines() if "per-call API charge" in line]
     assert len(notice) == 1
     assert "OPENAI_API_KEY" in notice[0] and "quality=low" in notice[0]
-
-
-def test_grok_on_an_api_key_announces_the_charge_too(tmp_path, api, monkeypatch, capsys):
-    monkeypatch.setenv("XAI_API_KEY", "xai-api-secret")
-    monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
-    monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
-    gen.generate_image("grok", "x", tmp_path / "grok.png")
-    notice = [line for line in capsys.readouterr().err.splitlines() if "per-call API charge" in line]
-    assert len(notice) == 1 and "XAI_API_KEY" in notice[0]
 
 
 def test_cli_accepts_provider_and_quality(tmp_path, api):
@@ -432,12 +383,10 @@ def _refused(tmp_path, api, status, error):
     return message[: -len(body)]
 
 
+# Three branches: a documented stage, no moderation object, a stage outside MODERATION_STAGES.
 @pytest.mark.parametrize("details, stage", [
     ({"moderation_details": {"moderation_stage": "output", "categories": ["other"]}}, " moderation_stage=output"),
-    ({"moderation_details": {"moderation_stage": "input"}}, " moderation_stage=input"),
-    ({"moderation_details": {"moderation_stage": "unknown"}}, " moderation_stage=unknown"),
     ({}, ""),
-    ({"moderation_details": None}, ""),
     ({"moderation_details": {"moderation_stage": "a sentence the body made up"}}, ""),
 ])
 def test_a_content_policy_block_says_so_with_its_code(tmp_path, api, details, stage):
@@ -454,8 +403,8 @@ def test_another_code_keeps_the_plain_failure_and_names_the_code(tmp_path, api):
     )
 
 
-@pytest.mark.parametrize("error", [{}, {"code": None}, {"code": 400}, {"code": "has a space"},
-                                   {"code": "x" * 65}, {"code": ""}, {"code": "quote'd"}])
+# `refusal.identifier`: no code, a code that is not a str, a str outside CODE_PATTERN.
+@pytest.mark.parametrize("error", [{}, {"code": 400}, {"code": "has a space"}, {"code": "x" * 65}])
 def test_no_code_or_a_code_outside_the_format_leaves_the_line_as_it_was(tmp_path, api, error):
     assert _refused(tmp_path, api, 400, error) == (
         "openai-gen: image request failed (HTTP 400); no retry or provider fallback"

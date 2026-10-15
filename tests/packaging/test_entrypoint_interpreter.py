@@ -77,3 +77,7 @@ def test_skill_md_owns_the_interpreter_rule() -> None:
     # missing venv is created or fails loudly — never quietly swapped for python3.
     assert "폴백 금지" in text, (
         "SKILL.md must keep the no-fallback clause for the interpreter rule")
+    # An agent that hits the missing-NumPy traceback (tests/packaging/test_numpy_dependency_gate.py)
+    # reads SKILL.md next; what a NumPy-less interpreter does lives there too.
+    assert "NumPy 가 없는 인터프리터" in text, (
+        "SKILL.md lost the clause telling agents what a NumPy-less interpreter does")

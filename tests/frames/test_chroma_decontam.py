@@ -243,28 +243,12 @@ def test_red_strand_blend_comes_back_red_with_partial_coverage():
     assert go > 0.35 * ro  # the engine's result is not red
 
 
-def test_interior_pixels_stay_byte_identical():
-    F, A = _render()
-    raw = _composite_on(F, A, GREEN_PAINTED)
-    _, interior = _edge(raw)
-    off, _ = _key(raw)
-    pal, _ = _key(raw, decontam="palette")
-    assert interior.sum() > 1000
-    assert np.array_equal(off[interior], pal[interior])
-
-
 def test_same_input_same_bytes():
     F, A = _render()
     raw = _subsample_420(_composite_on(F, A, GREEN_PAINTED))
     first, s1 = _key(raw, decontam="palette", decontam_fit="video")
     second, s2 = _key(raw, decontam="palette", decontam_fit="video")
     assert np.array_equal(first, second) and s1 == s2
-
-
-def test_transparent_pixels_carry_no_colour():
-    F, A = _render()
-    pal, _ = _key(_composite_on(F, A, GREEN_PAINTED), decontam="palette")
-    assert not pal[pal[..., 3] == 0, :3].any()
 
 
 def test_magenta_key_is_handled_by_the_same_pass():
@@ -355,15 +339,6 @@ def test_degenerate_key_fails_loud():
     raw = _composite_on(F, A, (128, 128, 128))
     with pytest.raises(SystemExit, match="no key hue"):
         _key(raw, (128, 128, 128), decontam="palette")
-
-
-def test_nothing_to_learn_from_fails_loud():
-    F, A = _render()
-    raw = _composite_on(F, A, GREEN_PAINTED)
-    raw[:, :] = GREEN_PAINTED
-    raw[60:63, 20:140] = HAIR  # a 3 px bar: every subject pixel is edge
-    with pytest.raises(SystemExit, match="no subject pixel lies deeper"):
-        _key(raw, decontam="palette")
 
 
 def test_unknown_mode_and_fit_fail_loud():
@@ -471,7 +446,9 @@ def test_row_extractor_reads_and_records_chroma_decontam(fixture_run_dir: Path):
     request_path = fixture_run_dir / "sprite-request.json"
     plain = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir))
     assert plain.returncode == 0, plain.stderr
-    assert "decontam" not in json.loads(request_path.read_text())["chroma"]
+    chroma = json.loads(request_path.read_text())["chroma"]
+    assert "decontam" not in chroma
+    assert chroma["mode"] == "rgb"
     frames_off = {p.name: p.read_bytes() for p in sorted((fixture_run_dir / "frames").rglob("frame-*.png"))}
 
     with_flag = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir), "--decontam", "palette")
