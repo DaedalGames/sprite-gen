@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from sprite_gen.gen import video, xai
+from sprite_gen.gen import retry, video, xai
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
@@ -82,14 +82,21 @@ class _Clock:
         self.slept.append(seconds)
         self.now += seconds
 
+    def waking_late(self, late: float):
+        """A sleep on this clock that wakes `late` seconds after the time it was asked for, as a real one may."""
+        def sleep(seconds: float) -> None:
+            self.sleep(seconds)
+            self.now += late
+        return sleep
+
 
 @pytest.fixture
 def clock(monkeypatch) -> _Clock:
-    """The test's clock, in place of `time` where video and xai read it: the run's deadline, its waits and the
-    reads of its answers all count on it, and nothing waits on the real clock. Other modules keep theirs."""
+    """The test's clock, in place of `time` where video, xai and retry read it: the run's deadline, its waits
+    and the reads of its answers all count on it, and nothing waits on the real clock. Other modules keep theirs."""
     clock = _Clock()
-    monkeypatch.setattr(video, "time", clock)
-    monkeypatch.setattr(xai, "time", clock)
+    for module in (video, xai, retry):
+        monkeypatch.setattr(module, "time", clock)
     return clock
 
 
@@ -637,10 +644,10 @@ def test_a_refused_submission_is_never_sent_again(tmp_path: Path, status) -> Non
     assert HTTP_STATUS.search(message).group(1) == str(status)
 
 
-def test_a_rate_limited_submission_is_sent_again_and_the_poll_timeout_counts_from_the_send_it_answered(
+def test_a_rate_limited_submission_is_sent_again_and_the_poll_timeout_counts_from_its_first_send(
         tmp_path: Path, clock, capsys) -> None:
     """xAI's 429 ("reached the rate limit") made nothing: the POST goes again after the doubling wait the
-    polls wait by, and the poll timeout starts at the send that was accepted, not the first one."""
+    polls wait by, and the poll timeout starts at the first send, so that wait is inside it."""
     answers = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, {"request_id": "req-1"})]
     api = _FakeApi()
     api.post = None
@@ -650,7 +657,7 @@ def test_a_rate_limited_submission_is_sent_again_and_the_poll_timeout_counts_fro
         if method == "POST":
             api.calls.append((method, url, token, body))
             return answers.pop(0)
-        assert deadline == 8.0 + 30  # the accepted send came after the 8 s wait
+        assert deadline == 30  # the first send, at 0; the accepted one came after the 8 s wait
         return real_call(method, url, token, body, deadline=deadline)
 
     result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
@@ -666,6 +673,51 @@ def test_a_rate_limit_still_there_after_two_more_sends_keeps_its_status_for_the_
     message, _ = _refused(tmp_path, api)
     assert [call[0] for call in api.calls] == ["POST"] * 3
     assert HTTP_STATUS.search(message).group(1) == "429"
+
+
+def test_a_rate_limited_submission_whose_next_wait_would_reach_the_poll_timeout_is_not_sent_again(
+        tmp_path: Path, clock, capsys) -> None:
+    """The waits before a refused POST goes again are inside the poll timeout: with 20 s, the 8 s wait leaves
+    some of it and the 16 s one would reach it, so the second 429 ends the run, its status kept for the
+    caller and its stderr line saying why it was not sent again — before a ceiling set above the timeout."""
+    api = _FakeApi(post=(429, {"code": "resource-exhausted", "error": "slow down"}))
+    request = _request(tmp_path)
+    with pytest.raises(SystemExit) as refused:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=api.call, download=api.download, sleep=clock.sleep, poll_timeout=20)
+    assert [call[0] for call in api.calls] == ["POST", "POST"] and clock.slept == [8.0]
+    assert HTTP_STATUS.search(str(refused.value)).group(1) == "429"
+    assert ("[video] xai refused the request (429 resource-exhausted); nothing was made — not asking again: "
+            "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
+    assert not request.out.exists() and api.downloads == []
+
+
+def test_a_rate_limited_submission_whose_wait_woke_past_the_poll_timeout_is_not_sent_again(
+        tmp_path: Path, clock, capsys) -> None:
+    """The counterexample: with 8.01 s, the 8 s wait after a 429 ends before the poll timeout as asked, but the
+    sleep wakes 20 ms late, past it. The timeout is read again right before the send, so no second POST goes —
+    one sent then could be taken, and billed, after the limit the caller set — and the 429 ends the run with
+    its status, its stderr line saying why."""
+    answers = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, {"request_id": "req-late"})]
+    sent = []
+
+    def call(method, url, token, body, *, deadline=None):
+        sent.append((method, clock.now))
+        assert method == "POST", "no poll goes after the poll timeout"
+        return answers.pop(0)
+
+    request = _request(tmp_path)
+    with pytest.raises(SystemExit) as refused:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN), call=call,
+                             download=lambda *a, **k: pytest.fail("no download"), sleep=clock.waking_late(0.020),
+                             poll_timeout=8.010)
+    assert sent == [("POST", 0.0)] and clock.slept == [8.0]
+    assert not isinstance(refused.value, video.GenerationUnfinished)
+    assert HTTP_STATUS.search(str(refused.value)).group(1) == "429"
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[video] xai refused the request (429 resource-exhausted); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not request.out.exists()
 
 
 def test_the_cli_leaves_an_unfinished_report_naming_the_request(tmp_path: Path, monkeypatch, clock, capsys) -> None:
@@ -1429,6 +1481,26 @@ def test_a_download_whose_next_wait_would_reach_the_poll_timeout_is_not_tried_ag
     assert not request.out.exists() and not list(tmp_path.glob("*.part"))
 
 
+def test_a_download_whose_wait_woke_past_the_poll_timeout_is_not_tried(tmp_path: Path, wire, clock) -> None:
+    """The 8 s wait after a refused download, asked with 8.01 s left, wakes 20 ms late, past the poll timeout:
+    no download is tried then, and the run ends on the refusal it had — not on a download the transport found
+    no time left to send, counted as one that got no answer."""
+    server = _clip_wire(wire, CLIP_REFUSED)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
+                             call=_on_wire, sleep=clock.waking_late(0.020), poll_timeout=8.010)
+    assert server.seen == SUBMITTED + [("GET", "/clips/1.mp4")] and clock.slept == [8.0]
+    assert str(unfinished.value) == (
+        "video: generation req-1 is done, but its download was refused (last answer 503) until the poll timeout "
+        "(8.01s, 1 attempt); the clip is made and may be billed — ask for request_id=req-1 again with `sprite-gen "
+        f"video-resume --request-id req-1 --out {request.out.resolve()}` instead of submitting a new request; "
+        "nothing was written")
+    report = unfinished.value.to_dict()
+    assert (report["downloads"], report["last_download"]) == (1, {"http": 503})
+    assert not request.out.exists() and not list(tmp_path.glob("*.part"))
+
+
 @pytest.mark.parametrize("slow", ["stalled", "trickled"])
 def test_a_poll_slower_than_the_time_left_ends_unfinished_by_the_poll_timeout(tmp_path: Path, wire, clock, monkeypatch, slow) -> None:
     """A poll's own read is cut by the poll timeout too: one that stalls past it, or whose answer keeps coming
@@ -1450,6 +1522,25 @@ def test_a_poll_slower_than_the_time_left_ends_unfinished_by_the_poll_timeout(tm
     assert report["elapsed_seconds"] == BUDGET
     assert (report["polls"], report["polls_unanswered"], report["last_poll"]) == (
         2, 1, {"http": None, "status": None, "error": "timed out"})
+    assert not request.out.exists()
+
+
+def test_a_poll_whose_wait_woke_past_the_poll_timeout_is_not_sent(tmp_path: Path, wire, clock) -> None:
+    """Each wait here wakes 40 ms late: the second, asked at 4.04 s for 4 s with 4.01 s of the 8.05 s poll
+    timeout left, wakes at 8.08 s, past it. No poll goes then, and the run ends on the last one as it came —
+    still pending after 2 polls — not on a third the transport found no time left to send, counted as a poll
+    that got no answer."""
+    server = wire(ACCEPTED, PENDING_ON_WIRE)
+    request = _request(tmp_path)
+    with pytest.raises(video.GenerationUnfinished) as unfinished:
+        video.generate_video(request, credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN), call=_on_wire,
+                             download=lambda url, token, **_: MP4, sleep=clock.waking_late(0.040), poll_timeout=8.05)
+    assert server.seen == [("POST", "/v1/videos/generations")] + [("GET", "/v1/videos/req-1")] * 2
+    assert clock.slept == [4.0, 4.0]
+    assert str(unfinished.value).startswith("video: generation req-1 still 'pending' after 2 polls — poll timeout; ")
+    report = unfinished.value.to_dict()
+    assert (report["polls"], report["polls_unanswered"], report["last_poll"]) == (
+        2, 0, {"http": 200, "status": "pending"})
     assert not request.out.exists()
 
 

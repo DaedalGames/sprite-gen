@@ -12,6 +12,7 @@ import base64
 import json
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .base import GEN_TIMEOUT_SECONDS, provider_binary, provider_subprocess_env
@@ -77,8 +78,11 @@ def grok_inspect(path: Path, *, credential=None, call=None, prompt: str = INSPEC
     credential = credential or xai.resolve_credential()
     if credential.source == xai.AUTH_SOURCE_API_KEY:
         announce_api_billing("grok", xai.AUTH_ENV, f" ({label}).")
-    status, reply, _sends = xai.post(call or xai.http_json, xai.API_BASE + "/responses", credential.token,
-                                     request_body(path, GROK_MODEL, prompt=prompt, detail=detail),
-                                     who="grok", label=_tag(label))
+    # The question's time limit is the transport's read timeout, from its first send: the waits before a
+    # refused one goes again count in it (`retry`), and each send reads only what is left of it.
+    send, deadline = call or xai.http_json, time.monotonic() + xai.HTTP_TIMEOUT_SECONDS
+    status, reply, _sends = xai.post(lambda *a: send(*a, deadline=deadline), xai.API_BASE + "/responses",
+                                     credential.token, request_body(path, GROK_MODEL, prompt=prompt, detail=detail),
+                                     who="grok", label=_tag(label), deadline=deadline)
     text, metadata = response_text(status, reply, label=label)
     return text, {**metadata, "auth_source": credential.source, "transport": "xai-api"}

@@ -174,8 +174,9 @@ def _no_answer(exc: BaseException) -> ApiError:
 
 
 def _open(request_for: Callable[[], urllib.request.Request], token: str, *, timeout: float, sleep: Sleep,
-          label: str, method: str = "POST") -> http.client.HTTPResponse:
-    """Send a request, and again after a refusal `retry` sends again; any other refusal raises ApiError."""
+          label: str, method: str = "POST", deadline: float | None = None) -> http.client.HTTPResponse:
+    """Send a request, and again after a refusal `retry` sends again within `deadline`, the time limit of the
+    call (None: none); any other refusal raises ApiError."""
     def send() -> tuple[int, Any, Any]:
         try:
             response = urllib.request.urlopen(request_for(), timeout=timeout)
@@ -189,7 +190,7 @@ def _open(request_for: Callable[[], urllib.request.Request], token: str, *, time
         return response.status, response, response.headers
 
     status, answer, headers, _asks = retry.ask(send, provider="anthropic", who="claude", label=label, method=method,
-                                               sleep=sleep, kind=_error_type)
+                                               sleep=sleep, kind=_error_type, deadline=deadline)
     if 200 <= status < 300:
         return answer
     raise ApiError(refused_line(status, answer, token), status=status,
@@ -301,10 +302,10 @@ def stream_message(token: str, body: dict[str, Any], *, sleep: Sleep = time.slee
 
 
 def _json_call(method: str, url: str, token: str, body: dict[str, Any] | None, *, sleep: Sleep,
-               label: str, timeout: float = 120.0) -> Any:
+               label: str, timeout: float = 120.0, deadline: float | None = None) -> Any:
     data = None if body is None else json.dumps(body).encode("utf-8")
     response = _open(lambda: _request(method, url, token, data, accept="application/json"),
-                     token, timeout=timeout, sleep=sleep, label=label, method=method)
+                     token, timeout=timeout, sleep=sleep, label=label, method=method, deadline=deadline)
     try:
         with response:
             raw = response.read().decode("utf-8")
@@ -326,8 +327,11 @@ def submit_batch(token: str, requests: list[tuple[str, dict[str, Any]]], *, slee
     return batch
 
 
-def get_batch(token: str, batch_id: str, *, sleep: Sleep = time.sleep, label: str = "pixel-draw") -> dict[str, Any]:
-    batch = _json_call("GET", f"{API_BASE}/messages/batches/{batch_id}", token, None, sleep=sleep, label=label)
+def get_batch(token: str, batch_id: str, *, sleep: Sleep = time.sleep, label: str = "pixel-draw",
+              deadline: float | None = None) -> dict[str, Any]:
+    """The batch object; a refused read is asked again within `deadline` (the wait for the batch)."""
+    batch = _json_call("GET", f"{API_BASE}/messages/batches/{batch_id}", token, None, sleep=sleep, label=label,
+                       deadline=deadline)
     if not isinstance(batch, dict):
         raise ApiError("pixel-draw: the batch status answer is not an object")
     return batch
@@ -349,14 +353,15 @@ def _message_reply(message: dict[str, Any], batch_id: str) -> Reply:
     )
 
 
-def batch_results(token: str, batch: dict[str, Any], *, sleep: Sleep = time.sleep,
-                  label: str = "pixel-draw") -> dict[str, Reply | ApiError]:
-    """Every result of an ended batch by custom_id; an item that was not answered is an ApiError."""
+def batch_results(token: str, batch: dict[str, Any], *, sleep: Sleep = time.sleep, label: str = "pixel-draw",
+                  deadline: float | None = None) -> dict[str, Reply | ApiError]:
+    """Every result of an ended batch by custom_id; an item that was not answered is an ApiError. A refused
+    read is asked again within `deadline` (the wait for the batch)."""
     url = batch.get("results_url")
     if not isinstance(url, str) or not url:
         raise ApiError(f"pixel-draw: batch {batch.get('id')} has ended but names no results_url")
     response = _open(lambda: _request("GET", url, token, None, accept="application/binary"),
-                     token, timeout=120.0, sleep=sleep, label=label, method="GET")
+                     token, timeout=120.0, sleep=sleep, label=label, method="GET", deadline=deadline)
     try:
         with response:
             lines = response.read().decode("utf-8").splitlines()
