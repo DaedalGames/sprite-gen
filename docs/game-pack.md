@@ -87,6 +87,8 @@ Source policies and row anchors are preserved by the asset adapter. Optional ent
 * `direction`: Direction override code or `null` (defaults to `null`). Allowed only if the entry resolves to one animation; the user can select one source `state` to override one animation. An entry expanding multiple states or directions must reject any `direction` field, including `null`, before publishing output.
 * `events`: Array of `{"frame": <int>, "name": "<string>"}` triggers where `frame` is a zero-based playback position validated within frame count (defaults to `[]`).
 
+A `video-stop` strip sidecar is packed like a loop strip and carries `loop: false`, `hold_last: true` and an `anchor` that puts the loop's pivot where the stop's cells hold it, so the two animations drawn at their anchors stand in one place.
+
 ## Packing and layout
 
 * Every frame receives 1-pixel edge extrusion on each side (+2 pixels to width and height). Maximum frame dimension plus 2 pixels must fit within `--page-size`.
