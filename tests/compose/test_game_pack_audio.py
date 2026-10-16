@@ -138,7 +138,9 @@ SOUND_ONLY_FILES = ['audio-hit.m4a', 'audio-hit.ogg', 'game-pack.json', 'sprite-
 def test_a_sound_only_request_packs_the_manifest_sound_and_helper(tmp_path, version, assets):
     path, request = with_sound(tmp_path)
     request['version'] = version
+    path.write_text(json.dumps(request))
     pictured = pack(path, tmp_path/'pictured')
+    assert pictured['version'] == version and pictured['textures']
     if assets is None:
         del request['assets']
     else:
