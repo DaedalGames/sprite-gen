@@ -218,6 +218,10 @@ Anthropic transport of `pixel-draw` (docs/pixel-draw.md) — in `sprite_gen/gen/
   a Message Batch (docs/pixel-draw.md). A wait that would reach the limit is not
   waited: the refusal ends the call after one line,
   `[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: the 16s wait would reach the time limit (12s left)`.
+  The limit is read again after the wait, right before the send: a sleep may wake
+  later than it was asked to, and one that woke at the limit or past it sends nothing —
+  the refusal ends the call the same way,
+  `[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: the time limit came during the 8s wait`.
   A realtime `pixel-draw` call has no time limit of its own.
 - **A request that got no answer it could read is never sent again** — the connection
   broke, it timed out, or the answer broke on the way, a refusal whose body broke
