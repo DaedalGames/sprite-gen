@@ -124,6 +124,16 @@ def pytest_make_collect_report(collector: pytest.Collector) -> Generator[None, p
     return report
 
 
+@pytest.fixture(autouse=True)
+def own_settings(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reads the saved preferences or the provider choices of the machine it runs on: what a call that
+    names no provider runs on (SPRITE_GEN_DEFAULT_PROVIDER) and what a default codex that cannot run turns into
+    (SPRITE_GEN_CODEX_UNAVAILABLE, `sprite-gen defaults`) are each test's own. Child processes inherit both."""
+    monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path_factory.mktemp("sprite-gen-config")))
+    for name in ("SPRITE_GEN_DEFAULT_PROVIDER", "SPRITE_GEN_CODEX_UNAVAILABLE"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def fixture_run_dir(tmp_path: Path) -> Path:
     """A throwaway copy of the golden fixture run dir."""

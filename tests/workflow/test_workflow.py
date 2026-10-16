@@ -19,6 +19,9 @@ from sprite_gen.gen.video import AUTH_SOURCE_API_KEY
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path / "settings"))
+    # What a default codex that cannot run turns into is answered by the environment here, so each test sees the
+    # questions it is about; the guide asking it is tests/gen/test_codex_unavailable.py's.
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")
 
 
 @pytest.fixture
@@ -57,7 +60,9 @@ def test_profiles_merge_and_clear_without_erasing_other_kind():
     assert cleared["profiles"] == {"image": third["profiles"]["image"]}
 
 
-@pytest.mark.parametrize("raw", [b"bad json", b'[]', b'{"version":2,"profiles":{}}',
+@pytest.mark.parametrize("raw", [b"bad json", b'[]', b'{"version":2,"profiles":{}}', b'{"version":3,"profiles":{},"general":{}}',
+                                    b'{"version":1,"profiles":{},"general":{}}',
+                                    b'{"version":2,"profiles":{},"general":{"codex_unavailable":"gemini"}}',
                                     b'{"version":1,"profiles":{"image":{"motion_method":"gpt-rows"}}}',
                                     b'{"version":1,"profiles":{"image":{"image_provider":true}}}'])
 def test_corrupt_settings_fail_without_reset(raw):
