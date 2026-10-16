@@ -282,6 +282,11 @@ class Provider(Protocol):
 
     def inspect_facing(self, path: Path, workdir: Path) -> tuple[str, dict[str, Any]]: ...
 
+    # One vision call asking `prompt` about the image at `path`, on this provider's own login
+    # (the facing check asks its own question through `inspect_facing`; `logo` asks what the
+    # lettering spells). `label` names the call in a billing line and a failure.
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = ...) -> tuple[str, dict[str, Any]]: ...
+
 
 @dataclass
 class GenResult:
