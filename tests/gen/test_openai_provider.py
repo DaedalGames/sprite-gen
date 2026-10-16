@@ -13,14 +13,16 @@ import os
 import re
 import subprocess
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import retry
+from sprite_gen.gen import retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -51,32 +53,14 @@ def api(monkeypatch):
              "slept": []}
     monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        @property
-        def status(self):
-            return state["status"]
-
-        @property
-        def headers(self):
-            return state["headers"]
-
-        def read(self):
-            return json.dumps(state["body"]).encode()
-
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
         if state.get("script"):  # one (status, body, headers) per request, in order
             state["status"], state["body"], state["headers"] = state["script"].pop(0)
+        answer = Answer(state["body"], status=state["status"], headers=state["headers"])
         if state["status"] == 200:
-            return Response()
-        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"],
-                                     io.BytesIO(json.dumps(state["body"]).encode()))
+            return answer
+        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"], answer)
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     return state
@@ -95,7 +79,7 @@ def test_generation_sends_the_billed_fields_and_publishes_a_png(tmp_path, api):
     assert _body(request) == {"model": openai.DEFAULT_MODEL, "prompt": "a blue square", "n": 1,
                               "size": "1024x1024", "quality": "auto",
                               "output_format": "png", "background": "opaque"}
-    assert timeout == openai.GEN_TIMEOUT_SECONDS
+    assert timeout == pytest.approx(openai.GEN_TIMEOUT_SECONDS, abs=1)  # the first send waits the whole time limit
     # `response_format` is rejected for gpt-image models; the answer is always b64.
     assert "response_format" not in _body(request)
     with Image.open(result.out) as image:
@@ -220,6 +204,63 @@ def test_a_refusal_still_there_after_two_more_sends_ends_the_call(tmp_path, api)
         gen.generate_image("openai", "x", tmp_path / "out.png")
     assert "(HTTP 503) code=server_is_overloaded; sent 3 times, no provider fallback" in str(error.value)
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
+
+
+def test_a_refusal_is_sent_again_only_within_the_time_limit_of_the_image(tmp_path, api, monkeypatch, capsys):
+    """SPRITE_GEN_GEN_TIMEOUT_SECONDS is the image's time limit from its first send (gen.retry): the waits
+    before a refused request goes again count in it and each send waits only what is left of it, so a
+    refusal whose next wait would reach it ends the call, its line saying why, before a caller's ceiling."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 20)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, limited, (200, api["body"], {})]
+    with pytest.raises(SystemExit) as refused:
+        gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert [timeout for _request, timeout in api["calls"]] == [20, 12] and api["slept"] == [8.0]
+    assert "(HTTP 429) code=rate_limit_exceeded; sent 2 times, no provider fallback" in str(refused.value)
+    assert ("[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+            "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
+    assert not (tmp_path / "out.png").exists()
+
+
+@pytest.mark.parametrize("call", ["image", "facing check"])
+def test_a_refusal_whose_wait_woke_past_the_time_limit_is_not_sent_again(tmp_path, api, monkeypatch, capsys, call):
+    """A sleep may wake later than asked: with 8.01 s, the 8 s wait after a 429 woke 20 ms late, past the time
+    limit. The limit is read again right before the send, so nothing is sent and the 429 ends the call as it
+    came, its stderr line saying why — not a send that finds no time left and ends as a request the server may
+    have taken."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds + 0.020
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 8.010)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, (200, api["body"], {})]
+    Image.new("RGB", (4, 4), (20, 90, 200)).save(tmp_path / "raw.png")
+    with pytest.raises(SystemExit) as refused:
+        if call == "image":
+            gen.generate_image("openai", "x", tmp_path / "out.png")
+        else:
+            openai.OpenAIProvider().inspect_facing(tmp_path / "raw.png", tmp_path)
+    assert len(api["calls"]) == 1 and api["slept"] == [8.0]
+    assert "HTTP 429" in str(refused.value) and "request failed or timed out" not in str(refused.value)
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not (tmp_path / "out.png").exists()
 
 
 @pytest.mark.parametrize("body", [{}, {"data": [None]}, {"data": [{}, {}]},
@@ -474,7 +515,7 @@ def test_a_body_that_is_not_json_is_its_text_on_one_line(api, tmp_path, monkeypa
 
     def open_request(request, *, timeout):
         api["calls"].append((request, timeout))
-        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, io.BytesIO(page.encode()))
+        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, Answer(page.encode(), status=502))
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     with pytest.raises(SystemExit) as refused:

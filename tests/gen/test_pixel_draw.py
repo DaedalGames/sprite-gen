@@ -11,6 +11,7 @@ import io
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -61,6 +62,7 @@ class FakeClaude:
         self.submitted: list[tuple[str, list]] = []
         self.polls = dict(polls or {})
         self.batch_ids = dict(known or {})
+        self.deadlines: list[tuple[str, float | None]] = []  # each batch read and the time limit it was handed
 
     def stream(self, token, body, *, sleep, label, timeout=None):
         assert token == KEY
@@ -79,13 +81,15 @@ class FakeClaude:
         self.batch_ids[batch_id] = [cid for cid, _ in requests]
         return {"id": batch_id, "processing_status": "in_progress"}
 
-    def get(self, token, batch_id, *, sleep, label):
+    def get(self, token, batch_id, *, sleep, label, deadline=None):
+        self.deadlines.append(("get", deadline))
         states = self.polls.setdefault(batch_id, ["ended"])
         state = states.pop(0) if len(states) > 1 else states[0]
         return {"id": batch_id, "processing_status": state, "results_url": f"https://results.invalid/{batch_id}",
                 "ended_at": "2026-10-12T00:00:00Z" if state == "ended" else None}
 
-    def results(self, token, batch, *, sleep, label):
+    def results(self, token, batch, *, sleep, label, deadline=None):
+        self.deadlines.append(("results", deadline))
         return {cid: replace(self.script[cid], mode="batch", batch_id=batch["id"], seconds=None)
                 for cid in self.batch_ids[batch["id"]]}
 
@@ -389,6 +393,16 @@ def test_batches_draw_at_half_price_and_repairs_stay_realtime(tmp_path, claude):
     assert calls["c1-gen1"]["cost_usd"] == api.cost_usd(calls["c1-gen1"]["usage"], batch=True)
     assert calls["c1-gen1-fix1"]["mode"] == "realtime"
     assert [(b["id"], b["collected"]) for b in report["batches"]] == [("msgbatch_1", True), ("msgbatch_2", True)]
+
+
+def test_the_batch_wait_is_the_time_limit_its_reads_are_asked_again_within(tmp_path, claude, monkeypatch):
+    """--batch-wait holds the reads of the batch, the waits `retry` asks a refused one again after included:
+    each status and results read is handed the time the wait ends, counted from when the run began waiting."""
+    monkeypatch.setattr(pixel_draw, "time", SimpleNamespace(monotonic=lambda: 100.0, sleep=lambda seconds: None))
+    fake = claude({"c1-gen1": reply(SPRITE16)}, polls={"msgbatch_1": ["in_progress", "ended"]})
+    assert draw(tmp_path / "run", "--subject", "a knight", "--size", "16", "--candidates", "1", "--batch",
+                "--batch-wait", "90") == 0
+    assert fake.deadlines == [("get", 190.0), ("get", 190.0), ("results", 190.0)]
 
 
 def test_a_batch_cut_short_is_collected_on_resume_and_not_bought_twice(tmp_path, claude):

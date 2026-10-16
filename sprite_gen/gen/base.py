@@ -71,6 +71,7 @@ _ORCHESTRATOR_SESSION_ENV_SUFFIXES = (
 # (회귀 2026-07-19: 15행 배치 중 1행의 codex exec 이 1시간 38분 무출력 — 같은 env
 # 로 14행이 성공했으니 세션/훅 충돌이 아니라 provider 측 산발 스톨. 킬 외엔 답이
 # 없으므로 바운드가 유일한 방어). 기본 180초 (maintainer 확정 2026-07-19; 실측 정상 최장 129초).
+# OpenAI·Grok 직접 호출(이미지, OpenAI 방향 검사)에는 첫 전송부터 센 호출 기한 — 다시 보내기 전 대기 포함 (gen.retry).
 GEN_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_GEN_TIMEOUT_SECONDS", "180"))
 
 
