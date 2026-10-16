@@ -2,32 +2,25 @@
 """Credential readiness is not proof of a paid subscription or remaining quota."""
 from __future__ import annotations
 
-import shutil
-import subprocess
-
-from sprite_gen.gen.base import provider_binary, provider_subprocess_env
+from sprite_gen.gen import codex_provider
 from sprite_gen.gen.openai_provider import AUTH_ENV as OPENAI_AUTH_ENV
 from sprite_gen.gen.openai_provider import resolve_credential as resolve_openai_credential
 from sprite_gen.gen.xai import AUTH_SOURCE_API_KEY, resolve_credential
 
 
-def probe_access(provider: str, *, video: bool = False) -> dict:
+def probe_access(provider: str) -> dict:
+    """One probe per provider: images and videos of a provider share its credential precedence."""
     result = {"provider": provider, "login": "unknown", "subscription": "unknown", "quota": "unknown",
               "billing": "subscription", "reason": "Subscription and media access need user confirmation when not independently known."}
     if provider == "codex":
-        if shutil.which("codex") is None:
-            return {**result, "login": "unavailable", "reason": "codex CLI is not installed"}
-        try:
-            check = subprocess.run([provider_binary("codex"), "login", "status"], capture_output=True,
-                                   text=True, encoding="utf-8", errors="replace", timeout=15, env=provider_subprocess_env())
-        except (OSError, subprocess.SubprocessError):
-            return {**result, "reason": "codex login status could not be checked"}
-        if check.returncode != 0:
-            return {**result, "login": "unavailable", "reason": "codex login status failed; sign in and check again"}
-        # Never publish the CLI's raw output: some authentication modes can name keys.
-        output = (check.stdout + check.stderr).lower()
-        if "chatgpt" not in output:
-            return {**result, "reason": "login succeeded but ChatGPT subscription authentication was not identified"}
+        # The one reading of how codex is signed in; it never repeats what the CLI said.
+        login = codex_provider.codex_login()
+        if login.source is None:
+            return {**result, "login": "unavailable", "reason": f"{login.reason}; sign in and check again"}
+        if login.source == codex_provider.AUTH_SOURCE_API_KEY:
+            return {**result, "login": "ready", "billing": "api-credit",
+                    "reason": "codex is signed in with an API key and bills it per call; confirm this billing choice "
+                              "or sign in with ChatGPT (`codex login`)."}
         return {**result, "login": "ready"}
     if provider == "openai":
         # An API key is the whole credential: there is no login to inspect and no

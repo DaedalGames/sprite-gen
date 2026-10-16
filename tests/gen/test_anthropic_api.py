@@ -264,11 +264,3 @@ def test_the_price_of_a_call_is_its_billed_tokens_at_the_published_prices(monkey
     usage = {"input_tokens": 1}
     assert api.cost_usd(usage, batch=False) == 8.00
     assert asked == [usage]
-
-
-def test_credential():
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
-        api.resolve_credential({})
-    with pytest.raises(SystemExit, match="set but empty"):
-        api.resolve_credential({"ANTHROPIC_API_KEY": " "})
-    assert api.resolve_credential({"ANTHROPIC_API_KEY": KEY}) == KEY

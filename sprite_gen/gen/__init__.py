@@ -2,7 +2,9 @@
 """Unified image generation layer for sprite-gen.
 
 Single source of truth for provider-backed image generation: codex (`image_gen`,
-ChatGPT OAuth), grok (Imagine, xAI OAuth) and openai (Images REST, OPENAI_API_KEY).
+the ChatGPT login; an API-key login bills per call and says so), grok (Imagine, the
+Grok login; XAI_API_KEY only without one, billed per call and said) and openai
+(Images REST, OPENAI_API_KEY).
 One call = prompt (+ optional refs) -> one verified raw PNG, with an optional
 deterministic transparent chroma post-process. The general `image-gen` skill is a
 thin shuttle over `sprite-gen gen`.
@@ -38,7 +40,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -50,6 +51,7 @@ from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 
 from . import chroma as chroma_mod
+from . import codex_provider
 from . import facing as facing_mod
 from . import handedness as handed_mod
 from . import prompt_parts
@@ -61,10 +63,9 @@ from .base import (
     TRANSPARENCY_STRATEGIES,
     GenRequest,
     GenResult,
+    PROVIDER_SWITCH_WORDS,
     GenTimeoutError,
     print_json,
-    provider_binary,
-    provider_subprocess_env,
     verify_png,
 )
 from .codex_provider import CodexProvider
@@ -91,7 +92,6 @@ HARD_DEFAULT_PROVIDER = "codex"
 # is not one of them: it is explicit-only, so no default, preference or fallback
 # can route a subscription user onto metered credit (구독 우선 불변식 1-2).
 EXPLICIT_ONLY_PROVIDERS = ("openai",)
-_CODEX_PROBE_TIMEOUT_SECONDS = 15
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
 # (`draw_guide`, the same 9.4 % safe margin), attached after the caller's refs, with
@@ -274,30 +274,10 @@ def resolve_transparency_strategy(backend, alpha_mode: str, *, refs: list[Path] 
 
 
 def _codex_available() -> tuple[bool, str]:
-    """Is codex usable here? Returns (ok, reason_if_not).
-
-    Two checks, cheapest first: the `codex` CLI on PATH, then `codex login status`
-    (exit 0 = logged in). Any probe error/timeout counts as unavailable with a
-    stated reason — never a silent pass. Monkeypatchable in tests.
-    """
-    if shutil.which("codex") is None:
-        return False, "codex CLI not found on PATH"
-    try:
-        completed = subprocess.run(
-            [provider_binary("codex"), "login", "status"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=provider_subprocess_env(),
-            timeout=_CODEX_PROBE_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"codex login-status probe failed: {exc}"
-    if completed.returncode != 0:
-        tail = (completed.stdout or completed.stderr or "").strip().splitlines()[-3:]
-        detail = f": {' '.join(tail)}" if tail else ""
-        return False, f"codex not logged in (codex login status exit {completed.returncode}{detail})"
-    return True, ""
+    """Is codex usable here? Returns (ok, reason_if_not), by `codex_provider.codex_login` —
+    the one reading of how codex is signed in. Monkeypatchable in tests."""
+    login = codex_provider.codex_login()
+    return login.source is not None, login.reason
 
 
 def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
@@ -669,7 +649,7 @@ def _run(args: argparse.Namespace) -> int:
             resolved_from = f"fallback-from-{fallback['from']}"
             print(
                 f"sprite-gen gen: default provider '{fallback['from']}' unavailable "
-                f"({fallback['reason']}) — falling back to '{fallback['to']}'. "
+                f"({fallback['reason']}) {PROVIDER_SWITCH_WORDS} '{fallback['to']}'. "
                 f"Set {DEFAULT_PROVIDER_ENV} or pass --provider to control this.",
                 file=sys.stderr,
             )

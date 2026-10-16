@@ -16,7 +16,7 @@ from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
 from sprite_gen.frames import cutout, extract, slice_sheet, ui_kit, unpack_atlas
-from sprite_gen.gen import gen_set, pixel_draw, prepare, video
+from sprite_gen.gen import gen_set, logo, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
@@ -35,8 +35,6 @@ from sprite_gen.effects import recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
-from sprite_gen.gen.prepare import BODY_PLAN_HELP, STYLE_DEFAULT, _outline_config
-from sprite_gen.spec.subject import SUBJECTS
 from sprite_gen.workflow import guide, preferences
 
 
@@ -61,40 +59,6 @@ def _parse_frame_order(value: str) -> list[int]:
 def _parse_grid(value: str) -> tuple[int, int]:
     cols, rows = value.lower().split("x")
     return int(cols), int(rows)
-
-
-def _add_prepare(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--out-dir", required=True, type=Path)
-    p.add_argument("--character-id", required=True)
-    p.add_argument("--base-image", type=Path)
-    p.add_argument("--description", default="")
-    p.add_argument("--style", default=STYLE_DEFAULT)
-    p.add_argument("--subject", choices=SUBJECTS, default=None,
-                   help="what the run draws: character (default) or effect — "
-                        "sets validation defaults like the sparse-frame floor")
-    p.add_argument("--cell-size", type=int, default=256)
-    p.add_argument("--cell-width", type=int)
-    p.add_argument("--cell-height", type=int)
-    p.add_argument("--safe-margin", type=int, default=None, help="absolute px override; default is 9.4%% of the cell dimension, floored")
-    p.add_argument("--chroma-key", default="auto", help="auto or #RRGGBB")
-    p.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None)
-    p.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None)
-    p.add_argument("--fit-align-y", choices=["center", "bottom"], default=None)
-    p.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None)
-    # 은퇴한 이름. 조용한 별칭으로 살려두지 않는다 — 두 이름이 공존하면 문서와 스크립트가
-    # 갈라진다. 대신 무엇으로 바뀌었는지 말하며 죽는다 (숨은 인자라 --help 를 어지럽히지 않음).
-    p.add_argument("--fit-pixel-perfect", "--no-fit-pixel-perfect", dest="_retired_pp",
-                   action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--fit-logical-height", type=int, default=None)
-    p.add_argument("--fit-palette-size", type=int, default=None)
-    p.add_argument("--fit-detail-bias", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--fit-outline", type=_outline_config, default=None, metavar="{on,off,STRENGTH}")
-    p.add_argument("--fit-pitch-hint", type=int, default=None)
-    p.add_argument("--body-plan", action="append", default=[], metavar="PLAN | FIGURE=PLAN", help=BODY_PLAN_HELP)
-    p.add_argument("--request", type=Path)
-    p.add_argument("--request-json")
-    p.add_argument("--force", action="store_true")
 
 
 def _add_extract(p: argparse.ArgumentParser) -> None:
@@ -259,7 +223,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     "scene-inspect": ("Measure scene loops, viewport clipping and repeated joins.", inspect_scene.add_arguments, inspect_scene.run),
     "workflow": ("Resolve image/sprite choices, check access and guide the next conversation step.", guide.add_arguments, guide.run),
     "defaults": ("Show, explicitly save or clear the defaults for each user workflow.", preferences.add_arguments, preferences.run),
-    "prepare": ("Prepare a sprite-gen component-row run.", _add_prepare, prepare.run),
+    "prepare": ("Prepare a sprite-gen component-row run.", prepare.add_arguments, prepare.run),
     "extract": ("Extract component-row sprite strips into clean RGBA frames.", _add_extract, extract.run),
     "compose-atlas": (
         "Compose component-row frames into a game atlas and runtime manifest.",
@@ -320,7 +284,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         ui_kit.run,
     ),
     "gen": (
-        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login, or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
+        "Generate one image via a provider (codex image_gen / grok Imagine on a subscription login first (an API key only without one, billed per call and said), or openai Images API for servers/SaaS, billed per call) into a verified PNG.",
         _add_gen,
         gen.run,
     ),
@@ -334,9 +298,15 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         gen_set.add_arguments,
         gen_set.run,
     ),
+    # Same declaration-once rule (docs/logo.md): a mood image with the title in it, its lettering redrawn on a key, the key removed.
+    "logo": (
+        "Typography logo: a title screen or poster with the title lettered in it, only its lettering redrawn on a chroma key, the key removed with glows and partial alpha kept; the text is read back and a misspelt logo refused.",
+        logo.add_arguments,
+        logo.run,
+    ),
     # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
     "pixel-draw": (
-        "Experimental: Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (ANTHROPIC_API_KEY, billed per call).",
+        "Experimental: Claude Opus draws 8..48 px pixel art as a pixel grid: gates, row repair, a pick of candidates; grid.txt is the truth, PNGs byte-reproducible (your Claude subscription first; without a login ANTHROPIC_API_KEY, billed per call).",
         pixel_draw.add_arguments,
         pixel_draw.run,
     ),

@@ -15,6 +15,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -77,21 +78,36 @@ class GenTimeoutError(SystemExit):
     """생성 서브프로세스가 GEN_TIMEOUT_SECONDS 안에 끝나지 않아 킬됨 (관측 가능)."""
 
 
-def provider_subprocess_env() -> dict[str, str]:
+def provider_subprocess_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Environment for a headless generation subprocess.
 
-    The parent environment minus known orchestrator session env families, so a
-    spawned engine (`codex exec`) is a clean standalone process — it
-    neither impersonates the spawning agent nor gets strangled by the
-    orchestrator's hooks. SSoT for every provider's `subprocess.run` env —
-    providers must not spawn with the inherited env directly.
+    The parent environment (`env`, default `os.environ`) minus known orchestrator
+    session env families, so a spawned engine (`codex exec`, `claude -p`) is a clean
+    standalone process — it neither impersonates the spawning agent nor gets
+    strangled by the orchestrator's hooks. SSoT for every provider's
+    `subprocess.run` env — providers must not spawn with the inherited env directly.
     """
-    env = {
+    source = os.environ if env is None else env
+    return {
         key: value
-        for key, value in os.environ.items()
+        for key, value in source.items()
         if not key.endswith(_ORCHESTRATOR_SESSION_ENV_SUFFIXES)
     }
-    return env
+
+
+def env_api_key(name: str, env: Mapping[str, str] | None = None, *, who: str, also: str = "") -> str | None:
+    """The API key in the environment variable `name` (`env`, default `os.environ`),
+    None when it is not set. Set but empty is refused, naming it: an empty key is a
+    mistake to show, not an absence to route around; `also` is said after it. The one
+    reading of a provider key; what a missing key means (another route, or a refusal)
+    is the caller's."""
+    source = os.environ if env is None else env
+    key = (source.get(name) or "").strip()
+    if key:
+        return key
+    if name in source:
+        raise SystemExit(f"{who}: {name} is set but empty; give it a value or unset it{also}")
+    return None
 
 
 def provider_binary(name: str) -> str:
@@ -105,6 +121,12 @@ def provider_binary(name: str) -> str:
     return shutil.which(name) or name
 
 
+# The words of the two notices a person must see on their terminal even when a batch verb keeps a
+# child's output in a log (`run_logged`): a call billed per call, and a default provider switched.
+API_CHARGE_WORDS = "this is a per-call API charge, not a subscription"
+PROVIDER_SWITCH_WORDS = "— falling back to"
+
+
 def announce_api_billing(provider: str, env_name: str, detail: str = "") -> None:
     """Say on stderr, before the request leaves, that this call bills API credit.
 
@@ -113,11 +135,23 @@ def announce_api_billing(provider: str, env_name: str, detail: str = "") -> None
     is never silent about it, because the person paying only finds out otherwise
     on the invoice (수홍 2026-09-20, 구독 우선 불변식 5).
     """
-    print(
-        f"[gen] {provider}: running on {env_name} — this is a per-call API charge, "
-        f"not a subscription{detail}",
-        file=sys.stderr,
-    )
+    print(f"[gen] {provider}: running on {env_name} — {API_CHARGE_WORDS}{detail}", file=sys.stderr, flush=True)
+
+
+def run_logged(cmd: list[str], log: Path) -> int:
+    """Run a child command with all its output in `log`. The lines that announce a per-call charge
+    or a default provider switched for being unavailable also go to this process's stderr as they
+    come: a batch verb (`gen-set`, `video-set`) keeps each item's output in its own log, and those
+    two lines are for the person running it, before the request leaves."""
+    with log.open("w", encoding="utf-8") as fh:
+        child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                 encoding="utf-8", errors="replace")
+        assert child.stdout is not None
+        for line in child.stdout:
+            fh.write(line)
+            if API_CHARGE_WORDS in line or PROVIDER_SWITCH_WORDS in line:
+                print(line.rstrip("\n"), file=sys.stderr, flush=True)
+        return child.wait()
 
 
 def flags_over_spec(spec: Mapping[str, Any], flags: Mapping[str, Any], *, verb: str, source: str,
@@ -247,6 +281,11 @@ class Provider(Protocol):
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun: ...
 
     def inspect_facing(self, path: Path, workdir: Path) -> tuple[str, dict[str, Any]]: ...
+
+    # One vision call asking `prompt` about the image at `path`, on this provider's own login
+    # (the facing check asks its own question through `inspect_facing`; `logo` asks what the
+    # lettering spells). `label` names the call in a billing line and a failure.
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = ...) -> tuple[str, dict[str, Any]]: ...
 
 
 @dataclass

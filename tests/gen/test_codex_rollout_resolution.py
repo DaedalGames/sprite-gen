@@ -143,6 +143,7 @@ def test_generate_reads_rollout_from_nondefault_codex_home(tmp_path: Path, monke
         return _Completed()
 
     monkeypatch.setattr(codex_provider.subprocess, "run", _fake_run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     workdir = tmp_path / "work"
     workdir.mkdir()
     raw = workdir / "raw.png"
@@ -181,6 +182,7 @@ def test_generate_reads_rollout_from_default_codex_home(tmp_path: Path, monkeypa
         return _Completed()
 
     monkeypatch.setattr(codex_provider.subprocess, "run", _fake_run)
+    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
     workdir = tmp_path / "work"
     workdir.mkdir()
     raw = workdir / "raw.png"

@@ -16,7 +16,9 @@ Parsing is strict and says what it found (`Issue`):
   are what the row repair asks for, one row at a time, and `splice` puts the answers in;
 - recovered issues are code-recoverable and recorded, never silent: the fence tagged otherwise or
   missing, a fence never closed, a single frame written without its `FRAME` line or under another
-  name, frames in another order, no `END` line.
+  name, frames in another order, no `END` line, an answer that wrote its block more than once (the
+  last block that reads whole is read), and — for a later answer of a set drawn over several, which
+  is given the first answer's palette (`hold_palette`) — a colour it added or changed.
 
 `png_bytes` writes a frame as a PNG whose bytes depend only on its pixels — stored deflate
 blocks, no compressor in the loop — so the same grid gives the same file on any machine and any
@@ -45,6 +47,7 @@ KEYS = string.ascii_lowercase + string.ascii_uppercase + string.digits
 TRANSPARENT_KEY = "."
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PREVIEW_COLUMNS = 8  # frames a preview row holds before the next row
 
 # PICO-8's 16 colours (lexaloffle.com/pico-8.php, the fixed palette of the console).
 PICO8 = ("#000000", "#1D2B53", "#7E2553", "#008751", "#AB5236", "#5F574F", "#C2C3C7", "#FFF1E8",
@@ -57,8 +60,8 @@ STRUCTURAL = frozenset({
     "frame_duplicate", "row_count_over", "stray_line",
 })
 ROW_CODES = frozenset({"row_width", "unknown_symbol", "row_missing"})
-RECOVERED = frozenset({"block_tag", "block_unclosed", "frame_header_missing", "frame_renamed", "frame_order",
-                       "no_end"})
+RECOVERED = frozenset({"block_tag", "block_unclosed", "block_many", "frame_header_missing", "frame_renamed",
+                       "frame_order", "no_end", "palette_added", "palette_changed"})
 
 _PALETTE_LINE = re.compile(r"^(\S)\s+(transparent|#[0-9A-Fa-f]{6})$")
 _ROW_ANSWER = re.compile(r"^\s*`?\s*ROW\s+(\S+)\s+(\d+)\s*:\s*(.*?)\s*`?\s*$", re.M)
@@ -365,28 +368,78 @@ def _json_row(row: object) -> list[str]:
     return [_json_token(v) for v in row] if isinstance(row, list) else []
 
 
-def parse_answer(text: str, fmt: str, width: int, height: int, frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
-    """Read a model's answer. Returns the grid (None when nothing could be read) and every issue."""
-    issues: list[Issue] = []
-    if fmt == "chargrid":
-        body, found = _fenced(text, "pixels")
-    elif fmt == "json":
-        body, found = _fenced(text, "json")
-        if body is None:
-            start, end = text.find("{"), text.rfind("}")
-            body, found = (text[start:end + 1], "block_tag") if 0 <= start < end else (None, None)
-    else:
-        raise ValueError(f"unknown format {fmt!r}")
-    if body is None:
-        issues.append(Issue("no_block", None, None, f"no ```{'pixels' if fmt == 'chargrid' else 'json'} block"))
-        return None, issues
-    if found:
-        issues.append(Issue(found))
+def _blocks(text: str, tag: str) -> list[tuple[str, str | None]]:
+    """Every ```<tag> block of an answer, in order, and how each was found: as asked (None), or never
+    closed before the next block or the end of the answer (`block_unclosed`)."""
+    openers = list(re.finditer(r"```" + re.escape(tag) + r"[ \t]*\r?\n", text))
+    out: list[tuple[str, str | None]] = []
+    for number, opener in enumerate(openers):
+        end = openers[number + 1].start() if number + 1 < len(openers) else len(text)
+        close = text.find("```", opener.end(), end)
+        out.append((text[opener.end():close], None) if close >= 0 else (text[opener.end():end], "block_unclosed"))
+    return out
+
+
+def _read_body(body: str, found: str | None, fmt: str, width: int, height: int,
+               frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    issues = [Issue(found)] if found else []
     parse = _parse_chargrid_body if fmt == "chargrid" else _parse_json_body
     grid = parse(body, width, height, frames, issues)
     if grid is not None and not structural(issues):
         issues.extend(check_rows(grid))
     return grid, issues
+
+
+def _last_whole(blocks: list[tuple[str, str | None]], fmt: str, width: int, height: int,
+                frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    """An answer that wrote its block more than once — a first try, then "Corrected:" and the block
+    again: the last block that reads whole is the answer; when none does, the last whose rows the
+    row repair can fix; when none can, the last. Which one was read is recorded (`block_many`)."""
+    read = [_read_body(body, found, fmt, width, height, frames) for body, found in blocks]
+    numbers = range(len(read) - 1, -1, -1)
+    chosen = next((n for n in numbers if read[n][0] is not None and not structural(read[n][1])
+                   and not row_issues(read[n][1])), None)
+    if chosen is None:
+        chosen = next((n for n in numbers if read[n][0] is not None and not structural(read[n][1])), len(read) - 1)
+    grid, issues = read[chosen]
+    return grid, [Issue("block_many", None, None, f"{len(read)} blocks, read block {chosen + 1}"), *issues]
+
+
+def parse_answer(text: str, fmt: str, width: int, height: int, frames: Sequence[str]) -> tuple[Grid | None, list[Issue]]:
+    """Read a model's answer. Returns the grid (None when nothing could be read) and every issue."""
+    if fmt not in FORMATS:
+        raise ValueError(f"unknown format {fmt!r}")
+    tag = "pixels" if fmt == "chargrid" else "json"
+    blocks = _blocks(text, tag)
+    if len(blocks) > 1:
+        return _last_whole(blocks, fmt, width, height, frames)
+    body, found = _fenced(text, tag)
+    if body is None and fmt == "json":
+        start, end = text.find("{"), text.rfind("}")
+        body, found = (text[start:end + 1], "block_tag") if 0 <= start < end else (None, None)
+    if body is None:
+        return None, [Issue("no_block", None, None, f"no ```{tag} block")]
+    return _read_body(body, found, fmt, width, height, frames)
+
+
+def hold_palette(grid: Grid, issues: list[Issue], palette: dict[str, str | None]) -> tuple[Grid, list[Issue]]:
+    """`grid` under the palette it was given — a later answer of a set drawn over several, which writes
+    the first answer's palette again. A key it added is refused, so its rows become row issues for the
+    row repair; a colour it changed is put back. Both are recorded."""
+    found = []
+    for key, color in grid.palette.items():
+        if key not in palette:
+            found.append(Issue("palette_added", None, None, f"{key} {color}"))
+        elif (color or "").lower() != (palette[key] or "").lower():
+            found.append(Issue("palette_changed", None, None, f"{key} {color}, kept {palette[key]}"))
+    held = replace(grid, palette=dict(palette))
+    return held, [i for i in issues if i.code not in ROW_CODES] + found + check_rows(held)
+
+
+def joined(grids: Sequence[Grid]) -> Grid:
+    """The frames of several answers, in order, under the first answer's palette (`hold_palette`)."""
+    frames = {name: rows for grid in grids for name, rows in grid.frames.items()}
+    return replace(grids[0], frames=frames)
 
 
 def read_grid_text(text: str) -> tuple[Grid | None, list[Issue]]:
@@ -524,15 +577,18 @@ def preview_scale(size: int) -> int:
     return max(1, 256 // size)
 
 
-def preview_strip(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int) -> Image.Image:
-    """The frames side by side, each enlarged `scale` times, two enlarged pixels apart."""
+def preview_strip(frames: Sequence[Sequence[Sequence[Pixel]]], scale: int,
+                  columns: int = PREVIEW_COLUMNS) -> Image.Image:
+    """The frames side by side, each enlarged `scale` times, two enlarged pixels apart; past `columns`
+    frames they go on in rows, left to right and top to bottom, so a long set stays readable."""
     images = [image_of(f).resize((len(f[0]) * scale, len(f) * scale), Image.NEAREST) for f in frames]
     gap = 2 * scale
-    strip = Image.new("RGBA", (sum(i.width for i in images) + gap * (len(images) - 1), max(i.height for i in images)))
-    x = 0
-    for image in images:
-        strip.paste(image, (x, 0))
-        x += image.width + gap
+    across = min(columns, len(images))
+    down = -(-len(images) // across)
+    width, height = max(i.width for i in images), max(i.height for i in images)
+    strip = Image.new("RGBA", (width * across + gap * (across - 1), height * down + gap * (down - 1)))
+    for number, image in enumerate(images):
+        strip.paste(image, ((number % across) * (width + gap), (number // across) * (height + gap)))
     return strip
 
 

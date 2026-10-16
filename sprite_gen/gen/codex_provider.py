@@ -13,6 +13,11 @@ Decisive flags (each verified in the image-gen skill):
 - `--add-dir <Codex state root>/generated_images`  not in the default writable set; the root is `CODEX_HOME` when set and `~/.codex` otherwise.
 - `--skip-git-repo-check`  the sandbox dir is not a git repo.
 - NO `--ephemeral`  the session jsonl must survive on disk so we can extract from it.
+
+How codex is signed in is one question, `codex_login`, asked by every caller: the default
+provider resolution, `generate`, the facing check and the guided workflow. Signed in with
+ChatGPT it runs on the subscription; signed in with an API key it bills that key per call,
+said on stderr before the request leaves like every metered route (`announce_api_billing`).
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from pathlib import Path
 from .base import (
     GEN_TIMEOUT_SECONDS,
     TRANSPARENCY_NATIVE,
+    announce_api_billing,
     GenRequest,
     GenTimeoutError,
     ProviderRun,
@@ -36,6 +42,44 @@ from .base import (
     provider_subprocess_env,
     verify_png,
 )
+
+AUTH_SOURCE_LOGIN = "codex-login"  # signed in with ChatGPT: the subscription
+AUTH_SOURCE_API_KEY = "codex-api-key"  # signed in with an API key: billed per call
+LOGIN_PROBE_TIMEOUT_SECONDS = 15
+LOGIN_HINT = "`codex login` signs your ChatGPT subscription in"
+
+
+@dataclass(frozen=True)
+class CodexLogin:
+    source: str | None  # AUTH_SOURCE_LOGIN | AUTH_SOURCE_API_KEY | None (not usable here)
+    reason: str = ""  # why it is not usable
+
+
+def codex_login() -> CodexLogin:
+    """How `codex` is signed in here, by `codex login status`: exit 0 and "ChatGPT" in what it
+    says is the subscription; exit 0 otherwise is signed in with an API key. No CLI, a probe that
+    fails or does not answer, and a non-zero exit are not usable, with the reason. What the CLI
+    says is never repeated: an API-key login can name its key."""
+    binary = provider_binary("codex")
+    try:
+        completed = subprocess.run([binary, "login", "status"], capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", env=provider_subprocess_env(),
+                                   timeout=LOGIN_PROBE_TIMEOUT_SECONDS)
+    except FileNotFoundError:
+        return CodexLogin(None, "codex CLI not found on PATH")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CodexLogin(None, f"codex login-status probe failed: {type(exc).__name__}")
+    if completed.returncode != 0:
+        return CodexLogin(None, f"codex not logged in (codex login status exit {completed.returncode})")
+    said = (completed.stdout + completed.stderr).lower()
+    return CodexLogin(AUTH_SOURCE_LOGIN if "chatgpt" in said else AUTH_SOURCE_API_KEY)
+
+
+def announce_codex_billing(login: CodexLogin, what: str = "") -> None:
+    """The stderr charge line for a codex signed in with an API key; nothing on the subscription."""
+    if login.source == AUTH_SOURCE_API_KEY:
+        announce_api_billing("codex", "the API key codex is signed in with", f"{what} — {LOGIN_HINT}.")
+
 
 # codex carries the inline base64 on a version-specific record. All are
 # first-class canonical records (not fallbacks) — read whichever the running
@@ -299,6 +343,10 @@ class CodexProvider:
         from .facing_vision import codex_inspect
         return codex_inspect(path, workdir)
 
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = "vision check") -> tuple[str, dict]:
+        from .facing_vision import codex_inspect
+        return codex_inspect(path, workdir, prompt=prompt, label=label)
+
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun:
         # `image_gen` exposes no effort or size dial, so neither knob is carried
         # into the prompt. Refusing beats returning a default-effort image under a
@@ -314,6 +362,10 @@ class CodexProvider:
             raise SystemExit(
                 f"codex-gen: Codex state root does not exist or is not a directory: {codex_home}"
             )
+        login = codex_login()
+        if login.source is None:
+            raise SystemExit(f"codex-gen: {login.reason}; {LOGIN_HINT}")
+        announce_codex_billing(login)
         sessions_root = codex_home / "sessions"
         preexisting_rollouts = set(_rollout_files(sessions_root))
         gen_dir = codex_home / "generated_images"
@@ -396,6 +448,7 @@ class CodexProvider:
             model=request.model,
             session_id=session_id,
             extra={
+                "auth_source": login.source,
                 "inline_results": len(results),
                 "rollout_cleaned": not self.keep_session,
                 # codex's own claim about the output; the orchestrator measures

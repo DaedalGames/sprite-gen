@@ -17,7 +17,7 @@ from PIL import Image
 
 from conftest import help_options
 from sprite_gen.gen import anthropic_api as api
-from sprite_gen.gen import pixel_draw, refusal
+from sprite_gen.gen import claude_login, pixel_draw, refusal
 from sprite_gen.gen import pixel_grid as pg
 from sprite_gen.gen.anthropic_api import ApiError, Reply
 
@@ -92,7 +92,9 @@ class FakeClaude:
 
 @pytest.fixture
 def claude(monkeypatch):
+    """The API key route: no subscription login here (`claude_login.login`), `ANTHROPIC_API_KEY` set."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: None)
     monkeypatch.setattr(pixel_draw, "BATCH_POLL_SECONDS", 0)
 
     def make(script, **kwargs) -> FakeClaude:
@@ -266,6 +268,19 @@ def test_a_candidate_is_drawn_twice_at_most(tmp_path, claude):
     assert asked(fake) == ["c1-gen1", "c1-gen2"]
 
 
+def test_an_answer_that_writes_its_block_again_is_read_from_the_last_whole_block(tmp_path, claude):
+    """A block, then 'Corrected:' and the block again (seen on the subscription, 2026-10-15): the last
+    block that reads whole is the answer - recorded, not drawn again."""
+    half = SPRITE16[:SPRITE16.index("FRAME sprite")] + "END\n```"
+    fake = claude({"c1-gen1": reply(half + "\n\nWait, the frame belongs inside the block. Corrected:\n\n" + SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    assert asked(fake) == ["c1-gen1"]
+    (candidate,) = report_of(out)["candidates"]
+    assert candidate["status"] == "passed" and candidate["redraws"] == []
+    assert candidate["G1"] == {"ok": True, "issues": [], "recovered": [{"code": "block_many", "detail": "2 blocks, read block 2"}]}
+
+
 def test_a_refusal_is_reported_as_it_came(tmp_path, claude):
     fake = claude({"c1-gen1": reply("", stop="refusal", details={"type": "refusal", "category": "cyber", "explanation": "x"})})
     out = tmp_path / "run"
@@ -431,7 +446,10 @@ def test_a_used_folder_is_refused(tmp_path, claude):
 @pytest.mark.parametrize("args,message", [
     (["--size", "7"], "--size is 8..48 pixels, got 7"),
     (["--size", "49"], "--size is 8..48 pixels, got 49"),
-    (["--frames", "a,b,c,d,e"], "at most 4 frames in one call, got 5"),
+    (["--frames", ",".join(f"f{i}" for i in range(65))], "at most 64 frames, got 65"),
+    (["--frames", "a,b", "--duration-ms", "5"], "--duration-ms is at least 10, got 5"),
+    (["--style", " "], "--style is a sentence of words, got ' '"),
+    (["--motion", "a spin"], "--motion is two or more frames"),
     (["--frames", "a b"], "frame names are letters, digits"),
     (["--frames", "a,a"], "frame names must differ"),
     (["--frames", "a,b", "--walk-cycle"], "--walk-cycle is four frames"),
@@ -538,18 +556,72 @@ def test_an_edited_grid_is_checked_and_rendered_without_a_call(tmp_path, claude,
         pixel_draw.main(["--grid", str(edited), "--out-dir", str(tmp_path / "fourth"), "--candidates", "2"])
 
 
-def test_no_key_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
+def test_no_credential_is_refused_before_the_folder_is_made(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: None)
     out = tmp_path / "run"
-    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY is not set"):
+    with pytest.raises(SystemExit, match=r"no subscription login \(`claude auth status`\) and ANTHROPIC_API_KEY is not set"):
         draw(out, "--subject", "a knight")
     assert not out.exists()
+
+
+class FakeLogin:
+    """The subscription route: `claude -p` answers by call id; the API must not be reached."""
+
+    def __init__(self, monkeypatch, script):
+        self.script = dict(script)
+        self.asked: list[tuple[str, dict]] = []
+        monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: claude_login.Login("claude.ai", "max"))
+        monkeypatch.setattr(claude_login, "send_message", self.send)
+        for name in ("stream_message", "submit_batch", "get_batch", "batch_results"):
+            monkeypatch.setattr(api, name, lambda *a, **k: pytest.fail("the API was reached on a subscription run"))
+
+    def send(self, body, *, label, env=None, run=None):
+        call_id = label.split()[-1]
+        self.asked.append((call_id, body))
+        return replace(self.script[call_id], mode="subscription", request_id=None)
+
+
+def test_a_signed_in_subscription_draws_with_no_charge_even_with_a_key_set(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    fake = FakeLogin(monkeypatch, {"c1-gen1": reply(ICON_ROW), "c1-gen1-fix1": reply(ICON_ROW_FIX)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a chest", "--kind", "icon", "--candidates", "1") == 0
+    report = report_of(out)
+    err = capsys.readouterr().err
+    assert "per-call API charge" not in err and "subscription" in err  # the call lines say what it ran on
+    assert asked(fake) == ["c1-gen1", "c1-gen1-fix1"]
+    assert report["status"] == "ok" and report["auth_source"] == "claude-login" and report["cost_usd"] == 0.0
+    assert [(c["mode"], c["auth_source"], c["cost_usd"]) for c in report["calls"]] == [
+        ("subscription", "claude-login", 0.0)] * 2
+    assert report["calls"][0]["thinking_tokens"] == 1000  # usage is kept: it counts against the plan
+
+
+def test_a_batch_runs_on_the_key_even_when_signed_in(tmp_path, claude, monkeypatch, capsys):
+    monkeypatch.setattr(claude_login, "login", lambda env=None, run=None: pytest.fail("a batch asked the login"))
+    fake = claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1", "--batch") == 0
+    assert "[gen] claude: running on ANTHROPIC_API_KEY — this is a per-call API charge" in capsys.readouterr().err
+    assert [cid for cid, _ in fake.submitted[0][1]] == ["c1-gen1"]
+    assert report_of(out)["auth_source"] == "ANTHROPIC_API_KEY"
+
+
+def test_a_run_read_back_whole_asks_nothing_and_announces_no_charge(tmp_path, claude, capsys):
+    claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    assert "per-call API charge" in capsys.readouterr().err
+    again = claude({})
+    assert pixel_draw.main(["--out-dir", str(out), "--resume"]) == 0
+    assert again.asked == [] and "per-call API charge" not in capsys.readouterr().err
 
 
 def test_the_cli_names_the_verb_and_its_flags():
     flags = help_options("-m", "sprite_gen.cli", "pixel-draw")
     assert {"--subject", "--spec", "--grid", "--size", "--kind", "--frames", "--walk-cycle", "--palette", "--candidates",
-            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume"} <= flags
+            "--effort", "--format", "--batch", "--batch-wait", "--max-tokens", "--pick", "--out-dir", "--resume",
+            "--style", "--motion", "--duration-ms"} <= flags
 
 
 def pixel_request(**changes) -> pixel_draw.PixelRequest:
@@ -659,3 +731,50 @@ def test_one_candidate_past_the_safe_area_is_the_pick(tmp_path, claude, answer, 
     assert report["pick"]["by"] == "only" and (out / f"frame-{frame}.png").is_file()
     assert report["warnings"] == candidate["warnings"] == warnings
     assert report["info"] == candidate["info"] == info
+
+
+def test_the_charge_is_said_before_any_request_leaves_even_from_another_thread(tmp_path):
+    """Two candidates ask at once: the second must not send before the first has said the charge."""
+    import threading
+    said, order = threading.Event(), []
+
+    def announce():
+        order.append("announce-start")
+        assert gate.wait(5)
+        said.set()
+        order.append("announced")
+
+    gate = threading.Event()
+    calls = pixel_draw.Calls(tmp_path, claude_login.Credential("ANTHROPIC_API_KEY", token=KEY), sleep=lambda s: None,
+                             note=lambda line: None, announce=announce)
+    first = threading.Thread(target=calls._leaving)
+    first.start()
+    while "announce-start" not in order:
+        pass
+    second = threading.Thread(target=lambda: (calls._leaving(), order.append(f"second-leaves said={said.is_set()}")))
+    second.start()
+    second.join(0.2)
+    assert second.is_alive(), "the second request left before the charge was said"
+    gate.set()
+    first.join(5)
+    second.join(5)
+    assert order == ["announce-start", "announced", "second-leaves said=True"]
+
+
+def test_a_resume_reports_the_route_its_calls_ran_on(tmp_path, claude, monkeypatch):
+    claude({"c1-gen1": reply(SPRITE16)})
+    out = tmp_path / "run"
+    assert draw(out, "--subject", "a knight", "--size", "16", "--candidates", "1") == 0
+    FakeLogin(monkeypatch, {})  # signed in now; every call is read back, none is asked
+    assert pixel_draw.main(["--out-dir", str(out), "--resume"]) == 0
+    report = report_of(out)
+    assert report["auth_source"] == "ANTHROPIC_API_KEY" and "auth_sources" not in report
+    assert [c["auth_source"] for c in report["calls"]] == ["ANTHROPIC_API_KEY"] and report["cost_usd"] > 0
+
+
+def test_a_run_whose_calls_ran_on_both_routes_says_so():
+    calls = [{"auth_source": "ANTHROPIC_API_KEY"}, {"auth_source": "claude-login"}, {"auth_source": "claude-login"}]
+    assert pixel_draw.run_auth_source(calls, "claude-login") == {"auth_source": "mixed",
+                                                                 "auth_sources": ["ANTHROPIC_API_KEY", "claude-login"]}
+    assert pixel_draw.run_auth_source(calls[1:], "ANTHROPIC_API_KEY") == {"auth_source": "claude-login"}
+    assert pixel_draw.run_auth_source([], "claude-login") == {"auth_source": "claude-login"}

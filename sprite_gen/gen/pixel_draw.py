@@ -10,17 +10,24 @@ asked for again on its own.
 
 One run, `--candidates` K answers to the same request:
 
-1. Each candidate is drawn once at `--effort`. An answer that used all `--max-tokens` thinking
-   and wrote nothing is drawn once more one effort lower; a refusal is reported as it came.
+1. Each candidate is drawn once at `--effort`, in one call of at most FRAMES_MAX frames — the
+   frames of one answer share a palette and a design. A set of more frames (up to FRAMES_TOTAL_MAX)
+   is drawn over several calls in order: each later call writes the first call's palette again
+   (`pixel_grid.hold_palette`: a colour added is refused and its rows repaired) and is shown the
+   first frame and the frames just before its own (`drawn_lines`). An answer that used all
+   `--max-tokens` thinking and wrote nothing is drawn once more one effort lower; a refusal is
+   reported as it came.
 2. G1 parse. Row issues are repaired one row at a time (`ROW <frame> <n>: …`, two rounds at most);
-   an answer still broken, or broken beyond its rows, is drawn once more. A candidate is drawn at
-   most twice in all.
-3. G2 palette, G3 alpha and G6 frames fail a candidate; G4 tile seam, G5 stray pixels, the walk
-   cycle's leg alternation and G8 safe area (a frame past the physical cap, a sprite off the floor
-   row) warn, and G8 notes a frame past the safe area within the cap in an info line. G3, G4, G5
-   and G8 are judgments sprite-gen already makes elsewhere, called rather than copied
-   (`pixel_gates`). The prompt gives a sprite or icon the engine's safe area (`safe_area_lines`) in
-   rows and columns, as a target for the body's size that a pose may go past.
+   an answer still broken, or broken beyond its rows, is drawn once more. Each call is drawn at
+   most twice; a call that fails ends its candidate.
+3. G2 palette, G3 alpha and G6 frames fail a candidate, on every frame once all are drawn; G4 tile
+   seam, G5 stray pixels, the walk cycle's leg alternation and G8 safe area (a frame past the
+   physical cap, a sprite off the floor row) warn, and G8 notes a frame past the safe area within
+   the cap in an info line. Frames of one motion (`--motion`, a walk cycle) take G6's motion rule
+   (`pixel_gates` header). G3, G4, G5, G6's size reading and G8 are judgments sprite-gen already
+   makes elsewhere, called rather than copied (`pixel_gates`). The prompt gives a sprite or icon the
+   engine's safe area (`safe_area_lines`) in rows and columns, as a target for the body's size that
+   a pose may go past.
 4. G7: of two or more candidates that passed, one vision call (effort low) picks, or a person
    does (`--pick human`). One that passed alone is the pick.
 
@@ -37,12 +44,13 @@ import hashlib
 import io
 import json
 import random
+import re
 import shutil
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Generator
@@ -53,25 +61,31 @@ from sprite_gen.qa.preview import checker
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import anthropic_api as api
-from . import refusal
+from . import claude_login, refusal
 from .anthropic_api import ApiError, Reply
 from .base import announce_api_billing, flags_over_spec, print_json
 from .pixel_gates import colors_used, evaluate, safe_area
 from .pixel_grid import (
-    FORMATS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, palette_rule, parse_answer,
-    parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text, recovered, row_issues, row_text,
-    save_gif, splice, structural, tiled_3x3, to_text, image_of,
+    FORMATS, PREVIEW_COLUMNS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, hold_palette,
+    joined, palette_rule, parse_answer, parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text,
+    recovered, row_issues, row_text, save_gif, splice, structural, tiled_3x3, to_text, image_of,
 )
 
 VERB = "pixel-draw"
 SIZE_MIN, SIZE_MAX, SIZE_DEFAULT = 8, 48, 32
-FRAMES_MAX = 4
+FRAMES_MAX = 4  # frames one call draws: one answer, one palette, one design
+FRAMES_TOTAL_MAX = 64  # frames one request draws, FRAMES_MAX a call
+DRAWN_SHOWN = 4  # frames just before a later call's own that it is shown, with the first frame
+# Characters of a written grid per token, for the estimate said before a long set is drawn: Opus's
+# own answers recorded 2026-10-12..14 wrote 2.0 characters a token at 32 px, 2.5 at 48 px.
+GRID_CHARS_PER_TOKEN = 2
 EFFECT_FRAMES_MAX = 8
 EFFECT_FRAMES = ("birth", "peak", "decay", "gone")
 KINDS = ("sprite", "icon", "tile", "effect")
 CANDIDATES_MIN, CANDIDATES_MAX, CANDIDATES_DEFAULT = 1, 6, 2
 EFFORT_CHOICES = ("medium", "high", "xhigh")
 EFFORT_DEFAULT = "high"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 LOWER_EFFORT = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low"}
 MAX_TOKENS_SINGLE, MAX_TOKENS_MULTI = 32000, 64000
 MAX_TOKENS_MIN = 1024
@@ -81,9 +95,17 @@ PICKS = ("vision", "human")
 BATCH_WAIT_DEFAULT = 3600.0
 BATCH_POLL_SECONDS = 30.0
 GIF_FRAME_MS = 150
-SPEC_KEYS = ("subject", "size", "kind", "frames", "walk_cycle", "palette")
+DURATION_MS_MIN = 10  # a GIF times its frames in hundredths of a second
+SPEC_KEYS = ("subject", "size", "kind", "frames", "walk_cycle", "palette", "style", "motion", "duration_ms")
 RUN_FLAGS = ("candidates", "effort", "answer_format", "batch", "max_tokens", "pick")
 REPORT_KIND = "sprite-gen-pixel-draw-report"
+
+# The style sentence a kind is drawn in unless `--style` gives one; what a kind must be — a transparent
+# background, the safe area and the floor, a tile's seams, an effect's centre — stays outside it.
+SPRITE_STYLE = ("clean, readable pixel art for a 2D RPG: a dark (not pure black) outline around the silhouette, "
+                "2-3 shades per material, light from the top-left, no anti-aliasing noise and no stray single pixels.")
+TILE_STYLE = ("clean, readable pixel art for a 2D RPG: 2-3 shades per material, light from the top-left, no noisy "
+              "single-pixel speckle.")
 
 SYSTEM = ("You are an expert pixel artist who draws game assets directly as pixel data. "
           "What you write is converted to a PNG mechanically, pixel for pixel, with no cleanup: "
@@ -128,6 +150,10 @@ class PixelRequest:
     batch: bool
     max_tokens: int
     pick: str
+    style: str | None = None  # in place of the kind's style sentence, in the drawing and the pick
+    motion: str | None = None  # the frames, in order, are this one motion
+    poses: dict[str, str] = field(default_factory=dict)  # frame name -> what that frame shows
+    duration_ms: int = GIF_FRAME_MS  # each frame of anim.gif
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -146,10 +172,21 @@ def _refuse(message: str) -> SystemExit:
     return SystemExit(f"{VERB}: {message}")
 
 
-def _frames(value: Any, kind: str = "sprite") -> tuple[str, ...]:
-    names = [n.strip() for n in value.split(",")] if isinstance(value, str) else value
-    if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
+def _frames(value: Any, kind: str = "sprite") -> tuple[tuple[str, ...], dict[str, str]]:
+    """The frame names, and what each frame shows where a spec gave it (`{"name": ..., "pose": ...}`)."""
+    items = [n.strip() for n in value.split(",")] if isinstance(value, str) else value
+    if not isinstance(items, list) or not items:
         raise _refuse("--frames takes comma-separated frame names, e.g. down,up,left,right")
+    names, poses = [], {}
+    for item in items:
+        if isinstance(item, dict) and set(item) == {"name", "pose"} and isinstance(item["name"], str) \
+                and isinstance(item["pose"], str) and item["pose"].strip():
+            names.append(item["name"])
+            poses[item["name"]] = item["pose"].strip()
+        elif isinstance(item, str) and item:
+            names.append(item)
+        else:
+            raise _refuse('a frame is a name or {"name": ..., "pose": ...} with a pose in words, got ' + repr(item))
     bad = [n for n in names if not frame_name_ok(n)]
     if bad:
         raise _refuse("frame names are letters, digits, '_' or '-' (at most 32): " + ", ".join(map(repr, bad)))
@@ -157,9 +194,30 @@ def _frames(value: Any, kind: str = "sprite") -> tuple[str, ...]:
         raise _refuse("frame names must differ: " + ", ".join(names))
     if kind == "effect" and not 2 <= len(names) <= EFFECT_FRAMES_MAX:
         raise _refuse(f"an effect needs 2..{EFFECT_FRAMES_MAX} frames, got {len(names)}")
-    if kind != "effect" and len(names) > FRAMES_MAX:
-        raise _refuse(f"at most {FRAMES_MAX} frames in one call, got {len(names)}")
-    return tuple(names)
+    if kind != "effect" and len(names) > FRAMES_TOTAL_MAX:
+        raise _refuse(f"at most {FRAMES_TOTAL_MAX} frames, got {len(names)}")
+    return tuple(names), poses
+
+
+def _duration(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < DURATION_MS_MIN:
+        raise _refuse(f"--duration-ms is at least {DURATION_MS_MIN}, got {value!r}")
+    return value
+
+
+def _words(value: Any, flag: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise _refuse(f"{flag} is a sentence of words, got {value!r}")
+    return value.strip()
+
+
+def _motion(motion: str | None, kind: str, frames: tuple[str, ...]) -> None:
+    if motion is not None and kind == "effect":
+        raise _refuse("--motion does not apply to an effect (its frames are a lifetime already)")
+    if motion is not None and len(frames) < 2:
+        raise _refuse(f"--motion is two or more frames in order, got {len(frames)}")
 
 
 def _load_spec(path: Path) -> dict[str, Any]:
@@ -190,7 +248,11 @@ def resolve_request(args: argparse.Namespace) -> PixelRequest:
     kind = merged.get("kind", "sprite")
     if kind not in KINDS:
         raise _refuse(f"--kind is one of {', '.join(KINDS)}, got {kind!r}")
-    frames = _frames(merged["frames"], kind) if "frames" in merged else (EFFECT_FRAMES if kind == "effect" else (kind,))
+    frames, poses = _frames(merged["frames"], kind) if "frames" in merged else (
+        EFFECT_FRAMES if kind == "effect" else (kind,), {})
+    style, motion = _words(merged.get("style"), "--style"), _words(merged.get("motion"), "--motion")
+    _motion(motion, kind, frames)
+    duration_ms = _duration(merged.get("duration_ms", GIF_FRAME_MS))
     walk_cycle = bool(merged.get("walk_cycle", False))
     if walk_cycle and kind == "effect":
         raise _refuse("--walk-cycle does not apply to an effect")
@@ -209,15 +271,58 @@ def resolve_request(args: argparse.Namespace) -> PixelRequest:
     return PixelRequest(
         subject=subject.strip(), size=size, kind=kind, frames=frames, walk_cycle=walk_cycle, palette=rule,
         candidates=candidates, effort=args.effort or EFFORT_DEFAULT, answer_format=args.answer_format or "chargrid",
-        batch=bool(args.batch), max_tokens=max_tokens, pick=args.pick or "vision",
+        batch=bool(args.batch), max_tokens=max_tokens, pick=args.pick or "vision", style=style, motion=motion,
+        poses=poses, duration_ms=duration_ms,
     )
+
+
+# ----------------------------------------------------------------------------- calls of at most four frames
+
+@dataclass(frozen=True)
+class Part:
+    """One call's share of a request's frames: call `number` of `count`."""
+
+    number: int
+    count: int
+    frames: tuple[str, ...]
+
+
+def call_parts(request: PixelRequest) -> list[Part]:
+    """The request's frames, FRAMES_MAX a call, in order. An effect is one call of its 2..8 frames."""
+    frames = request.frames
+    if request.kind == "effect" or len(frames) <= FRAMES_MAX:
+        return [Part(1, 1, frames)]
+    chunks = [frames[i:i + FRAMES_MAX] for i in range(0, len(frames), FRAMES_MAX)]
+    return [Part(number, len(chunks), chunk) for number, chunk in enumerate(chunks, 1)]
+
+
+def shown_frames(drawn: Grid) -> list[str]:
+    """What a later call is shown of the frames already drawn: the first, and the DRAWN_SHOWN just before
+    its own. At 48 px a frame written as keys is about 1,200 tokens (GRID_CHARS_PER_TOKEN), so the five
+    add about 6,000 input tokens to a call whose answer and thinking run to tens of thousands."""
+    names = list(drawn.frames)
+    return list(dict.fromkeys([names[0], *names[-DRAWN_SHOWN:]]))
+
+
+def drawn_lines(request: PixelRequest, drawn: Grid) -> list[str]:
+    """The palette and the shown frames already drawn, written as the answer writes them."""
+    names = shown_frames(drawn)
+    if request.answer_format == "chargrid":
+        block = "```reference\n" + to_text(replace(drawn, frames={n: drawn.frames[n] for n in names})) + "```"
+    else:
+        palette = json.dumps(["transparent" if c is None else c for c in drawn.palette.values()])
+        frames = ",\n".join(f' "{n}": [\n' + ",\n".join("  [" + ", ".join(row) + "]" for row in drawn.frames[n]) + "]"
+                            for n in names)
+        block = "```reference\n" + f'{{"palette": {palette}, "frames": {{\n{frames}}}}}' + "\n```"
+    return ["Frames already drawn - the first frame and the frames just before this answer's - with the palette, "
+            "for reference; do not write them again:", block]
 
 
 # ----------------------------------------------------------------------------- prompts
 
-def _format_spec(request: PixelRequest) -> str:
+def _format_spec(request: PixelRequest, frames: tuple[str, ...]) -> str:
     w = h = request.size
-    names = ", ".join(request.frames)
+    names = ", ".join(frames)
     if request.answer_format == "chargrid":
         return (
             "Output format: exactly one fenced code block tagged `pixels`, and nothing after it:\n"
@@ -266,8 +371,22 @@ def safe_area_lines(request: PixelRequest) -> list[str]:
     return lines
 
 
-def generation_prompt(request: PixelRequest) -> str:
+def _part_line(request: PixelRequest, part: Part) -> str:
+    first = request.frames.index(part.frames[0]) + 1
+    last = first + len(part.frames) - 1
+    which = f"frame {first}" if first == last else f"frames {first}-{last}"
+    line = (f"The {len(request.frames)} frames are drawn {FRAMES_MAX} at a time, over {part.count} answers in order. "
+            f"This is answer {part.number} of {part.count}: it draws {', '.join(part.frames)} ({which}).")
+    if part.number == 1:
+        line += " The answers after it keep this answer's palette and design, so choose them for the whole set."
+    return line
+
+
+def generation_prompt(request: PixelRequest, part: Part | None = None, drawn: Grid | None = None) -> str:
+    """The drawing prompt; for a set drawn over several calls, the prompt of call `part`, shown the
+    frames `drawn` so far after the first call."""
     frames = request.frames
+    own = part.frames if part is not None else frames
     lines = [f"Draw: {request.subject}", f"Canvas: exactly {request.size}x{request.size} pixels per frame."]
     if request.kind == "effect":
         lines.append(f"Frames: {', '.join(frames)}. One effect's lifetime: appears, grows to a peak, then disappears. "
@@ -281,7 +400,17 @@ def generation_prompt(request: PixelRequest) -> str:
         lines.append(f"The frames are one looping walk cycle: {a} = contact pose with the front leg forward, "
                      f"{b} = passing pose (legs together, body one pixel higher), {c} = contact pose with the "
                      f"other leg forward, {d} = passing pose.")
-    if request.palette.fixed:
+    if request.motion:
+        lines.append(f"Motion: the frames, in this order, are one continuous motion: {request.motion}")
+    if part is not None and part.count > 1:
+        lines.append(_part_line(request, part))
+    posed = [(name, request.poses[name]) for name in own if name in request.poses]
+    if posed:
+        lines += ["What each frame shows:", *(f"- {name}: {pose}" for name, pose in posed)]
+    if drawn is not None:
+        lines.append("Palette: keep the palette of the frames already drawn, shown below: write it again exactly as "
+                     "it is - the same keys and the same colors, no color added and none changed.")
+    elif request.palette.fixed:
         lines.append(f"Palette: use only these {len(request.palette.colors)} colors and transparent, no others: "
                      + " ".join(request.palette.colors) + ".")
     else:
@@ -290,18 +419,19 @@ def generation_prompt(request: PixelRequest) -> str:
         lines.append("This is a tile: fill every pixel (no transparency) and make it repeat seamlessly in a grid, "
                      "so the left edge continues into the right edge and the top edge into the bottom edge. "
                      "No border or outline around the tile.")
-        lines.append("Style: clean, readable pixel art for a 2D RPG: 2-3 shades per material, light from the "
-                     "top-left, no noisy single-pixel speckle.")
+        lines.append(f"Style: {request.style or TILE_STYLE}")
     elif request.kind == "effect":
         lines.append("Background: transparent. Draw readable clusters of light; detached sparks are intentional. "
                      "No dark outline, no ground plane, no antialiasing. Use the full canvas around its fixed center.")
+        if request.style:
+            lines.append(f"Style: {request.style}")
     else:
         lines.append("Background: transparent.")
         lines += safe_area_lines(request)
-        lines.append("Style: clean, readable pixel art for a 2D RPG: a dark (not pure black) outline around the "
-                     "silhouette, 2-3 shades per material, light from the top-left, no anti-aliasing noise and "
-                     "no stray single pixels.")
-    lines += ["", _format_spec(request)]
+        lines.append(f"Style: {request.style or SPRITE_STYLE}")
+    if drawn is not None:
+        lines += ["", *drawn_lines(request, drawn)]
+    lines += ["", _format_spec(request, own)]
     return "\n".join(lines)
 
 
@@ -311,13 +441,14 @@ def _ruler(n: int) -> str:
 
 def repair_prompt(request: PixelRequest, grid: Grid, issues: list[Issue]) -> tuple[str, list[tuple[str, int]]]:
     """The broken rows with their neighbours (and a column ruler), and the rows to write."""
-    wanted = sorted({(i.frame, i.row) for i in issues}, key=lambda fr: (request.frames.index(fr[0]), fr[1]))
+    order = list(grid.frames)  # this call's frames, in order
+    wanted = sorted({(i.frame, i.row) for i in issues}, key=lambda fr: (order.index(fr[0]), fr[1]))
     broken = {(i.frame, i.row): [] for i in issues}
     for issue in issues:
         broken[(issue.frame, issue.row)].append(issue)
     chargrid = grid.fmt == "chargrid"
     parts: list[str] = []
-    for name in request.frames:
+    for name in order:
         rows = grid.frames[name]
         for number, row in enumerate(rows, 1):
             found = broken.get((name, number))
@@ -380,17 +511,25 @@ def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
     ]
     if request.kind == "tile":
         lines.append("Each tile is shown alone and, to its right, repeated 3x3 so seams are visible.")
-    if multi:
+    if multi and len(request.frames) > PREVIEW_COLUMNS:
+        lines.append(f"Each candidate's {len(request.frames)} frames run left to right in rows of {PREVIEW_COLUMNS}, top "
+                     f"to bottom, in this order: {', '.join(request.frames)}.")
+    elif multi:
         lines.append(f"Each candidate is a row of {len(request.frames)} frames in this order: {', '.join(request.frames)}.")
     lines += [
         f"The request was: {request.subject} Canvas {request.size}x{request.size} pixels per frame{_kept(request)}.",
         "Score every candidate:",
         "- subject_read 1-5: how clearly it reads as the requested subject (5 instantly, 1 unrecognisable).",
-        "- craft 1-5: pixel-art craft: clean silhouette and outline, consistent shading and light, no noise, sensible "
-        "use of the canvas (5 professional, 3 acceptable indie, 1 broken)."
+        (f"- craft 1-5: pixel-art craft judged against the style the request asked for - {request.style} - consistent "
+         "shading and light, no noise, sensible use of the canvas (5 professional, 3 acceptable indie, 1 broken)."
+         if request.style else
+         "- craft 1-5: pixel-art craft: clean silhouette and outline, consistent shading and light, no noise, sensible "
+         "use of the canvas (5 professional, 3 acceptable indie, 1 broken).")
         + (" For tiles, visible seams in the 3x3 repeat count against craft." if request.kind == "tile" else ""),
         ("- consistency 1-5: a readable lifetime around a fixed center, with a peak and decay; "
          "changing extent, detached sparks and an empty final frame are intentional." if request.kind == "effect" else
+         "- consistency 1-5: the same subject, proportions and colours across frames, and the frames following one "
+         f"another as one motion in their order ({request.motion})." if multi and request.motion else
          "- consistency 1-5: the same subject, proportions and colours across frames, and correct poses/directions "
          "for the frame names." if multi else "- consistency: 0 (single frame)."),
         "- verdict: ship (usable in a game as is), touch_up (usable after a few pixel fixes), redraw (not usable).",
@@ -439,14 +578,21 @@ class Unfinished(Exception):
 
 
 class Calls:
-    """Every model call of a run: asked, or read back from `calls/<id>.json` on --resume."""
+    """Every model call of a run: asked on `credential` (`claude_login.resolve_credential`), or read back
+    from `calls/<id>.json` on --resume. `announce` runs once, before the first request that leaves —
+    a run read back whole asks nothing and says nothing."""
 
-    def __init__(self, run_dir: Path, token: str, *, sleep: Callable[[float], None], note: Callable[[str], None]) -> None:
+    def __init__(self, run_dir: Path, credential: claude_login.Credential, *, sleep: Callable[[float], None],
+                 note: Callable[[str], None], announce: Callable[[], None] = lambda: None) -> None:
         self.dir = run_dir / "calls"
         self.batch_dir = run_dir / "batches"
-        self.token = token
+        self.credential = credential
+        self.token = credential.token
         self.sleep = sleep
         self.note = note
+        self.announce = announce
+        self.announced = False
+        self.announce_lock = threading.Lock()
         self.lock = threading.Lock()
         self.summaries: dict[str, dict[str, Any]] = {}
         self.batches: dict[str, dict[str, Any]] = {}
@@ -457,6 +603,14 @@ class Calls:
 
     def _path(self, call_id: str) -> Path:
         return self.dir / f"{call_id}.json"
+
+    def _leaving(self) -> None:
+        """Say the charge once, before the first request leaves. A thread that comes while it is being said
+        waits until it has been: no request of any candidate leaves ahead of the line."""
+        with self.announce_lock:
+            if not self.announced:
+                self.announce()
+                self.announced = True
 
     def cached(self, call_id: str, body: dict[str, Any]) -> Reply | None:
         path = self._path(call_id)
@@ -479,12 +633,13 @@ class Calls:
     def save(self, call_id: str, purpose: str, candidate: str | None, body: dict[str, Any],
              outcome: Reply | ApiError, *, image: str | None = None) -> None:
         reply = outcome if isinstance(outcome, Reply) else outcome.partial
-        batch = reply is not None and reply.mode == "batch"
+        subscription = self.credential.source == claude_login.AUTH_SOURCE_LOGIN
+        mode = reply.mode if reply is not None else ("subscription" if subscription else "realtime")
         usage = reply.usage if reply is not None else {}
         record: dict[str, Any] = {
             "id": call_id, "purpose": purpose, "candidate": candidate,
             "outcome": "reply" if isinstance(outcome, Reply) else "error",
-            "mode": "batch" if batch else "realtime", "model": body["model"],
+            "mode": mode, "auth_source": self.credential.source, "model": body["model"],
             "effort": body["output_config"]["effort"], "max_tokens": body["max_tokens"],
             "request_id": reply.request_id if reply else getattr(outcome, "request_id", None),
             "message_id": reply.message_id if reply else None,
@@ -493,7 +648,7 @@ class Calls:
             "stop_details": reply.stop_details if reply else None,
             "usage": usage or None,
             "thinking_tokens": api.thinking_tokens(usage) if usage else None,
-            "cost_usd": api.cost_usd(usage, batch=batch) if usage else 0.0,
+            "cost_usd": _cost_usd(usage, mode),
             "seconds": reply.seconds if reply else None,
             "finished_at": _now(),
         }
@@ -515,8 +670,12 @@ class Calls:
         if cached is not None:
             self.note(f"{call_id}: read back from calls/{call_id}.json (not asked again)")
             return cached
+        self._leaving()
         try:
-            outcome: Reply | ApiError = api.stream_message(self.token, body, sleep=self.sleep, label=f"{VERB} {call_id}")
+            if self.credential.source == claude_login.AUTH_SOURCE_LOGIN:
+                outcome: Reply | ApiError = claude_login.send_message(body, label=f"{VERB} {call_id}")
+            else:
+                outcome = api.stream_message(self.token, body, sleep=self.sleep, label=f"{VERB} {call_id}")
         except ApiError as exc:
             outcome = exc
         self.save(call_id, purpose, candidate, body, outcome, image=image)
@@ -548,6 +707,7 @@ class Calls:
                 out.update(self._collect(record, need, wait))
         need = {cid: ask for cid, ask in need.items() if cid not in out}
         if need:
+            self._leaving()
             try:
                 batch = api.submit_batch(self.token, [(cid, ask.body) for cid, ask in need.items()],
                                          sleep=self.sleep, label=VERB)
@@ -595,14 +755,22 @@ class Calls:
         return out
 
 
+def _cost_usd(usage: dict[str, Any], mode: str) -> float:
+    """What one call charged: nothing on the subscription (it counts against the plan's usage limits
+    instead), the published price on the API key, half of it in a Message Batch."""
+    if not usage or mode == "subscription":
+        return 0.0
+    return api.cost_usd(usage, batch=mode == "batch")
+
+
 def _call_line(call_id: str, outcome: Reply | ApiError) -> str:
     if isinstance(outcome, ApiError):
         return f"{call_id}: {outcome.line}"
     usage = outcome.usage
-    cost = api.cost_usd(usage, batch=outcome.mode == "batch")
+    paid = "subscription" if outcome.mode == "subscription" else f"${_cost_usd(usage, outcome.mode):.4f}"
     took = f" {outcome.seconds:.0f}s" if outcome.seconds is not None else ""
     return (f"{call_id}: {outcome.stop_reason} — {usage.get('output_tokens')} output tokens "
-            f"({api.thinking_tokens(usage)} thinking), ${cost:.4f}{took}")
+            f"({api.thinking_tokens(usage)} thinking), {paid}{took}")
 
 
 # ----------------------------------------------------------------------------- candidates
@@ -622,15 +790,17 @@ class Candidate:
     info: list[str] = field(default_factory=list)
     grid: Grid | None = None
     files: dict[str, Any] = field(default_factory=dict)
+    parts: list[dict[str, Any]] = field(default_factory=list)  # per call of a set drawn over several
 
     def end(self, status: str, reason: str | None = None) -> "Candidate":
         self.status, self.reason = status, reason
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "status": self.status, "reason": self.reason, "effort": self.effort,
+        data = {"id": self.id, "status": self.status, "reason": self.reason, "effort": self.effort,
                 "generations": self.generations, "redraws": self.redraws, "repairs": self.repairs, "G1": self.g1,
                 "gates": self.gates, "warnings": self.warnings, "info": self.info, "files": self.files}
+        return {**data, "parts": self.parts} if self.parts else data
 
 
 def _g1(issues: list[Issue]) -> dict[str, Any]:
@@ -656,49 +826,78 @@ class Run:
         self.batch_wait = batch_wait
         self.note = note
 
-    def generation_body(self, effort: str) -> dict[str, Any]:
-        return api.message_body(system=SYSTEM, content=generation_prompt(self.request), effort=effort,
+    def generation_body(self, effort: str, part: Part | None = None, drawn: Grid | None = None) -> dict[str, Any]:
+        return api.message_body(system=SYSTEM, content=generation_prompt(self.request, part, drawn), effort=effort,
                                 max_tokens=self.request.max_tokens)
 
     def flow(self, cid: str) -> Generator[Ask, Reply | ApiError, Candidate]:
+        """A candidate's calls, one part after another; the gates once every frame is drawn."""
         request = self.request
         candidate = Candidate(cid)
+        parts = call_parts(request)
+        drawn: Grid | None = None
+        issues: list[Issue] = []
+        efforts: list[str] = []
+        for part in parts:
+            outcome = yield from self.draw_part(candidate, part, drawn, issues)
+            if isinstance(outcome, Candidate):
+                return outcome
+            grid, part_issues, effort = outcome
+            drawn = grid if drawn is None else joined([drawn, grid])
+            issues += part_issues
+            efforts.append(effort)
+            if len(parts) > 1:
+                candidate.parts.append({"part": part.number, "frames": list(part.frames), "effort": effort})
+        candidate.g1 = _g1(issues)
+        candidate.effort, candidate.grid = min(efforts, key=EFFORTS.index), drawn
+        pixels = {name: frame_pixels(drawn, name) for name in request.frames}
+        candidate.gates = evaluate(pixels, kind=request.kind, rule=request.palette, walk_cycle=request.walk_cycle,
+                                   motion=bool(request.motion))
+        candidate.warnings, candidate.info = candidate.gates["warnings"], candidate.gates["info"]
+        if candidate.gates["ok"]:
+            return candidate.end("passed")
+        return candidate.end("failed", "failed " + ", ".join(candidate.gates["failed"]))
+
+    def draw_part(self, candidate: Candidate, part: Part, drawn: Grid | None, earlier: list[Issue]
+                  ) -> Generator[Ask, Reply | ApiError, Candidate | tuple[Grid, list[Issue], str]]:
+        """One call's frames: drawn, held to the palette of the frames `drawn` before it, repaired, and
+        drawn once more when they still do not read whole. Returns the part's grid, its issues and the
+        effort it was drawn at, or the candidate ended."""
+        request = self.request
+        cid = candidate.id
+        prefix, who = (cid, cid) if part.count == 1 else (f"{cid}-part{part.number}", f"{cid} part {part.number}")
         effort, number, redrawn = request.effort, 1, False
         while True:
-            ask = Ask(f"{cid}-gen{number}", cid, effort, self.generation_body(effort))
+            ask = Ask(f"{prefix}-gen{number}", cid, effort, self.generation_body(effort, part, drawn))
             outcome = yield ask
             candidate.generations.append(ask.call_id)
             if isinstance(outcome, ApiError):
                 return candidate.end("error", outcome.line)
             if outcome.stop_reason == "refusal":
                 return candidate.end("refused", _refusal_reason(outcome))
-            grid, issues = parse_answer(outcome.text, request.answer_format, request.size, request.size, request.frames)
+            grid, issues = parse_answer(outcome.text, request.answer_format, request.size, request.size, part.frames)
+            if drawn is not None and grid is not None and not structural(issues):
+                grid, issues = hold_palette(grid, issues, drawn.palette)
             if outcome.stop_reason == "max_tokens" and grid is None:  # nothing readable was written
                 lower = LOWER_EFFORT.get(effort)
                 if not redrawn and lower:
                     self.note(f"{ask.call_id}: all {request.max_tokens} tokens went to thinking and nothing was "
-                              f"written; drawing {cid} once more at effort {lower}")
+                              f"written; drawing {who} once more at effort {lower}")
                     candidate.redraws.append({"after": ask.call_id, "why": "max_tokens", "effort": lower})
                     effort, number, redrawn = lower, number + 1, True
                     continue
                 return candidate.end("failed", f"max_tokens: {ask.call_id} used all {request.max_tokens} tokens "
                                                f"at effort {effort} and wrote nothing")
             grid, issues = self.repair(candidate, ask.call_id, grid, issues)
-            candidate.g1 = _g1(issues)
+            candidate.g1 = _g1(earlier + issues)
             if not candidate.g1["ok"]:
                 if not redrawn:
-                    self.note(f"{ask.call_id}: G1 still fails ({_issue_list(issues)}); drawing {cid} once more")
+                    self.note(f"{ask.call_id}: G1 still fails ({_issue_list(issues)}); drawing {who} once more")
                     candidate.redraws.append({"after": ask.call_id, "why": "G1", "effort": effort})
                     number, redrawn = number + 1, True
                     continue
                 return candidate.end("failed", f"G1: {_issue_list(issues)}")
-            candidate.effort, candidate.grid = effort, grid
-            pixels = {name: frame_pixels(grid, name) for name in request.frames}
-            candidate.gates = evaluate(pixels, kind=request.kind, rule=request.palette, walk_cycle=request.walk_cycle)
-            candidate.warnings, candidate.info = candidate.gates["warnings"], candidate.gates["info"]
-            if candidate.gates["ok"]:
-                return candidate.end("passed")
-            return candidate.end("failed", "failed " + ", ".join(candidate.gates["failed"]))
+            return grid, issues, effort
 
     def repair(self, candidate: Candidate, gen_id: str, grid: Grid | None,
                issues: list[Issue]) -> tuple[Grid | None, list[Issue]]:
@@ -779,7 +978,8 @@ class Run:
         order = list(passed)
         random.Random(_sha(self.request.to_dict())).shuffle(order)
         by_label = {label: c for label, c in zip(labels, order)}
-        sheet = pick_sheet(self.run_dir, by_label, tile=self.request.kind == "tile")
+        sheet = pick_sheet(self.run_dir, by_label, tile=self.request.kind == "tile",
+                           scale=preview_scale(self.request.size))
         sheet_path = self.run_dir / "pick-sheet.png"
         sheet_path.write_bytes(sheet)
         content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -811,19 +1011,50 @@ def _issue_list(issues: list[Issue]) -> str:
 
 
 PICK_CHECKER_SQUARE = 8  # sheet pixels a square of the checker under a preview
+# What Claude reads of an image unscaled, on Claude 4.7 and later models (Opus 5.5 among them): a long
+# edge of at most 2576 px and at most 4784 patches of 28x28 px; a larger image is scaled down, which
+# blurs pixel art (platform.claude.com/docs/en/build-with-claude/vision, "Resolution and token cost",
+# read 2026-10-15). An image past 8000 px a side is refused outright.
+PICK_SHEET_LONG_EDGE, PICK_SHEET_PATCHES, PICK_SHEET_PATCH = 2576, 4784, 28
+PICK_PAD, PICK_LABEL_WIDTH = 16, 56
 
 
-def pick_sheet(run_dir: Path, by_label: dict[str, Candidate], *, tile: bool) -> bytes:
+def _sheet_size(rows: list[tuple[str, Image.Image, Image.Image | None]]) -> tuple[int, int]:
+    width = max(PICK_LABEL_WIDTH + p.width + (t.width + PICK_PAD if t else 0) for _, p, t in rows) + PICK_PAD * 2
+    height = sum(max(p.height, t.height if t else 0) + PICK_PAD for _, p, t in rows) + PICK_PAD
+    return width, height
+
+
+def _fits(size: tuple[int, int]) -> bool:
+    width, height = size
+    patches = -(-width // PICK_SHEET_PATCH) * -(-height // PICK_SHEET_PATCH)
+    return max(size) <= PICK_SHEET_LONG_EDGE and patches <= PICK_SHEET_PATCHES
+
+
+def _rescaled(image: Image.Image | None, scale: int, step: int) -> Image.Image | None:
+    """A preview enlarged `scale` times, enlarged `step` times instead — nearest-neighbour, exact: every
+    side is a whole number of `scale`-pixel units, and each becomes `step` pixels."""
+    if image is None or step == scale:
+        return image
+    return image.resize((image.width * step // scale, image.height * step // scale), Image.NEAREST)
+
+
+def pick_sheet(run_dir: Path, by_label: dict[str, Candidate], *, tile: bool, scale: int = 1) -> bytes:
     """One sheet of the candidates' previews (and 3x3 tilings), each row labelled, a preview's
-    transparency on the engine's preview checker (`qa.preview.checker`)."""
-    rows = []
+    transparency on the engine's preview checker (`qa.preview.checker`). The previews are enlarged
+    `scale` times; when the sheet is larger than Claude reads unscaled — many frames, many candidates —
+    they are drawn at the largest smaller whole enlargement at which it fits."""
+    loaded = []
     for label, candidate in by_label.items():
         preview = Image.open(run_dir / candidate.files["preview"]).convert("RGBA")
         tiled = Image.open(run_dir / candidate.files["tiled"]).convert("RGBA") if tile else None
-        rows.append((label, preview, tiled))
-    pad, label_width = 16, 56
-    width = max(label_width + p.width + (t.width + pad if t else 0) for _, p, t in rows) + pad * 2
-    height = sum(max(p.height, t.height if t else 0) + pad for _, p, t in rows) + pad
+        loaded.append((label, preview, tiled))
+    for step in range(scale, 0, -1):
+        rows = [(label, _rescaled(p, scale, step), _rescaled(t, scale, step)) for label, p, t in loaded]
+        if _fits(_sheet_size(rows)):
+            break
+    pad, label_width = PICK_PAD, PICK_LABEL_WIDTH
+    width, height = _sheet_size(rows)
     sheet = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(sheet)
     y = pad
@@ -842,8 +1073,9 @@ def pick_sheet(run_dir: Path, by_label: dict[str, Candidate], *, tile: bool) -> 
 # ----------------------------------------------------------------------------- files and report
 
 def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], kind: str, rule: PaletteRule,
-                pixels_used: list[str]) -> dict[str, Any]:
-    """grid.txt, palette.json, frame-<name>.png, preview-x<s>.png, tiled-3x3.png (tile), anim.gif (2+ frames)."""
+                pixels_used: list[str], duration_ms: int = GIF_FRAME_MS) -> dict[str, Any]:
+    """grid.txt, palette.json, frame-<name>.png, preview-x<s>.png (rows of PREVIEW_COLUMNS frames),
+    tiled-3x3.png (tile), anim.gif (2+ frames, `duration_ms` each)."""
     directory.mkdir(parents=True, exist_ok=True)
     frames = {name: frame_pixels(grid, name) for name in request_frames}
     scale = preview_scale(max(grid.width, grid.height))
@@ -863,7 +1095,7 @@ def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], ki
         tiled_3x3(frames[request_frames[0]], scale).save(directory / "tiled-3x3.png")
         files["tiled"] = "tiled-3x3.png"
     if len(frames) > 1:
-        save_gif(list(frames.values()), scale, directory / "anim.gif", GIF_FRAME_MS, loop=None if kind == "effect" else 0)
+        save_gif(list(frames.values()), scale, directory / "anim.gif", duration_ms, loop=None if kind == "effect" else 0)
         files["gif"] = "anim.gif"
     if kind == "effect":
         strip = Image.new("RGBA", (grid.width * len(frames), grid.height))
@@ -873,7 +1105,7 @@ def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], ki
         meta = {"kind": "effect", "frames": len(frames), "w": grid.width, "h": grid.height,
                 "loop": False, "hold_last": False, "end_frame": len(frames) - 1,
                 "events": [], "blend": "add", "anchor": [grid.width / 2, grid.height / 2],
-                "delay_ms": GIF_FRAME_MS, "frame_names": list(frames)}
+                "delay_ms": duration_ms, "frame_names": list(frames)}
         atomic_write_text(directory / "effect.strip.json", json.dumps(meta, indent=2) + "\n")
         files.update(strip="effect.strip.png", metadata="effect.strip.json")
     return files
@@ -917,11 +1149,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                                                  "measured best at 32 or less)")
     parser.add_argument("--kind", choices=KINDS, help="sprite (default) and icon have a transparent background; a tile is "
                                                      "opaque and repeats; an effect has a centered lifetime")
-    parser.add_argument("--frames", help=f"comma-separated frame names drawn in one call, at most {FRAMES_MAX} "
-                                         "(effect: 2..8, default birth,peak,decay,gone; others: one named after --kind)")
+    parser.add_argument("--frames", help=f"comma-separated frame names, at most {FRAMES_TOTAL_MAX}, drawn {FRAMES_MAX} a "
+                                         "call (effect: 2..8 in one call, default birth,peak,decay,gone; others: one "
+                                         "named after --kind); a --spec frame may be {\"name\": ..., \"pose\": ...}")
     parser.add_argument("--walk-cycle", action="store_true", default=None,
                         help="the four frames are one walk cycle (contact, passing, contact, passing): says so in the "
                              "prompt and checks the legs change sides")
+    parser.add_argument("--motion", help="the frames, in this order, are one motion, in words: says so in the prompt, "
+                                         "and G6 fails only a frame off the ground row (a pose's height and a hold "
+                                         "are reported)")
+    parser.add_argument("--style", help="the style to draw in, in words, in place of the kind's (a dark outline, 2-3 "
+                                        "shades, light from the top-left); the pick judges craft against it")
+    parser.add_argument("--duration-ms", type=int, help=f"each frame of anim.gif, in milliseconds (default "
+                                                        f"{GIF_FRAME_MS}; at least {DURATION_MS_MIN})")
     parser.add_argument("--palette", help="free[:N] (default free:16), pico8, #RRGGBB,#RRGGBB,..., or a palette file "
                                           "(.json list, or one colour per line)")
     parser.add_argument("--candidates", type=int, help=f"answers drawn for the request, {CANDIDATES_MIN}..{CANDIDATES_MAX} "
@@ -965,7 +1205,7 @@ def _note_printer() -> Callable[[str], None]:
 
 
 def _run_grid(args: argparse.Namespace) -> int:
-    extra = _given(args, ("size", "frames") + RUN_FLAGS + ("batch_wait",)) + (["--resume"] if args.resume else [])
+    extra = _given(args, ("size", "frames", "style") + RUN_FLAGS + ("batch_wait",)) + (["--resume"] if args.resume else [])
     if extra:
         raise _refuse(f"--grid checks and renders a grid as it is; drop {', '.join(extra)}")
     try:
@@ -977,6 +1217,8 @@ def _run_grid(args: argparse.Namespace) -> int:
     except ValueError as exc:
         raise _refuse(str(exc)) from exc
     kind = args.kind or "sprite"
+    motion = _words(args.motion, "--motion")
+    duration_ms = _duration(GIF_FRAME_MS if args.duration_ms is None else args.duration_ms)
     grid, issues = read_grid_text(text)
     if grid is not None and not (SIZE_MIN <= grid.width <= SIZE_MAX and SIZE_MIN <= grid.height <= SIZE_MAX):
         raise _refuse(f"--grid {args.grid}: {grid.width}x{grid.height}; each side is {SIZE_MIN}..{SIZE_MAX} pixels")
@@ -987,20 +1229,22 @@ def _run_grid(args: argparse.Namespace) -> int:
             raise _refuse("--walk-cycle does not apply to an effect")
     if args.walk_cycle and len(frames) != 4:
         raise _refuse(f"--walk-cycle is four frames, the grid holds {len(frames)}")
+    if grid is not None:
+        _motion(motion, kind, frames)
     out_dir = Path(args.out_dir).expanduser().resolve()
     _fresh_dir(out_dir)
     report: dict[str, Any] = {"kind": REPORT_KIND, "status": "failed", "out_dir": str(out_dir), "source": "grid",
                               "grid_source": str(Path(args.grid).expanduser().resolve()), "model": None,
                               "request": {"kind": kind, "frames": list(frames), "walk_cycle": bool(args.walk_cycle),
-                                          "palette": rule.to_dict()},
+                                          "motion": motion, "palette": rule.to_dict(), "duration_ms": duration_ms},
                               "G1": _g1(issues), "gates": None, "warnings": [], "info": [], "files": {}, "calls": [],
                               "cost_usd": 0.0}
     if grid is None or not report["G1"]["ok"]:
         path = _write_report(out_dir, report)
         raise _refuse(f"{args.grid} does not parse whole: {_issue_list(issues)}; report {path}")
     pixels = {name: frame_pixels(grid, name) for name in frames}
-    gates = evaluate(pixels, kind=kind, rule=rule, walk_cycle=bool(args.walk_cycle))
-    files = write_files(out_dir, grid, frames, kind, rule, colors_used(pixels))
+    gates = evaluate(pixels, kind=kind, rule=rule, walk_cycle=bool(args.walk_cycle), motion=bool(motion))
+    files = write_files(out_dir, grid, frames, kind, rule, colors_used(pixels), duration_ms)
     report.update(status="ok" if gates["ok"] else "failed", gates=gates, warnings=gates["warnings"], info=gates["info"],
                   files=files, request={**report["request"], "size": [grid.width, grid.height]})
     path = _write_report(out_dir, report)
@@ -1027,19 +1271,26 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
     batch_wait = BATCH_WAIT_DEFAULT if args.batch_wait is None else args.batch_wait
     if batch_wait < 0:
         raise _refuse(f"--batch-wait is seconds, at least 0, got {batch_wait:g}")
-    token = api.resolve_credential()
+    credential = claude_login.resolve_credential(batch=request.batch)
     if not args.resume:
         _fresh_dir(out_dir)
         atomic_write_text(out_dir / "request.json", json.dumps(request.to_dict(), ensure_ascii=False, indent=1) + "\n")
     note = _note_printer()
-    announce_api_billing("claude", api.AUTH_ENV,
-                         f" (model={api.MODEL}, effort={request.effort}, candidates={request.candidates}, "
-                         f"{'Message Batches at half price' if request.batch else 'realtime'}).")
+
+    def announce() -> None:
+        if credential.source == claude_login.AUTH_SOURCE_API_KEY:
+            announce_api_billing("claude", api.AUTH_ENV,
+                                 f" (model={api.MODEL}, effort={request.effort}, candidates={request.candidates}, "
+                                 f"{'Message Batches at half price' if request.batch else 'realtime'})"
+                                 + ("." if request.batch else f" — {claude_login.LOGIN_HINT}."))
+
     started = time.monotonic()
-    calls = Calls(out_dir, token, sleep=sleep, note=note)
+    calls = Calls(out_dir, credential, sleep=sleep, note=note, announce=announce)
     run = Run(request, out_dir, calls, batch_wait=batch_wait, note=note)
+    _say_parts(request, note)
     report: dict[str, Any] = {"kind": REPORT_KIND, "status": None, "out_dir": str(out_dir), "source": "model",
-                              "model": api.MODEL, "request": request.to_dict(), "chosen": None, "files": {},
+                              "model": api.MODEL, "auth_source": credential.source, "request": request.to_dict(),
+                              "chosen": None, "files": {},
                               "pick": None, "candidates": [], "warnings": [], "info": []}
     try:
         candidates = run.candidates()
@@ -1053,7 +1304,7 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
         if candidate.grid is not None:
             pixels = {name: frame_pixels(candidate.grid, name) for name in request.frames}
             files = write_files(out_dir / "candidates" / candidate.id, candidate.grid, request.frames, request.kind,
-                                request.palette, colors_used(pixels))
+                                request.palette, colors_used(pixels), request.duration_ms)
             candidate.files = _prefixed(files, f"candidates/{candidate.id}")
     passed = [c for c in candidates if c.status == "passed"]
     report["candidates"] = [c.to_dict() for c in candidates]
@@ -1086,19 +1337,45 @@ def _run(args: argparse.Namespace, *, sleep: Callable[[float], None] = time.slee
     return 0
 
 
+def run_auth_source(summaries: list[dict[str, Any]], resolved: str) -> dict[str, Any]:
+    """What a run's calls ran on, as their records say: one route, or `mixed` with each route named (a run
+    resumed under another credential). A run with no call yet names the credential it resolved."""
+    sources = sorted({s["auth_source"] for s in summaries if s.get("auth_source")})
+    if not sources:
+        return {"auth_source": resolved}
+    if len(sources) == 1:
+        return {"auth_source": sources[0]}
+    return {"auth_source": "mixed", "auth_sources": sources}
+
+
 def _finish(report: dict[str, Any], calls: Calls, started: float) -> Path:
     summaries = [calls.summaries[cid] for cid in sorted(calls.summaries, key=_call_order)]
     usage, cost = _totals(summaries)
+    report.pop("auth_sources", None)
     report.update(calls=summaries, batches=list(calls.batches.values()), usage=usage, cost_usd=cost,
-                  seconds=round(time.monotonic() - started, 3))
+                  seconds=round(time.monotonic() - started, 3),
+                  **run_auth_source(summaries, calls.credential.source))
     return _write_report(Path(report["out_dir"]), report)
 
 
 def _call_order(call_id: str) -> tuple:
+    """c<candidate>[-part<n>]-gen<n>[-fix<n>] in the order the calls were made; the pick last."""
     if call_id == "pick":
         return (10**6,)
-    parts = call_id.replace("-gen", " ").replace("-fix", " ").split()
-    return (int(parts[0][1:]), *[int(p) for p in parts[1:]])
+    return tuple(int(n) for n in re.findall(r"\d+", call_id))
+
+
+def _say_parts(request: PixelRequest, note: Callable[[str], None]) -> None:
+    """Before a set of more than FRAMES_MAX frames is drawn: how many calls, and what they may spend."""
+    parts = call_parts(request)
+    if len(parts) == 1:
+        return
+    shown = min(len(request.frames) - len(parts[-1].frames), 1 + DRAWN_SHOWN)
+    reads = shown * request.size * (request.size + 1) // GRID_CHARS_PER_TOKEN
+    note(f"{len(request.frames)} frames (at most {FRAMES_TOTAL_MAX}): {len(parts)} calls a candidate of at most "
+         f"{FRAMES_MAX} frames each, {len(parts) * request.candidates} drawings in all; each may write up to "
+         f"{request.max_tokens} output tokens, thinking included, and each call after a candidate's first also "
+         f"reads its palette and up to {shown} frames already drawn, about {reads} input tokens")
 
 
 def run(**kwargs: Any) -> int:

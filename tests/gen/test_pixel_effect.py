@@ -19,14 +19,18 @@ def test_only_effects_accept_two_to_eight_frames():
     names = ",".join(f"f{i}" for i in range(8))
     assert len(request("--kind", "effect", "--frames", names).frames) == 8
     assert len(request("--kind", "effect").frames) >= 2
+    many = ",".join(f"f{i}" for i in range(65))
     for kind in ("sprite", "icon", "tile"):
-        with pytest.raises(SystemExit, match="at most 4"):
-            request("--kind", kind, "--frames", names)
+        assert len(request("--kind", kind, "--frames", names).frames) == 8  # drawn four at a time
+        with pytest.raises(SystemExit, match="at most 64"):
+            request("--kind", kind, "--frames", many)
     for names in ("only", ",".join(f"f{i}" for i in range(9))):
         with pytest.raises(SystemExit, match="2.*8"):
             request("--kind", "effect", "--frames", names)
     with pytest.raises(SystemExit, match="walk-cycle"):
         request("--kind", "effect", "--walk-cycle")
+    with pytest.raises(SystemExit, match="--motion does not apply to an effect"):
+        request("--kind", "effect", "--motion", "a burst")
     prompt = draw.generation_prompt(request("--kind", "effect"))
     assert "center" in prompt and "empty" in prompt and "brightness" in prompt
     assert "same proportions" not in prompt and "floor" not in prompt
