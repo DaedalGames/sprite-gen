@@ -26,6 +26,7 @@ from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
 from sprite_gen.video import follow_inspect as video_follow_inspect
 from sprite_gen.video import set_sheet as video_set_sheet
+from sprite_gen.video import stop as video_stop
 from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
@@ -399,6 +400,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "The directions of one set on one sheet: rows in compass order (S SW W NW N NE E SE), one cell holding every body box, one ground line under every cell, no row scaled; an optional centre picture stood on the same line at the rows' standing height.",
         video_set_sheet.add_arguments,
         video_set_sheet.run,
+    ),
+    "video-stop": (
+        "A walk or run that stops: the clip's own start played backwards from where it reaches the loop to the still it was filmed from, cut as a one-shot strip beside the loop (seam, drift, speed and refusals reported).",
+        video_stop.add_arguments,
+        video_stop.run,
     ),
     "rife": (
         "install: download the pinned RIFE (rife-ncnn-vulkan, sha256-checked) into the user data directory, where the loop repair finds it.",
