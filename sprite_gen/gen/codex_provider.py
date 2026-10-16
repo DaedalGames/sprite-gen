@@ -343,6 +343,10 @@ class CodexProvider:
         from .facing_vision import codex_inspect
         return codex_inspect(path, workdir)
 
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = "vision check") -> tuple[str, dict]:
+        from .facing_vision import codex_inspect
+        return codex_inspect(path, workdir, prompt=prompt, label=label)
+
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun:
         # `image_gen` exposes no effort or size dial, so neither knob is carried
         # into the prompt. Refusing beats returning a default-effort image under a

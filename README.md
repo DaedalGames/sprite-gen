@@ -129,6 +129,8 @@ Making clips through a video MCP connected to your agent? With ZCRE's (지크), 
 
 A watch on one wrist, a pin on one side of the head? Turned over, a right-facing view puts it on the other side, so draw the left-facing views instead: `sprite-gen gen --direction side --facing left --handed "the black smartwatch=left wrist"` says where the item is in that view, `video-set --facing right,left --handed …` films each side and diagonal view both ways from its own still, and `sprite-gen handed-check` checks, frame by frame, that a colour-marked item is on the right side. Mirroring stays the default, since drawing the left views costs as much again ([how](docs/video-pipeline.md#handedness--an-item-on-one-side)).
 
+A title logo whose letters the model draws freely? `sprite-gen logo --provider codex --text "STARFALL" --style "painted fantasy" --out-dir logo/` letters the title into a title screen first, redraws only its lettering on a chroma key and cuts it out with its glow kept, then reads the text back and refuses a misspelt logo ([logo](docs/logo.md)).
+
 **C · utilities** — each stands alone.
 
 ```bash
@@ -184,7 +186,7 @@ Image generation is part of this engine (`sprite_gen.gen`, providers `codex` and
 | `gen --provider openai` | — | `OPENAI_API_KEY`, named only | [gen](docs/gen.md#subscription-first--openai-is-named-or-it-does-not-run) |
 | `sound` | — | `ELEVENLABS_API_KEY` | [sound](docs/sound.md) |
 
-A call on an API key is billed per call and says so on stderr before the request leaves, also inside `gen-set` and `video-set`.
+A call on an API key is billed per call and says so on stderr before the request leaves, also inside `gen-set` and `video-set`. `logo` makes its images and its text checks through `gen`'s providers, on the same credentials.
 
 `sprite-gen` supports CPython 3.11+; CI runs only 3.14. Python 3.10 is no longer supported. The quickstart needs a Python with working `venv`/`ensurepip`.
 
