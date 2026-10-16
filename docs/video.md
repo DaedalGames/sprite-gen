@@ -144,7 +144,9 @@ What happens, in order:
 2. `POST /v1/videos/generations` with `model`, `prompt`, `duration`, `resolution`,
    then `image.url` / `last_frame.url` / `reference_images[].url` as base64 data
    URLs, optional `aspect_ratio` / `generate_audio`. A `429` — xAI's rate limit, a
-   request it did not take — is sent again, twice at most, after 8 s and 16 s
+   request it did not take — is sent again, twice at most, after 8 s and 16 s, while
+   the wait leaves some of the poll timeout (step 3); a wait that would reach it is not
+   waited and the run ends on that `429`
    ([a refused request sent again](gen.md#a-refused-request-sent-again)). A `401/403`
    names the credential source and its fix; any other reply without a `request_id`
    fails with the API's own error text.
@@ -163,8 +165,8 @@ What happens, in order:
    valid JSON` for an answer it could not read — goes to stderr each time.
 
    The poll timeout (`SPRITE_GEN_VIDEO_TIMEOUT_SECONDS`, default 600) is the one time
-   limit of the accepted request. It counts from the send of the POST xAI accepted and bounds the polls,
-   their waits and the clip's downloads (step 4) alike:
+   limit of the request. It counts from the POST's first send and bounds the waits before a refused
+   POST goes again (step 2), the polls, their waits and the clip's downloads (step 4) alike:
 
    - Each poll reads only what is left of it. One whose answer stalls, or comes too
      slowly for its 120 s read timeout ever to fire, is cut when the timeout comes and

@@ -38,6 +38,12 @@ again, as OpenAI's rate-limit guide asks), else `backoff` — the doubling the `
 downloads wait by, from START_SECONDS up to MAX_SECONDS. A POST is sent again ASKS_AGAIN times at
 most, each said on stderr in one line.
 
+The waits are inside the time limit of the call the request belongs to (`ask(deadline=)`): the gen
+image calls and the facing check count theirs from the first send, the clip request its poll
+timeout, a Message Batch's reads `--batch-wait`. A request is sent again only when its wait ends
+before that limit; one whose wait would reach it is returned as it came, and its stderr line says
+why — so a caller whose own ceiling sits above the limit hears the refusal, not a kill.
+
 A GET buys nothing, so one answered with any of GET_AGAIN is asked again; the `video` poll keeps
 asking for as long as its poll timeout lets it, the Anthropic batch reads ASKS_AGAIN times.
 """
@@ -117,13 +123,23 @@ def again_after(provider: str, method: str, status: int, body: Any, headers: Any
     return said if said <= RETRY_AFTER_MAX_SECONDS else None
 
 
-def asking_again(label: str, who: str, method: str, status: int, kind: str | None, wait: float, failures: int) -> str:
-    """The stderr line of one ask again. The status goes in plain digits: `(HTTP 429)` on this stream
-    reads as a refusal line, which a caller may answer by sending a second request."""
+def _refused(label: str, who: str, method: str, status: int, kind: str | None) -> str:
+    # The status goes in plain digits: `(HTTP 429)` on this stream reads as a refusal line, which a caller
+    # may answer by sending a second request.
     why = ("a read buys nothing" if method == "GET"
            else "its docs say to ask again" if status == 500 else "nothing was made")
-    return (f"[{label}] {who} refused the request ({status}{' ' + kind if kind else ''}); {why} — "
-            f"asking again in {wait:g}s ({failures} of {ASKS_AGAIN})")
+    return f"[{label}] {who} refused the request ({status}{' ' + kind if kind else ''}); {why}"
+
+
+def asking_again(label: str, who: str, method: str, status: int, kind: str | None, wait: float, failures: int) -> str:
+    """The stderr line of one ask again."""
+    return f"{_refused(label, who, method, status, kind)} — asking again in {wait:g}s ({failures} of {ASKS_AGAIN})"
+
+
+def out_of_time(label: str, who: str, method: str, status: int, kind: str | None, wait: float, left: float) -> str:
+    """The stderr line of a request not sent again because its wait would reach the time limit of its call."""
+    return (f"{_refused(label, who, method, status, kind)} — not asking again: "
+            f"the {wait:g}s wait would reach the time limit ({max(left, 0.0):.0f}s left)")
 
 
 def tail(asks: int) -> str:
@@ -136,12 +152,14 @@ def _sleep(seconds: float) -> None:
 
 
 def ask(send: Send, *, provider: str, who: str, label: str, method: str = "POST", sleep: Sleep | None = None,
-        kind: Callable[[Any], str | None] | None = None) -> tuple[int, Any, Any, int]:
+        kind: Callable[[Any], str | None] | None = None, deadline: float | None = None) -> tuple[int, Any, Any, int]:
     """`send()` until an answer is not one to send again: `(status, body, headers, asks)`.
 
     `send` returns `(status, body, headers)` — `headers` None when the transport keeps none — and
     raises when no answer came; that is never asked again here. `kind` reads the provider's word for
-    the refusal off the body for the stderr line."""
+    the refusal off the body for the stderr line. `deadline`, a `time.monotonic()` instant (None:
+    none), is the time limit of the call: a wait that would reach it is not waited, and the refusal
+    is returned as it came."""
     asks = 0
     while True:
         status, body, headers = send()
@@ -149,5 +167,10 @@ def ask(send: Send, *, provider: str, who: str, label: str, method: str = "POST"
         wait = None if 200 <= status < 300 else again_after(provider, method, status, body, headers, asks)
         if wait is None:
             return status, body, headers, asks
-        print(asking_again(label, who, method, status, kind(body) if kind else None, wait, asks), file=sys.stderr)
+        said = kind(body) if kind else None
+        left = None if deadline is None else deadline - time.monotonic()
+        if left is not None and wait >= left:
+            print(out_of_time(label, who, method, status, said, wait, left), file=sys.stderr)
+            return status, body, headers, asks
+        print(asking_again(label, who, method, status, said, wait, asks), file=sys.stderr)
         (sleep or _sleep)(wait)

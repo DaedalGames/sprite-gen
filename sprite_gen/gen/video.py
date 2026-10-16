@@ -102,12 +102,13 @@ MODE_RESUME = "resume"
 # What `video-resume` takes for an id: it goes into the `/videos/{id}` path, so no `/`, `?`, `#` or `%`.
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 POLL_INTERVAL_SECONDS = 4.0
-# The poll timeout is the one time limit of an accepted request: it counts from the moment the request is
-# sent (a resume: its first poll) and bounds its polls, their waits and the clip's downloads alike. Each
-# poll and download reads only what is left of it (xai.read_whole), and one whose wait would reach it is
-# not asked: the run ends unfinished on the request_id instead. So a caller that stops the run at a hard
-# limit gets the id back when it sets the timeout under that limit. The POST is not cut by it — its
-# answer is the one way to the id; an answer that comes after the whole timeout ends the run at once.
+# The poll timeout is the one time limit of a request: it counts from the POST's first send (a resume: its
+# first poll) and bounds the waits before a refused POST goes again (`retry`), the polls, their waits and
+# the clip's downloads alike. Each poll and download reads only what is left of it (xai.read_whole), and a
+# send, poll or download whose wait would reach it is not asked: the run ends on the refusal, or unfinished
+# on the request_id. So a caller that stops the run at a hard limit gets its line back when it sets the
+# timeout under that limit. The POST is not cut by it — its answer is the one way to the id; an answer
+# that comes after the whole timeout ends the run at once.
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
 # A poll xAI throttles (429) or fails on its own side (5xx, `retry.GET_AGAIN`), or one that gets no answer
 # it can read (the connection failed or timed out, the answer broke on the way or was not JSON —
@@ -518,17 +519,12 @@ def _submit_poll_publish(
         announce_api_billing(verb, AUTH_ENV,
                              f"{f' ({priced})' if priced else ''} — "
                              f"`{GROK_LOGIN_COMMAND}` signs your Grok subscription in.")
-    sent: list[float] = []
-
-    def send(*args: Any) -> tuple[int, Any]:
-        sent.append(time.monotonic())
-        return call(*args)
-
-    # A refusal xAI documents as a request not taken (429) is sent again (`retry`); the poll timeout counts
-    # from the send it answered.
-    status, reply, _sends = post(send, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
-                                 sleep=sleep)
-    started = sent[-1]
+    # A refusal xAI documents as a request not taken (429) is sent again (`retry`) while its wait leaves
+    # some of the poll timeout, which counts from the first send.
+    started = time.monotonic()
+    timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
+    status, reply, _sends = post(call, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
+                                 sleep=sleep, deadline=started + timeout)
     if status in (401, 403):
         raise SystemExit(
             f"{verb}: xAI rejected the credential ({credential.source}) with HTTP {status}: {_error_detail(reply, credential.token)}\n"
@@ -542,7 +538,7 @@ def _submit_poll_publish(
         )
     return _poll_publish(
         verb=verb, request_id=str(request_id), model=body.get("model"), out=out, credential=credential, call=call,
-        download=download, sleep=sleep, poll_timeout=poll_timeout, started=started, accept=accept,
+        download=download, sleep=sleep, poll_timeout=timeout, started=started, accept=accept,
     )
 
 
@@ -566,7 +562,7 @@ def _poll_publish(
     still the `.part` file — `video-extend` measures the staged bytes with ffprobe; the
     staged file is removed and `out` is never written.
 
-    The poll timeout counts from `started`, when the request was sent (a resume: its first poll), and
+    The poll timeout counts from `started`, the POST's first send (a resume: its first poll), and
     is one deadline for the polls and the downloads: `call` (as http_json) and `download` take it as
     `deadline=` and read only what is left of it, and a poll or download whose wait would reach it is
     not asked. A run that ends before the request does — the deadline came, xAI rejected the credential,

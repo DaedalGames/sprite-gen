@@ -41,7 +41,7 @@ from typing import Any
 from PIL import Image, UnidentifiedImageError
 
 from . import refusal, retry
-from .xai import NO_ANSWER, error_body
+from .xai import NO_ANSWER, error_body, read_whole, time_left
 from .base import (
     GEN_TIMEOUT_SECONDS,
     QUALITIES,
@@ -216,34 +216,41 @@ def _multipart_request(fields: dict[str, str], refs: list[Path]) -> tuple[bytes,
 TRANSPORT_FAILED = "openai-gen: request failed or timed out; no automatic retry (the server may have accepted it)"
 
 
-def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout: float) -> tuple[int, Any, Any]:
+def http_image(url: str, token: str, data: bytes, content_type: str, *, timeout: float,
+               deadline: float | None = None) -> tuple[int, Any, Any]:
     """POST an images request and return (status, parsed JSON, response headers).
 
     A transport error is terminal: the server may already have accepted and billed
     the request, so it is never retried here. A refusal whose body broke on the way
-    is one too (`xai.error_body`).
+    is one too (`xai.error_body`). A `deadline` bounds the waits as it does in
+    `xai.http_json`: an answer that has not come, or not whole, by then is none.
     """
     request = urllib.request.Request(url, data=data, method="POST")
     request.add_header("Authorization", f"Bearer {token}")
     request.add_header("Accept", "application/json")
     request.add_header("Content-Type", content_type)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+        with urllib.request.urlopen(request, timeout=time_left(timeout, deadline)) as response:
+            raw = read_whole(response, timeout, deadline).decode("utf-8")
             return response.status, (json.loads(raw) if raw else {}), response.headers
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SystemExit("openai-gen: response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
         try:
-            return exc.code, error_body(exc, timeout), exc.headers
+            return exc.code, error_body(exc, timeout, deadline), exc.headers
         except NO_ANSWER as cut:
             raise SystemExit(TRANSPORT_FAILED) from cut
     except NO_ANSWER as exc:
         raise SystemExit(TRANSPORT_FAILED) from exc
 
 
-def _ask(send: retry.Send) -> tuple[int, Any, Any, int]:
-    return retry.ask(send, provider="openai", who="openai", label="gen", kind=refusal.provider_code)
+def _ask(url: str, token: str, data: bytes, content_type: str) -> tuple[int, Any, Any, int]:
+    """POST one request, sent again as `retry` says. SPRITE_GEN_GEN_TIMEOUT_SECONDS is its time limit from
+    the first send: the waits before a refused one goes again count in it, and each send reads only what is
+    left of it."""
+    deadline = time.monotonic() + GEN_TIMEOUT_SECONDS
+    return retry.ask(lambda: http_image(url, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS, deadline=deadline),
+                     provider="openai", who="openai", label="gen", kind=refusal.provider_code, deadline=deadline)
 
 
 def rate_limit_headers(headers: Any) -> dict[str, str]:
@@ -291,8 +298,7 @@ class OpenAIProvider:
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, f" ({label}).")
         data = json.dumps(body).encode("utf-8")
-        status, reply, _headers, _asks = _ask(lambda: http_image(API_BASE + "/responses", token, data, "application/json",
-                                                                 timeout=GEN_TIMEOUT_SECONDS))
+        status, reply, _headers, _asks = _ask(API_BASE + "/responses", token, data, "application/json")
         text, metadata = vision.response_text(status, reply, label=label)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -312,8 +318,7 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply, headers, asks = _ask(lambda: http_image(API_BASE + endpoint, token, data, content_type,
-                                                               timeout=GEN_TIMEOUT_SECONDS))
+        status, reply, headers, asks = _ask(API_BASE + endpoint, token, data, content_type)
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).
