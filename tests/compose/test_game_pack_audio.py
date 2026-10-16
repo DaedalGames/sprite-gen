@@ -131,6 +131,40 @@ def test_version_2_pack_with_sound_adds_only_the_tile_files(tmp_path):
     assert result['tiles']['ground']['image'] == 'tile-ground.png'
 
 
+SOUND_ONLY_FILES = ['audio-hit.m4a', 'audio-hit.ogg', 'game-pack.json', 'sprite-gen-audio-v2.mjs']
+
+
+@pytest.mark.parametrize('version,assets', [(1, []), (1, None), (2, []), (2, None)])
+def test_a_sound_only_request_packs_the_manifest_sound_and_helper(tmp_path, version, assets):
+    path, request = with_sound(tmp_path)
+    request['version'] = version
+    pictured = pack(path, tmp_path/'pictured')
+    if assets is None:
+        del request['assets']
+    else:
+        request['assets'] = assets
+    path.write_text(json.dumps(request))
+    out = tmp_path/'sound'
+    result = pack(path, out)
+    assert sorted(p.name for p in out.iterdir()) == SOUND_ONLY_FILES
+    # the manifest a pack with pictures has, its textures and animations empty
+    assert result == {**pictured, 'textures': [], 'animations': {}}
+    assert json.loads((out/'game-pack.json').read_bytes()) == result
+    for name in ('audio-hit.m4a', 'audio-hit.ogg', 'sprite-gen-audio-v2.mjs'):
+        assert (out/name).read_bytes() == (tmp_path/'pictured'/name).read_bytes(), name
+    assert pack(path, out) == result
+
+
+@pytest.mark.parametrize('document', [{'version': 1, 'assets': []}, {'version': 1, 'assets': [], 'audio': []},
+                                      {'version': 1}, {'version': 2, 'assets': [], 'audio': []}, {'version': 2}])
+def test_a_request_with_neither_pictures_nor_sound_is_refused(tmp_path, document):
+    path = tmp_path/'request.json'
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='nothing to pack'):
+        pack(path, tmp_path/'out')
+    assert not (tmp_path/'out').exists()
+
+
 def version_3_bundle(tmp_path, lufs=-18., spike=None, timescale=48000, **changes):
     """A sound made by processing version 3: real encodes of a synthetic tone, the file numbers that
     version's loudnorm check recorded, and no PCM loudness record. 48003 frames are no whole
