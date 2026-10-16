@@ -107,10 +107,8 @@ def _cell(image, size, sampling):
     return image.resize(size, Image.Resampling.NEAREST) if sampling == "nearest" else resize_cell(image, size)
 
 
-def _prepare(request, base, page_size, version=1):
-    entries = request.get("assets") if version == 1 else request.get("assets", [])
-    if version == 1 and (not isinstance(entries, list) or not entries):
-        raise ValueError("assets must be a nonempty list")
+def _prepare(request, base, page_size):
+    entries = request.get("assets", [])
     if not isinstance(entries, list):
         raise ValueError("assets must be a list")
     ids, animations, frames, sources = set(), {}, [], set()
@@ -494,7 +492,7 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
     request, out_dir = Path(request).expanduser().resolve(), Path(out_dir).expanduser().resolve()
     document = json.loads(request.read_text(encoding="utf-8"))
     version = _version(document)
-    animations, frames, sources = _prepare(document, request.parent, page_size, version)
+    animations, frames, sources = _prepare(document, request.parent, page_size)
     # `files` is the audio loop's name below; the version 2 tile files must not share it.
     sections = tile_files = None
     if version == 2:
@@ -504,8 +502,6 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
         names = [name for name, _image, _anchor in frames]
         if len(set(names)) != len(names):
             raise ValueError("two atlas frames share a name; rename an asset or scene entry")
-        if not frames and not tile_files:
-            raise ValueError("game pack request declares nothing to pack")
     audio_entries = document.get("audio", [])
     if not isinstance(audio_entries, list):
         raise ValueError("audio must be a list")
@@ -526,6 +522,8 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
             audio_payloads[name] = data
         audio[asset_id] = record
         sources.update(paths)
+    if not frames and not tile_files and not audio:
+        raise ValueError("game pack request declares nothing to pack: give it an asset, a scene entry or a sound")
     if any(path == out_dir or out_dir in path.parents for path in sources | {request}):
         raise ValueError("output directory must not contain any source file")
     result, payloads = _encode(_layout(frames, page_size) if frames else [], animations, max_bytes, sections, tile_files)
