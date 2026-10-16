@@ -3,17 +3,19 @@
 provider documents the answer as a request not taken (Anthropic 429 but its spend cap, 500, 529;
 OpenAI 429 but its billing codes, 503; xAI 429), a GET on any of 429/5xx it may be answered with;
 the wait is the answer's retry-after when this run waits that long, else the doubling `backoff` the
-video polls wait by; twice at most. Every direct provider call asks it — the Anthropic transport, the
-OpenAI and Grok image calls, the facing check and the clip request."""
+video polls wait by; twice at most, and only while the wait ends before the time limit of the call the
+request belongs to. Every direct provider call asks it — the Anthropic transport, the OpenAI and Grok
+image calls, the facing check and the clip request — and hands it that time limit."""
 from __future__ import annotations
 
 import io
-import json
+import time
 import urllib.error
 
 import pytest
 from PIL import Image
 
+from http_answer import Answer
 from sprite_gen.gen import anthropic_api, facing_vision, grok_provider, openai_provider, retry, video, xai
 from sprite_gen.gen.base import GenRequest
 
@@ -86,37 +88,77 @@ def test_ask_sends_again_says_so_and_returns_the_last_answer(capsys):
                    "[gen] openai refused the request (503); nothing was made — asking again in 1s (2 of 2)"]
 
 
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    """The test's clock where `retry` reads it and waits on it."""
+    clock = _Clock()
+    monkeypatch.setattr(retry, "time", clock)
+    monkeypatch.setattr(retry, "_sleep", clock.sleep)
+    return clock
+
+
+def test_a_request_is_sent_again_only_while_its_wait_ends_before_the_time_limit(clock, capsys):
+    """The time limit of the call the request belongs to (`deadline`) holds its waits: the 8 s wait ends
+    before 20 s, the 16 s one would not, so the second refusal is the answer, said on stderr in one line."""
+    answers = [(429, {"code": "resource-exhausted"}, None)] * 3 + [(200, {}, None)]
+    sent = []
+
+    def send():
+        sent.append(clock.now)
+        return answers.pop(0)
+
+    status, _body, _headers, asks = retry.ask(send, provider="xai", who="xai", label="video", deadline=20.0,
+                                              kind=lambda body: body.get("code"))
+    assert (status, asks, sent, clock.slept) == (429, 2, [0.0, 8.0], [8.0])
+    assert capsys.readouterr().err.splitlines() == [
+        "[video] xai refused the request (429 resource-exhausted); nothing was made — asking again in 8s (1 of 2)",
+        "[video] xai refused the request (429 resource-exhausted); nothing was made — not asking again: "
+        "the 16s wait would reach the time limit (12s left)"]
+
+
+@pytest.mark.parametrize(("provider", "headers", "deadline", "why"), [
+    # A wait that ends at the time limit leaves no time to send in.
+    ("xai", None, 8.0, "the 8s wait would reach the time limit (8s left)"),
+    # The answer's own wait counts the same.
+    ("openai", {"retry-after": "30"}, 20.0, "the 30s wait would reach the time limit (20s left)"),
+], ids=["backoff", "retry-after"])
+def test_a_wait_that_would_reach_the_time_limit_is_not_waited(clock, capsys, provider, headers, deadline, why):
+    status, _body, _headers, asks = retry.ask(lambda: (429, {}, headers), provider=provider, who=provider,
+                                              label="gen", deadline=deadline)
+    assert (status, asks, clock.slept) == (429, 1, [])
+    assert capsys.readouterr().err == f"[gen] {provider} refused the request (429); nothing was made — not asking again: {why}\n"
+
+
 # --- every direct provider call asks it -------------------------------------------------------------
 
 
 @pytest.fixture
 def asked(monkeypatch):
-    """Every `retry.ask`: the provider and method it was asked for; the answer is the real one's."""
+    """Every `retry.ask`: the provider and method it was asked for, and the seconds left of the time limit it
+    was handed (None: none); the answer is the real one's."""
     real, seen = retry.ask, []
 
     def recording(send, **kwargs):
-        seen.append((kwargs["provider"], kwargs.get("method", "POST")))
+        deadline = kwargs.get("deadline")
+        seen.append((kwargs["provider"], kwargs.get("method", "POST"),
+                     None if deadline is None else round(deadline - time.monotonic())))
         return real(send, **kwargs)
 
     monkeypatch.setattr(retry, "ask", recording)
     return seen
-
-
-class _Answer:
-    status = 200
-    headers: dict = {}
-
-    def __init__(self, body: dict):
-        self.body = body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    def read(self):
-        return json.dumps(self.body).encode()
 
 
 def _png_b64() -> str:
@@ -127,22 +169,23 @@ def _png_b64() -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-def test_the_openai_image_call_asks_it(monkeypatch, tmp_path, asked):
+def test_the_openai_image_call_and_its_facing_check_ask_it_within_the_gen_timeout(monkeypatch, tmp_path, asked):
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic")
     monkeypatch.setattr(openai_provider.urllib.request, "urlopen",
-                        lambda request, timeout: _Answer({"data": [{"b64_json": _png_b64()}]}))
+                        lambda request, timeout: Answer({"data": [{"b64_json": _png_b64()}]}))
     openai_provider.OpenAIProvider().generate(GenRequest("x", tmp_path / "raw.png"), tmp_path)
-    assert asked == [("openai", "POST")]
+    openai_provider.OpenAIProvider().inspect_facing(tmp_path / "raw.png", tmp_path)
+    assert asked == [("openai", "POST", openai_provider.GEN_TIMEOUT_SECONDS)] * 2
 
 
-def test_the_grok_image_call_and_the_facing_check_ask_it(monkeypatch, tmp_path, asked):
+def test_the_grok_image_call_and_the_facing_check_ask_it_within_their_timeouts(monkeypatch, tmp_path, asked):
     monkeypatch.setenv("XAI_API_KEY", "synthetic")
     monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
-    monkeypatch.setattr(xai.urllib.request, "urlopen", lambda request, timeout: _Answer({"data": [{"b64_json": _png_b64()}]}))
+    monkeypatch.setattr(xai.urllib.request, "urlopen", lambda request, timeout: Answer({"data": [{"b64_json": _png_b64()}]}))
     grok_provider.GrokProvider().generate(GenRequest("x", tmp_path / "raw.png"), tmp_path)
     facing_vision.grok_inspect(tmp_path / "raw.png", credential=xai.Credential("t", xai.AUTH_SOURCE_GROK_LOGIN),
                                call=lambda *a, **k: (200, {"output": []}))
-    assert asked == [("xai", "POST"), ("xai", "POST")]
+    assert asked == [("xai", "POST", grok_provider.GEN_TIMEOUT_SECONDS), ("xai", "POST", xai.HTTP_TIMEOUT_SECONDS)]
 
 
 def test_the_clip_request_asks_it(tmp_path, asked):
@@ -159,15 +202,15 @@ def test_the_clip_request_asks_it(tmp_path, asked):
                          credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN), call=call,
                          download=lambda url, token, **_: b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64,
                          sleep=lambda s: None)
-    assert asked == [("xai", "POST")] and calls == ["POST", "GET"]
+    assert asked == [("xai", "POST", video.POLL_TIMEOUT_SECONDS)] and calls == ["POST", "GET"]
 
 
-def test_the_anthropic_transport_asks_it_for_its_posts_and_its_reads(monkeypatch, asked):
+def test_the_anthropic_transport_asks_it_for_its_posts_and_its_reads_within_the_time_limit_handed(monkeypatch, asked):
     answers = iter([{"id": "msgbatch_1"}, {"id": "msgbatch_1", "processing_status": "in_progress"}])
-    monkeypatch.setattr(anthropic_api.urllib.request, "urlopen", lambda request, timeout: _Answer(next(answers)))
+    monkeypatch.setattr(anthropic_api.urllib.request, "urlopen", lambda request, timeout: Answer(next(answers)))
     anthropic_api.submit_batch("k", [("c1", {})], sleep=lambda s: None)
-    anthropic_api.get_batch("k", "msgbatch_1", sleep=lambda s: None)
-    assert asked == [("anthropic", "POST"), ("anthropic", "GET")]
+    anthropic_api.get_batch("k", "msgbatch_1", sleep=lambda s: None, deadline=time.monotonic() + 30)
+    assert asked == [("anthropic", "POST", None), ("anthropic", "GET", 30)]
 
 
 # --- a refusal's body is read by one function ---------------------------------------------------------

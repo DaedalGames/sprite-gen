@@ -13,10 +13,12 @@ import os
 import re
 import subprocess
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
@@ -42,22 +44,10 @@ def encoded_image(fmt="PNG", *, alpha=False, key=False):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-class _GrokResponse:
+def _grok_answer(request, api):
     """Minimal 200 answer for the xai transport (a PNG, so chroma stays untouched)."""
-
-    def __init__(self, request, api):
-        api["calls"].append((request, None))
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    status = 200
-
-    def read(self):
-        return json.dumps({"data": [{"b64_json": encoded_image()}]}).encode()
+    api["calls"].append((request, None))
+    return Answer({"data": [{"b64_json": encoded_image()}]})
 
 
 @pytest.fixture
@@ -69,32 +59,14 @@ def api(monkeypatch):
              "slept": []}
     monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        @property
-        def status(self):
-            return state["status"]
-
-        @property
-        def headers(self):
-            return state["headers"]
-
-        def read(self):
-            return json.dumps(state["body"]).encode()
-
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
         if state.get("script"):  # one (status, body, headers) per request, in order
             state["status"], state["body"], state["headers"] = state["script"].pop(0)
+        answer = Answer(state["body"], status=state["status"], headers=state["headers"])
         if state["status"] == 200:
-            return Response()
-        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"],
-                                     io.BytesIO(json.dumps(state["body"]).encode()))
+            return answer
+        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"], answer)
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     return state
@@ -113,7 +85,7 @@ def test_generation_sends_the_billed_fields_and_publishes_a_png(tmp_path, api):
     assert _body(request) == {"model": openai.DEFAULT_MODEL, "prompt": "a blue square", "n": 1,
                               "size": "1024x1024", "quality": "auto",
                               "output_format": "png", "background": "opaque"}
-    assert timeout == openai.GEN_TIMEOUT_SECONDS
+    assert timeout == pytest.approx(openai.GEN_TIMEOUT_SECONDS, abs=1)  # the first send waits the whole time limit
     # `response_format` is rejected for gpt-image models; the answer is always b64.
     assert "response_format" not in _body(request)
     with Image.open(result.out) as image:
@@ -247,6 +219,31 @@ def test_a_refusal_still_there_after_two_more_sends_ends_the_call(tmp_path, api)
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
+def test_a_refusal_is_sent_again_only_within_the_time_limit_of_the_image(tmp_path, api, monkeypatch, capsys):
+    """SPRITE_GEN_GEN_TIMEOUT_SECONDS is the image's time limit from its first send (gen.retry): the waits
+    before a refused request goes again count in it and each send waits only what is left of it, so a
+    refusal whose next wait would reach it ends the call, its line saying why, before a caller's ceiling."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 20)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, limited, (200, api["body"], {})]
+    with pytest.raises(SystemExit) as refused:
+        gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert [timeout for _request, timeout in api["calls"]] == [20, 12] and api["slept"] == [8.0]
+    assert "(HTTP 429) code=rate_limit_exceeded; sent 2 times, no provider fallback" in str(refused.value)
+    assert ("[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+            "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
+    assert not (tmp_path / "out.png").exists()
+
+
 @pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
@@ -370,7 +367,7 @@ def test_grok_login_still_outranks_its_api_key(tmp_path, api, monkeypatch, capsy
         "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
     assert xai.resolve_credential().source == xai.AUTH_SOURCE_GROK_LOGIN
     monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
+                        lambda request, *, timeout: _grok_answer(request, api))
     result = gen.generate_image("grok", "x", tmp_path / "grok.png")
     assert result.extra["auth_source"] == xai.AUTH_SOURCE_GROK_LOGIN
     # A subscription call says nothing about API billing; only the key route does.
@@ -389,7 +386,7 @@ def test_grok_on_an_api_key_announces_the_charge_too(tmp_path, api, monkeypatch,
     monkeypatch.setenv("XAI_API_KEY", "xai-api-secret")
     monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
     monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
+                        lambda request, *, timeout: _grok_answer(request, api))
     gen.generate_image("grok", "x", tmp_path / "grok.png")
     notice = [line for line in capsys.readouterr().err.splitlines() if "per-call API charge" in line]
     assert len(notice) == 1 and "XAI_API_KEY" in notice[0]
@@ -525,7 +522,7 @@ def test_a_body_that_is_not_json_is_its_text_on_one_line(api, tmp_path, monkeypa
 
     def open_request(request, *, timeout):
         api["calls"].append((request, timeout))
-        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, io.BytesIO(page.encode()))
+        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, Answer(page.encode(), status=502))
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     with pytest.raises(SystemExit) as refused:
