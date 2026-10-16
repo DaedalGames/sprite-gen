@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """The two user journeys and their selectable fields, declared once."""
-from sprite_gen.gen import PROVIDERS
+from sprite_gen.gen import CODEX_UNAVAILABLE_CHOICES, CODEX_UNAVAILABLE_SETTING, PROVIDERS
 
 MOTION_METHODS = {
     "gpt-rows": {"label": "지피티 이미지 스프라이트", "provider": "codex", "doc": "docs/atlas-workflow.md",
@@ -17,9 +17,9 @@ PROVIDER_LABELS = {
     "openai": "지피티 API (서버·SaaS 용, 호출당 과금)",
 }
 # Subscription-first (수홍 2026-09-20): the guided flow offers only the routes
-# that run on a subscription the user already pays for. `openai` is a registered
-# provider but never an offered, recommended or savable one — it spends metered
-# API credit per call, so it has to be named on purpose (`--provider openai`).
+# that run on a subscription the user already pays for as the image provider.
+# `openai` spends metered API credit per call, so it is never offered there; the
+# one place it is a choice is the answer for a codex that cannot run (below).
 GUIDED_PROVIDERS = ("codex", "grok")
 _unlabelled = [provider for provider in PROVIDERS if provider not in PROVIDER_LABELS]
 if _unlabelled:
@@ -36,6 +36,18 @@ FIELDS = {
     "curation": {"options": {"open": "열기", "skip": "열지 않기"},
                  "question": "큐레이션뷰에서 결과를 확인하고 골라볼까요?"},
 }
+# Settings every profile shares, asked once and saved beside the profiles (`preferences`, `general`). The one so
+# far: what a call that names no provider does when codex cannot run here (not signed in, or its usage used up) —
+# `gen.codex_unavailable_choice` reads it, docs/gen.md "When codex cannot run" owns the rule.
+GENERAL_FIELDS = {
+    CODEX_UNAVAILABLE_SETTING: {
+        "options": {"ask": "멈추고 묻기 (기본)", "grok": "그록으로 만들기", "openai": "OpenAI API 로 만들기 (호출당 과금)"},
+        "question": "지피티(codex)를 쓸 수 없을 때 — 로그인이 없거나 사용량을 다 썼을 때 — 어떻게 할까요?",
+    },
+}
+if list(GENERAL_FIELDS[CODEX_UNAVAILABLE_SETTING]["options"]) != list(CODEX_UNAVAILABLE_CHOICES):
+    raise RuntimeError("workflow catalog: the codex-unavailable options must be gen.CODEX_UNAVAILABLE_CHOICES")
+
 FLOWS = {
     "sprite": {"label": "스프라이트 만들기", "fields": ("image_provider", "motion_method", "curation")},
     "image": {"label": "이미지 만들기", "fields": ("image_provider", "curation")},
@@ -51,3 +63,12 @@ def validate_choices(kind: str, choices: dict) -> dict:
         if key not in FLOWS[kind]["fields"] or not isinstance(value, str) or value not in FIELDS[key]["options"]:
             raise ValueError(f"invalid {kind} choice: {key}")
     return dict(choices)
+
+
+def validate_general(values: dict) -> dict:
+    if not isinstance(values, dict):
+        raise ValueError("general settings must be an object")
+    for key, value in values.items():
+        if key not in GENERAL_FIELDS or not isinstance(value, str) or value not in GENERAL_FIELDS[key]["options"]:
+            raise ValueError(f"invalid general setting: {key}")
+    return dict(values)

@@ -54,10 +54,12 @@ def _cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedP
 
 
 def _without_codex(tmp_path: Path) -> dict[str, str]:
-    """The environment with a PATH that holds no `codex`: its login cannot be asked."""
-    empty = tmp_path / "no-codex-bin"
-    empty.mkdir(exist_ok=True)
-    return {**os.environ, "PATH": str(empty)}
+    """The environment with a PATH that holds no `codex` (its login cannot be asked), and no Grok login or API key
+    anywhere: a call that went on to another provider instead of asking would fail here, never reach one."""
+    for name in ("no-codex-bin", "no-grok-home"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if key not in ("XAI_API_KEY", "OPENAI_API_KEY")}
+    return {**env, "PATH": str(tmp_path / "no-codex-bin"), "GROK_HOME": str(tmp_path / "no-grok-home")}
 
 
 def _choose(choice: str) -> dict:
@@ -154,7 +156,8 @@ def test_no_codex_login_and_nothing_chosen_ends_with_the_question_and_draws_noth
     assert not out.exists() and not report.exists()
 
 
-@pytest.mark.parametrize("said", USAGE_LIMIT_SAID)
+@pytest.mark.parametrize("said", USAGE_LIMIT_SAID, ids=["0.160.1", "0.153.4", "workspace-credits", "spend-cap",
+                                                         "quota-exceeded", "usage-not-included"])
 def test_codex_usage_used_up_and_nothing_chosen_asks_the_same_question(tmp_path, codex, made, said, capsys):
     codex["said"] = said
     with pytest.raises(base.CodexUnavailableAsk) as asked:
@@ -249,13 +252,23 @@ def test_the_environment_answers_before_the_saved_choice(monkeypatch, capsys):
 
 def test_a_codex_that_can_run_reads_no_choice(tmp_path, monkeypatch, made):
     path = preferences.settings_path()
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not json", encoding="utf-8")  # a broken settings file is read only when the choice is needed
     monkeypatch.setattr(gen, "_codex_available", lambda: (True, ""))
     assert gen.resolve_default_provider() == ("codex", None)
     _codex_down(monkeypatch)
     with pytest.raises(SystemExit, match="invalid preferences"):
         gen.resolve_default_provider()
+
+
+def test_logo_resolves_the_same_way(tmp_path, monkeypatch, made):
+    from sprite_gen.gen import logo
+
+    _codex_down(monkeypatch)
+    out_dir = tmp_path / "logo"
+    with pytest.raises(base.CodexUnavailableAsk):
+        logo.run(text="STARFALL", style="painted fantasy", out_dir=out_dir)
+    assert made == [] and not out_dir.exists()
 
 
 # --- a named provider runs as named ---------------------------------------------------------------------------
@@ -312,7 +325,11 @@ def test_gen_set_takes_the_providers_gen_takes():
 
 
 def test_video_set_whose_mid_step_redraw_asked_stops_with_the_same_question(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", _without_codex(tmp_path)["PATH"])
+    hermetic = _without_codex(tmp_path)
+    for name in ("PATH", "GROK_HOME"):
+        monkeypatch.setenv(name, hermetic[name])
+    for name in ("XAI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     still = Image.new("RGB", (96, 128), (0, 255, 0))
     for y in range(20, 110):
         for x in range(36, 60):
@@ -374,7 +391,7 @@ def test_the_choice_is_kept_beside_the_profiles_in_the_one_settings_file():
 
 def test_a_version_1_settings_file_still_reads_with_nothing_chosen():
     path = preferences.settings_path()
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"version":1,"profiles":{"image":{"curation":"skip"}}}', encoding="utf-8")
     settings = preferences.read_settings()
     assert settings["profiles"] == {"image": {"curation": "skip"}} and settings["general"] == {}

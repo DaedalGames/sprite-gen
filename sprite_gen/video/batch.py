@@ -26,7 +26,8 @@ from typing import Any, Callable
 from PIL import Image
 
 from sprite_gen.spec.runio import atomic_write_text
-from sprite_gen.gen.base import run_logged
+from sprite_gen.gen.base import (CodexUnavailableAsk, ask_codex_unavailable, child_asked, codex_unavailable_question,
+                                 run_logged)
 from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS, validate as validate_facing
 from sprite_gen.gen import handedness as handed_mod
@@ -680,6 +681,8 @@ def walk_start_still(base: Path, direction: str, item_dir: Path, *, key: str, fo
         if prior.get("prompt") == prompt and [str(Path(r).resolve()) for r in prior.get("refs") or []] == [str(base.resolve())]:
             return out, {"redrawn": True, "reused": True, "still": str(out), "key": kind}
     rc = runner(base, prompt, out, report, log=item_dir / "walk-start.log", provider=provider)
+    if (question := child_asked(rc, item_dir / "walk-start.log")) is not None:
+        raise CodexUnavailableAsk(question)  # the set asks it once, when its items have ended (`run_set`)
     if rc != 0 or not out.is_file():
         raise SystemExit(f"the mid-step start still for the {direction} walk was not drawn; see {item_dir / 'walk-start.log'}")
     return out, {"redrawn": True, "reused": False, "still": str(out), "key": kind, "report": str(report)}
@@ -867,6 +870,10 @@ def run_item(
             # cut as filmed for want of RIFE: the set report lists it under `warnings`
             result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "score_max_before", "install")}
         result["ok"] = True
+    except CodexUnavailableAsk as exc:
+        result["ok"] = False
+        result["asked"] = exc.question
+        result["error"] = f"the mid-step start still was not drawn: codex cannot run here ({exc.question['reason']})"
     except SystemExit as exc:
         result["ok"] = False
         result["error"] = str(exc)
@@ -1155,9 +1162,15 @@ def run_set(
     warnings += [f"cycle-align:{st}: {line}" for st, a in aligned.items() for line in a.get("warnings", [])]
     warnings += [f"cycle-align:{st}: --align-foot {item}={foot} not applied ({a.get('why') or a.get('error') or 'the item failed'})"
                  for st, a in aligned.items() for item, foot in a.get("feet_unused", {}).items()]
-    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), **({"play": play} if play else {}), **({"motion": motion} if motion else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, "items": results, "cycle_align": aligned}
+    # A start still `gen` asked about instead of drawing (codex cannot run, and the choice is to ask): the set ends
+    # with that question, the way to answer it named as this verb's own flag, once every other item has ended.
+    asked = next((codex_unavailable_question(r["asked"]["cause"], r["asked"]["reason"], flag="--still-provider")
+                  for r in results if r.get("asked")), None)
+    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), **({"play": play} if play else {}), **({"motion": motion} if motion else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, **({"asked": asked} if asked else {}), "items": results, "cycle_align": aligned}
     atomic_write_text(root / "set.report.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     print(table)
+    if asked:
+        raise ask_codex_unavailable(asked)
     return payload
 
 
@@ -1245,7 +1258,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--body-height", type=int, default=None, help="scale every state's loop so the standing height is this many px (video-loop --body-height): one value for the whole set keeps the character the same size across states")
     parser.add_argument("--decontam", choices=frames_mod.DECONTAM_MODES, default="off", help="passed to video-frames: palette re-explains key-tinted edges with the subject's own colours (default off)")
     parser.add_argument("--walk-start", choices=WALK_START_MODES, default="redraw", help="redraw (default): a front or back walk films from its base still redrawn mid-step (one image generation, `sprite-gen gen --ref base`, kept as walk-start.png) — from a standing still the clip model walks askew; as-given: film from the base still itself")
-    parser.add_argument("--still-provider", help="image provider for the mid-step redraw (default: sprite-gen gen's own default)")
+    parser.add_argument("--still-provider", help="image provider for the mid-step redraw (default: sprite-gen gen's own default; "
+                        "a codex that cannot run there asks, and the set stops with the question)")
     parser.add_argument("--align-cycles", choices=ALIGN_MODES, default="auto", help="auto (default): after the loops are cut, every walk/run filmed in two or more directions is resampled to the set's median cycle length and turned to start on a foot strike (video-cycle-align; RIFE makes only the frames between source frames — where no RIFE is installed the alignment is skipped with a warning and recorded); off: each loop keeps its own length")
     parser.add_argument("--align-between", choices=align_mod.BETWEEN, default=align_mod.DEFAULT_BETWEEN, help="how the alignment fills a time between two source frames (video-cycle-align --between): auto (default) makes the frame with RIFE and takes the nearer source frame where it smeared or lost its outline, rife keeps every made frame, nearest takes the nearer source frame")
     parser.add_argument("--align-foot", action="append", default=[], metavar="ITEM=left|right",
