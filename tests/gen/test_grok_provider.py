@@ -151,6 +151,31 @@ def test_a_rate_limit_is_sent_again_only_within_the_time_limit_of_the_image(tmp_
             "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
 
 
+def test_a_rate_limit_whose_wait_woke_past_the_time_limit_is_not_sent_again(tmp_path, api, monkeypatch, capsys):
+    """A sleep may wake later than asked: with 8.01 s, the 8 s wait after a 429 woke 20 ms late, past the
+    image's time limit. Nothing is sent then: the 429 ends the call as it came and its stderr line says why —
+    not a send that finds no time left and ends as a request the server may have taken."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds + 0.020
+
+    for module in (grok, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(grok, "GEN_TIMEOUT_SECONDS", 8.010)
+    api["script"] = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, api["body"])]
+    with pytest.raises(SystemExit) as error:
+        gen.generate_image("grok", "x", tmp_path / "out.png")
+    assert len(api["calls"]) == 1 and api["slept"] == [8.0]
+    assert "(HTTP 429) code=resource-exhausted; no retry or provider fallback" in str(error.value)
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[gen] grok refused the request (429 resource-exhausted); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not (tmp_path / "out.png").exists()
+
+
 @pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},

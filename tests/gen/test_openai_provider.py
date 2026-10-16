@@ -244,6 +244,38 @@ def test_a_refusal_is_sent_again_only_within_the_time_limit_of_the_image(tmp_pat
     assert not (tmp_path / "out.png").exists()
 
 
+@pytest.mark.parametrize("call", ["image", "facing check"])
+def test_a_refusal_whose_wait_woke_past_the_time_limit_is_not_sent_again(tmp_path, api, monkeypatch, capsys, call):
+    """A sleep may wake later than asked: with 8.01 s, the 8 s wait after a 429 woke 20 ms late, past the time
+    limit. The limit is read again right before the send, so nothing is sent and the 429 ends the call as it
+    came, its stderr line saying why — not a send that finds no time left and ends as a request the server may
+    have taken."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds + 0.020
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 8.010)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, (200, api["body"], {})]
+    Image.new("RGB", (4, 4), (20, 90, 200)).save(tmp_path / "raw.png")
+    with pytest.raises(SystemExit) as refused:
+        if call == "image":
+            gen.generate_image("openai", "x", tmp_path / "out.png")
+        else:
+            openai.OpenAIProvider().inspect_facing(tmp_path / "raw.png", tmp_path)
+    assert len(api["calls"]) == 1 and api["slept"] == [8.0]
+    assert "HTTP 429" in str(refused.value) and "request failed or timed out" not in str(refused.value)
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not (tmp_path / "out.png").exists()
+
+
 @pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
