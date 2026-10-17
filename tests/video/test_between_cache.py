@@ -6,8 +6,10 @@ bytes at the same times, and the second pass takes them from the directory the f
 
 What must hold: the second pass delivers the very bytes a pass without the directory delivers; a
 frame is taken only for the same two frames, the same fraction and the same RIFE on the same
-machine, and made again for anything else; and nothing is kept unless a directory is named. The
-stand-in RIFE cross-fades, names itself (`identity`) as `rife.Rife` does, and records what it made."""
+machine, and made again for anything else — the same RIFE too, once a file it runs from changed
+under it, and a frame made while one changed is not kept; and nothing is kept unless a directory is
+named. The stand-in RIFE cross-fades, names itself (`identity`) as `rife.Rife` does, and records what
+it made."""
 
 from __future__ import annotations
 
@@ -15,6 +17,8 @@ import hashlib
 import json
 import os
 import shutil
+import sys
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -85,7 +89,7 @@ def test_the_foot_pass_takes_every_frame_the_first_pass_made_and_delivers_the_sa
     first = Blend()
     report = _pass(root, names, first, between=between, between_cache=kept)
     n = len(first.made)
-    assert n > 0 and report["between_cache"] == {"dir": str(kept.resolve()), "hits": 0, "misses": n, "unreadable": 0}
+    assert n > 0 and report["between_cache"] == {"dir": str(kept.resolve()), "hits": 0, "misses": n, "unreadable": 0, "not_kept": 0}
     assert len(list(kept.glob("*.png"))) == n
     for label in ("foot", "plain"):
         shutil.copytree(root, tmp_path / f"loops.{label}")
@@ -94,7 +98,7 @@ def test_the_foot_pass_takes_every_frame_the_first_pass_made_and_delivers_the_sa
     taken = _pass(tmp_path / "loops.foot", names, reused, between=between, feet=feet, between_cache=kept)
     plain = _pass(tmp_path / "loops.plain", names, fresh, between=between, feet=feet)
     assert reused.made == [] and len(fresh.made) == n
-    assert taken["between_cache"] == {"dir": str(kept.resolve()), "hits": n, "misses": 0, "unreadable": 0}
+    assert taken["between_cache"] == {"dir": str(kept.resolve()), "hits": n, "misses": 0, "unreadable": 0, "not_kept": 0}
     assert plain["between_cache"] is None
     assert _hashes(tmp_path / "loops.foot") == _hashes(tmp_path / "loops.plain")
     assert _said(taken, tmp_path / "loops.foot", tmp_path / "loops.plain") == _said(plain, tmp_path / "loops.plain", tmp_path / "loops.plain")
@@ -143,7 +147,10 @@ def _stub_call(monkeypatch) -> list[int]:
     return calls
 
 
-def test_a_kept_frame_is_taken_only_for_the_same_frames_fraction_rife_and_machine(monkeypatch, tmp_path):
+def test_a_kept_frame_is_taken_only_for_the_same_frames_and_fraction(monkeypatch, tmp_path):
+    """The same two frames at the same fraction take the kept frame; the two swapped, another fraction — even one
+    a float apart — or one pixel moved make it. Frames are kept for RGBA frames only: their mode, size and bytes are
+    all of them, where a palette or a transparent colour is not in an image's bytes."""
     calls = _stub_call(monkeypatch)
     binary = _fake_binary(tmp_path / "one")
     made = rife.Rife(binary, binary.parent / rife.MODEL)
@@ -162,23 +169,132 @@ def test_a_kept_frame_is_taken_only_for_the_same_frames_fraction_rife_and_machin
     for x, y, t in others:
         assert cache.frame(made, x, y, t).tobytes() == rife.between(x, y, t, binary=binary, model=made.model, tmp=tmp_path).tobytes()
     assert cache.misses == 1 + len(others) and cache.hits == 1
-
-    def remade(changed) -> bool:
-        before = cache.misses
-        changed()
-        cache.frame(rife.Rife(binary, binary.parent / rife.MODEL), a, b, 0.5)
-        return cache.misses == before + 1
-
-    assert remade(lambda: (binary.parent / rife.MODEL / "flownet.bin").write_bytes(b"another model"))
-    assert remade(lambda: binary.write_text("#!/bin/sh\nexit 0  # another build\n"))
-    assert remade(lambda: monkeypatch.setattr(rife.platform, "node", lambda: "another-machine"))
-    code = tmp_path / "rife.py"
-    code.write_text(Path(rife.__file__).read_text(encoding="utf-8") + "\n# another engine\n", encoding="utf-8")
-    assert remade(lambda: monkeypatch.setattr(rife, "__file__", str(code)))
-    assert cache.record() == {"dir": str((tmp_path / "kept").resolve()), "hits": 1, "misses": 1 + len(others) + 4, "unreadable": 0}
+    with pytest.raises(ValueError, match=r"kept for RGBA frames only, not RGB"):
+        cache.frame(made, a.convert("RGB"), b, 0.5)
+    assert cache.record() == {"dir": str((tmp_path / "kept").resolve()), "hits": 1, "misses": 1 + len(others), "unreadable": 0, "not_kept": 0}
     if os.name == "posix":  # the directory and its frames are this user's only
         assert (tmp_path / "kept").stat().st_mode & 0o077 == 0
         assert all(p.stat().st_mode & 0o077 == 0 for p in (tmp_path / "kept").iterdir())
+
+
+def test_the_same_rife_is_another_identity_once_its_machine_libraries_or_code_changed(monkeypatch, tmp_path):
+    """Under one Rife, the machine (host name, OS build, architecture: read each time, where platform.uname() keeps
+    its first answer), NumPy's or Pillow's version, or engine code loaded anew make the frame again. rife.py written
+    over on disk after the import is no code that runs here: the frame the loaded code made is taken."""
+    _stub_call(monkeypatch)
+    binary = _fake_binary(tmp_path)
+    made = rife.Rife(binary, binary.parent / rife.MODEL)
+    cache = rife.Cache(tmp_path / "kept")
+    a, b = _disc(40), _disc(72)
+    cache.frame(made, a, b, 0.5)
+
+    def remade(change) -> bool:
+        before = cache.misses
+        change()
+        cache.frame(made, a, b, 0.5)
+        return cache.misses == before + 1
+
+    host = list(os.uname()) if hasattr(os, "uname") else ["Windows", "host", "10", "10.0.19045", "AMD64"]
+    for field, value in ((1, "another-host"), (3, "another OS build")):
+        host[field] = value
+        assert remade(lambda: monkeypatch.setattr(rife.os, "uname", lambda now=tuple(host): now, raising=False))
+    assert remade(lambda: monkeypatch.setattr(rife.np, "__version__", "0.0.1"))
+    assert remade(lambda: monkeypatch.setattr(rife.PIL, "__version__", "0.0.1"))
+    assert rife.CODE_SHA256 == _sha(Path(rife.__file__).read_bytes())
+    code = tmp_path / "rife.py"
+    code.write_text(Path(rife.__file__).read_text(encoding="utf-8") + "\n# another engine\n", encoding="utf-8")
+    assert not remade(lambda: monkeypatch.setattr(rife, "__file__", str(code)))
+    assert remade(lambda: monkeypatch.setattr(rife, "CODE_SHA256", _sha(code.read_bytes())))
+    assert (cache.hits, cache.misses) == (1, 6)
+
+
+def _picking_rife(root: Path) -> tuple[Path, Path]:
+    """(binary, its model's flownet.bin): a stand-in RIFE that runs. It hands back the first or the second of its two
+    images (`-0`, `-1`) — the one its model's flownet.bin names, the other where its own FLIP is 1 — so a frame taken
+    for another model or binary shows in its pixels. Where a file `race` stands beside it, it first writes the other
+    model over its own, once: a model replaced while a frame is made."""
+    binary = root / "bin" / rife.installed_binary(Path(".")).name
+    binary.parent.mkdir(parents=True)
+    binary.write_text(f"#!{sys.executable}\n" + textwrap.dedent("""\
+        import shutil, sys
+        from pathlib import Path
+        FLIP = 0
+        args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+        weights = Path(args["-m"]) / "flownet.bin"
+        pick = int(weights.read_text())
+        race = Path(sys.argv[0]).with_name("race")
+        if race.exists():
+            race.unlink()
+            weights.write_text(str(1 - pick))
+        shutil.copyfile(args["-" + str(pick ^ FLIP)], args["-o"])
+        """))
+    binary.chmod(0o700)
+    model = binary.parent / rife.MODEL
+    model.mkdir()
+    (model / "flownet.param").write_text("synthetic")
+    (model / "flownet.bin").write_text("0")
+    return binary, model / "flownet.bin"
+
+
+def _dot(cx: int, colour: tuple[int, int, int]) -> Image.Image:
+    """`_disc` at `cx`, in `colour`."""
+    im = np.asarray(_disc(cx)).copy()
+    im[im[..., 3] > 0, :3] = colour
+    return Image.fromarray(im, "RGBA")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a shebang script cannot stand in for rife-ncnn-vulkan.exe")
+def test_the_same_rife_makes_its_frame_again_once_a_file_it_runs_from_changed(tmp_path):
+    """One Rife makes and keeps a frame, then its model's bytes are written over: the next pass makes the frame
+    again, as this very RIFE now makes another. So for its binary written over, a file added to its model, and its
+    model's files under another name (the binary reads the model's version from the name). Every frame taken or made
+    is the frame the same RIFE makes with no directory, byte for byte. A RIFE whose model is gone fails as a RIFE that
+    fails."""
+    binary, weights = _picking_rife(tmp_path)
+    made = rife.Rife(binary, weights.parent)
+    a, b = _dot(40, (255, 0, 0)), _dot(72, (0, 0, 255))
+
+    def again(interpolate: rife.Rife) -> tuple[bytes, int, int]:
+        """A pass's frame, hits and misses; its frame is the one the same RIFE makes with no directory."""
+        cache = rife.Cache(tmp_path / "kept")
+        frame = cache.frame(interpolate, a, b, 0.5).tobytes()
+        assert frame == interpolate(a, b, 0.5).tobytes()
+        return frame, cache.hits, cache.misses
+
+    assert again(made) == (a.tobytes(), 0, 1)
+    assert again(made) == (a.tobytes(), 1, 0)
+    weights.write_text("1")
+    assert again(made) == (b.tobytes(), 0, 1)
+    binary.write_text(binary.read_text().replace("FLIP = 0", "FLIP = 1"))
+    assert again(made) == (a.tobytes(), 0, 1)
+    (weights.parent / "contextnet.bin").write_text("a file added")
+    assert again(made) == (a.tobytes(), 0, 1)
+    assert again(rife.Rife(binary, shutil.copytree(weights.parent, tmp_path / "rife-v4"))) == (a.tobytes(), 0, 1)
+    shutil.rmtree(weights.parent)
+    with pytest.raises(rife.RifeUnavailable, match="could not be read"):
+        rife.Cache(tmp_path / "kept").frame(made, a, b, 0.5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a shebang script cannot stand in for rife-ncnn-vulkan.exe")
+def test_a_frame_made_while_its_rife_changed_is_handed_on_and_not_kept(tmp_path):
+    """The model written over while a frame is made, between RIFE's two runs: the frame is what RIFE made — its colour
+    from one model, its coverage from the other — and it is handed on as made, as a pass with no directory hands it
+    on, but not kept, as no key names what made it. The pass after makes the frame again."""
+    binary, weights = _picking_rife(tmp_path)
+    made = rife.Rife(binary, weights.parent)
+    a, b = _dot(40, (255, 0, 0)), _dot(72, (0, 0, 255))
+    race = binary.with_name("race")
+    race.touch()
+    cache = rife.Cache(tmp_path / "kept")
+    frame = cache.frame(made, a, b, 0.5).tobytes()
+    assert cache.record() == {"dir": str((tmp_path / "kept").resolve()), "hits": 0, "misses": 1, "unreadable": 0, "not_kept": 1}
+    assert list((tmp_path / "kept").iterdir()) == []
+    weights.write_text("0")
+    race.touch()
+    assert made(a, b, 0.5).tobytes() == frame and frame not in (a.tobytes(), b.tobytes())
+    weights.write_text("0")
+    after = rife.Cache(tmp_path / "kept")
+    assert after.frame(made, a, b, 0.5).tobytes() == a.tobytes() and (after.hits, after.misses, after.not_kept) == (0, 1, 0)
 
 
 def test_a_kept_file_that_does_not_read_back_is_made_again(monkeypatch, tmp_path):
