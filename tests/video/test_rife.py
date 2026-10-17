@@ -153,6 +153,67 @@ def _disc(cx: int) -> Image.Image:
     return Image.fromarray(im, "RGBA")
 
 
+def _marked(cx: int) -> Image.Image:
+    """The disc with a block and a bar off its centre lines: no flip or transpose of it is itself."""
+    im = np.asarray(_disc(cx)).copy()
+    im[10:22, cx - 30:cx - 14] = (40, 160, 90, 255)
+    im[70:74, cx + 4:cx + 30] = (230, 220, 40, 128)
+    return Image.fromarray(im, "RGBA")
+
+
+def _premultiplied(frame: Image.Image) -> np.ndarray:
+    """A frame's colour and coverage as `rife.passes` gives them to the binary, premultiplied (0..1)."""
+    x = np.asarray(frame, dtype=np.float32) / 255.0
+    colour = np.uint8(np.clip(rife.bleed(x), 0, 1) * 255 + 0.5) / 255.0
+    cover = np.uint8(x[..., 3:] * 255 + 0.5) / 255.0
+    return np.concatenate([colour * cover, cover], axis=-1)
+
+
+def test_read_makes_the_frame_as_every_call_and_reads_sixteen_single_passes_turned_back(monkeypatch, tmp_path):
+    """`Rife.read`: the frame as `between` makes it, with the augmentation every call asks for, then the sixteen single
+    passes with none — the pair flipped and transposed eight ways, each from a to b at t and from b to a at 1 - t. A binary
+    that hands back its first frame makes every forward pass a and every backward pass b, once each pass is turned back:
+    the passes disagree by exactly how far a and b differ, and only where they differ."""
+    monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
+    binary, log = _recording_binary(tmp_path)
+    interpolate = rife.Rife(binary, tmp_path / rife.MODEL)
+    a, b = _marked(40), _marked(72)
+    frame, apart = interpolate.read(a, b, 0.25)
+    calls = [line.split() for line in log.read_text().splitlines()]
+    assert len(calls) == 2 + rife.PASS_CALLS == interpolate.calls and interpolate.made == 1
+    flags = [[x for x in argv if x in ("-x", "-z", "-u", "-g")] for argv in calls]
+    assert flags[:2] == [["-x", "-z"], ["-x", "-z"]] and all(f == [] for f in flags[2:])
+    times = [argv[argv.index("-s") + 1] for argv in calls[2:]]
+    assert times.count("0.2500") == times.count("0.7500") == rife.PASS_CALLS // 2
+    assert np.array_equal(np.asarray(frame), np.asarray(a))  # the frame between, from the copying binary: a itself
+    pa, pb = _premultiplied(a), _premultiplied(b)
+    expected = np.sqrt(((pa - pb) ** 2).sum(axis=-1) / 4.0)
+    assert apart.shape == (96, 128) and np.allclose(apart, expected, atol=1e-5)
+    assert apart[pa[..., 3] + pb[..., 3] == 0].max() == 0 and apart.max() > 0.5
+
+
+def test_torn_reads_a_thick_patch_in_a_window_and_not_an_edge_or_scattered_pixels():
+    """`rife.torn` on disagreement drawn by hand over a body 100 px high, windows of 10 px: a patch a window wide where the
+    passes disagree fills its window; lines a pixel or two wide, pixels scattered one in five, or a patch they disagree on
+    by less than TORN_LEVEL leave it empty; a frame with no body reads nothing."""
+    body = np.zeros((160, 128, 4), dtype=np.uint8)
+    body[30:130, 34:94] = (200, 180, 160, 255)
+    made = Image.fromarray(body, "RGBA")
+    apart = np.zeros((160, 128), dtype=np.float32)
+    patch = apart.copy()
+    patch[60:72, 50:62] = 0.3
+    assert rife.torn(patch, made) == 1.0
+    lines = apart.copy()
+    lines[:, 40] = lines[:, 70:72] = lines[90, :] = 0.5
+    assert rife.torn(lines, made) == 0.0
+    scattered = np.where(np.random.default_rng(7).random(apart.shape) < 0.2, 0.5, 0.0).astype(np.float32)
+    assert rife.torn(scattered, made) < 0.05
+    faint = apart.copy()
+    faint[60:72, 50:62] = rife.TORN_LEVEL * 0.8
+    assert rife.torn(faint, made) == 0.0
+    assert rife.torn(patch, Image.new("RGBA", (128, 160))) == 0.0
+
+
 @pytest.mark.real_rife
 def test_real_rife_makes_the_frame_between_in_colour_and_alpha():
     interpolate = rife.Rife()

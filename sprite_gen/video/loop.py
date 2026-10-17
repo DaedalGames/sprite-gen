@@ -912,14 +912,29 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
     made_by: list[dict[str, str]] = []
     calls = 0
 
-    def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        nonlocal interpolate, calls
+    def located() -> rife_mod.Interpolate:
+        nonlocal interpolate
         if interpolate is None:
-            located = rife_mod.Rife()
-            made_by.append(located.describe())
-            interpolate = located
+            found = rife_mod.Rife()
+            made_by.append(found.describe())
+            interpolate = found
+        return interpolate
+
+    def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        nonlocal calls
         calls += 1
-        return interpolate(a, b, t)
+        return located()(a, b, t)
+
+    def lazy_read(a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        # the overlapped wrap reads each frame it makes with RIFE's single passes, for a part torn: an interpolator given
+        # that cannot say how far its passes disagree is refused, never read as agreeing
+        nonlocal calls
+        read = getattr(located(), "read", None)
+        if read is None:
+            raise ValueError("the overlapped wrap reads how far RIFE's single passes disagree on each frame it makes, and "
+                             "the interpolator given has no `read` (rife.Rife.read)")
+        calls += 1
+        return read(a, b, t)
 
     overlap: dict[str, Any] | None = None
     overlapped: list[int] = []
@@ -929,15 +944,16 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
         asked = partial(repair_mod.overlap_wrap, others=wrap["others"], seam=wrap_on_cells, steps=ring_steps,
                         seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso)
         try:
-            frames, overlap = asked(frames, interpolate=lazy)
+            frames, overlap = asked(frames, read=lazy_read)
         except rife_mod.RifeNotInstalled as exc:
             if required:
                 raise
-            frames, overlap = asked(frames, interpolate=None)
+            frames, overlap = asked(frames, read=None)
             overlap.update(why="RIFE not installed — the wrap cut as filmed", rife=str(exc), install=rife_mod.INSTALL_COMMAND)
         overlapped = overlap["frames"]
         if overlap["calls"]:
-            overlap["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]} if made_by else {"kind": "injected"}
+            overlap["interpolator"] = ({"kind": "rife-ncnn-vulkan", **made_by[0], "binary_calls": interpolate.calls}
+                                       if made_by else {"kind": "injected"})
     wrap_calls = calls
     try:
         repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen, overlapped=overlapped,
@@ -1010,7 +1026,15 @@ def _overlap_lines(overlap: dict[str, Any]) -> list[str]:
                 "and cut it again (docs/loop-repair.md section 2)"]
     if "skipped" in overlap:
         return [f"{said}; the overlapped wrap was not made: {overlap['skipped']} (docs/loop-repair.md section 2)"]
-    refused = "; ".join(f"{t['width']} frames {t['side']} the wrap: {', '.join(t['rejected_for'])}" for t in overlap["tries"])
+
+    def why(t: dict[str, Any]) -> str:
+        if "unmade" not in t:
+            return ", ".join(t["rejected_for"])
+        stopped = next(r for r in t["made"] if r["faults"])  # the first frame with a fault ended the run
+        rest = ", the rest not made" if t["unmade"] else ""
+        return f"{', '.join(t['rejected_for'])} ({', '.join(stopped['faults'])} at frame {stopped['frame']}{rest})"
+
+    refused = "; ".join(f"{t['width']} frames {t['side']} the wrap: {why(t)}" for t in overlap["tries"])
     return [f"{said}, and the overlapped wrap was refused ({refused}): cut as filmed (docs/loop-repair.md section 2)"]
 
 

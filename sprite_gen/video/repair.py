@@ -25,7 +25,9 @@ repair is for, not drift.
 A part on a beat of its own — a tail swinging round every 41 frames on a walk of 26 — closes on no cut of two steps,
 and turns back at the wrap, where no retime reaches it. Before the rounds above, the frames beside such a cut's wrap
 are made again between the clip's frames a cycle apart and the cut's own (`overlap_wrap`), so the wrap plays a step
-the clip filmed (docs/loop-repair.md section 2, "The overlapped wrap").
+the clip filmed (docs/loop-repair.md section 2, "The overlapped wrap"). Those frames bridge the part's whole move in
+one, and where it swings over a smaller part — a tail across a hand — RIFE drags the small part apart with it: each is
+read with RIFE's single passes and refused where they disagree there (`overlap_frame`, `rife.torn`).
 
 Measured on the loop as it plays — cyclic, the last frame followed by the first — and inside
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
@@ -47,7 +49,7 @@ from sprite_gen._deps import np
 from sprite_gen.video import auto_motion, motion_anchor
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
-from sprite_gen.video.rife import Interpolate, crossfade, ghost, outline_shift, smear
+from sprite_gen.video.rife import Interpolate, Read, crossfade, ghost, outline_shift, smear, torn
 from sprite_gen.video.interpolation_quality import clean_beside, faults, ghost_screen, looks
 
 # Interpolation calls at most per loop, a drawing made one call, including rejected proposals. A loop that needs more is
@@ -874,7 +876,23 @@ def overlap_weights(step: np.ndarray, body: np.ndarray, rest: list[int], rest_bo
             "off_ease": round(float(np.abs(np.array(weights) - own / (G - 1)).max()), 4)}
 
 
-def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Image]], interpolate: Interpolate | None, *,
+def overlap_frame(read: Read, a: Image.Image, b: Image.Image, u: float, *, reads: bool) -> tuple[Image.Image, dict[str, Any]]:
+    """A frame of the overlapped wrap: RIFE's frame at weight `u` of the early frame `b` from the late frame `a`, with how
+    far its single passes disagree there (`read`, `rife.Rife.read`), and what it reads — the measures every made frame
+    carries, its ghost where the loop's ghost screen reads it (`reads`), and a part torn (`rife.torn`) — with its faults
+    and what to look at (docs/loop-repair.md section 2, "The overlapped wrap")."""
+    made, apart = read(a, b, u)
+    if made.mode != "RGBA" or made.size != b.size:
+        raise ValueError("repair interpolator must return an RGBA frame of the original size")
+    if apart.shape != (b.height, b.width):
+        raise ValueError("repair interpolator must read how far its passes disagree at every pixel of the frame")
+    measure = {**smear(made, a, b), "outline_shift": outline_shift(made, a, b), "ghost": ghost(made) if reads else None,
+               "crossfade": crossfade(made, a, b, u), "torn": torn(apart, made)}
+    return made, {"proposal": measure, "look": looks(measure),
+                  "faults": faults(measure) + ([] if made.getchannel("A").getbbox() else ["empty"])}
+
+
+def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Image]], read: Read | None, *,
                  seam: Callable[[list[Image.Image]], float], steps: Callable[[list[Image.Image]], dict[str, Any]],
                  seam_max: float, reads: bool, torso: Torso | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
     """The overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap") of a loop cut two steps long whose wrap
@@ -887,10 +905,12 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
     inside; each of its frames has two of one time, the late (the clip's frame a cycle after, or the loop's own before the
     wrap) and the early (the loop's own, or the clip's frame a cycle before). Each frame of the run is shown at the weight
     of its early frame `overlap_weights` chooses on the line between the two frames' states — an ease in and out, moved off
-    it only as far as the rest of the body and the body's measures need — as RIFE's frame between them (`interpolate`), or
-    either one whole at 0 or 1.
+    it only as far as the rest of the body and the body's measures need — as RIFE's frame between them, read with its
+    single passes (`read`, `overlap_frame`), or either one whole at 0 or 1. The frames are made the weight nearest a half
+    first: the part's whole move is bridged there, and a frame torn is torn there first.
 
-    The run is taken only where, on the frames made: no frame has an interpolation fault; the gate passes it; the loop
+    The first made frame with an interpolation fault ends the run — a part torn (`rife.torn`) among them — and the rest of
+    it is not made (`unmade`). The run is taken only where, on the frames made: no frame has a fault; the gate passes it; the loop
     played round still covers two steps (`steps`, the clip's crossings read on it); no body measure moves in a step more
     than a pixel past the largest step the stretch takes as the loop plays it (`drift_points`, the eased retime's bound,
     the body's point the torso: `torso`, the `Torso` of `frames` where none is given, recorded as `torso`; the body's
@@ -933,7 +953,7 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
     if not plans:
         record["skipped"] = "the clip holds no frames a cycle from the loop's beside the wrap"
         return frames, record
-    if interpolate is None:
+    if read is None:
         record["skipped"] = "no interpolator"
         return frames, record
     torso = torso if torso is not None else Torso(frames)
@@ -988,9 +1008,11 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
             record["tries"].append(tried)
             continue
         new = list(frames)
-        made_rows = []
-        for p, u in enumerate(chosen["weights"], start=1):
-            q = stretch[p]
+        weights = chosen["weights"]
+        rows: dict[int, dict[str, Any]] = {}
+        made_order = []
+        for p in sorted(range(1, P), key=lambda p: (abs(weights[p - 1] - 0.5), p)):
+            u, q = weights[p - 1], stretch[p]
             a, b = images[late[p]], images[early[p]]
             row: dict[str, Any] = {"frame": q, "t": round(u, 4), "proposal": None, "faults": [], "look": []}
             if u <= 0.0:
@@ -1000,18 +1022,24 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
             else:
                 key = (late[p], early[p], row["t"])
                 if key not in made_at:
-                    made = interpolate(a, b, u)
+                    made_at[key] = overlap_frame(read, a, b, u, reads=reads)
                     record["calls"] += 1
-                    if made.mode != "RGBA" or made.size != b.size:
-                        raise ValueError("repair interpolator must return an RGBA frame of the original size")
-                    measure = {**smear(made, a, b), "outline_shift": outline_shift(made, a, b),
-                               "ghost": ghost(made) if reads else None, "crossfade": crossfade(made, a, b, u)}
-                    made_at[key] = (made, {"proposal": measure, "look": looks(measure),
-                                           "faults": faults(measure) + ([] if made.getchannel("A").getbbox() else ["empty"])})
                 frame, said = made_at[key]
                 row.update(said)
-            made_rows.append(row)
+                made_order.append(q)
+            rows[p] = row
             new[q] = frame
+            if row["faults"]:
+                break
+        made_rows = [rows[p] for p in sorted(rows)]
+        wrong = sorted({f for r in made_rows for f in r["faults"]})
+        tried.update(eased=chosen["eased"], off_ease=chosen["off_ease"], weights=[round(w, 4) for w in weights], made=made_rows,
+                     made_order=made_order)
+        if wrong:
+            tried.update(unmade=[stretch[p] for p in range(1, P) if p not in rows], faults=wrong,
+                         look=sorted({w for r in made_rows for w in r["look"]}), outcome="rejected", rejected_for=["fault"])
+            record["tries"].append(tried)
+            continue
         shown = [q for q in run if new[q] is not frames[q]]
         after_flow = _flow(new, box, (flow["runs"], flow["hold"]))
         rel_after = after_flow["step"] / scale
@@ -1026,15 +1054,12 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
         rushes = [_said_surge(x, after_flow) for x in touching(after_flow, set(steps_at)) if (x["d"], x["r"]) not in had]
         seam_after = float(seam(new))
         counted = steps(new)
-        wrong = sorted({f for r in made_rows for f in r["faults"]})
-        rejected = ((["fault"] if wrong else []) + (["seam"] if seam_after > seam_max else [])
+        rejected = ((["seam"] if seam_after > seam_max else [])
                     + (["steps"] if counted.get("verdict") != "two" else []) + (["drift"] if over else [])
                     + (["no gain"] if part and part_after >= part_before else [])
                     + (["off the flow"] if off_after[stretch].max() >= FLOW_LIMIT and off_after[stretch].max() > off_before[stretch].max() else [])
                     + (["a new rush"] if rushes else []) + (["the rest faster"] if faster else []))
-        tried.update({
-            "eased": chosen["eased"], "off_ease": chosen["off_ease"], "made": made_rows, "shown": shown, "seam": round(seam_after, 4),
-            "steps": {key: counted.get(key) for key in ("verdict", "k", "ring", "why")}})
+        tried.update({"shown": shown, "seam": round(seam_after, 4), "steps": {key: counted.get(key) for key in ("verdict", "k", "ring", "why")}})
         tried["part"].update(step_max_before=round(part_before, 4), step_max_after=round(part_after, 4))
         tried.update({
             "rest": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in rest],

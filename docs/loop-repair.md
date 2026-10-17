@@ -598,7 +598,7 @@ frames.
 | When | `--repair auto` or `on`; a cut whose two steps the clip's crossings show (`cycle.steps.by: crossings`) and whose wrap the gate reads over `--seam-max` on its frames as corrected (`loop.wrap_on_cells`) | the legs close; what does not is a part on its own beat. A cut whose steps are not counted keeps the gate's word |
 | The frames a cycle apart | the clip's frame a cycle after each of the cut's first frames (`after`), or before each of its last (`before`), one past the widest run, as far as the clip after its lead-in holds them; each moved by the analysis translation between the two — the drift the clip walks over a cycle — and corrected as its cut frame was (`loop.cycle_apart`) | placed where the cut frame is, the in-between moves the part, not the body |
 | How many | four frames, then six, eight, ten and twelve (`OVERLAP_WIDTHS`), never past half the loop (`MADE_SHARE`), on the side whose frames a cycle apart differ least from the cut's over the run | the fewer made, the more of the loop is the clip's own; a longer run where a shorter one rushes the part or leaves the body no room, its weights going over in smaller steps |
-| Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below); a weight of 0 or 1 shows that frame whole, no call, and a frame at one weight is made once, whatever the run | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
+| Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below), and read with RIFE's sixteen single passes for a part torn (`rife.Rife.read`, `repair.overlap_frame`, below); a weight of 0 or 1 shows that frame whole, no call, and a frame at one weight is made once, whatever the run | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
 | The weights | in play order, from 0 at the frame before the run to 1 at the frame after it, never going back, on a grid of a twentieth: of those that keep every window of the rest of the body within its own largest step over the stretch as the loop plays it and every body measure within the stretch's largest step and half a pixel (below), read on the line between the two frames' states, the one nearest the ease in and out x²(3 − 2x), x = p/(width + 1) at the run's p-th frame (`repair.overlap_weight`) | the part goes over in an ease in and out, held off it only in the steps where the body has no room: a window that closes all but a step still moves by what it differs a cycle apart, and a weight that moves there pushes it past its own step |
 
 The stretch runs from the frame before the run to the frame after it, the wrap inside, and the body is
@@ -612,7 +612,7 @@ as far as that lets it. The run is taken only where, on the frames made:
 
 | Read on the frames made | Refused for (`rejected_for`) |
 |---|---|
-| no made frame carries an interpolation fault (section 4) | `fault` |
+| no made frame carries an interpolation fault (section 4), a part torn among them (`torn`, below); the frames are made the weight nearest a half first, and the first with a fault ends the run, the rest of it not made (`unmade`) | `fault` |
 | the seam gate's reading passes | `seam` |
 | the loop, played round three times, still covers two steps: the crossings read on it, its middle turn judged `two` (`loop.ring_steps`) | `steps` |
 | no body measure (`repair.drift_points`: the foot line, the torso, the ground) moves in a step more than a pixel past the largest step of the stretch as the loop plays it | `drift` |
@@ -625,6 +625,18 @@ The first run taken ends the search; where none is, the cut is kept as filmed an
 as before. The jump repair after it makes nothing from, beside or again over a frame it made
 (`jump_repair.overlapped`); a filmed ghost beside one gives way to the filmed frame on its other side.
 A loop drawn on twos or threes is not overlapped: a frame made beside the wrap would split a drawing.
+
+**A part torn.** A frame made between two frames a cycle apart bridges the part's whole move in one.
+Where the part swings over a smaller one — a tail across a hand — RIFE's flow drags the small part apart
+with it, and on art painted without a line no other reading sees it (section 4, "A part torn"). So each
+frame the run makes is read with RIFE's sixteen single passes as well, and a frame they disagree on over
+a part is refused (`torn`). The frame nearest a half is made first, where the part's move is bridged
+furthest; the first frame refused ends the run. A clip whose part crosses another on every run is
+refused the overlapped wrap and kept as filmed, for the gate to refuse: a torn hand is not delivered.
+On the file's third walker — painted without a line, seen from behind, 480 × 640, its big tail swung
+from 48 to −8 degrees across its hand between two frames a cycle apart — the real RIFE's frames at
+weights 0.5 and 0.7 read 0.44 and 0.26, over the 0.21 that names a part torn, with no other fault;
+swung 10 degrees past no hand, its frames at 0.3, 0.5 and 0.7 read 0.04 at most.
 
 On the walker of `tests/video/test_loop_overlap.py` — seen from the front, 26 frames a cycle, its
 tail swinging round on a beat of 41 frames, 73 frames, with the stand-in in-between (measured
@@ -646,21 +658,28 @@ clip carries the tuft on its bob and 8 px aside a frame.
 | the whole walker also 3 px aside a cycle on (its torso slides) | every run of four to twelve held at 0.85 of the cut's own frame next to the wrap, all refused (`seam`), 15 calls | 3.41 → 3.04 to 3.15 | 0.03 → 0.05 at most | 0.71 → 1.96 to 3.91 |
 
 The report's `wrap_overlap` carries `seam` (the reading that asked for it), `seam_max`, `widths`,
-`calls`, and each try in `tries` — `side`, `width`, `frames`, `stretch`, `eased` and `off_ease` (the
-ease and how far the weights left it), `made` (per frame: `frame`, its weight `t`, `proposal`, `faults`,
-`look`), `shown` (the frames shown otherwise than as cut), `seam`, `steps`, `part` (`windows`, `apart`,
-`step_max_before`, `step_max_after`), `rest` (`windows`, `step_max_bound`, `step_max_after`, `faster`),
+`calls` (the frames made), and each try in `tries` — `side`, `width`, `frames`, `stretch`, `part`
+(`windows`, `apart`), `eased` and `off_ease` (the ease and how far the weights left it), `weights` (those
+the search chose), `made` (per frame made, in play order: `frame`, its weight `t`, `proposal` with its
+`torn`, `faults`, `look`) and `made_order` (the frames in the order made); where a fault ended the run,
+`unmade` (the frames it did not make), `faults`, `look`, `outcome` and `rejected_for` (`fault`); where the
+run was made whole, `shown` (the frames shown otherwise than as cut), `seam`, `steps`, the part's
+`step_max_before` and `step_max_after`, `rest` (`windows`, `step_max_bound`, `step_max_after`, `faster`),
 `drift`, `off_max`, `rushes`, `faults`, `look`, `outcome` and `rejected_for` (`no weighting keeps the
 body in bound` where the search found none and nothing was made); where a run was taken, `side`,
-`width`, `frames` (those shown otherwise than as cut) and `seam_after`; and `skipped` where none was tried (drawn on twos, a loop too short
+`width`, `frames` (those shown otherwise than as cut) and `seam_after`; `interpolator`, with the binary's
+calls (`binary_calls`) where RIFE was located for it; and `skipped` where none was tried (drawn on twos, a loop too short
 for a run that leaves half of it filmed, the clip holds no frames a cycle from the cut's beside the wrap,
-no interpolator). The summary names it. A made frame
+no interpolator). The summary names it; a `warning:` line names the frame that ended each run refused for
+a fault ("fault (torn at frame 3, the rest not made)"). A made frame
 that cross-fades two drawings inside its outline is kept and named in a `warning:` line, as for the
 jump repair. Without RIFE the wrap is cut as filmed with a warning line (`why`: "RIFE not installed —
-the wrap cut as filmed"), and `--repair on` refuses. Each run tried makes its frames with RIFE, a frame
-at one weight once: at most forty calls where every width is made and refused, outside the jump
-repair's — the first walker above takes ten, the second four where it is taken and fifteen where its
-torso slides.
+the wrap cut as filmed"), and `--repair on` refuses. Each frame made costs the binary 34 calls (the frame
+as every call makes it, and its sixteen passes in colour and coverage), a frame at one weight made once,
+whatever the run; a run ends at its first fault, the frames past it not made, so a wrap whose every run
+is refused for a part torn costs the frames each run makes up to its first torn one, and one whose every
+run is made whole and refused for something else at most forty frames, outside the jump repair's — the
+first walker above takes ten frames, the second four where it is taken and fifteen where its torso slides.
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 
@@ -1258,6 +1277,38 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     a step of 13 degrees or more between far-apart drawings, most outlined in grey. A fault would
     give way for clean frames and still pass blends; a line to look at costs neither. 0.015 is set
     by eye between the cross-faded frames and the clean ones, a reference, not a measured optimum.
+- **A part torn — the overlapped wrap's frames** (`rife.passes`, `rife.torn`): between two frames a
+  cycle apart a part on its own beat moves its whole way at once (section 2, "The overlapped wrap"),
+  and where it swings over a smaller part — a tail across a hand — RIFE's flow drags the small part
+  apart with it: the hand broken into blocks, much of its coverage gone, what is left part-covered. On
+  art painted without a line nothing above reads it: there is no line to lose (and the outline
+  readings judge against the less outlined neighbour, the one whose tail meets the air), the coverage
+  goes rather than staying part-covered in a band, and nothing goes darker. RIFE's augmentation runs
+  the pair eight ways (every flip and transpose) and both ways in time, combines the sixteen inside
+  the binary and gives back one frame; run one at a time with no augmentation, each turned back, the
+  passes guess differently exactly where the flow finds no one way through.
+  - `torn`: per pixel, how far the mean of the eight forward passes and the mean of the eight
+    backward ones put the premultiplied colour and coverage apart (`rife.passes`); the pixels where
+    they are more than **0.05** apart (`rife.TORN_LEVEL`), in regions at least **3 px** thick
+    (`rife.TORN_THICK`: an edge the passes place a pixel or two apart opens away, as does hair they
+    redraw strand by strand); and of those, the largest share of a window **a tenth** of the made
+    frame's body height on a side (`rife.TORN_WINDOW`, about a hand on a walk; 8 px at least, the
+    windows stepping by a quarter of it). Read in a window rather than over the body, so a small part
+    torn on a large body is not lost in it.
+  - Over **0.21** (`interpolation_quality.TORN_WARN`) the frame is torn: the fault `torn`. Set by eye
+    on drawn walks, between the frames seen torn — a hand dragged apart beside a tail swung far, legs
+    melted into one shape, a part doubled — which read over it, and the frames seen as clean, which
+    read under it; a reference, not a measured optimum. On the painted walker of
+    `tests/video/test_loop_overlap.py` (section 2) the frames made across the hand read 0.44 and
+    0.26 and those of a swing past no hand 0.04 at most.
+  - Read only on the overlapped wrap's frames: each is made as every call makes it and read with its
+    passes, 34 calls of the binary against two for a frame anywhere else. The jump repair, the eased
+    retime and the cycle alignment make their frames between a walk's neighbours, a move RIFE carries,
+    and do not read it.
+  - The frame delivered is the binary's, not the passes' mean: where the passes disagree the mean
+    blends their guesses part-covered, which the augmentation, combining them inside the binary, does
+    not. Nor can the binary's own augmented calls be read for it: a call with `-x` from a to b and one
+    from b to a agree where the single passes do not.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings

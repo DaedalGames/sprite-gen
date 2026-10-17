@@ -14,7 +14,9 @@ the flow failed and melted a limb into the fill; `outline_shift` reads that edge
 neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost — where the
 neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
 part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
-whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4).
+whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4). `passes` runs
+the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
+`torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
 The binary's own CPU path (`-g -1`) returns a wrong frame with rife-v4.6 on both macOS and
 Linux (measured 2026-10-03: mean error 39 against 3.3 through Vulkan), so it is never passed;
@@ -28,7 +30,8 @@ puts it (`install_root()`, docs/loop-repair.md section 1). A RIFE that cannot be
 RIFE that is found and then fails is `RifeUnavailable` and always an error.
 
 The interpolator is a plain callable `(a, b, t) -> frame`, so a caller can be handed a stand-in
-(`Interpolate`), and a test needs no binary.
+(`Interpolate`), and a test needs no binary. A caller that reads the passes takes a callable
+`(a, b, t) -> (frame, disagreement)` (`Read`, `Rife.read`).
 """
 
 from __future__ import annotations
@@ -92,12 +95,26 @@ GHOST_THICK = 5
 CROSSFADE_RANGE = 7
 CROSSFADE_WINDOW = 0.08
 CROSSFADE_KEEP = 0.6
+# `passes`: the binary's augmentation runs the pair turned eight ways (`-x`: every flip and transpose) and both ways in
+# time (`-z`), combines the sixteen inside, and gives back one frame — where the passes disagree, the frame does not say
+# so. Run one at a time with no augmentation, each turned back, they can be read apart. Each pass is two calls, colour
+# and coverage, as `between` makes them.
+PASS_GEOMETRIES = tuple((transpose, flips) for transpose in (False, True) for flips in range(4))  # flips: 1 left-right, 2 up-down
+PASS_CALLS = 2 * 2 * len(PASS_GEOMETRIES)
+# `torn`: the forward passes' mean and the backward passes' mean put a different colour or coverage at a pixel where
+# they are more than this apart (premultiplied RGBA, 0..1); an edge they place a pixel or two apart is thinner than
+# TORN_THICK pixels and opened away; a part torn is read in windows TORN_WINDOW of the body's height on a side, the
+# size of a hand on a walk.
+TORN_LEVEL = 0.05
+TORN_THICK = 3
+TORN_WINDOW = 0.10
 # One call past this is stopped and reported as a RIFE that failed. TTA's slowest call measured, on a
 # 960 x 960 frame on Modal's CPU, took about 30 s, and Modal's hosts differ by up to 2.5 times on one frame
 # (2026-10-15, docs/loop-repair.md section 1).
 CALL_TIMEOUT_SECONDS = 600
 
 Interpolate = Callable[[Image.Image, Image.Image, float], Image.Image]
+Read = Callable[[Image.Image, Image.Image, float], tuple[Image.Image, np.ndarray]]
 
 # The one line that installs it, quoted wherever a missing RIFE is reported.
 INSTALL_COMMAND = "sprite-gen rife install"
@@ -182,19 +199,22 @@ def tta() -> tuple[str, ...]:
     return modes
 
 
-def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path) -> Image.Image:
+def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path,
+          modes: tuple[str, ...] | None = None) -> Image.Image:
+    """One run of the binary from `a` to `b` at `t`, with the augmentation `tta()` names, or `modes` (`passes`: none)."""
+    modes = tta() if modes is None else modes
     a.save(tmp / "a.png")
     b.save(tmp / "b.png")
     out = tmp / "o.png"
     out.unlink(missing_ok=True)
     try:
         proc = subprocess.run(
-            [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model), *tta()],
+            [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model), *modes],
             capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         raise RifeUnavailable(f"{binary.name} made no frame in {CALL_TIMEOUT_SECONDS} s and was stopped "
-                              f"(augmentation {' '.join(tta()) or 'none'}, SPRITE_GEN_RIFE_TTA)") from exc
+                              f"(augmentation {' '.join(modes) or 'none'}, SPRITE_GEN_RIFE_TTA)") from exc
     if proc.returncode != 0 or not out.is_file():
         raise RifeUnavailable(f"{binary.name} failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[-300:]}")
     with Image.open(out) as im:
@@ -245,9 +265,66 @@ def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Pa
     cov = [Image.fromarray(np.uint8(x[..., 3] * 255 + 0.5), "L").convert("RGB") for x in (fa, fb)]
     rgb = np.asarray(_call(binary, model, colour[0], colour[1], t, tmp), dtype=np.float32) / 255.0
     alpha = np.asarray(_call(binary, model, cov[0], cov[1], t, tmp).convert("L"), dtype=np.float32) / 255.0
+    return _joined(rgb, alpha)
+
+
+def _joined(rgb: np.ndarray, alpha: np.ndarray) -> Image.Image:
+    """The RGBA frame of a colour run and a coverage run (0..1): coverage under ALPHA_FLOOR dropped, the colour kept
+    wherever there is coverage."""
     alpha = np.where(alpha < ALPHA_FLOOR, 0.0, alpha)
     out = np.dstack([np.where(alpha[..., None] > 0, rgb, 0.0), alpha])
     return Image.fromarray(np.uint8(np.clip(out, 0, 1) * 255 + 0.5), "RGBA")
+
+
+def _turned(x: np.ndarray, geometry: tuple[bool, int]) -> np.ndarray:
+    """An image (H x W x C) turned one of PASS_GEOMETRIES' ways: transposed, then flipped."""
+    transpose, flips = geometry
+    if transpose:
+        x = x.transpose(1, 0, 2)
+    if flips & 1:
+        x = x[:, ::-1]
+    if flips & 2:
+        x = x[::-1]
+    return np.ascontiguousarray(x)
+
+
+def _turned_back(x: np.ndarray, geometry: tuple[bool, int]) -> np.ndarray:
+    """`_turned` undone."""
+    transpose, flips = geometry
+    if flips & 2:
+        x = x[::-1]
+    if flips & 1:
+        x = x[:, ::-1]
+    if transpose:
+        x = x.transpose(1, 0, 2)
+    return np.ascontiguousarray(x)
+
+
+def passes(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> np.ndarray:
+    """How far the binary's sixteen single passes from `a` to `b` at fraction `t` disagree, per pixel (docs/loop-repair.md
+    section 4).
+
+    Each pass is the pair turned one of PASS_GEOMETRIES' ways and run with no augmentation — from `a` to `b` at `t`, and
+    from `b` to `a` at 1 - t — colour and coverage as `between` runs them, and turned back. The disagreement is how far
+    apart the mean of the eight forward passes and the mean of the eight backward ones put the premultiplied colour and
+    coverage (0..1, `torn` reads it). Their mean is not the frame: where they disagree it blends their guesses part-covered,
+    which the augmentation, combining them inside the binary, does not. PASS_CALLS calls of the binary."""
+    if a.size != b.size:
+        raise ValueError(f"rife: frames differ in size ({a.size} vs {b.size})")
+    fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (a, b))
+    colour = [np.uint8(np.clip(bleed(x), 0, 1) * 255 + 0.5) for x in (fa, fb)]
+    cover = [np.repeat(np.uint8(x[..., 3:] * 255 + 0.5), 3, axis=-1) for x in (fa, fb)]
+    rgbs, alphas = [], []
+    for geometry in PASS_GEOMETRIES:
+        for first, second, at in ((0, 1, t), (1, 0, 1 - t)):
+            runs = [_call(binary, model, Image.fromarray(_turned(pair[first], geometry), "RGB"),
+                          Image.fromarray(_turned(pair[second], geometry), "RGB"), at, tmp, ()) for pair in (colour, cover)]
+            rgbs.append(_turned_back(np.asarray(runs[0], dtype=np.float32) / 255.0, geometry))
+            alphas.append(_turned_back(np.asarray(runs[1].convert("L"), dtype=np.float32)[..., None] / 255.0, geometry)[..., 0])
+    rgb, alpha = np.stack(rgbs), np.stack(alphas)
+    pre = np.concatenate([rgb * alpha[..., None], alpha[..., None]], axis=-1)
+    apart = np.sqrt(((pre[0::2].mean(axis=0) - pre[1::2].mean(axis=0)) ** 2).sum(axis=-1) / 4.0)
+    return apart.astype(np.float32)
 
 
 def _mask(mask: np.ndarray, size: int, op: type) -> np.ndarray:
@@ -418,8 +495,32 @@ def crossfade(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> fl
     return round(lost / max(1, int(solid.sum())), 5)
 
 
+def torn(apart: np.ndarray, made: Image.Image) -> float:
+    """A part torn in a made frame, read on how far its single passes disagree (`passes`): of the pixels where they are
+    more than TORN_LEVEL apart, those in regions at least TORN_THICK pixels thick, and of them the largest share of a
+    window TORN_WINDOW of the made frame's body height on a side (8 px at least; the windows step by a quarter of it). A
+    hand the flow drags apart beside a tail swung far fills its window; an edge the passes place a pixel apart, or hair
+    they redraw strand by strand, leaves it nearly empty. Read in a window, not over the body, so a small part torn on a
+    large body is not lost in it. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
+    alpha = np.asarray(made.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0
+    rows = np.nonzero((alpha >= 0.5).any(axis=1))[0]
+    if rows.size == 0:
+        return 0.0
+    side = max(8, int(round((rows[-1] - rows[0] + 1) * TORN_WINDOW)))
+    thick = _mask(_mask(apart > TORN_LEVEL, TORN_THICK, ImageFilter.MinFilter), TORN_THICK, ImageFilter.MaxFilter)
+    h, w = thick.shape
+    if side >= min(h, w):
+        return round(float(thick.sum()) / (side * side), 5)
+    sums = np.pad(thick.astype(np.float64).cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0)))
+    step = max(1, side // 4)
+    ys, xs = np.arange(0, h - side + 1, step)[:, None], np.arange(0, w - side + 1, step)[None, :]
+    covered = sums[ys + side, xs + side] - sums[ys, xs + side] - sums[ys + side, xs] + sums[ys, xs]
+    return round(float(covered.max()) / (side * side), 5)
+
+
 class Rife:
-    """A located RIFE as an `Interpolate` callable. Counts the frames it made (`made`)."""
+    """A located RIFE as an `Interpolate` callable, and as a `Read` (`read`). Counts the frames it made (`made`) and the
+    times it ran the binary (`calls`)."""
 
     def __init__(self, binary: Path | None = None, model: Path | None = None):
         if binary is None or model is None:
@@ -427,12 +528,24 @@ class Rife:
         self.binary, self.model = binary, model
         self.tta = tta()  # refused here, before a frame is asked for
         self.made = 0
+        self.calls = 0
 
     def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
             frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
         self.made += 1
+        self.calls += 2
         return frame
+
+    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        """The frame at `t`, made as every call makes it (`between`), and how far the sixteen single passes disagree
+        there (`passes`): 2 + PASS_CALLS calls of the binary."""
+        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
+            frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+            apart = passes(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+        self.made += 1
+        self.calls += 2 + PASS_CALLS
+        return frame, apart
 
     def describe(self) -> dict[str, str]:
         return {"binary": str(self.binary), "model": self.model.name, "tta": " ".join(self.tta)}

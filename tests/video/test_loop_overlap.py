@@ -6,8 +6,10 @@ the loop passes the gate, still two steps, its body standing where it stood.
 
 The walker is seen from the front, 26 frames a cycle, its tail swinging round on a beat of 41 frames, in a 73-frame clip.
 The interpolator is a stand-in that draws the walker between two frames the way an optical-flow in-between does: the body
-at the time between them, the tail's tip on the line between its two places. A second walker, a big tuft bobbing on a
-short tail, is carried over at the wrap with its torso where it stood, or with its torso sliding. Synthetic frames only."""
+at the time between them, the tail's tip on the line between its two places — and says its passes agree. A second walker,
+a big tuft bobbing on a short tail, is carried over at the wrap with its torso where it stood, or with its torso sliding.
+A third, painted without a line and seen from behind, swings a big tail across its hand between two frames a cycle apart,
+and the real RIFE tears the hand there. Synthetic frames only."""
 
 from __future__ import annotations
 
@@ -20,7 +22,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from sprite_gen.video import loop, repair
+from sprite_gen.video import loop, repair, rife
+from sprite_gen.video.interpolation_quality import TORN_WARN, faults
 from tests.video.test_loop_repair import _no_rife
 
 FRAMES, CYCLE, TAIL = 73, 26, 41
@@ -94,6 +97,10 @@ class Between:
         out.paste(drawn, (dx, dy))
         return out
 
+    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        """The frame between, and its passes agreeing everywhere: a drawing has one way through."""
+        return self(a, b, t), np.zeros((b.height, b.width), dtype=np.float32)
+
 
 def _bobbing(body: float, tip: tuple[float, float], aside: int = 0) -> Image.Image:
     """The second walker: the walker with a big tuft on a short tail, whose bob moves the picture and not the body's mass."""
@@ -124,6 +131,9 @@ class Drawn:
         self.calls.append((ba, bb, round(t, 4)))
         return self.draw(bb, (xa + t * (xb - xa), ya + t * (yb - ya)), round(sa + t * (sb - sa)))
 
+    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        return self(a, b, t), np.zeros((b.height, b.width), dtype=np.float32)
+
 
 def _second(slid: int = 0) -> tuple[Drawn, list[Image.Image], dict[str, dict[int, Image.Image]]]:
     """The second walker's loop as cut, its tuft bobbing and the walker in its place; and the clip's frames a cycle after
@@ -136,7 +146,7 @@ def _second(slid: int = 0) -> tuple[Drawn, list[Image.Image], dict[str, dict[int
 
 def _overlapped(drawn: Drawn, frames: list[Image.Image], others: dict) -> tuple[list[Image.Image], dict]:
     """The overlapped wrap of the second walker's loop, its steps taken as two (the walker shows no crossings)."""
-    return repair.overlap_wrap(frames, others, drawn, seam=loop.wrap_on_cells, steps=lambda f: {"verdict": "two"},
+    return repair.overlap_wrap(frames, others, drawn.read, seam=loop.wrap_on_cells, steps=lambda f: {"verdict": "two"},
                                seam_max=loop.SEAM_RATIO_MAX, reads=True)
 
 
@@ -186,18 +196,22 @@ def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cy
     assert taken["rest"]["faster"] == [] and taken["faults"] == [] and taken["rushes"] == []
     assert taken["part"]["step_max_after"] < taken["part"]["step_max_before"]
     # each frame of a run shown between the clip's frame a cycle apart and the cut's own, at the weight the search chose,
-    # the weights never going back toward the frame a cycle apart; RIFE asked only for a frame between the two, and once
-    # for a frame at one weight, whatever the run
+    # the weights never going back toward the frame a cycle apart; RIFE asked only for a frame between the two, the weight
+    # nearest a half first, and once for a frame at one weight, whatever the run
     calls, asked = list(between.calls), set()
     for tried in overlap["tries"]:
         sign = 1 if tried["side"] == "after" else -1
         assert tried["frames"] == repair.overlap_run(tried["side"], tried["width"], L)
         weights = [r["t"] for r in tried.get("made", [])]
         assert weights == sorted(weights)
-        for r in tried.get("made", []):
-            q = r["frame"]
+        rows = {r["frame"]: r for r in tried.get("made", [])}
+        order = tried.get("made_order", [])
+        assert sorted(order) == sorted(q for q, r in rows.items() if 0 < r["t"] < 1)
+        assert [abs(rows[q]["t"] - 0.5) for q in order] == sorted(abs(rows[q]["t"] - 0.5) for q in order)
+        for q in order:
+            r = rows[q]
             late, early = (s + q + L, s + q) if sign > 0 else (s + q, s + q - L)
-            if 0 < r["t"] < 1 and (tried["side"], q, r["t"]) not in asked:
+            if (tried["side"], q, r["t"]) not in asked:
                 asked.add((tried["side"], q, r["t"]))
                 ka, kb, t = calls.pop(0)
                 assert (ka, kb) == (late, early) and abs(t - r["t"]) < 1e-3
@@ -287,25 +301,144 @@ def test_without_rife_and_the_repair_on_the_loop_fails_asking_for_it(tmp_path, m
     assert "sprite-gen rife install" in report["error"]
 
 
-def test_a_made_frame_with_a_fault_refuses_the_run_and_the_wrap_is_cut_as_filmed(tmp_path, capsys):
-    """A stand-in that returns nothing: every run is refused (`fault`), each width tried once, and the gate refuses the
-    cut as filmed."""
+def _stopped(tried: dict) -> dict:
+    """The one frame a run made before it ended: the frame nearest a half, made first, and its fault ended the run."""
+    (stopped,) = tried["made"]
+    assert tried["made_order"] == [stopped["frame"]] and stopped["faults"]
+    assert abs(stopped["t"] - 0.5) == min(abs(w - 0.5) for w in tried["weights"])
+    assert sorted([stopped["frame"], *tried["unmade"]]) == sorted(tried["frames"])
+    return stopped
+
+
+def test_a_made_frame_with_a_fault_ends_its_run_and_the_wrap_is_cut_as_filmed(tmp_path, capsys):
+    """A stand-in that returns nothing: each run ends at the first frame it makes (`fault`), the rest of it not made, each
+    width tried once, and the gate refuses the cut as filmed."""
     calls = []
 
-    def empty(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        calls.append(t)
-        return Image.new("RGBA", b.size)
+    class Empty:
+        def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+            calls.append(t)
+            return Image.new("RGBA", b.size)
 
-    report = _cut(tmp_path, _keyed(tmp_path), interpolate=empty)
+        def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+            return self(a, b, t), np.zeros((b.height, b.width), dtype=np.float32)
+
+    report = _cut(tmp_path, _keyed(tmp_path), interpolate=Empty())
     assert report["status"] == "failed" and report["error"].startswith("video-loop: loop seam ratio")
     overlap = report["wrap_overlap"]
     assert overlap["frames"] == [] and [t["width"] for t in overlap["tries"]] == list(repair.OVERLAP_WIDTHS)
-    assert all(t["outcome"] == "rejected" and "fault" in t["rejected_for"] for t in overlap["tries"])
+    assert all(t["outcome"] == "rejected" and t["rejected_for"] == ["fault"] and _stopped(t)["faults"] == ["empty"]
+               for t in overlap["tries"])
     # the overlapped wrap's calls first, once a frame and weight; the jump repair then reads the cut as filmed, its wrap off
     # the flow
     made = list(dict.fromkeys((t["side"], r["frame"], r["t"]) for t in overlap["tries"] for r in t["made"] if 0 < r["t"] < 1))
     assert overlap["calls"] == len(made) and calls[:len(made)] == pytest.approx([t for _, _, t in made], abs=1e-3)
     assert "the overlapped wrap was refused" in capsys.readouterr().err
+
+
+class Torn(Between):
+    """The stand-in, saying its passes disagree over a patch of the body on a frame made far from both of its two (a
+    weight between 0.2 and 0.8): a part torn there."""
+
+    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        frame = self(a, b, t)
+        apart = np.zeros((b.height, b.width), dtype=np.float32)
+        if 0.2 < t < 0.8:
+            x0, y0, x1, y1 = frame.getbbox()
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            apart[cy - 15:cy + 15, cx - 15:cx + 15] = 0.5
+        return frame, apart
+
+
+def test_a_frame_its_passes_disagree_on_ends_its_run_and_the_wrap_is_cut_as_filmed(tmp_path, capsys):
+    """The first walker with a stand-in whose passes disagree over a patch of its body on a frame made far from both of its
+    two: each run makes the frame nearest a half first, reads it torn, and ends there, the rest of it not made; every
+    width is refused (`fault`, torn), and the gate refuses the cut as filmed, the warning naming the torn frame."""
+    torn = Torn()
+    report = _cut(tmp_path, _keyed(tmp_path), interpolate=torn)
+    assert report["status"] == "failed" and report["error"].startswith("video-loop: loop seam ratio")
+    overlap = report["wrap_overlap"]
+    assert overlap["frames"] == [] and [t["width"] for t in overlap["tries"]] == list(repair.OVERLAP_WIDTHS)
+    for t in overlap["tries"]:
+        assert t["outcome"] == "rejected" and t["rejected_for"] == ["fault"] and t["faults"] == ["torn"]
+        stopped = _stopped(t)
+        assert stopped["faults"] == ["torn"] and stopped["proposal"]["torn"] > TORN_WARN
+    # one call a run, the overlapped wrap's first; the jump repair then reads the cut as filmed
+    made = list(dict.fromkeys((t["side"], t["made"][0]["frame"], t["made"][0]["t"]) for t in overlap["tries"]))
+    assert overlap["calls"] == len(made)
+    assert [t for _, _, t in torn.calls[:len(made)]] == pytest.approx([t for _, _, t in made], abs=1e-3)
+    err = capsys.readouterr().err
+    assert "the overlapped wrap was refused" in err and "fault (torn at frame" in err
+
+
+PAINTED = (480, 640)  # the third walker's canvas: the tail's tip swings over 200 px between its two frames
+
+
+def _shape(draw) -> np.ndarray:
+    im = Image.new("L", PAINTED, 0)
+    draw(ImageDraw.Draw(im))
+    return np.asarray(im) > 127
+
+
+def _paint(canvas: np.ndarray, mask: np.ndarray, dark: tuple, light: tuple, across: bool = True) -> None:
+    """`mask` painted over `canvas` in a soft gradient from `dark` to `light`, left to right (or top to bottom): a fill with
+    no outline."""
+    ys, xs = np.nonzero(mask)
+    v = xs if across else ys
+    v = (v - v.min()) / max(1, v.max() - v.min())
+    canvas[ys, xs, :3] = (np.array(dark)[None] * (1 - v[:, None]) + np.array(light)[None] * v[:, None]) / 255
+    canvas[ys, xs, 3] = 1
+
+
+def _painted(tail: float) -> Image.Image:
+    """The third walker, seen from behind and painted without a line: legs, boots, shorts, a shirt, a head, the left arm
+    hanging with a four-fingered hand, and a big furred tail from the hips in front of it all, swung `tail` degrees toward
+    the hand (0 hangs straight down). Two of its frames a cycle apart differ by the tail alone."""
+    f = np.zeros((PAINTED[1], PAINTED[0], 4))
+    cx = 250
+    _paint(f, _shape(lambda d: (d.rounded_rectangle((cx - 52, 380, cx - 6, 600), 18, fill=255),
+                                d.rounded_rectangle((cx + 6, 380, cx + 52, 600), 18, fill=255))), (232, 180, 150), (250, 214, 190))
+    _paint(f, _shape(lambda d: (d.rectangle((cx - 56, 560, cx - 2, 620), fill=255), d.rectangle((cx + 2, 560, cx + 56, 620), fill=255))),
+           (110, 60, 30), (150, 90, 50), across=False)
+    _paint(f, _shape(lambda d: d.rounded_rectangle((cx - 62, 300, cx + 62, 400), 20, fill=255)), (50, 90, 160), (90, 130, 200), across=False)
+    _paint(f, _shape(lambda d: d.rounded_rectangle((cx - 66, 130, cx + 66, 310), 30, fill=255)), (225, 225, 235), (250, 250, 255))
+    _paint(f, _shape(lambda d: d.ellipse((cx - 55, 20, cx + 55, 140), fill=255)), (200, 190, 220), (240, 235, 250), across=False)
+    _paint(f, _shape(lambda d: d.rounded_rectangle((cx - 96, 150, cx - 68, 330), 14, fill=255)), (235, 190, 160), (250, 215, 190))
+    _paint(f, _shape(lambda d: (d.ellipse((cx - 104, 324, cx - 62, 364), fill=255),
+                                *[d.rounded_rectangle((cx - 104 + 10 * i, 354, cx - 96 + 10 * i, 392 - 4 * abs(i - 1.5)), 4, fill=255)
+                                  for i in range(4)])), (230, 170, 140), (250, 205, 180))
+    a = math.radians(tail)
+    root, length, half = (cx - 20, 330), 230, 85
+    tip = (root[0] - length * math.sin(a), root[1] + length * math.cos(a))
+    nx, ny = math.cos(a), math.sin(a)
+    tuft = _shape(lambda d: (d.polygon([(root[0] - 30 * nx, root[1] - 30 * ny), (root[0] + 30 * nx, root[1] + 30 * ny),
+                                        (tip[0] + half * nx, tip[1] + half * ny), (tip[0] - half * nx, tip[1] - half * ny)], fill=255),
+                             d.ellipse((tip[0] - half, tip[1] - half, tip[0] + half, tip[1] + half), fill=255)))
+    ys, xs = np.nonzero(tuft)
+    along = (xs - root[0]) * -math.sin(a) + (ys - root[1]) * math.cos(a)
+    across = (xs - root[0]) * nx + (ys - root[1]) * ny
+    fur = 0.85 + 0.15 * (0.5 + 0.5 * np.sin(across / 7.0 + along / 40.0))  # bands along the tail
+    f[ys, xs, :3] = np.array([236, 232, 244])[None] / 255 * fur[:, None]
+    f[ys, xs, 3] = 1
+    return Image.fromarray(np.uint8(np.clip(f, 0, 1) * 255 + 0.5), "RGBA")
+
+
+@pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 102 calls of the binary at 480 x 640: over a minute on a GPU, minutes on a CPU's Vulkan driver
+def test_real_rife_a_frame_made_across_a_hand_is_torn_and_refused_and_a_short_swing_is_kept():
+    """The third walker: between its frame with the tail swung over the hand (48 degrees) and its frame a cycle on with
+    the tail hanging (-8 degrees), the real RIFE drags the hand apart at weights 0.5 and 0.7, and only the passes say so —
+    the frame is refused as torn, and without that reading nothing refuses it (painted without a line, the outline readings
+    pass it, and its coverage keeps no ghost band). Swung 10 degrees, past no hand, its frame half way reads nothing."""
+    interpolate = rife.Rife()
+    early = _painted(-8)
+    for u in (0.5, 0.7):
+        _, said = repair.overlap_frame(interpolate.read, _painted(48), early, u, reads=True)
+        assert said["faults"] == ["torn"] and said["proposal"]["torn"] > TORN_WARN
+        assert faults({**said["proposal"], "torn": None}) == []
+    _, said = repair.overlap_frame(interpolate.read, _painted(2), early, 0.5, reads=True)
+    assert said["faults"] == [] and said["proposal"]["torn"] < TORN_WARN / 2
+    assert interpolate.calls == 3 * (2 + rife.PASS_CALLS)
 
 
 def test_the_weights_ease_from_the_late_frame_to_the_early_off_the_ease_only_where_the_body_needs_it():
