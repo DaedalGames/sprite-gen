@@ -2,13 +2,18 @@
 """The eased retime (docs/loop-repair.md section 2, "The eased retime"): where a part rushes — a run of one or
 two steps far faster than the steps around it, going the way it was going — the frames either side are made
 again at times the search chooses, so the part's speed rises and falls gradually; the body's feet, mass and
-ground line move no further in a step than they did anywhere in that stretch, the loop keeps its length, and
-every frame outside the stretch is the video's own. A frame flung against the way is the flow repair's, not
-a rush; an ordinary walk has none.
+ground line move no further in a step than they did anywhere in that stretch, nor any window of the rest of the
+body further than its own largest step there, read on the frames made; the loop keeps its length, and every
+frame outside the stretch is the video's own. A frame flung against the way is the flow repair's, not a rush;
+an ordinary walk has none.
 
 The loops are the walker of tests/video/test_loop_flow.py, whose tail can run short of the cycle so that it
 rushes on at the wrap (`lag`). The interpolator is a stand-in that draws the walker between two frames the way
-an optical-flow in-between does: the body at the time between them, the tail moved on between its two places."""
+an optical-flow in-between does: the body at the time between them, the tail moved on between its two places.
+Drawn over 36 frames a cycle, its legs, arm and head move far between frames, and the stand-in's frames made
+there, the body's own way, step further than the line between the frames as filmed the search reads them on:
+every such stretch is refused on the frames made. The walkers eased here are drawn over 14 to 48 frames, where
+the frames made keep the rest of the body within its own steps."""
 
 from __future__ import annotations
 
@@ -25,6 +30,8 @@ from tests.video.test_loop_flow import N, _against, _frame, _loop
 from tests.video.test_loop_repair import _keyed, _no_rife
 
 LAG = 0.25  # the tail a quarter of a cycle short: the flow repair takes one frame at the wrap, and a rush is left
+WRAP = 24  # frames a cycle of the walker eased after the flow repair's frame at the wrap
+SHORT, SHORT_LAG = 16, 0.15  # a walker whose tail rushes at the wrap under the flow reading's limit
 
 
 def _walk(n: int = N, *, lag: float = 0.0, hold: int = 1, flung: dict[int, float] | None = None) -> list[Image.Image]:
@@ -81,45 +88,89 @@ def _ease(record: dict) -> dict:
     return round_
 
 
+def _rest(frames: list[Image.Image], before: list[Image.Image], after: list[Image.Image], round_: dict
+          ) -> tuple[np.ndarray, np.ndarray]:
+    """Every window the rush is not read in, its largest step over the stretch on the loop `before` the ease and on the
+    loop `after` it: the flow reading's own steps, on the union box of `frames` (the loop as filmed) and the drawings of
+    `before`."""
+    box = repair.union_box(frames)
+    flow = repair._flow(before, box)
+    then = repair._flow(after, box, (flow["runs"], flow["hold"]))
+    first = [run[0] for run in flow["runs"]]
+    stretch = [first.index(k) for k in (round_["anchors"][0], *(d[0] for d in round_["drawings"]), round_["anchors"][1])]
+    part = [w for w, fraction in enumerate(flow["fractions"]) if [round(v, 4) for v in fraction] in round_["part"]["windows"]]
+    rest = [w for w in range(len(flow["windows"])) if w not in part]
+    return flow["step"][stretch[:-1]][:, rest].max(axis=0), then["step"][stretch[:-1]][:, rest].max(axis=0)
+
+
+def _kept_rest(frames: list[Image.Image], flow_only: list[Image.Image], out: list[Image.Image], round_: dict) -> None:
+    """The stretch taken kept every window the rush is not read in within the largest step it took over the stretch as
+    it played, read again here on the loop as it now plays, and the round says so (`rest`)."""
+    before, after = _rest(frames, flow_only, out, round_)
+    assert np.all(after <= before + 1e-9)
+    assert round_["rest"]["faster"] == [] and len(round_["rest"]["windows"]) == len(before)
+    assert all(a <= b + 1e-4 for a, b in zip(round_["rest"]["step_max_after"], round_["rest"]["step_max_before"]))
+
+
 def test_a_tail_that_rushes_on_at_the_wrap_is_eased_over_the_frames_either_side():
-    frames = _walk(lag=LAG)
-    flow_only, before = repair.repair_jumps(frames, Lerp(frames, lag=LAG), ease=False)
+    n = WRAP
+    frames = _walk(n, lag=LAG)
+    flow_only, before = repair.repair_jumps(frames, Lerp(frames, lag=LAG, n=n), ease=False)
     assert [r["why"] for r in before["rounds"]] == ["flow"]  # the flow takes one frame at the wrap, and leaves a rush
     assert before["surge"] is not None and before["surge_after"] is not None
-    lerp = Lerp(frames, lag=LAG)
+    lerp = Lerp(frames, lag=LAG, n=n)
     out, record = repair.repair_jumps(frames, lerp)
     round_ = _ease(record)
     assert round_["outcome"] == "accepted" and round_["width"] in repair.EASE_WIDTHS
     segment = [*[round_["anchors"][0]], *round_["frames"], round_["anchors"][1]]
-    assert [(k - segment[0]) % N for k in segment] == list(range(len(segment)))  # one stretch, in play order
-    assert {N - 1, 0} <= set(round_["frames"]) and len(round_["frames"]) == 2 * round_["width"] + round_["surge"]["steps"] - 1
-    assert len(out) == N and all(out[k] is frames[k] for k in range(N) if k not in round_["frames"])
+    assert [(k - segment[0]) % n for k in segment] == list(range(len(segment)))  # one stretch, in play order
+    assert {n - 1, 0} <= set(round_["frames"]) and len(round_["frames"]) == 2 * round_["width"] + round_["surge"]["steps"] - 1
+    assert len(out) == n and all(out[k] is frames[k] for k in range(n) if k not in round_["frames"])
     # every frame is made from two frames as filmed, never from a frame made — the flow's frame at the wrap is made again
     flow_frames = set(before["rounds"][0]["frames"])
     assert flow_frames <= set(round_["frames"]) and round_["supersedes"] == sorted(flow_frames)
     assert all(not {a, b} & flow_frames for a, b, _ in lerp.calls)
-    # the rush is spread: the part's largest step over the stretch falls by a quarter or more, and its speed changes
-    # less from step to step. A quarter of a cycle is too far to spread out of sight over the stretch without hurrying
-    # the legs, and the legs may go no faster than they did there.
+    # the rush is spread: the part's largest step over the stretch falls by a quarter or more, its speed changes less
+    # from step to step, and no rush is left
     assert round_["part"]["step_max_after"] <= 3 / 4 * round_["part"]["step_max_before"]
-    assert round_["accel"]["chosen"] < round_["accel"]["before"] / 2
+    assert round_["accel"]["chosen"] < round_["accel"]["before"] / 2 and record["surge_after"] is None
     # no drift: the feet, the body's mass and the ground line move no further in a step than they did there, to within
-    # the pixel they are read on
+    # the pixel they are read on; and the rest of the body no faster
     assert np.all(_drift(out, segment) <= _drift(flow_only, segment) + repair.DRIFT_PIXEL)
+    _kept_rest(frames, flow_only, out, round_)
     changed = {k for k in round_["frames"] if out[k] is not frames[k]}
     assert round_["replaced"] == sorted(changed, key=round_["frames"].index) and len(changed) >= len(round_["frames"]) - 2
     assert set(record["replaced"]) == flow_frames | changed
 
 
 def test_a_rush_the_flow_reading_lets_pass_is_eased_too():
-    # A tail a tenth of a cycle short reads under the flow's limit: no frame is taken out, and it still rushes.
-    frames = _walk(lag=0.1)
+    # A tail 15 % of a cycle short over 16 frames reads under the flow's limit: no frame is taken out, and it still rushes.
+    frames = _walk(SHORT, lag=SHORT_LAG)
     assert repair.flow_targets(frames)["groups"] == []
-    out, record = repair.repair_jumps(frames, Lerp(frames, lag=0.1))
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=SHORT_LAG, n=SHORT), ease=False)
+    out, record = repair.repair_jumps(frames, Lerp(frames, lag=SHORT_LAG, n=SHORT))
     round_ = _ease(record)
     assert round_["outcome"] == "accepted" and round_["supersedes"] == []
     assert record["surge"]["ratio"] >= repair.SURGE_RATIO and record["surge_after"] is None
-    assert len(out) == N and all(out[k] is frames[k] for k in range(N) if k not in round_["frames"])
+    assert len(out) == SHORT and all(out[k] is frames[k] for k in range(SHORT) if k not in round_["frames"])
+    _kept_rest(frames, flow_only, out, round_)
+
+
+def test_a_stretch_whose_frames_made_hurry_the_rest_of_the_body_is_refused():
+    # Over 36 frames the legs, the arm and the head move far between frames. Easing a tail a tenth of a cycle short gives
+    # the rush more time and the steps around it less; the search reads the rest of the body on the line between the
+    # frames as filmed and finds times that keep it, and the frames made, which go the body's own way between them, step
+    # further there (a validator's counterexample on 9dd5050: the arm's window 1.736 to 2.030, the stretch taken). Read
+    # on the frames made, the stretch is refused for that alone, and the loop stays as the flow left it.
+    frames = _walk(lag=0.1)
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=0.1), ease=False)
+    out, record = repair.repair_jumps(frames, Lerp(frames, lag=0.1))
+    round_ = _ease(record)
+    assert round_["outcome"] == "rejected" and round_["rejected_for"] == ["the rest faster"]
+    faster = [i for i, w in enumerate(round_["rest"]["windows"]) if w in round_["rest"]["faster"]]
+    assert faster and all(round_["rest"]["step_max_after"][i] > round_["rest"]["step_max_before"][i] for i in faster)
+    assert [f.tobytes() for f in out] == [f.tobytes() for f in flow_only] and record["replaced"] == []
+    assert record["surge_after"] is not None and "replaced" not in round_
 
 
 def test_an_ordinary_walk_has_no_rush_and_nothing_is_made():
@@ -136,20 +187,24 @@ def test_a_frame_flung_against_the_way_is_not_a_rush():
 
 
 def test_on_twos_each_drawing_is_made_once_and_shown_for_both_its_frames():
-    frames = _walk(lag=LAG, hold=2)
-    lerp = Lerp(frames, lag=LAG, hold=2)
+    n = 48  # 24 drawings on twos
+    frames = _walk(n, lag=LAG, hold=2)
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=LAG, hold=2, n=n), ease=False)
+    lerp = Lerp(frames, lag=LAG, hold=2, n=n)
     out, record = repair.repair_jumps(frames, lerp)
     round_ = _ease(record)
     assert record["hold"] == 2 and round_["outcome"] == "accepted"
     assert all(len(d) == 2 and out[d[0]] is out[d[1]] for d in round_["drawings"])
     assert len(lerp.calls) <= len(round_["drawings"]) + len(record["rounds"][0]["drawings"])
-    assert len(out) == N and all(out[k] is frames[k] for k in range(N) if k not in round_["frames"])
+    assert len(out) == n and all(out[k] is frames[k] for k in range(n) if k not in round_["frames"])
+    _kept_rest(frames, flow_only, out, round_)
 
 
 def test_a_made_frame_that_moves_the_body_further_than_the_stretch_did_refuses_the_ease():
-    frames = _walk(lag=LAG)
-    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=LAG), ease=False)
-    lerp = Lerp(frames, lag=LAG)
+    n = WRAP
+    frames = _walk(n, lag=LAG)
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=LAG, n=n), ease=False)
+    lerp = Lerp(frames, lag=LAG, n=n)
 
     def pushed(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         made = lerp(a, b, t)
@@ -167,9 +222,10 @@ def test_a_made_frame_that_moves_the_body_further_than_the_stretch_did_refuses_t
 
 
 def test_a_made_frame_at_fault_refuses_the_ease_and_the_loop_stays_as_the_flow_left_it():
-    frames = _walk(lag=LAG)
-    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=LAG), ease=False)
-    lerp = Lerp(frames, lag=LAG)
+    n = WRAP
+    frames = _walk(n, lag=LAG)
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=LAG, n=n), ease=False)
+    lerp = Lerp(frames, lag=LAG, n=n)
 
     def melted(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         made = lerp(a, b, t)
@@ -194,17 +250,18 @@ def test_without_an_interpolator_a_rush_is_named_and_nothing_is_made():
 
 
 def test_it_eases_the_same_frames_whichever_way_the_body_faces():
-    frames = _walk(lag=0.1)
+    frames = _walk(SHORT, lag=SHORT_LAG)
     mirrored = [ImageOps.mirror(f) for f in frames]
-    lerp = Lerp(frames, lag=0.1)
+    lerp = Lerp(frames, lag=SHORT_LAG, n=SHORT)
     index = {id(m): k for k, m in enumerate(mirrored)}
 
     def mirror_lerp(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         return ImageOps.mirror(lerp(frames[index[id(a)]], frames[index[id(b)]], t))
 
-    _, record = repair.repair_jumps(frames, Lerp(frames, lag=0.1))
+    _, record = repair.repair_jumps(frames, Lerp(frames, lag=SHORT_LAG, n=SHORT))
     _, flipped = repair.repair_jumps(mirrored, mirror_lerp)
     assert _ease(flipped)["frames"] == _ease(record)["frames"] and _ease(flipped)["outcome"] == "accepted"
+    assert _ease(record)["outcome"] == "accepted"
 
 
 # --- the search (repair.ease_times) -------------------------------------------------------------------------------
@@ -255,19 +312,19 @@ class NearestLerp(Lerp):
 def _cut(tmp_path, frames: list[Image.Image], **kw):
     return loop_mod.run_loop(_keyed(tmp_path, frames), tmp_path / "out", fps=24.0, state="walk", min_len=None, max_len=None,
                              n_out=None, seam_max=1000.0, name="w", report_path=tmp_path / "w.json", cycle_mode="fixed",
-                             start=0, length=N, anchor="none", **kw)
+                             start=0, length=len(frames), anchor="none", **kw)
 
 
 def test_video_loop_eases_the_rush_and_plays_the_frames_made(tmp_path, capsys):
-    frames = _walk(lag=0.1)
-    lerp = NearestLerp(frames, lag=0.1)
+    frames = _walk(SHORT, lag=SHORT_LAG)
+    lerp = NearestLerp(frames, lag=SHORT_LAG, n=SHORT)
     rep = _cut(tmp_path, frames, interpolate=lerp)
     jr = rep["jump_repair"]
     round_ = _ease(jr)
     assert round_["outcome"] == "accepted" and jr["applied"] is True and jr["surge_after"] is None
     assert set(round_["replaced"]) <= set(jr["replaced"]) and rep["seam_measurement"] == "rendered-cells"
     cells = sorted((tmp_path / "out" / "cycle").glob("frame-*.png"))
-    assert len(cells) == N  # the loop keeps its length
+    assert len(cells) == SHORT  # the loop keeps its length
     made = {k: m for m in round_["made"] if m["proposal"] is not None for k in m["frames"]}
     assert made and len(made) == len(lerp.made)
     for k, image in zip(sorted(made, key=round_["frames"].index), lerp.made):
@@ -298,8 +355,10 @@ def test_a_stretch_never_leaves_more_than_half_the_loop_made(monkeypatch):
     frames = _walk(14, lag=0.15)
     monkeypatch.setattr(repair, "MADE_SHARE", 1.0)
     _, unbound = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14))
-    assert _ease(unbound)["width"] == 4 and len(unbound["replaced"]) == 8
+    assert _ease(unbound)["width"] == 4 and len(_ease(unbound)["frames"]) == 8
     monkeypatch.setattr(repair, "MADE_SHARE", 0.5)
-    _, record = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14))
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14), ease=False)
+    out, record = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14))
     round_ = _ease(record)
     assert round_["outcome"] == "accepted" and round_["width"] == 3 and len(record["replaced"]) <= 14 // 2
+    _kept_rest(frames, flow_only, out, round_)

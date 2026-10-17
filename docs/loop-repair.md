@@ -486,7 +486,8 @@ forward and keep, in every step,
   the ground it stands on (`repair.drift_points`) — within the stretch's largest step as it played,
   and half a pixel (`DRIFT_PIXEL` − `EASE_MARGIN`), drawn between the frames as filmed, and
 - every other window of the flow reading — the rest of the body — within its own largest step in
-  the stretch: no leg or arm hurried past what it did there,
+  the stretch, read on the line between the states of the frames as filmed: no leg or arm hurried
+  past what it did there (read again on the frames made, below),
 
 `repair.ease_times` takes the one whose largest change of the part's step from one step to the next,
 from the step into the stretch to the step out of it, is least (`accel`): the part speeds up and
@@ -507,21 +508,38 @@ on the frames made:
 | the part's largest step over the stretch falls (`part`) | `no gain` |
 | no frame of the stretch is read further off the flow than before and at or over its limit (`off_max`) | `off the flow` |
 | no rush is read in the stretch in a window the part does not rush in: the rest of the body was hurried | `a new rush` |
+| no window the part does not rush in steps further than its own largest step over the stretch as it played (`rest`: `windows`, `step_max_before`, `step_max_after`, in the usual steps of the loop the flow groups left, and `faster`) | `the rest faster` |
 
 A refused stretch keeps the loop as the flow groups left it; the loop keeps its length and every
 frame outside the stretch is as it was.
 
+**The rest of the body, read again.** The search reads each window of the rest of the body on the
+line between the states of the frames as filmed. The frames made go the body's own way between
+them, and where a part moves far between two frames — a leg through its swing, two legs crossing —
+its window steps further than that line says, most where a step is stretched across a frame as
+filmed. So the bound is read again on the frames made, on the flow reading's own steps, and a
+stretch that goes past it in any window is refused whole: nothing is allowed over. Better readings
+from the frames as filmed alone were weighed and none holds. Against the stand-in's frames made at
+every time of the search on the 36-frame walker, over the steps a search step can take, a step each
+reading allows is made as much as 1.48 times the bound on the line, 1.39 times along the window's
+path through the frames, 1.35 times along it with a smoothly changing speed and 1.31 times with each
+step lengthened by the circle through its bend; and the stand-in's own speed integrated, the ceiling
+of every reading by speed, eases none of those walkers drawn every frame. Searching again with the
+frames made added to the frames as filmed does not settle either: after five tries those walkers
+were still refused.
+
 | On the synthetic walker (the stand-in in-between of `tests/video/test_loop_ease.py`) | Part's largest step | Frames made |
 |---|---|---|
-| the tail 5 % of a cycle short | 3.8 → 2.6 | 8, at four a side, 7 calls |
-| 8 % | 4.9 → 2.6 | 8, 8 calls |
-| a tenth | 5.8 → 2.7, no rush left | 8, 8 calls |
-| a quarter, after the flow repair | 7.2 → 5.0, still read a rush (3.7) | 9, 9 calls |
-| a quarter, on twos | 3.4 → 1.6 (on its drawings) | 8 drawings, 16 frames, 8 calls |
+| 24 frames a cycle, the tail a quarter short, after the flow repair at the wrap | 5.3 → 3.4, no rush left | 8, at four a side, 8 calls |
+| 16 frames, 15 % short (under the flow reading's limit) | 3.6 → 1.7, no rush left | 6, at three a side, 5 calls |
+| 16 frames, a fifth short | 3.1 → 1.5, no rush left | 6, 6 calls |
+| 14 frames, 15 % short | 3.1 → 1.5, no rush left | 6, 6 calls |
+| 48 frames on twos, a quarter short, after the flow repair | 5.3 → 3.4 (on its drawings), no rush left | 8 drawings, 16 frames, 8 calls |
+| 36 frames, 5 % to 30 % short, drawn every frame or on twos | refused: the rest of the body 1.5 % to 19 % past its own largest step on the frames made | 6 to 9 calls, none kept |
 
-A quarter of a cycle is too far to spread out of sight over four drawings a side without hurrying
-the legs past their own largest step: the rush falls by three tenths and is left, named in `surge_after`.
-On a Mac's GPU a call is a second or so; on Modal's CPU with `-x -z` twelve to thirty seconds a
+Over 36 frames a cycle the stand-in's legs, arm and head move far between frames, and every stretch
+there is refused: the loop keeps the flow repair, `surge_after` names the rush, and the calls the
+stretch made are spent. On a Mac's GPU a call is a second or so; on Modal's CPU with `-x -z` twelve to thirty seconds a
 280 × 520 frame (section 1), so a loop that rushes costs two to four and a half minutes more, and a
 loop that does not, nothing.
 
@@ -534,8 +552,9 @@ given way, refused, or flung against the way`, `no timing keeps the body in boun
 stretch in play order), `sources` (the frames as filmed it was made from), `supersedes`, `span`
 (frames from anchor to anchor), `made` (per drawing: `frames`, `time` and `own` in frames from the
 first anchor, `from`, `t`, `proposal`, `faults`, `look`), `accel` (`before`, `chosen`), `part`
-(`windows`, `step_max_before`, `step_max_after`), `drift`, `off_max`, `calls`, `faults`, `look` and
-`outcome`, and `replaced` or `rejected_for`. The record's `replaced` holds the frames it changed, the
+(`windows`, `step_max_before`, `step_max_after`), `rest` (`windows`, `step_max_before`,
+`step_max_after`, `faster`), `drift`, `off_max`, `calls`, `faults`, `look` and `outcome`, and
+`replaced` or `rejected_for`. The record's `replaced` holds the frames it changed, the
 seam gate reads the rendered cells, and the summary names them (`eased`). Without RIFE the rush is
 cut as filmed with a warning line (`why`: "RIFE not installed — the rush cut as filmed"), and
 `--repair on` refuses.

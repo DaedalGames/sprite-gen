@@ -17,7 +17,8 @@ A part can also keep its way and still rush: a tail that runs short of the cycle
 it covers in eight elsewhere. The surge reading (`surges`) reads that speed; the frames either side of the rush, three
 or four drawings each way, are made again by RIFE at times chosen so the part's speed rises and falls gradually
 (`ease_times`), while the body's feet, mass and ground line move no further in a step, nor the rest of the body
-faster, than they did in that stretch (docs/loop-repair.md section 2, "The eased retime").
+faster, than they did in that stretch — read again on the frames made, which go the body's own way between the
+frames as filmed (docs/loop-repair.md section 2, "The eased retime").
 
 Measured on the loop as it plays — cyclic, the last frame followed by the first — and inside
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
@@ -577,7 +578,8 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
             into = np.array([float(np.linalg.norm(pl[stretch[0]] - pl[(stretch[0] - 1) % n])) for pl in places])
             after = np.array([float(np.linalg.norm(pl[(stretch[-1] + 1) % n] - pl[stretch[-1]])) for pl in places])
             own = list(range(1, T))
-            # the rest of the body, window by window, moves in no step further than it did in a step of the stretch
+            # the rest of the body, window by window, moves in no step further than it did in a step of the stretch —
+            # read here on the line between the frames as filmed, and on the frames made once they are made
             rest = [w for w in range(len(flow["windows"])) if w not in W]
             allowed = np.ones((len(grid), len(grid)), dtype=bool)
             for w in rest:
@@ -592,9 +594,9 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
             if result is None:
                 why = "no timing keeps the body in bound"
                 continue
-            plans.append({"surge": s, "k": k, "stretch": stretch, "sources": sources, "W": W, "progress": progress,
-                          "grid": grid, "bound": bound, "into": into, "after": after, "result": result,
-                          "accel_before": _part_accel(progress, [float(t) for t in own], grid, into, after)})
+            plans.append({"surge": s, "k": k, "stretch": stretch, "sources": sources, "W": W, "rest": rest,
+                          "progress": progress, "grid": grid, "bound": bound, "into": into, "after": after,
+                          "result": result, "accel_before": _part_accel(progress, [float(t) for t in own], grid, into, after)})
         if plans:
             break
     if not plans:
@@ -654,9 +656,15 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
     # a rush the stretch did not have, in a window the part does not rush in: the retime hurried the rest of the body
     rushes = [x for x in _surges(after_flow)
               if {(x["d"] + i) % n for i in range(x["r"] + 1)} & inside and set(x["W"]) - set(W)]
+    # the rest of the body on the frames made, window by window: no step of the stretch further than its largest as it
+    # played. The search reads it between the frames as filmed; the frames made go the body's own way between them.
+    rest = plan["rest"]
+    rest_before = flow["step"][stretch[:-1]][:, rest].max(axis=0) if rest else np.zeros(0)
+    rest_after = after_flow["step"][stretch[:-1]][:, rest].max(axis=0) if rest else np.zeros(0)
+    faster = [w for w, b, a in zip(rest, rest_before, rest_after) if a > b + 1e-9]
     rejected = ((["fault"] if wrong else []) + (["drift"] if over else []) + (["no gain"] if part_after >= part_before else [])
                 + (["off the flow"] if off_after >= FLOW_LIMIT and off_after > off_before else [])
-                + (["a new rush"] if rushes else []))
+                + (["a new rush"] if rushes else []) + (["the rest faster"] if faster else []))
     changed = [t for d in stretch[1:-1] for t in runs[d] if new[t] is not out[t]]
     round_: dict[str, Any] = {
         "why": "ease", "surge": _said_surge(s, flow), "width": plan["k"], "anchors": [first[stretch[0]], first[stretch[-1]]],
@@ -666,6 +674,10 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
         "accel": {"before": round(plan["accel_before"], 4), "chosen": round(plan["result"]["accel"], 4)},
         "part": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in W],
                  "step_max_before": round(part_before, 4), "step_max_after": round(part_after, 4)},
+        "rest": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in rest],
+                 "step_max_before": [round(float(v), 4) for v in rest_before / flow["scale"][rest]],
+                 "step_max_after": [round(float(v), 4) for v in rest_after / flow["scale"][rest]],
+                 "faster": [[round(v, 4) for v in flow["fractions"][w]] for w in faster]},
         "drift": {"measures": list(DRIFT_MEASURES), "bound": [round(float(v), 3) for v in plan["bound"]],
                   "moved": [round(float(v), 3) for v in moved], "over": over},
         "off_max": {"before": round(off_before, 4), "after": round(off_after, 4)}, "calls": calls, "faults": wrong,
@@ -746,7 +758,8 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     as filmed (a frame the flow made inside it is made again, `supersedes`), each drawing at the time `ease_times`
     chooses and shown on every frame it was; the stretch is taken only where no made frame has a fault, no body
     measure moves further than the stretch did and a pixel (`drift`), the part's largest step falls (`part`), no
-    frame is left further off the flow than the limit and before, and no new rush appears in the rest of the body
+    frame is left further off the flow than the limit and before, no new rush appears in the rest of the body, and
+    no window of the rest of the body steps further than its own largest step over the stretch as it played (`rest`)
     (`rejected_for` names what failed). Its calls are its own, outside `max_frames` (`ease_calls`). `surge_after`
     is the reading of the loop as it now plays. `facing` reads nothing here: it is recorded for the jump guard of
     `video-loop-compare` (`restoration.jump`)."""
