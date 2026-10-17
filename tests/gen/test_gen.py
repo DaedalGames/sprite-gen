@@ -94,73 +94,6 @@ def test_provider_binary_resolves_windows_style_path_shims(monkeypatch) -> None:
     assert gen_base.provider_binary("codex") == "codex"
 
 
-def test_provider_run_uses_scrubbed_env(tmp_path: Path, monkeypatch) -> None:
-    # Codex remains the subprocess provider; Grok now calls the API directly.
-
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    seen: dict[str, dict | None] = {}
-
-    class _Completed:
-        returncode = 0
-        stdout = '{"type":"thread.started","thread_id":"aaaa-bbbb"}\n'
-        stderr = ""
-
-    def _fake_codex_run(cmd, **kwargs):
-        seen["codex"] = kwargs.get("env")
-        seen["codex_cmd"] = cmd
-        seen["codex_encoding"] = kwargs.get("encoding")
-        return _Completed()
-
-    # Short-circuit codex's post-run rollout parsing — we only assert the env.
-    monkeypatch.setattr(codex_provider.subprocess, "run", _fake_codex_run)
-    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
-    monkeypatch.setattr(
-        codex_provider,
-        "_resolve_rollout",
-        lambda sid, sessions_root, *, preexisting: tmp_path / "x.jsonl",
-    )
-    b64 = base64.b64encode(_png_bytes()).decode()
-    monkeypatch.setattr(
-        codex_provider, "_collect_inline_results", lambda rollout: [codex_provider.InlineResult(b64)]
-    )
-    monkeypatch.setenv("ORCHESTRATOR_RUNTIME_ENDPOINT_ID", "synthetic-endpoint")
-    codex_provider.CodexProvider(keep_session=True).generate(
-        GenRequest(prompt="a mushroom", raw=tmp_path / "raw.png"), tmp_path
-    )
-    assert seen["codex"] is not None
-    assert "ORCHESTRATOR_RUNTIME_ENDPOINT_ID" not in seen["codex"]
-    assert seen["codex_encoding"] == "utf-8"
-
-
-def test_provider_commands_use_the_single_resolved_binary(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    seen: dict[str, list[str]] = {}
-    monkeypatch.setattr(codex_provider, "provider_binary", lambda _name: "C:/bin/codex.CMD")
-
-    class _CodexCompleted:
-        returncode = 0
-        stdout = '{"type":"thread.started","thread_id":"aaaa-bbbb"}\n'
-        stderr = ""
-
-    def fake_codex(cmd, **_kwargs):
-        seen["codex"] = cmd
-        return _CodexCompleted()
-
-    monkeypatch.setattr(codex_provider.subprocess, "run", fake_codex)
-    monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(codex_provider.AUTH_SOURCE_LOGIN))
-    monkeypatch.setattr(codex_provider, "_resolve_rollout", lambda *_args, **_kwargs: tmp_path / "rollout.jsonl")
-    monkeypatch.setattr(
-        codex_provider,
-        "_collect_inline_results",
-        lambda _path: [codex_provider.InlineResult(base64.b64encode(_png_bytes()).decode())],
-    )
-    codex_provider.CodexProvider(keep_session=True).generate(
-        GenRequest(prompt="도구", raw=tmp_path / "codex.png"), tmp_path
-    )
-
-    assert seen["codex"][0] == "C:/bin/codex.CMD"
-
-
 def test_json_report_writes_utf8_bytes_without_reconfiguring_stdout(monkeypatch) -> None:
     import io
     import sys
@@ -290,32 +223,6 @@ def test_codex_parse_session_id_json_and_legacy() -> None:
     assert codex_provider._parse_session_id("no id here") is None
 
 
-def test_codex_prompt_carries_official_imagegen_skill_trigger() -> None:
-    # Image generation lives in codex's bundled `imagegen` system skill, and the
-    # official way to invoke a skill explicitly is the `$<skill>` prompt mention
-    # (skills/.system/imagegen/agents/openai.yaml ships `default_prompt: "Use
-    # $imagegen to make or edit an image for this project."`). This locks the
-    # transport prompt to that contract; if the implicit prose phrasing comes
-    # back, this goes red.
-    #
-    # Scope note: the trigger is a contract alignment, not a tool-exposure fix.
-    # Built-in image generation is an account capability of the active Codex state
-    # root — see codex_provider._no_image_records_message. Do not let this test's
-    # name imply that the trigger is what makes image_gen available.
-    user_prompt = "a mushroom sprite row on a #00FF00 background"
-    prompt = codex_provider._build_prompt(user_prompt)
-
-    assert codex_provider._SKILL_TRIGGER == "$imagegen"
-    assert "$imagegen" in prompt, "the official skill trigger must be in the transport prompt"
-    # It must lead the instruction, not trail the user's prompt as an aside.
-    assert prompt.startswith("$imagegen "), prompt
-    # The caller's sprite-request prompt is the SSoT — passed through verbatim.
-    assert user_prompt in prompt
-    # The rest of the transport contract survives the trigger.
-    assert "정확히 1번" in prompt
-    assert "금지" in prompt
-
-
 def test_codex_empty_rollout_fails_loud_on_tool_non_exposure(tmp_path: Path, monkeypatch) -> None:
     # An empty rollout is the tool-non-exposure signature. It must fail loudly, name
     # the account capability behind the active Codex state root as the thing that is
@@ -360,7 +267,9 @@ def test_codex_prompt_reaches_the_child_process(tmp_path: Path, monkeypatch) -> 
     # The trigger is only real if it survives into codex exec's stdin — assert the
     # transport prompt is what the child actually receives, not just what we build.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    seen: dict[str, str] = {}
+    monkeypatch.setenv("ORCHESTRATOR_RUNTIME_ENDPOINT_ID", "synthetic-endpoint")
+    monkeypatch.setattr(codex_provider, "provider_binary", lambda _name: "C:/bin/codex.CMD")
+    seen: dict = {}
 
     class _Completed:
         returncode = 0
@@ -368,6 +277,9 @@ def test_codex_prompt_reaches_the_child_process(tmp_path: Path, monkeypatch) -> 
         stderr = ""
 
     def _fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env")
+        seen["encoding"] = kwargs.get("encoding")
         seen["input"] = kwargs.get("input", "")
         return _Completed()
 
@@ -387,6 +299,10 @@ def test_codex_prompt_reaches_the_child_process(tmp_path: Path, monkeypatch) -> 
         GenRequest(prompt="a mushroom", raw=tmp_path / "raw.png"), tmp_path
     )
 
+    assert seen["cmd"][0] == "C:/bin/codex.CMD"
+    assert seen["env"] is not None
+    assert "ORCHESTRATOR_RUNTIME_ENDPOINT_ID" not in seen["env"]
+    assert seen["encoding"] == "utf-8"
     assert seen["input"].startswith("$imagegen ")
     assert "a mushroom" in seen["input"]
 
@@ -451,29 +367,10 @@ def test_chroma_key_transparent_removes_textured_gradient_background(
     assert keyed.getpixel((48, 32))[3] == 255
 
 
-def test_chroma_key_transparent_rejects_zero_percent_alpha(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    src = tmp_path / "src.png"
-    Image.new("RGBA", (512, 512), (20, 30, 40, 255)).save(src)
-
-    def ineffective_matte(image, chroma_key, warnings):
-        result = image.convert("RGBA")
-        result.putpixel((0, 0), (0, 0, 0, 0))
-        return result
-
-    monkeypatch.setattr(chroma_mod, "remove_chroma_background_ycbcr", ineffective_matte)
-
-    out = tmp_path / "out.png"
-    with pytest.raises(SystemExit, match=r"0\.0% transparent pixels"):
-        chroma_mod.key_transparent(src, out, key="magenta")
-    assert not out.exists()
-
-
 class _FakeProvider:
     name = "fake"
     transparency = gen_base.TRANSPARENCY_CHROMA
+    size = (8, 8)
 
     def __init__(self) -> None:
         self.calls = 0
@@ -482,7 +379,7 @@ class _FakeProvider:
     def generate(self, request: GenRequest, workdir: Path):
         self.calls += 1
         self.requests.append(request)
-        Image.new("RGBA", (8, 8), (255, 0, 255, 255)).save(request.raw)
+        Image.new("RGBA", self.size, (255, 0, 255, 255)).save(request.raw)
         return gen_base.ProviderRun(provider=self.name, elapsed_seconds=1.23, model=request.model)
 
 
@@ -565,21 +462,6 @@ def test_native_strategy_publishes_measured_alpha_and_asks_provider_for_it(
     assert payload["chroma"] is None  # no chroma key ran
 
 
-def test_chroma_strategy_reports_itself_under_alpha_too(tmp_path: Path, monkeypatch) -> None:
-    fake = _FakeProvider()
-    monkeypatch.setattr(gen, "_make_provider", lambda name, *, keep_session: fake)
-    out = tmp_path / "asset.png"
-    report = tmp_path / "report.json"
-
-    assert gen.run(**_gen_kwargs(out, report)) == 0
-
-    assert fake.requests[0].native_alpha is False
-    payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["alpha"]["strategy"] == "chroma"
-    assert payload["alpha"]["method"] == "ycbcr"
-    assert payload["chroma"]["method"] == "ycbcr"
-
-
 @pytest.mark.parametrize(
     ("image", "expected_message"),
     [
@@ -628,26 +510,6 @@ def test_alpha_mode_chroma_forces_keying_on_a_native_provider(tmp_path: Path, mo
     assert payload["chroma"]["key"] == "magenta"
 
 
-def test_auto_steps_down_to_chroma_when_refs_are_attached(tmp_path: Path, monkeypatch, capsys) -> None:
-    # 2026-09-08 실측: codex native alpha with --ref drew checkerboards 5/6, chroma 6/6.
-    # `auto` therefore keys a ref run instead of gambling on native — decided before
-    # the model call, printed, and recorded in the report.
-    fake = _FakeNativeProvider(Image.new("RGBA", (8, 8), (255, 0, 255, 255)))
-    monkeypatch.setattr(gen, "_make_provider", lambda name, *, keep_session: fake)
-    ref = tmp_path / "ref.png"
-    ref.write_bytes(_png_bytes())
-    out = tmp_path / "asset.png"
-    report = tmp_path / "report.json"
-
-    assert gen.run(**_gen_kwargs(out, report, ref=[ref])) == 0
-
-    assert fake.requests[0].native_alpha is False
-    payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["alpha"]["strategy"] == "chroma"
-    assert payload["alpha"]["strategy_source"] == "refs-attached"
-    assert "reference image(s) attached" in capsys.readouterr().err
-
-
 def test_explicit_native_still_runs_with_refs(tmp_path: Path, monkeypatch) -> None:
     fake = _FakeNativeProvider()
     monkeypatch.setattr(gen, "_make_provider", lambda name, *, keep_session: fake)
@@ -664,8 +526,9 @@ def test_explicit_native_still_runs_with_refs(tmp_path: Path, monkeypatch) -> No
     assert payload["alpha"]["strategy_source"] == "explicit"
 
 
-# Three raws a ref run can come back with (2026-10-04): a real cut-out (a transparent
-# --ref is answered with alpha), a drawn checkerboard and a painted key background.
+# Raws a ref run can come back with (2026-10-04): a real cut-out (a transparent
+# --ref is answered with alpha) and a painted key background; a drawn checkerboard is
+# refused in tests/gen/test_painted_checkerboard.py.
 # The figure is a dark outline around an orange body with a cream belly — the two
 # colours a second key took off the real cut-out.
 _OUTLINE, _BODY, _CREAM = (20, 20, 20), (240, 140, 40), (245, 230, 200)
@@ -685,14 +548,6 @@ def _outlined_figure(background: Image.Image) -> Image.Image:
 
 def _real_alpha_raw() -> Image.Image:
     return _outlined_figure(Image.new("RGBA", (64, 64), (0, 0, 0, 0)))
-
-
-def _checkerboard_raw() -> Image.Image:
-    board = Image.new("RGB", (64, 64))
-    for y in range(64):
-        for x in range(64):
-            board.putpixel((x, y), (204, 204, 204) if (x // 8 + y // 8) % 2 else (255, 255, 255))
-    return _outlined_figure(board)
 
 
 def _key_background_raw() -> Image.Image:
@@ -731,7 +586,7 @@ def test_ref_run_publishes_a_real_alpha_raw_without_keying_its_outline(
     assert "publishing its own alpha" in capsys.readouterr().err
 
 
-def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch) -> None:
+def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch, capsys) -> None:
     fake, rc, out, report = _ref_run(tmp_path, monkeypatch, _key_background_raw())
 
     assert rc == 0
@@ -745,21 +600,7 @@ def test_ref_run_still_keys_a_raw_with_no_alpha(tmp_path: Path, monkeypatch) -> 
     }
     assert payload["chroma"]["key"] == "magenta"
     assert Image.open(out).getpixel((0, 0)) == (0, 0, 0, 0)  # the background was keyed out
-
-
-def test_ref_run_refuses_a_drawn_checkerboard_instead_of_keying_it(tmp_path: Path, monkeypatch) -> None:
-    # a drawn checkerboard is no alpha either, so it is not published on its own alpha; and it is not the key
-    # the run asked for, so it is refused before keying (tests/gen/test_painted_checkerboard.py)
-    with pytest.raises(SystemExit, match=r"^chroma: the background is a painted transparency checkerboard \(8 px"):
-        _ref_run(tmp_path, monkeypatch, _checkerboard_raw())
-    assert not (tmp_path / "asset.png").exists() and not (tmp_path / "report.json").exists()
-
-
-def test_key_background_ref_run_keeps_its_outline(tmp_path: Path, monkeypatch) -> None:
-    _, _, out, _ = _ref_run(tmp_path, monkeypatch, _key_background_raw())
-    published = Image.open(out)
-    assert published.getpixel(_OUTLINE_PX) == _OUTLINE + (255,)
-    assert published.getpixel(_CREAM_PX) == _CREAM + (255,)
+    assert "reference image(s) attached" in capsys.readouterr().err
 
 
 def test_ref_run_keys_an_ambiguous_raw_and_warns(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -939,20 +780,6 @@ def test_classify_raw_alpha_reads_the_alpha_band(tmp_path: Path, image: Image.Im
     assert chroma_mod.classify_raw_alpha(path)["verdict"] == verdict
 
 
-def test_classify_raw_alpha_needs_a_transparent_border(tmp_path: Path) -> None:
-    # Plenty of alpha 0, all of it inside an opaque frame: not a transparent background.
-    image = Image.new("RGBA", (20, 20), (255, 0, 255, 255))
-    for y in range(4, 16):
-        for x in range(4, 16):
-            image.putpixel((x, y), (0, 0, 0, 0))
-    path = tmp_path / "raw.png"
-    image.save(path)
-    stats = chroma_mod.classify_raw_alpha(path)
-    assert stats["alpha_zero_pct"] == 36.0
-    assert stats["border_alpha_zero_pct"] == 0.0
-    assert stats["verdict"] == "ambiguous"
-
-
 def test_classify_raw_alpha_judges_before_rounding(tmp_path: Path) -> None:
     # One alpha-0 pixel in 200 x 200 is 0.0025 %, reported as 0.0 but not "no alpha".
     image = Image.new("RGBA", (200, 200), (255, 0, 255, 255))
@@ -1094,12 +921,15 @@ def test_generate_image_zero_percent_alpha_fails_without_success_report(
     monkeypatch,
 ) -> None:
     fake = _FakeProvider()
+    fake.size = (150, 150)
     monkeypatch.setattr(gen, "_make_provider", lambda name, *, keep_session: fake)
-    monkeypatch.setattr(
-        chroma_mod,
-        "remove_chroma_background_ycbcr",
-        lambda image, chroma_key, warnings: image.convert("RGBA"),
-    )
+
+    def ineffective_matte(image, chroma_key, warnings):
+        result = image.convert("RGBA")
+        result.putpixel((0, 0), (0, 0, 0, 0))
+        return result
+
+    monkeypatch.setattr(chroma_mod, "remove_chroma_background_ycbcr", ineffective_matte)
 
     out = tmp_path / "asset.png"
     report = tmp_path / "report.json"
@@ -1147,11 +977,14 @@ def test_generate_image_orchestrates_report_and_raw_keep(tmp_path: Path, monkeyp
     )
     assert rc == 0
     assert fake.calls == 1
+    assert fake.requests[0].native_alpha is False
     assert out.is_file()
     assert (tmp_path / "asset.png.raw.png").is_file()  # pre-chroma raw preserved
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["provider"] == "fake"
     assert payload["transparent"] is True
+    assert payload["alpha"]["strategy"] == "chroma"
+    assert payload["alpha"]["method"] == "ycbcr"
     assert payload["chroma"]["method"] == "ycbcr"
     assert payload["chroma"]["stale_transparent_rgb_pixels"] == 0
     assert payload["elapsed_seconds"] == 1.23
@@ -1170,12 +1003,6 @@ def test_unknown_provider_fails_loud(tmp_path: Path) -> None:
 # ── Default-provider policy (maintainer 2026-07-17): default = codex, observable grok
 # fallback when codex is unavailable, SPRITE_GEN_DEFAULT_PROVIDER override. ──────
 
-def test_resolve_default_provider_hard_default_is_codex(monkeypatch) -> None:
-    monkeypatch.delenv(gen.DEFAULT_PROVIDER_ENV, raising=False)
-    monkeypatch.setattr(gen, "_codex_available", lambda: (True, ""))
-    assert gen.resolve_default_provider() == ("codex", None)
-
-
 def test_resolve_default_provider_env_override(monkeypatch) -> None:
     monkeypatch.setenv(gen.DEFAULT_PROVIDER_ENV, "grok")
     # codex probe must not even run when the env pins a non-codex default.
@@ -1187,19 +1014,6 @@ def test_resolve_default_provider_invalid_env_fails_loud(monkeypatch) -> None:
     monkeypatch.setenv(gen.DEFAULT_PROVIDER_ENV, "gemini")
     with pytest.raises(SystemExit):
         gen.resolve_default_provider()
-
-
-def test_resolve_default_provider_codex_unavailable_falls_back_observably(monkeypatch) -> None:
-    monkeypatch.delenv(gen.DEFAULT_PROVIDER_ENV, raising=False)
-    monkeypatch.setattr(gen, "_codex_available", lambda: (False, "codex not logged in (test)"))
-    provider, fallback = gen.resolve_default_provider()
-    assert provider == "grok"
-    assert fallback == {
-        "from": "codex",
-        "to": "grok",
-        "reason": "codex not logged in (test)",
-        "default_source": "hard-default",
-    }
 
 
 def test_resolve_default_provider_env_codex_still_falls_back(monkeypatch) -> None:

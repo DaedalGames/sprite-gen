@@ -31,8 +31,10 @@ class Api:
         return 200, {"status": "done", "video": {"url": "https://vidgen.x.ai/test.mp4", "duration": 3}}
 
 
-@pytest.mark.parametrize("fix", ["mirror", "none"])
-@pytest.mark.parametrize("observed", ["left", "right", "front", "unknown"])
+# `fix` is read only when the still faces the other way, so the other observations are asked once, with `none`
+@pytest.mark.parametrize(("observed", "fix"), [
+    ("left", "mirror"), ("right", "none"), ("front", "none"), ("unknown", "none"),
+])
 def test_side_input_is_inspected_once_before_upload(tmp_path, fix, observed):
     api = Api(observed)
     original = FIXTURE.read_bytes()
@@ -57,10 +59,10 @@ def test_side_input_is_inspected_once_before_upload(tmp_path, fix, observed):
         assert uploaded.tobytes() == expected.tobytes()
 
 
-@pytest.mark.parametrize("direction", [None, "front", "back"])
-def test_non_side_video_keeps_prompt_and_has_no_inspection(tmp_path, direction):
+def test_non_side_video_keeps_prompt_and_has_no_inspection(tmp_path):
+    # only `direction == "side"` branches: one named view that is not side stands for the rest and for none
     api = Api()
-    result = video.generate_video(video.VideoRequest(FIXTURE, "original prompt", tmp_path / "out.mp4", direction=direction),
+    result = video.generate_video(video.VideoRequest(FIXTURE, "original prompt", tmp_path / "out.mp4", direction="front"),
                                   credential=video.Credential("synthetic", "grok-login"), call=api.call, download=lambda *a, **kw: MP4)
     assert len(api.calls) == 2
     assert result.prompt == "original prompt" and "facing" not in result.to_dict()
@@ -84,15 +86,15 @@ def test_side_multi_input_refused_before_vision_or_video(tmp_path):
     assert not api.calls
 
 
-@pytest.mark.parametrize("options", [[], ["--facing-fix", "none"]])
-def test_video_cli_passes_side_policy(tmp_path, monkeypatch, options):
+def test_video_cli_passes_side_policy(tmp_path, monkeypatch):
+    # `--facing-fix` defaults to `none`, so passing it runs the same code
     api = Api()
     monkeypatch.setattr(video, "resolve_credential", lambda: video.Credential("synthetic", "grok-login"))
     monkeypatch.setattr(video, "http_json", api.call)
     monkeypatch.setattr(video, "http_download", lambda *a, **kw: MP4)
     report = tmp_path / "report.json"
     assert video.main(["--image", str(FIXTURE), "--prompt", "idle", "--out", str(tmp_path / "out.mp4"),
-                       "--direction", "side", "--facing", "right", *options, "--report", str(report)]) == 0
+                       "--direction", "side", "--facing", "right", "--report", str(report)]) == 0
     data = json.loads(report.read_text())
     assert data["facing"]["requested"] == "right" and "facing right" in data["prompt"]
     assert data["facing"]["fix"] == "none" and data["facing"]["action"] == "none"

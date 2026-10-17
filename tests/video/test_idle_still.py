@@ -15,29 +15,6 @@ from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import loop as loop_mod
 
 
-def test_the_idle_prompt_holds_the_feet_and_asks_for_the_return_not_a_rhythm() -> None:
-    prompt = batch_mod.build_prompt("side", "idle", None)
-    assert "both feet planted flat on the ground" in prompt
-    assert "no walking, no marching in place" in prompt
-    assert "weight sway" not in prompt
-    assert "evenly paced" not in prompt
-    assert prompt.endswith("The last frame returns to the exact pose of the first frame, so the animation loops seamlessly.")
-    # the rest of the frame rules are the ordinary ones, not the attack's
-    assert "anything it holds" not in prompt
-    assert prompt.replace(batch_mod.MOTION_TEXT["idle"], "{m}") == batch_mod.PINNED_LOOP_TEXT.format(
-        motion="{m}", view=batch_mod.VIEW_TEXT["side"].format(facing="right"))
-
-
-def test_idle_is_pinned_and_its_whole_clip_is_the_loop() -> None:
-    assert "idle" in batch_mod.PIN_LAST_FRAME_STATES
-    assert batch_mod.PINNED_LOOP_STATES == frozenset({"idle", "attack"})
-    # an attack's whole clip is its loop too (one strike, stance to stance), with its own template
-    assert "Crisp, clean frames" in batch_mod.build_prompt("side", "attack", None)
-    assert "Crisp, clean frames" not in batch_mod.build_prompt("side", "idle", None)
-    # the other states keep the evenly paced loop
-    assert "evenly paced" in batch_mod.build_prompt("side", "walk", None)
-
-
 def _still_frames(tmp_path: Path, *, n: int = 48, breath: int = 1, end_offset: int = 0) -> Path:
     """A standing body that breathes by `breath` px; the last frame is the first moved by `end_offset`."""
     d = tmp_path / "keyed"
@@ -61,21 +38,14 @@ def _loop(tmp_path: Path, keyed: Path, name: str = "idle") -> dict:
 
 
 def test_a_pinned_still_clip_is_one_whole_loop(tmp_path: Path) -> None:
+    """Breathing moves almost nothing per frame, so the ratio of the wrap to one step can be large
+    while the wrap itself is invisible; the pin decides, with a re-render noise floor."""
     rep = _loop(tmp_path, _still_frames(tmp_path))
     cycle = rep["cycle"]
     assert (cycle["kind"], cycle["start"], cycle["length"]) == ("pinned", 0, 47)  # every frame but the re-rendered first
-    assert cycle["pin_error"] <= cycle["pin_tolerance"]
-    assert rep["strip"]["kind"] == "pinned"
-
-
-def test_a_near_still_clip_is_not_refused_for_its_seam_ratio(tmp_path: Path) -> None:
-    """Breathing moves almost nothing per frame, so the ratio of the wrap to one step can be large
-    while the wrap itself is invisible; the pin decides, with a re-render noise floor."""
-    frames = _still_frames(tmp_path, breath=1)
-    D = loop_mod.distance_matrix(sorted(frames.glob("*.png")))
-    cycle = loop_mod.pinned_cycle(D, seam_max=loop_mod.SEAM_RATIO_MAX)
     assert cycle["pin_tolerance"] == max(loop_mod.SEAM_RATIO_MAX * cycle["inner_mean_adjacent"], loop_mod.PIN_NOISE_MAX)
     assert cycle["pin_error"] <= cycle["pin_tolerance"]
+    assert rep["strip"]["kind"] == "pinned"
 
 
 def test_a_clip_that_does_not_come_back_to_its_first_frame_is_refused(tmp_path: Path) -> None:

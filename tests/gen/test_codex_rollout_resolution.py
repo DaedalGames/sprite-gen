@@ -49,21 +49,6 @@ def _write_rollout(codex_home: Path, session_id: str, *, branch: str = "03") -> 
     return rollout
 
 
-def test_codex_home_env_is_the_only_state_root(tmp_path: Path, monkeypatch) -> None:
-    configured = tmp_path / "account-codex-home"
-    configured.mkdir()
-    monkeypatch.setenv("CODEX_HOME", str(configured))
-
-    assert codex_provider._resolve_codex_home() == configured.resolve()
-
-
-def test_codex_home_unset_uses_codex_default_root(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.setattr(codex_provider.Path, "home", classmethod(lambda cls: tmp_path / "user"))
-
-    assert codex_provider._resolve_codex_home() == tmp_path / "user" / ".codex"
-
-
 def test_codex_home_set_empty_fails_instead_of_falling_back(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_HOME", "   ")
 

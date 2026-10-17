@@ -23,7 +23,9 @@ from keyed_figure import STRANDS, colour_outside, figure, neighbour_ranges, scal
 from sprite_gen.util import resample
 from sprite_gen.video import loop
 
-SCALES = (0.5, 0.9662, 1.0256, 1.5)
+# One down-scale and one up-scale: `resize_cell` has one path for any size other than the input's, and
+# tests in other folders (frames, compose, scene) lean on these two for its properties.
+SCALES = (0.5, 1.5)
 
 
 @pytest.mark.parametrize("scale", SCALES)

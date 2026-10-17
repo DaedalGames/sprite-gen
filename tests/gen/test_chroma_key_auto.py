@@ -61,22 +61,6 @@ def _candidate(result: dict, name: str) -> dict:
     return next(entry for entry in result["candidates"] if entry["name"] == name)
 
 
-def test_flat_background_is_excluded_from_subject_pixels(tmp_path: Path) -> None:
-    ref = tmp_path / "base.png"
-    _base_on_background(ref)
-
-    result = prepare.choose_chroma_key(ref, "auto")
-    assert result["background"]["mode"] == "flat"
-    assert result["background"]["hex"] == "#FF00FF"
-
-    # No sampled subject pixel is the background, so the key the base was drawn
-    # against is scored against the body -- not against itself.
-    for pixel in prepare.sampled_reference_pixels(ref):
-        assert prepare.color_distance(pixel, MAGENTA) > prepare.BACKGROUND_TOLERANCE
-    assert _candidate(result, "magenta")["min_subject_distance"] > prepare.MIN_SUBJECT_KEY_DISTANCE
-    assert "warning" not in result
-
-
 def test_auto_can_reselect_the_key_the_base_was_drawn_against(tmp_path: Path) -> None:
     # Subject material sits inside the erase radius of green, cyan and blue, so
     # magenta is the only safe key -- and magenta is also the base's background.

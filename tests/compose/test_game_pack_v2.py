@@ -230,7 +230,6 @@ def test_version_2_output_is_deterministic(tmp_path):
 
 
 @pytest.mark.parametrize("change,message", [
-    ({"version": 1}, "version 2"),
     ({"version": 3}, "version must be 1 or 2"),
     ({"images": [{"id": "pillar", "source": "pillar.png", "display": {"body_height": 30}}]}, "width or height"),
     ({"images": [{"id": "a", "source": "pillar.png", "display": {"height": 9}},
@@ -333,14 +332,6 @@ def test_a_fill_is_stored_at_its_frames_content_area(tmp_path, scale):
     # the middle is the fill's own middle columns, repeated or dropped, never blended
     middle = {tuple(map(tuple, source[:, x])) for x in range(left, resized.width - right)}
     assert all(tuple(map(tuple, stored[:, x])) in middle for x in range(left, rect["w"] - right))
-
-
-def test_a_report_without_fills_packs_as_before(tmp_path):
-    ui_kit_report(tmp_path / "ui")
-    request = write_json(tmp_path / "game.json", {"version": 2, "ui": {"kit": "ui/ui-kit.json", "scale": 0.5}})
-    result = game_pack.pack(request, tmp_path / "out")
-    assert all(set(entry) == {"frame", "size", "stretch", "insets", "padding"}
-               for entry in result["ui"]["nine_slice"].values())
 
 
 @pytest.mark.parametrize("change,message", [

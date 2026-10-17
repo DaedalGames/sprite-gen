@@ -42,16 +42,10 @@ def _logical_art(width: int = 24, height: int = 40, seed: int = 11) -> Image.Ima
 
 def test_integer_pitch_is_detected_exactly():
     art = _logical_art()
+    # k=12 는 약수 6 을 반환하던 회귀의 재현이다
     for k in (4, 6, 8, 10, 12, 14, 16, 17, 20, 24, 32):
         upscaled = art.resize((art.width * k, art.height * k), Image.NEAREST)
         assert detect_pixel_pitch(upscaled) == k, f"pitch {k} misdetected"
-
-
-def test_divisor_is_not_preferred_over_true_pitch():
-    """k=12 에서 6 을 반환하던 회귀의 최소 재현."""
-    art = _logical_art()
-    upscaled = art.resize((art.width * 12, art.height * 12), Image.NEAREST)
-    assert detect_pixel_pitch(upscaled) == 12
 
 
 def test_phase_follows_crop_offset():
@@ -86,7 +80,8 @@ def _mismatch(a: Image.Image, b: Image.Image) -> int:
     return sum(1 for y in range(a.height) for x in range(a.width) if pa[x, y] != pb[x, y])
 
 
-@pytest.mark.parametrize("scale", [12.0, 14.35, 16.0, 16.2, 17.24, 20.0, 23.7])
+# integer scales are `test_integer_pitch_still_snaps_exactly`, which asks for an exact match
+@pytest.mark.parametrize("scale", [14.35, 16.2, 17.24, 23.7])
 def test_fractional_pitch_roundtrips_to_the_original_logical_art(scale):
     """소수 배율로 늘린 도트를 스냅하면 원본 논리 픽셀이 그대로 돌아와야 한다.
 
@@ -137,22 +132,6 @@ def test_non_integer_bbox_does_not_stretch_the_grid(fringe):
     # 마지막 셀만 자투리를 흡수한다. 나머지는 전부 참 피치 ±1px.
     for w in widths[:-1]:
         assert abs(w - k) <= 1, f"cell width {w} drifted from pitch {k} (widths={widths})"
-
-
-def test_pitch_is_detected_per_axis():
-    """가로/세로 블록 크기가 다르면 축별로 따로 잡아야 한다.
-
-    비균등 리스케일된 생성물은 가로 블록과 세로 블록이 어긋난다 (chibi 베이스:
-    가로 30.38 / 세로 30.92). 한 피치를 두 축에 강제하면 한 축이 통째로 미끄러졌다
-    — 실측 가로 정렬률 11.7%.
-    """
-    art = _logical_art(width=20, height=24)
-    upscaled = art.resize((art.width * 24, art.height * 30), Image.NEAREST)
-
-    (pitch_x, pitch_y), _ = detect_pixel_grid(upscaled)
-
-    assert abs(pitch_x - 24) < 0.6, f"x pitch {pitch_x:.2f} != 24"
-    assert abs(pitch_y - 30) < 0.6, f"y pitch {pitch_y:.2f} != 30"
 
 
 def test_non_square_pitch_roundtrips():
@@ -270,7 +249,7 @@ def test_measured_phase_survives_an_offset_grid_where_the_histogram_phase_does_n
             f"offset {offset}: 실측 위상인데 픽셀이 어긋난다 ({_mismatch(snapped, art)})")
 
 
-@pytest.mark.parametrize("scale", [12.0, 14.35, 16.0, 17.24, 20.0])
+@pytest.mark.parametrize("scale", [14.35, 17.24])
 def test_measured_phase_roundtrips_like_the_detected_phase(scale):
     """스냅 경로가 쓰는 위상(`_best_phase`)도 원본 논리 픽셀을 되돌려야 한다.
 

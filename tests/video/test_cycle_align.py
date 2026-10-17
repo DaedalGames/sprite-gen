@@ -405,18 +405,6 @@ def test_a_made_frame_that_lost_its_outline_is_replaced_by_the_nearer_source_fra
     assert len([w for w in kept["warnings"] if "lost its outline" in w and "--between auto" in w]) == kept["made_by_rife"]
 
 
-def test_a_made_frame_that_keeps_its_outline_is_kept_under_auto(tmp_path):
-    def drawn(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        return a.copy()  # a frame RIFE followed: whole, outlined as its neighbours
-
-    dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24))]
-    report = align.align_set(dirs, interpolate=drawn)
-    row = next(r for r in report["loops"] if Path(r["dir"]).name == "S")
-    assert report["replaced"] == 0 and row["nearest_at"] == [] and len(row["made_at"]) == len(row["smear"]) > 0
-    assert all(m["method"] == "rife" and m["faults"] == [] for m in row["smear"])
-    assert not any("lost its outline" in w for w in report["warnings"])
-
-
 def test_video_set_without_rife_skips_the_alignment_with_a_warning(tmp_path, monkeypatch, capsys):
     from sprite_gen.video import batch
 

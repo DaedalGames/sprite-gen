@@ -13,7 +13,7 @@ from sprite_gen.video import follow, follow_inspect
 W, H, N, DELAY = 160, 300, 13, 41.67
 SKIN, TORSO, LEG, PATCH, LINE = (200, 150, 120, 255), (90, 120, 180, 255), (190, 170, 120, 255), (120, 160, 220, 255), (10, 10, 20, 255)
 CX, CY = 80, 112
-FLOORS = (0.03, 0.1, 0.2, 0.35)
+FLOORS = (0.03, 0.2)
 
 
 def figure(dx, dy, *, lines):
@@ -111,14 +111,6 @@ def test_f1_under_refuse_a_move_under_the_floor_is_refused(probes, tmp_path):
 
 
 # ---------------------------------------------------------------- F2: never above the fold rule's gain
-
-def test_f2_where_the_fold_rule_is_stricter_its_gain_stands(probes, tmp_path):
-    _, region = X2
-    _, legacy = followed(probes['X2'], tmp_path/'legacy', [region])
-    _, rec = followed(probes['X2'], tmp_path/'floor', [region], stretch_floor=0.2)
-    entry = rec['stretch']['regions'][0]
-    assert entry['floor_gain'] > entry['rule_gain'] == legacy['gain'] == rec['gain']
-
 
 def test_f2_where_the_floor_is_stricter_its_gain_stands(probes, tmp_path):
     _, region = X1

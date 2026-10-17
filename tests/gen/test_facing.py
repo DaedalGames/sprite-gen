@@ -73,10 +73,10 @@ def test_left_request_mirrors_right_and_preserves_alpha_and_preview(tmp_path, mo
     assert result.extra["facing"]["final_direction"] == "left"
 
 
-@pytest.mark.parametrize("options", [{}, {"facing_fix": "none"}])
-def test_default_and_none_preserve_bytes_despite_wrong_observation(tmp_path, monkeypatch, options):
+def test_default_and_none_preserve_bytes_despite_wrong_observation(tmp_path, monkeypatch):
+    # the default is `none`, so an explicit `facing_fix="none"` runs the same code
     backend = Backend("left", image_direction="right")
-    result = generate(tmp_path, monkeypatch, backend, **options)
+    result = generate(tmp_path, monkeypatch, backend)
     assert result.out.read_bytes() == result.raw.read_bytes() == (FIXTURES / "right.png").read_bytes()
     report = result.extra["facing"]
     assert report["fix"] == "none" and report["action"] == "none"
@@ -232,14 +232,14 @@ def test_codex_vision_reads_new_answer_and_scrubs_identity(monkeypatch, tmp_path
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("options", [[], ["--facing-fix", "none"]])
-def test_cli_options_reach_report(tmp_path, monkeypatch, options):
+def test_cli_options_reach_report(tmp_path, monkeypatch):
+    # `--facing-fix` defaults to `none`, so passing it runs the same code
     backend = Backend("right")
     monkeypatch.setattr(gen, "_make_provider", lambda *a, **kw: backend)
     report = tmp_path / "report.json"
     assert gen.main(["--provider", "openai", "--prompt", "robot", "--ref", str(FIXTURES / "right.png"),
                      "--out", str(tmp_path / "out.png"), "--report", str(report),
-                     "--facing", "left", *options]) == 0
+                     "--facing", "left"]) == 0
     facing_report = json.loads(report.read_text())["extra"]["facing"]
     assert facing_report["requested"] == "left" and facing_report["action"] == "none"
     assert facing_report["fix"] == "none"

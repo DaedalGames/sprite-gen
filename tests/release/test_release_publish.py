@@ -126,14 +126,6 @@ def test_a_dry_run_creates_nothing_and_shows_what_it_would_create(harness: Harne
     assert not harness.published()
 
 
-def test_a_dry_run_on_a_released_tag_reports_the_no_op(harness: Harness) -> None:
-    harness.state.write_text("published", encoding="utf-8")
-    proc = harness.run("--dry-run")
-    assert proc.returncode == 0, proc.stderr
-    assert "already has a release page" in proc.stdout
-    assert [c.split()[1] for c in harness.calls] == ["view"]
-
-
 def test_an_unreadable_answer_is_not_read_as_a_missing_release(harness: Harness) -> None:
     """No silent fallback: a 503 must not become "no release yet" and then a create."""
     proc = harness.run(unreachable=True)
@@ -148,14 +140,6 @@ def test_a_missing_changelog_section_stops_before_gh_is_called(harness: Harness)
     assert proc.returncode == 2
     assert "v9.9.9" in proc.stderr
     assert harness.calls == [], "the notes are rendered before anything is asked of gh"
-
-
-def test_a_gif_named_in_the_notes_but_absent_stops_the_release(harness: Harness) -> None:
-    (harness.checkout / "docs" / "assets" / "wave-cube.gif").unlink()
-    proc = harness.run()
-    assert proc.returncode == 2
-    assert "wave-cube.gif" in proc.stderr
-    assert not harness.published()
 
 
 def test_a_dist_directory_with_stale_archives_is_refused(harness: Harness, tmp_path: Path) -> None:

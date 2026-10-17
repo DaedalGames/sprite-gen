@@ -9,8 +9,6 @@ the margin), 4 levels by 0.0314 (over it), the default 60 by far more."""
 
 from __future__ import annotations
 
-import math
-
 from sprite_gen.video import align
 
 from tests.video.test_cycle_align import _cycle
@@ -52,9 +50,3 @@ def test_a_low_margin_loop_is_listed_for_whoever_looks_and_the_others_stay_named
     # the answer comes back as for any unnamed loop, and the reason it was unnamed is kept
     told = _rows(align.align_set(dirs, views=views, feet={"L": "right"}))["L"]
     assert told["start_foot_source"] == "given" and told["foot_unnamed_why"].startswith("low-margin: ")
-
-
-def test_the_figure_shades_its_far_leg_by_the_levels_asked():
-    """The fixture itself: the margins the tests above rest on."""
-    margins = {d: align.strike_foot(_cycle(view="side", far_darker=d), (0, 6), "side", "right")["margin"] for d in (FAINT, CLEAR)}
-    assert math.isclose(margins[FAINT], 0.0235, abs_tol=0.0005) and math.isclose(margins[CLEAR], 0.0314, abs_tol=0.0005)

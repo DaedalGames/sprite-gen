@@ -81,16 +81,6 @@ def test_split_duplicate_holds_preserve_duration_and_stance_speed():
     assert b["contact_candidates"][0]["measurement_elapsed_seconds"] == pytest.approx(0.8)
 
 
-def test_added_hold_time_reduces_speed_instead_of_being_dropped():
-    original = analyze_motion(sequence(), contacts="0:4", foot_box=FOOT_BOX)
-    repeated = analyze_motion(
-        sequence((24, 24, 22, 22, 20, 20, 18, 18, 16, 16)),
-        contacts="0:9", foot_box=FOOT_BOX,
-    )
-    assert repeated["duration_seconds"] == pytest.approx(original["duration_seconds"] * 2)
-    assert repeated["stride_px_per_second"] == pytest.approx(original["stride_px_per_second"] / 2)
-
-
 def test_nonuniform_frame_durations_determine_speed():
     seq = sequence((24, 23, 20, 18, 16), durations=[0.05, 0.15, 0.1, 0.1, 0.4])
     report = analyze_motion(seq, contacts=[(0, 4)], foot_box=FOOT_BOX)

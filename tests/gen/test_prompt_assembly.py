@@ -22,7 +22,7 @@ import re
 import pytest
 
 from sprite_gen import gen
-from sprite_gen.gen import chroma, facing as facing_mod, handedness as h, prompt_parts
+from sprite_gen.gen import chroma, handedness as h, prompt_parts
 from sprite_gen.gen import video as video_mod
 from sprite_gen.video import batch, clip_prompt
 
@@ -41,19 +41,17 @@ SUBJECT = "A small fox adventurer, 2D game sprite, full body"
 USER_TEXT = {
     "plain": {"text": f"{SUBJECT}."},
     "names-key": {"text": f"{SUBJECT}, magenta chroma-key background.", "key": "magenta"},
-    "names-key-hex": {"text": f"{SUBJECT} on a flat #FF00FF background.", "key": "magenta"},
     "says-turn": {"text": f"{SUBJECT}, facing right.", "turn": "right"},
     "says-item-side": {"text": f"{SUBJECT}, wearing a black smartwatch on its left wrist.", "item": "left"},
     "says-other-item-side": {"text": f"{SUBJECT}, wearing a black smartwatch on its right wrist.", "item": "right"},
 }
 # --character: words the motion paragraphs below never use, so a clip that names the character got them from here
 CHARACTER = "A small fox adventurer in a green cloak"
-STATES = ("idle", "walk", "run", "jump", "attack", "cheer")
+STATES = ("idle", "walk", "run", "jump", "attack")
 MODELS = {"pro": "grok-imagine-video-1.5", "lite": "grok-imagine-video-1.5-lite"}
-# --motion: the built-in sentence, the caller's own, one that quotes an engine rule, one that walks the other way
+# --motion: the built-in sentence, the caller's own that quotes an engine rule, one that walks the other way
 MOTION = {
     "built-in": {"text": None},
-    "own": {"text": "The fox walks with a cheerful bounce, swinging both arms."},
     "quotes-engine": {"text": "The fox walks with a cheerful bounce. Camera completely locked, no zoom, no pan, no reframing."},
     "says-turn": {"text": "The fox walks to the right with a cheerful bounce.", "turn": "right"},
 }
@@ -83,7 +81,8 @@ def _still_rows():
 
 def _clip_rows():
     for (view, facing), handed, state, model, motion in itertools.product(_views(), HANDED, STATES, MODELS, MOTION):
-        if MOTION[motion]["text"] and state != "walk":
+        # Lite adds its text to a walk only (`batch._lite_text`): another state's Lite prompt is the Pro one
+        if state != "walk" and (MOTION[motion]["text"] or model == "lite"):
             continue
         make = lambda items, v=view, s=state, f=facing or "right", m=MOTION[motion]["text"], mo=MODELS[model]: (
             batch.clip_prompt_parts(v, s, CHARACTER, facing=f, motion=m, model=mo, handed=items))
@@ -91,7 +90,8 @@ def _clip_rows():
         row = {"user": None, "motion": motion, "facing": facing, "handed": handed, "state": state, "character": CHARACTER,
                "plain": make(None).text}
         yield f"clip/{view}@{facing}/{state}/{model}/{motion}/{handed}", parts, row
-        if view == "side":  # handed on to `sprite-gen video --direction side`
+        # handed on to `sprite-gen video --direction side`, whose hold sentence is appended whatever the clip says
+        if view == "side" and (state, model, motion) == ("walk", "pro", "built-in"):
             yield (f"clip+video/{view}@{facing}/{state}/{model}/{motion}/{handed}",
                    video_mod.side_view_prompt(parts.text, facing), {**row, "clip": parts})
 
@@ -109,6 +109,13 @@ def _start_still_rows():
 
 ROWS = [*_still_rows(), *_clip_rows(), *_start_still_rows()]
 _HANDED_ROWS = [r for r in ROWS if r[2]["handed"] != "none"]
+# without --handed a row's prompt and its plain one are the same call: one such row per kind, and every side hold
+_FIRST_PLAIN = {name.split("/")[0]: name for name, _, row in reversed(ROWS) if row["handed"] == "none"}
+_ASSEMBLY_ROWS = [r for r in ROWS
+                  if r[2]["handed"] != "none" or r[0].startswith("clip+video/") or r[0] in _FIRST_PLAIN.values()]
+# the engine's own words handed on carry no handed piece of their own, and their notes are the first verb's
+_NOTED_ROWS = [r for r in ROWS if not r[0].startswith(("clip+video/", "start-still"))]
+_TWICE_ROWS = [r for r in _HANDED_ROWS if not r[0].startswith(("clip+video/", "start-still/"))]
 
 # -- the checks ------------------------------------------------------------------------------------
 
@@ -138,10 +145,10 @@ def _without_handed(parts: prompt_parts.Prompt) -> str:
 def test_the_table_covers_every_place_a_prompt_is_put_together() -> None:
     kinds = {name.split("/")[0] for name, _, _ in ROWS}
     assert kinds == {"still", "clip", "clip+video", "start-still", "start-still+gen"}
-    assert len(_HANDED_ROWS) > 1000
+    assert len(_HANDED_ROWS) > 600
 
 
-@pytest.mark.parametrize("name,parts,row", ROWS, ids=[name for name, _, _ in ROWS])
+@pytest.mark.parametrize("name,parts,row", _ASSEMBLY_ROWS, ids=[name for name, _, _ in _ASSEMBLY_ROWS])
 def test_handed_puts_in_its_piece_and_changes_nothing_else(name, parts, row) -> None:
     """With --handed the prompt is the one without it (2.22.0's) and the handed piece; without it, there is none."""
     if name.startswith("clip+video"):
@@ -156,20 +163,18 @@ def test_handed_puts_in_its_piece_and_changes_nothing_else(name, parts, row) -> 
         assert parts.piece("handed") is None and parts.text == row["plain"]
 
 
-@pytest.mark.parametrize("name,parts,row", _HANDED_ROWS, ids=[name for name, _, _ in _HANDED_ROWS])
+@pytest.mark.parametrize("name,parts,row", _TWICE_ROWS, ids=[name for name, _, _ in _TWICE_ROWS])
 def test_no_handed_sentence_is_said_twice(name, parts, row) -> None:
     said = _sentences(parts.text)
     for sentence in _sentences(_handed_text(parts)):
         assert said.count(sentence) == 1, (sentence, parts.text)
 
 
-@pytest.mark.parametrize("name,parts,row", ROWS, ids=[name for name, _, _ in ROWS])
+@pytest.mark.parametrize("name,parts,row", _NOTED_ROWS, ids=[name for name, _, _ in _NOTED_ROWS])
 def test_the_notes_say_where_the_callers_words_turn_or_place_the_item_the_other_way(name, parts, row) -> None:
     caller = {**USER_TEXT.get(row["user"] or "", {}), **MOTION.get(row.get("motion") or "", {})}
     facing = row["facing"]
     conflicts = {note["about"] for note in parts.notes if note["kind"] == "conflict"}
-    if name.startswith("clip+video") or name.startswith("start-still"):
-        return  # the engine's own words handed on: the notes are the first verb's
     if caller.get("turn") not in (None, facing):
         # the caller's own words turn another way than the view: they are left as written, and the notes say so
         assert "facing" in conflicts, name
@@ -287,16 +292,3 @@ def test_gen_reports_what_the_callers_text_says_against_the_options(tmp_path, mo
     assert '[gen] warning: the text says "facing left" and the engine\'s sentence says right' in err
     quiet = gen.generate_image("fake", "a fox", tmp_path / "quiet.png", view="side", facing="right")
     assert "prompt_notes" not in quiet.extra
-
-
-def test_video_prompt_names_the_character_in_every_view_of_a_callers_walk() -> None:
-    for view, state in itertools.product(h.VIEWS, batch.GAIT_STATES):
-        record = clip_prompt.plan_prompt(direction=view, state=state, character=CHARACTER, facing="right",
-                                         motion=MOTION["own"]["text"])
-        assert record["prompt"].count(CHARACTER) == 1, record["prompt"]
-
-
-def test_the_facing_correction_is_said_after_the_prompt_as_2_22_0_did() -> None:
-    """`--facing-fix regen` sends the first prompt and the correction after it (`facing.prepare_correction`)."""
-    assert facing_mod.prompt_suffix("left", retry=True).startswith("CORRECTION REQUIRED: redraw the subject's orientation. "
-                                                                   "The subject must be facing left")

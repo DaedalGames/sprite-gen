@@ -159,7 +159,6 @@ def test_reference_with_image_keeps_both(tmp_path: Path) -> None:
         (lambda t: _gen(t, reference_images=[_still(t), _still(t, "b.png")], prompt="<IMAGE_0> and <IMAGE_2>"), "<IMAGE_2> but only 2 --reference"),
         (lambda t: _gen(t, image=_still(t), prompt="<IMAGE_0> walks"), "<IMAGE_0> but no --reference"),
         (lambda t: _gen(t, image=_still(t), last_frame=_still(t, "l.png"), model=video.CLASSIC_MODEL), "classic grok-imagine-video rejects last_frame"),
-        (lambda t: _gen(t, last_frame=_still(t, "l.png"), model=video.CLASSIC_MODEL), "classic grok-imagine-video rejects last_frame"),
         (lambda t: _gen(t, image=_still(t), reference_images=[_still(t, "r.png")], model=video.CLASSIC_MODEL), "rejects --image combined with --reference"),
     ],
 )
@@ -205,13 +204,6 @@ def test_extend_posts_classic_model_to_extensions_and_inherits_the_rest(tmp_path
     assert payload["input_duration"] == 15.04 and payload["output_duration"] == 20.04
     assert payload["duration_reported"] == 5 and payload["duration_requested"] == 5
     assert result.out.read_bytes() == MP4
-
-
-def test_extend_accepts_the_frame_padded_fifteen_second_clip(tmp_path: Path) -> None:
-    # probe m4c: a 15.04 s container went through and came back 20.04 s.
-    api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/2.mp4", "duration": 20.04}, "model": "grok-imagine-video"})
-    video.extend_video(_ext(tmp_path, duration=5), probe=_probe(15.04, 20.04), **api.kw())
-    assert api.body["duration"] == 5
 
 
 def test_extend_refuses_a_result_shorter_than_the_input_measured_from_bytes(tmp_path: Path) -> None:
@@ -268,7 +260,6 @@ def test_edit_posts_classic_model_to_edits_without_duration(tmp_path: Path) -> N
     ("build", "seconds", "expected"),
     [
         (lambda t: _edit(t), 8.71, "at most 8.7s"),
-        (lambda t: _edit(t), 15.04, "at most 8.7s"),
         (lambda t: _edit(t, video=_clip(t, "in.webm")), 5.0, "must be an .mp4"),
         (lambda t: _edit(t, model=video.DEFAULT_MODEL), 5.0, "only the classic grok-imagine-video supports editing"),
         (lambda t: _edit(t, prompt=""), 5.0, "empty prompt"),

@@ -120,18 +120,15 @@ def _strip_for_state(run_dir: Path, request: dict[str, Any], state: str, args: a
 def _frames_from_raw(strip: Image.Image, expected: int, request: dict[str, Any]) -> tuple[list[Image.Image], int]:
     cell_width, cell_height, safe_margin_x, safe_margin_y = extract.cell_geometry(request["cell"])
     segments, natural = segment_strip(strip, expected)
-    frames: list[Image.Image] = []
-    for left, right in segments:
-        frames.append(
-            extract.fit_to_cell(
-                strip.crop((left, 0, right, strip.height)),
-                cell_width,
-                cell_height,
-                safe_margin_x,
-                safe_margin_y,
-                request.get("fit") or {},
-            )
-        )
+    # A row is fitted the way extract fits it: one scale for every pose (extract.fit_row_to_cells).
+    frames = extract.fit_row_to_cells(
+        [strip.crop((left, 0, right, strip.height)) for left, right in segments],
+        cell_width,
+        cell_height,
+        safe_margin_x,
+        safe_margin_y,
+        request.get("fit") or {},
+    )
     return frames, natural
 
 

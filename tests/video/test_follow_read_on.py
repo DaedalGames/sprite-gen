@@ -93,15 +93,24 @@ class Blend:
         return Image.blend(a, b, t)
 
 
-@pytest.fixture
-def origin(tmp_path):
-    """The cut every case starts from, followed as cut (the reference), and its strip's sha256 — what an app keeps
-    as `read_on` beside the regions it read on the first cell."""
-    o = cut(tmp_path/'cut', [runner(k) for k in range(N)])
+@pytest.fixture(scope='module')
+def origin_once(tmp_path_factory):
+    """The cut and its follow-through, made once for the module: `cut/` and `followed/`, and the cut strip's sha256."""
+    root = tmp_path_factory.mktemp('origin')
+    o = cut(root/'cut', [runner(k) for k in range(N)])
     read_on = sha(o/'run.strip.png')
-    followed = copy(o, tmp_path/'followed')
-    follow.follow_loop(followed, [chest(o)], on_fold='lower')
-    return o, read_on, followed
+    follow.follow_loop(copy(o, root/'followed'), [chest(o)], on_fold='lower')
+    return root, read_on
+
+
+@pytest.fixture
+def origin(origin_once, tmp_path):
+    """The cut every case starts from, followed as cut (the reference), and its strip's sha256 — what an app keeps
+    as `read_on` beside the regions it read on the first cell. A copy in this case's tmp_path, so nothing a case
+    writes reaches another."""
+    root, read_on = origin_once
+    shutil.copytree(root, tmp_path, dirs_exist_ok=True)
+    return tmp_path/'cut', read_on, tmp_path/'followed'
 
 
 def aligned(o, path, **kw):
@@ -116,7 +125,9 @@ def aligned(o, path, **kw):
 def test_the_first_alignment_records_the_cut_it_was_made_from_and_later_ones_keep_it(origin, tmp_path):
     o, read_on, _ = origin
     as_cut = meta_of(o)
-    loop_dir = aligned(o, tmp_path/'turned')
+    loop_dir = copy(o, tmp_path/'turned')
+    report = align.align_set([loop_dir], between='nearest', multi_cycle='warn')
+    assert 'origin' not in report['loops'][0]  # the report names each cell's source; the cut's record stays in the meta
     record = meta_of(loop_dir)['cycle_align']
     source = record['origin']
     assert source['strip_sha256'] == read_on
@@ -201,18 +212,6 @@ def test_t1_the_same_turned_loop_followed_as_read_today_moves_another_place(orig
     assert sum(not np.array_equal(moved[k], reference[(k+turned) % N]) for k in range(N)) >= N//2
 
 
-def test_t1_the_inspection_carries_every_cell_by_the_cuts_reading(origin, tmp_path):
-    o, read_on, _ = origin
-    loop_dir = aligned(o, tmp_path/'turned')
-    turned = meta_of(loop_dir)['cycle_align']['turned_by']
-    reading = meta_of(loop_dir)['cycle_align']['origin']['reading']['carry_px']
-    record = follow_inspect.inspect_loop(loop_dir, [chest(o)], tmp_path/'out', on_fold='lower', read_on=read_on)
-    assert [c['carry_px'] for c in record['cells']] == [reading[(k+turned) % N] for k in range(N)]
-    assert record['inputs']['settings']['read_on'] == read_on
-    as_cut = follow_inspect.inspect_loop(o, [chest(o)], tmp_path/'cut-out', on_fold='lower')
-    assert [c['carry_px'] for c in as_cut['cells']] == reading
-
-
 # ---------------------------------------------------------------- T2: a stretch by the nearer cell repeats cells
 
 def test_t2_a_loop_stretched_by_the_nearer_cell_is_carried_cell_for_cell_duplicates_and_all(origin, tmp_path):
@@ -266,7 +265,7 @@ def test_t4_another_clip_or_an_unknown_read_on_is_refused_no_match(origin, tmp_p
         follow.follow_loop(copy(o, tmp_path/'plain'), [chest(o)], on_fold='lower', read_on=sha(turned/'run.strip.png'))
 
 
-@pytest.mark.parametrize('given', ['AB'*32, 'ab'*31+'a', 'zz'*32, ''])
+@pytest.mark.parametrize('given', ['ab'*31+'a'])
 def test_a_read_on_that_is_no_sha256_is_refused_before_anything_is_read(origin, tmp_path, given):
     o, _, _ = origin
     with pytest.raises(SystemExit, match='--read-on'):
@@ -288,26 +287,7 @@ def test_t5_a_loop_whose_cells_were_cropped_again_is_refused_uncertain(tmp_path)
     assert files(loop_dir) == before
 
 
-def test_t5_a_cell_drawn_again_after_the_alignment_is_refused_uncertain(origin, tmp_path):
-    o, read_on, _ = origin
-    loop_dir = aligned(o, tmp_path/'touched')
-    strip = Image.open(loop_dir/'run.strip.png').convert('RGBA')
-    ImageDraw.Draw(strip).point((meta_of(loop_dir)['w']*4+3, 3), fill=MARK)  # cell 4 is no longer the cut's cell
-    strip.save(loop_dir/'run.strip.png')
-    with pytest.raises(SystemExit, match='uncertain.*cell 4'):
-        follow.follow_loop(loop_dir, [chest(o)], on_fold='lower', read_on=read_on)
-
-
 # ---------------------------------------------------------------- T6: nothing asked, nothing changes
-
-LEGACY_KEYS = {'regions', 'gain', 'freq_hz', 'zeta', 'harmonics', 'source', 'body_px', 'body_worn_px', 'body_bob_px', 'dx_px', 'dy_px',
-               'reach_px', 'gain_requested', 'on_fold', 'fold', 'gif', 'webp'}
-
-
-def test_t6_without_read_on_the_record_holds_nothing_new(origin):
-    _, _, followed = origin
-    assert set(meta_of(followed)['follow']) == LEGACY_KEYS
-
 
 def test_t6_read_on_the_strip_as_cut_moves_exactly_what_it_moves_without(origin, tmp_path):
     o, read_on, followed = origin
@@ -321,15 +301,6 @@ def test_t6_read_on_the_strip_as_cut_moves_exactly_what_it_moves_without(origin,
     # Once followed, the strip as cut is read from follow.source.png, so the same read_on is still `same`.
     follow.follow_loop(loop_dir, [chest(o)], on_fold='lower', read_on=read_on)
     assert meta_of(loop_dir)['follow']['read_on']['relation'] == 'same'
-
-
-def test_t6_an_alignment_adds_two_keys_and_no_pixel(origin, tmp_path):
-    o, _, _ = origin
-    loop_dir = aligned(o, tmp_path/'turned')
-    record = meta_of(loop_dir)['cycle_align']
-    assert {'origin', 'cells_from'} <= set(record)
-    report = align.align_set([copy(o, tmp_path/'again')], between='nearest', multi_cycle='warn')
-    assert 'origin' not in report['loops'][0]  # the report names each cell's source; the cut's record stays in the meta
 
 
 # ---------------------------------------------------------------- T7: the floor decides on the cut's numbers

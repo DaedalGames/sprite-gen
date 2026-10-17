@@ -1211,14 +1211,6 @@ def test_key_tint_score_matches_frozen_scalar_reference():
     assert checked == len(_KEYS) * len(_SWEEP) ** 3
 
 
-def test_key_tint_score_returns_zero_for_degenerate_keys():
-    """축퇴 키(키 채널 없음 / 언키 채널 없음)는 0.0 — 이 값이
-    `remove_chroma_background` 의 unmix·spill 패스 전체를 끄는 스위치다."""
-    for key in _DEGENERATE_KEYS:
-        assert extract.key_tint_score((10, 200, 30), key) == 0.0
-        assert _ref_key_tint_score((10, 200, 30), key) == 0.0
-
-
 def test_despill_and_unmix_match_frozen_scalar_reference():
     """despill/unmix 는 벡터화 대상 안쪽의 산수라 별도로 고정한다."""
     key = GREEN
@@ -1347,28 +1339,15 @@ def test_key_tint_field_matches_frozen_scalar_reference():
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case[0] for case in CASES])
-def test_remove_chroma_background_byte_identical_to_frozen_reference(case):
-    got = _run_production(case)
-    ref = _run_reference(case)
-    assert got.size == ref.size
-    assert got.mode == ref.mode == "RGBA"
-    assert got.tobytes() == ref.tobytes(), f"{case[0]}: {_sha256(got)} != {_sha256(ref)}"
-
-
-@pytest.mark.parametrize("case", CASES, ids=[case[0] for case in CASES])
 def test_remove_chroma_background_matches_pinned_output_hash(case):
-    """절대 잠금 — 프로덕션과 동결 참조를 같이 고쳐도 여기서 걸린다."""
+    """절대 잠금 — 프로덕션과 동결 참조를 같이 고쳐도 여기서 걸린다. 두 해시가 같은 리터럴이니
+    프로덕션 == 동결 참조 바이트 동일도 여기서 성립한다. 같은 참조 실행으로 픽스처가 어떤 분기를
+    실제로 밟는지도 고정한다 — 통과만 하는 단정을 막는다."""
     expected = EXPECTED_OUTPUT_SHA256[case[0]]
     assert expected != "PENDING", "고정 해시가 비어 있다 — 게이트가 아니다"
     assert _sha256(_run_production(case)) == expected
-    assert _sha256(_run_reference(case)) == expected
-
-
-@pytest.mark.parametrize("case", CASES, ids=[case[0] for case in CASES])
-def test_case_branch_coverage_is_pinned(case):
-    """픽스처가 어떤 분기를 실제로 밟는지 고정 — 통과만 하는 단정을 막는다."""
     counters = {}
-    _run_reference(case, counters=counters)
+    assert _sha256(_run_reference(case, counters=counters)) == expected
     assert counters == EXPECTED_COVERAGE[case[0]], f"{case[0]}: {counters}"
 
 

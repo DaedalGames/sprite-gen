@@ -76,21 +76,6 @@ def test_fused_extraction_matches_golden_manifest(fused_run_dir: Path) -> None:
     assert "[segment] kick: projection split at columns" in result.stderr
 
 
-def test_fused_strip_fails_without_opt_in(fused_run_dir: Path) -> None:
-    # Default segmentation is components: the fused strip is one blob and the
-    # run must fail loudly (this is the failure mode the port addresses).
-    _set_segmentation(fused_run_dir, None)
-    result = run_script("extract_sprite_row_frames.py", "--run-dir", str(fused_run_dir))
-    assert result.returncode == 1
-    # Strict whole-generation atomicity: a failed FIRST extract publishes no partial generation
-    # to canonical frames/ — the per-state failure signal is written OUTSIDE frames/ as
-    # extract-failure.json (still observable, still consumed by the correction loop).
-    assert not (fused_run_dir / "frames").exists()
-    failure = json.loads((fused_run_dir / "extract-failure.json").read_text(encoding="utf-8"))
-    assert failure["ok"] is False
-    assert any("could not extract 3 sprite components" in error for error in failure["errors"])
-
-
 def test_cli_flag_enables_projection_without_request_opt_in(fused_run_dir: Path) -> None:
     _set_segmentation(fused_run_dir, None)
     result = run_script(

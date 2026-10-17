@@ -145,6 +145,10 @@ def test_a_clip_the_first_search_cuts_is_cut_without_the_fallback(tmp_path):
     assert report['cycle']['length'] == 24
     assert 'gait_fallback' not in report
     assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    # A clip that keeps its size is not held.
+    assert report['size_hold']['applied'] is False
+    assert abs(report['size_hold']['drift']) < gait_fallback.SIZE_HOLD_MIN
+    assert 'padding_ltrb' not in report['size_hold']
 
 
 def test_a_cycle_longer_than_half_the_clip_is_found_by_the_fallback(tmp_path):
@@ -157,12 +161,6 @@ def test_a_cycle_longer_than_half_the_clip_is_found_by_the_fallback(tmp_path):
     assert fallback['scale_undone'] is False
     assert fallback['window'] == [12, gait_fallback.long_window(12, 73, 24.0)]
     assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
-
-
-def test_an_explicit_max_len_stays_the_ceiling(tmp_path):
-    code, report, _ = run(tmp_path, [walker(k, period=40) for k in range(73)], '--max-len', '36')
-    assert str(code).startswith('video-loop: no periodic cycle found')
-    assert report['gait_fallback']['window'] == [12, 36]
 
 
 def test_a_walk_toward_the_camera_is_held_at_its_size_before_the_first_search(tmp_path):
@@ -193,14 +191,6 @@ def test_a_small_change_of_size_is_held_too(tmp_path):
     assert report_off['size_hold'] == {'applied': False, 'why': '--size-hold off'}
     fallback = report_off['gait_fallback']
     assert fallback['scale_undone'] is False and fallback['scale_drift']['drift'] < gait_fallback.SCALE_DRIFT_MIN
-
-
-def test_a_clip_that_keeps_its_size_is_not_held(tmp_path):
-    code, report, output = run(tmp_path, [walker(k) for k in range(73)])
-    assert code == 0
-    assert report['size_hold']['applied'] is False
-    assert abs(report['size_hold']['drift']) < gait_fallback.SIZE_HOLD_MIN
-    assert 'padding_ltrb' not in report['size_hold']
 
 
 def test_the_size_is_read_one_cycle_on():

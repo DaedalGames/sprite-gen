@@ -2,8 +2,6 @@
 """Prepared guides carry geometry only, including when old recipes are reused."""
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,8 +11,8 @@ from conftest import run_script
 from sprite_gen.gen import prepare
 
 
-@pytest.mark.parametrize("frames", [8, 16])
-def test_reused_request_cannot_restore_pose_guides(tmp_path: Path, frames: int):
+def test_reused_request_cannot_restore_pose_guides(tmp_path: Path):
+    frames = 8  # `draw_guide` has no frame-count branch, so one count stands for any
     payload = {"states": {"running-right": {
         "frames": frames, "fps": 16, "loop": True, "action": "running in place",
     }}}
@@ -49,20 +47,9 @@ def test_reused_request_cannot_restore_pose_guides(tmp_path: Path, frames: int):
     assert prompt_texts[0] == prompt_texts[1] == prompt_texts[2]
 
 
-@pytest.mark.parametrize("entrypoint", ["wrapper", "cli"])
-def test_removed_flag_is_rejected_before_output(tmp_path: Path, entrypoint: str):
-    args = ["--out-dir", str(tmp_path / "run"), "--character-id", "runner", "--motion-phase-guides"]
-    if entrypoint == "wrapper":
-        result = run_script("prepare_sprite_run.py", *args)
-    else:
-        result = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "prepare", *args],
-                                text=True, capture_output=True)
-    assert result.returncode != 0
-    assert "unrecognized arguments: --motion-phase-guides" in result.stderr
-    assert not (tmp_path / "run").exists()
-
-
 def test_library_does_not_accept_removed_option(tmp_path: Path):
+    """The removed option stays removed at every entrypoint: the wrapper re-exports `prepare`, and
+    the CLI subparser is prepare's own parser (tests/gen/test_flags_over_spec.py)."""
     with pytest.raises(TypeError, match="unexpected keyword argument.*motion_phase_guides"):
         prepare.run(out_dir=tmp_path / "run", character_id="runner", motion_phase_guides=True)
     assert not (tmp_path / "run").exists()

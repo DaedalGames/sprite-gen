@@ -12,7 +12,6 @@ not a painted checkerboard. Every sheet here is synthetic.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -70,8 +69,8 @@ def test_an_element_across_two_edges_leaves_the_checkerboard_recognised():
 
 
 @pytest.mark.parametrize("background", [
+    # a flat key leaves at the grey-share test whatever its hue: one key stands for both
     pytest.param(lambda: np.full((384, 256, 3), MAGENTA, dtype=np.uint8), id="magenta key"),
-    pytest.param(lambda: np.full((384, 256, 3), (0, 255, 0), dtype=np.uint8), id="green key"),
     pytest.param(lambda: np.full((384, 256, 3), 240, dtype=np.uint8), id="plain light grey"),
     pytest.param(lambda: np.repeat(np.linspace(200, 255, 256).astype(np.uint8)[None, :, None], 384, 0)
                  .repeat(3, -1), id="grey gradient"),
@@ -135,18 +134,3 @@ def test_a_ui_kit_generation_that_comes_back_on_a_checkerboard_is_refused(tmp_pa
         gen.run(provider="fake", prompt="A game UI kit in brass and walnut.", out=out, report=report,
                 transparent=True, layout_guide="ui-kit", aspect_ratio="2:3")
     assert not out.exists() and not report.exists()
-
-
-def test_a_ui_kit_generation_on_a_key_background_is_keyed_as_before(tmp_path, monkeypatch):
-    class _KeyProvider(_CheckerboardProvider):
-        def generate(self, request, workdir):
-            image(with_elements(np.full((384, 256, 3), MAGENTA, dtype=np.uint8))).save(request.raw)
-            return gen_base.ProviderRun(provider=self.name, elapsed_seconds=0.1, model=request.model)
-
-    monkeypatch.setattr(gen, "_make_provider", lambda name, *, keep_session: _KeyProvider())
-    out, report = tmp_path / "uikit.png", tmp_path / "report.json"
-    assert gen.run(provider="fake", prompt="A game UI kit in brass and walnut.", out=out, report=report,
-                   transparent=True, layout_guide="ui-kit", aspect_ratio="2:3") == 0
-    alpha = json.loads(report.read_text(encoding="utf-8"))["alpha"]
-    assert alpha["strategy"] == "chroma" and alpha["strategy_source"] == "refs-attached"
-    assert 50 < alpha["alpha_zero_pct"] < 90

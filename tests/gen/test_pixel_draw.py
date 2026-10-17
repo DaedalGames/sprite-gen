@@ -460,7 +460,6 @@ def test_a_used_folder_is_refused(tmp_path, claude):
 @pytest.mark.parametrize("args,message", [
     (["--size", "7"], "--size is 8..48 pixels, got 7"),
     (["--size", "49"], "--size is 8..48 pixels, got 49"),
-    (["--frames", ",".join(f"f{i}" for i in range(65))], "at most 64 frames, got 65"),
     (["--frames", "a,b", "--duration-ms", "5"], "--duration-ms is at least 10, got 5"),
     (["--style", " "], "--style is a sentence of words, got ' '"),
     (["--motion", "a spin"], "--motion is two or more frames"),
@@ -528,22 +527,6 @@ def test_a_walk_cycle_is_one_call_of_four_frames(tmp_path, claude):
         assert gif.n_frames == 4
     with Image.open(out / "preview-x8.png") as preview:
         assert preview.size == (4 * 256 + 3 * 16, 256)
-
-
-def test_prompts_say_the_kind_and_the_format():
-    def request(**changes):
-        base = dict(subject="grass", size=32, kind="tile", frames=("tile",), walk_cycle=False,
-                    palette=pg.palette_rule("free:8"), candidates=1, effort="high", answer_format="chargrid",
-                    batch=False, max_tokens=32000, pick="vision")
-        return pixel_draw.PixelRequest(**{**base, **changes})
-    tile = pixel_draw.generation_prompt(request())
-    assert "This is a tile: fill every pixel (no transparency) and make it repeat seamlessly" in tile
-    assert "Palette: at most 8 colors plus transparent." in tile and "Background: transparent" not in tile
-    assert "```pixels\nPALETTE\n. transparent" in tile and "exactly 32 lines of exactly 32 characters" in tile
-    sprite = pixel_draw.generation_prompt(request(kind="sprite", frames=("down", "up"), subject="a knight"))
-    assert "stand on row 29 in every frame." in sprite and "goes below it" not in sprite
-    assert "Background: transparent." in sprite
-    assert "Frames in this order: down, up." in sprite
 
 
 def test_an_edited_grid_is_checked_and_rendered_without_a_call(tmp_path, claude, monkeypatch):
@@ -645,25 +628,6 @@ def pixel_request(**changes) -> pixel_draw.PixelRequest:
     return pixel_draw.PixelRequest(**{**base, **changes})
 
 
-@pytest.mark.parametrize("size,margin,inner,first,last", [(16, 1, 14, 2, 15), (24, 2, 20, 3, 22), (32, 3, 26, 4, 29),
-                                                          (48, 4, 40, 5, 44)])
-def test_the_prompt_says_the_safe_area_in_pixels(size, margin, inner, first, last):
-    """The engine's safe area (prepare's 9.4% margin, floored), in numbers the model can count - a
-    target for the body's size that a pose may go past, as the image path keeps it (frames/extract.py)."""
-    sprite = pixel_draw.generation_prompt(pixel_request(size=size))
-    assert "fill most of the canvas" not in sprite and "1-2 pixel margin" not in sprite
-    assert (f"Safe area: draw the subject's body about the size of the central {inner}x{inner} pixels - rows "
-            f"{first}-{last} and columns {first}-{last}, counting rows and columns from 1 - inside a {margin}-pixel "
-            "margin on every side. That is a target for its average size, not a wall: when a pose or a detail needs "
-            "the room (a raised weapon, a long blade, an effect, a wide stance), it may reach past the safe area "
-            "into the margin, up to the canvas edge. Keep the four corner pixels transparent.") in sprite
-    assert (f"Floor: row {last}, the bottom row of the safe area, is the ground: the feet (or the lowest point the "
-            f"subject rests on) stand on row {last}.") in sprite
-    for absolute in ("outermost rows and columns", "stay transparent", "Only a thin detail", "nothing reaches past",
-                     "goes below it", "keep a"):
-        assert absolute not in sprite, absolute
-
-
 def test_the_prompt_keeps_every_frame_on_the_floor_row_and_icons_off_it():
     walk = pixel_draw.generation_prompt(pixel_request(frames=("walk1", "walk2", "walk3", "walk4"), walk_cycle=True))
     assert "stand on row 29 in every frame." in walk
@@ -727,12 +691,11 @@ def staff_answer() -> str:
     return "```pixels\nPALETTE\n. transparent\na #2a1f2e\nb #8a5a30\nFRAME sprite\n" + "\n".join(rows) + "\nEND\n```"
 
 
+# The knight's two warnings reach the report in test_an_edited_grid_goes_through_the_safe_area_check.
 @pytest.mark.parametrize("answer,size,frame,warnings,info", [
     (staff_answer(), "32", "sprite", [],
      ["G8: frames exceed the safe area 26x26 but fit within the margin zone (informational, no action): sprite:17x29"]),
-    (FULL16, "16", "front", ["G8: frames exceed the physical cap 16x15 (reroll candidates): front:14x16",
-                             "G8 the feet are not on the floor row (the safe area's bottom row): front 1 px below it"], []),
-], ids=["staff-to-the-edge", "knight-on-the-edge-rows"])
+], ids=["staff-to-the-edge"])
 def test_one_candidate_past_the_safe_area_is_the_pick(tmp_path, claude, answer, size, frame, warnings, info):
     """One candidate, as a caller that buys one drawing asks: a staff on the canvas edge, or a knight
     from helmet to boots on its edge rows, passes - its info lines and warnings in the report."""

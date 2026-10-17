@@ -12,8 +12,9 @@ slower" is a failure of this contract rather than an outcome it tolerates.
 The absence is simulated with a `sitecustomize.py` on `PYTHONPATH` that installs
 a meta-path finder raising `ModuleNotFoundError` for `numpy`, so the real
 documented command line runs on the real interpreter and only the one import
-disappears. Every failing case is paired with the same command unblocked, so a
-green run cannot come from an entrypoint that was already broken.
+disappears. Every failing case is paired with the same command unblocked (here,
+or by a real run in another test), so a green run cannot come from an
+entrypoint that was already broken.
 
 Two assertions carry this past the point where the vectorized code actually
 lands. The runtime ones hold whatever `sprite_gen/frames/extract.py` does, because the
@@ -121,6 +122,33 @@ def _entry_scripts() -> list[Path]:
 COMMANDS = {"package import": ["-c", "import sprite_gen"], "cli module": ["-m", "sprite_gen.cli", "--help"]}
 COMMANDS.update({path.name: [str(path), "--help"] for path in _entry_scripts()})
 
+# The gate fires once, at `import sprite_gen` (`sprite_gen/__init__.py` -> `_deps.py`), and every
+# wrapper imports the package at load; `test_numpy_is_imported_in_exactly_one_shipped_module` rules
+# out any other NumPy import. So one probe per register stands for all of them: the bare package
+# import, the package CLI, and one `scripts/` wrapper.
+_BLOCKED_PROBES = ("package import", "cli module", "extract_sprite_row_frames.py")
+
+# Wrappers other tests already launch for real with NumPy present (test_pipeline_smoke.py,
+# tests/qa/test_inspect_score_loop.py, tests/serve/test_curation_view_contract.py and the
+# `*_cli_entrypoint` launch-form tests): an end-to-end run there is a stronger control than
+# `--help` exiting 0 here.
+_LAUNCHED_ELSEWHERE = {
+    "prepare_sprite_run.py",
+    "extract_sprite_row_frames.py",
+    "compose_sprite_atlas.py",
+    "compose_selected_cycle.py",
+    "export_curated_pngs.py",
+    "preview_animation.py",
+    "compose_sprite_gif.py",
+    "inspect_sprite_run.py",
+    "score_sprite_run.py",
+    "run_correction_loop.py",
+    "unpack_atlas_run.py",
+    "serve_curation.py",
+    "compose_layers.py",
+    "recolor.py",
+}
+
 
 def _run(args: list[str], *, numpy_blocked: bool, tmp_path: Path) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -140,7 +168,7 @@ def test_the_scanned_entrypoints_are_the_real_ones() -> None:
         f"documented entrypoints missing from the scan: {sorted(_CORE_ENTRYPOINTS - found)}")
 
 
-@pytest.mark.parametrize("register", sorted(COMMANDS))
+@pytest.mark.parametrize("register", _BLOCKED_PROBES)
 def test_entrypoint_without_numpy_fails_loudly_with_the_install_path(
     register: str, tmp_path: Path
 ) -> None:
@@ -161,7 +189,7 @@ def test_entrypoint_without_numpy_fails_loudly_with_the_install_path(
         f"{register} failure does not spell out the install command for the skill venv:\n{stderr}")
 
 
-@pytest.mark.parametrize("register", sorted(COMMANDS))
+@pytest.mark.parametrize("register", sorted(set(COMMANDS) - _LAUNCHED_ELSEWHERE))
 def test_the_same_entrypoint_succeeds_when_numpy_is_importable(
     register: str, tmp_path: Path
 ) -> None:
@@ -191,11 +219,3 @@ def test_the_gate_hands_back_the_real_numpy() -> None:
 
     assert _deps.np is _deps.numpy
     assert getattr(_deps.np, "__name__", None) == "numpy"
-
-
-def test_skill_md_documents_the_missing_numpy_behavior() -> None:
-    """An agent that hits the traceback reads SKILL.md next; the rule lives there."""
-    text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-
-    assert "NumPy 가 없는 인터프리터" in text, (
-        "SKILL.md lost the clause telling agents what a NumPy-less interpreter does")

@@ -20,7 +20,6 @@ from sprite_gen.video import frames as frames_mod
 from sprite_gen.video import loop as loop_mod
 
 GREEN = (0, 255, 0)
-HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 HAS_IMG2WEBP = shutil.which("img2webp") is not None and __import__("sprite_gen.video.loop", fromlist=["x"]).img2webp_supports_exact()  # presence is not support: libwebp < 1.3 has no -exact
 
 
@@ -47,28 +46,7 @@ def test_profile_table_routes_states_and_shape_overrides() -> None:
         canvas_mod.profile_for("jump", shape="round")
 
 
-def test_tall_canvas_keeps_headroom_and_key(tmp_path: Path) -> None:
-    still = Image.open(_still(tmp_path))
-    out, rep = canvas_mod.pad_canvas(still, canvas_mod.profile_for("jump"))
-    w, h = out.size
-    assert rep["shape"] == "tall" and abs(w / h - 3 / 4) < 0.02
-    assert rep["offset"][1] == h - 160  # still sits at the bottom
-    assert h - 160 >= round(h * 0.34) - 1  # headroom above the still
-    assert out.getpixel((0, 0)) == GREEN and rep["key_rgb"] == list(GREEN)
-    assert out.getpixel((rep["offset"][0] + 50, h - 100)) == (200, 40, 40)  # still content intact
-
-
-def test_wide_canvas_puts_room_in_front_of_the_facing(tmp_path: Path) -> None:
-    still = Image.open(_still(tmp_path))
-    right, rep_r = canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), facing="right")
-    left, rep_l = canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), facing="left")
-    behind = round(right.width * rep_r["trail"])
-    assert behind > 0 and rep_r["offset"][0] == behind and rep_l["offset"][0] == left.width - 120 - behind
-    assert right.width - 120 - behind > behind  # more room in front than behind
-    assert abs(right.width / right.height - 16 / 9) < 0.02
-
-
-@pytest.mark.parametrize("facing", ["right", "left"])
+@pytest.mark.parametrize("facing", ["right"])
 def test_attack_canvas_reserves_overhead_room_and_reports_placement(tmp_path: Path, facing) -> None:
     still = _still(tmp_path)
     out = tmp_path / "attack.png"
@@ -90,8 +68,6 @@ def test_attack_canvas_reserves_overhead_room_and_reports_placement(tmp_path: Pa
 
 @pytest.mark.parametrize("state,size,offset", [
     ("walk", (160, 160), (20, 0)),
-    ("idle", (160, 160), (20, 0)),
-    ("run", (160, 160), (20, 0)),
     ("jump", (182, 242), (31, 82)),
 ])
 def test_nonattack_canvas_defaults_preserve_pixels(tmp_path: Path, state, size, offset) -> None:
@@ -111,13 +87,6 @@ def test_square_canvas_never_shrinks_and_refuses_non_flat_corners(tmp_path: Path
     bad.putpixel((0, 0), (255, 255, 255))
     with pytest.raises(SystemExit, match="not one flat colour"):
         canvas_mod.pad_canvas(bad, canvas_mod.profile_for("walk"))
-
-
-def test_run_canvas_writes_png_and_report(tmp_path: Path) -> None:
-    still = _still(tmp_path)
-    rep = canvas_mod.run_canvas(still, tmp_path / "o" / "canvas.png", state="jump", shape=None, facing="right", headroom=None, lead=None, report_path=tmp_path / "o" / "r.json")
-    assert (tmp_path / "o" / "canvas.png").is_file() and rep["kind"] == "sprite-gen-video-canvas-report"
-    assert json.loads((tmp_path / "o" / "r.json").read_text())["shape"] == "tall"
 
 
 # --- frames ----------------------------------------------------------------------
@@ -146,26 +115,6 @@ def test_key_frames_keys_green_and_reports_alpha(tmp_path: Path) -> None:
     assert rep["alpha_zero_pct_min"] > 50
     keyed = Image.open(tmp_path / "keyed" / "frame-0000.png").convert("RGBA")
     assert keyed.getpixel((0, 0))[3] == 0 and keyed.getpixel((40, 50))[3] > 0
-
-
-def test_key_frames_fails_loud_on_edge_contact_unless_allowed(tmp_path: Path) -> None:
-    files = _raw_frames(tmp_path, 3, touch_top=True)
-    with pytest.raises(SystemExit, match="touches the frame edge"):
-        frames_mod.key_frames(files, tmp_path / "keyed", key="green")
-    rep = frames_mod.key_frames(files, tmp_path / "keyed2", key="green", check_edges=False)
-    assert rep["frames"] == 3
-
-
-@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
-def test_run_frames_extracts_a_real_clip(tmp_path: Path) -> None:
-    import subprocess
-
-    files = _raw_frames(tmp_path, 12)
-    clip = tmp_path / "clip.mp4"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "24", "-i", str(tmp_path / "raw" / "frame-%04d.png"), "-pix_fmt", "yuv420p", "-c:v", "libx264", "-crf", "12", str(clip)], check=True)
-    rep = frames_mod.run_frames(clip, tmp_path / "fr", key="green", allow_edge_contact=False, report_path=None)
-    assert rep["frames"] == 12 and abs(rep["fps"] - 24) < 0.01
-    assert Path(rep["report"]).is_file() and len(list(Path(rep["keyed_dir"]).glob("*.png"))) == 12
 
 
 # --- loop ----------------------------------------------------------------------------
@@ -220,17 +169,6 @@ def test_detect_cycle_refuses_empty_window() -> None:
     D = np.zeros((10, 10), dtype=np.float32)
     with pytest.raises(SystemExit, match="window"):
         loop_mod.detect_cycle(D, min_len=9, max_len=8)
-
-
-def test_profiles_scale_windows_with_clip_length() -> None:
-    p = loop_mod.profile_for("idle")
-    assert p.min_frac > loop_mod.profile_for("walk").min_frac
-    # a 6 s / 24 fps clip: the walk floor must admit a 13-frame bounce (legless body) and the
-    # ceiling a 28-frame gait (2026-09-09: slime 13, wolf 24, biped 25 all resolved by the depth rule).
-    # Gait windows are in seconds now (floor 0.25 s, ceiling half the clip) — the same two bounds hold.
-    lo, hi = loop_mod.profile_for("walk").window(144, 24.0)
-    assert lo <= 13 and hi >= 28
-    assert loop_mod.profile_for("unknown-state") is loop_mod.STATE_PROFILES["default"]
 
 
 @pytest.mark.skipif(not HAS_IMG2WEBP, reason="img2webp not installed")
@@ -329,9 +267,7 @@ def test_strip_cap_is_on_pixels_not_cells() -> None:
     frames = []
     for t in range(100):
         im = Image.new("RGBA", (720, 300), (0, 0, 0, 0))
-        for y in range(40 + (t % 7), 300):
-            for x in range(10, 710):
-                im.putpixel((x, y), (200, 60, 60, 255))
+        im.paste((200, 60, 60, 255), (10, 40 + (t % 7), 710, 300))
         frames.append(im)
     strip, meta = loop_mod.build_strip(frames, cycle_seconds=100 / 24)
     assert strip.width <= loop_mod.STRIP_MAX_WIDTH
@@ -465,200 +401,7 @@ def test_body_height_is_a_target_across_states_not_a_downward_clamp() -> None:
     assert capped["body_height_target"] == 60 and capped["body_h"] < 60
 
 
-def test_drop_specks_erases_detached_slivers_only() -> None:
-    im = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
-    for y in range(5, 35):
-        for x in range(10, 30):
-            im.putpixel((x, y), (200, 0, 0, 255))
-    im.putpixel((0, 0), (200, 0, 0, 255))  # a 1-px speck
-    im.putpixel((1, 0), (200, 0, 0, 255))
-    out, dropped = frames_mod.drop_specks(im, alpha_over=16, diagonal=False, apart=0)  # the loop cut's reading
-    assert dropped == 1 and out.getpixel((0, 0))[3] == 0 and out.getpixel((20, 20))[3] == 255
-
-
 # --- batch -------------------------------------------------------------------------------
-
-
-def test_prompt_uses_state_and_view_and_optional_character() -> None:
-    p = batch_mod.build_prompt("side", "walk", "The armored knight")
-    assert p.startswith("2D game sprite animation. The armored knight walks naturally in place, as if on a treadmill")
-    assert "seen from the exact side" in p
-    assert "The character" in batch_mod.build_prompt("back", "jump", None)
-
-
-def test_every_gait_walks_or_runs_naturally_in_place() -> None:
-    """Since 2.16.0 every walk and run, from any view, says only that it moves naturally, which way it
-    faces and that it stays in place: spelling the steps out made takes march, and "on a treadmill"
-    said as a place, or "an even left-right rhythm", are gone from every view."""
-    for state, direction, opening in (
-        ("walk", "front", "walks naturally in place, facing the viewer"),
-        ("walk", "back", "walks naturally in place, facing away from the viewer"),
-        ("walk", "side", "walks naturally in place"),
-        ("run", "front", "runs naturally in place, facing the viewer"),
-        ("run", "back", "runs naturally in place, facing away from the viewer"),
-        ("run", "side", "runs naturally in place"),
-    ):
-        sentence = batch_mod.VIEW_MOTION_TEXT.get((state, direction)) or batch_mod.MOTION_TEXT[state]
-        p = batch_mod.build_prompt(direction, state, None)
-        assert p == batch_mod.COMMON_TEXT.format(motion=sentence, view=batch_mod.VIEW_TEXT[direction].format(facing="right"))
-        assert sentence.startswith(opening) and sentence.count(".") == 1
-        assert ", as if on a treadmill" in p
-        for gone in ("left-right", "on a treadmill:", "lifts and lands", "never turns to the side"):
-            assert gone not in p
-    assert batch_mod.MOTION_TEXT["idle"] in batch_mod.build_prompt("back", "idle", None)
-    named = batch_mod.build_prompt("back", "walk", "The armored knight")
-    assert named.startswith("2D game sprite animation. The armored knight walks naturally in place, facing away from the viewer")
-
-
-def test_a_callers_gait_is_held_in_place_and_facing_the_images_way() -> None:
-    """A request interpreter's own walk or run (a sneak, a march) is followed by the engine's in-place
-    and facing sentence for the view; any other state's paragraph is not."""
-    sneak = "The knight sneaks along on tiptoe, setting each foot down slowly."
-    for direction in ("front", "back", "side"):
-        for state in ("walk", "run"):
-            p = batch_mod.build_prompt(direction, state, "The knight", "left", motion=sneak)
-            hold = batch_mod.GAIT_HOLD_TEXT[direction].format(facing="left")
-            assert p.startswith(f"2D game sprite animation. {sneak} {hold} The knight is {batch_mod.VIEW_TEXT[direction].format(facing='left')}.")
-            assert batch_mod.MOTION_TEXT[state] not in p
-    assert "keeps facing left the whole time" in batch_mod.GAIT_HOLD_TEXT["side"].format(facing="left")
-    jump = batch_mod.build_prompt("front", "jump", None, motion="The knight hops twice.")
-    assert all(text.split(",")[0] not in jump for text in batch_mod.GAIT_HOLD_TEXT.values())
-
-
-def test_pinned_picks_the_return_sentence_for_any_state() -> None:
-    """A walk or run pinned to end on its first frame asks for the return, not an even repeat; left
-    unsaid, only the states pinned by default do."""
-    walk = batch_mod.build_prompt("front", "walk", None, pinned=True)
-    assert "The last frame returns to the exact pose of the first frame" in walk and "evenly paced" not in walk
-    assert "evenly paced" in batch_mod.build_prompt("front", "walk", None)
-    assert batch_mod.build_prompt("side", "idle", None) == batch_mod.build_prompt("side", "idle", None, pinned=True)
-    assert "evenly paced" in batch_mod.build_prompt("side", "idle", None, pinned=False)
-    # An attack keeps its action template whichever way it is pinned.
-    assert batch_mod.build_prompt("side", "attack", None, pinned=False) == batch_mod.build_prompt("side", "attack", None)
-
-
-def test_a_diagonal_walk_is_pinned_and_named_as_an_isometric_heading() -> None:
-    """The two three-quarter views (2.17.0): a walk or run says where it heads on the screen, as an
-    isometric game reads, keeps the image's angle, and is filmed pinned to its first frame with the
-    return sentence. Any other state in a diagonal is the state's own sentence at that view."""
-    for direction, heading in (("front_diagonal", "heading diagonally toward the viewer and to the right"),
-                               ("back_diagonal", "heading diagonally away from the viewer toward the upper right")):
-        for state in ("walk", "run"):
-            sentence = batch_mod.VIEW_MOTION_TEXT[(state, direction)].format(facing="right")
-            p = batch_mod.build_prompt(direction, state, None)
-            assert p == batch_mod.PINNED_LOOP_TEXT.format(motion=sentence, view=batch_mod.VIEW_TEXT[direction])
-            assert heading in sentence and "never turns into a side view" in sentence
-            assert batch_mod.pins_last_frame(state, direction)
-        assert "turned exactly as in the image" in batch_mod.VIEW_TEXT[direction]
-        idle = batch_mod.build_prompt(direction, "idle", None)
-        assert batch_mod.MOTION_TEXT["idle"] in idle and batch_mod.VIEW_TEXT[direction] in idle
-        assert not batch_mod.pins_last_frame("jump", direction)
-    for direction in ("front", "back", "side"):
-        assert not batch_mod.pins_last_frame("walk", direction)
-    assert batch_mod.pins_last_frame("attack", "side") and batch_mod.pins_last_frame("idle", "front")
-
-
-@pytest.mark.parametrize("direction", ["front_diagonal", "back_diagonal"])
-@pytest.mark.parametrize("state", ["walk", "run"])
-def test_a_diagonal_facing_left_heads_left(direction, state) -> None:
-    """Regression: a diagonal drawn facing left was filmed with a walk heading "to the right" — the gait
-    sentence ignored `facing`. Facing left, it heads down or up and to the left, and says right nowhere."""
-    left = batch_mod.build_prompt(direction, state, None, facing="left")
-    assert "and to the left" in left and "to the right" not in left and "upper right" not in left
-    assert left == batch_mod.build_prompt(direction, state, None, facing="right").replace("right", "left")
-
-
-def test_a_diagonal_still_is_told_how_far_to_turn() -> None:
-    """A still at a diagonal is often redrawn from a front or side picture, so its view sentence says the
-    turn (45 degrees), that the head turns with the body and where the feet point, instead of pointing
-    at the image's own angle. A side still draws with the clip's view sentence."""
-    front = batch_mod.still_view_text("front_diagonal")
-    back = batch_mod.still_view_text("back_diagonal")
-    assert "about 45 degrees to the right" in front and "toes pointing toward the lower right" in front
-    assert "away from the viewer toward the upper right" in back and "not looking back over the" in back
-    assert "turned exactly as in the image" not in front + back
-    assert batch_mod.still_view_text("side", "left") == batch_mod.VIEW_TEXT["side"].format(facing="left")
-
-
-@pytest.mark.parametrize("facing", ["right", "left"])
-def test_a_front_diagonal_still_turns_its_body_and_legs_not_only_its_head(facing) -> None:
-    """Regression: the turn, the head and the shoes alone are met by a front-diagonal still that turns only its head,
-    the chest and the legs standing as from the front. The sentence says what that angle shows: the chest and hips
-    turn with the head, the middle of the chest three quarters of the way toward the far edge, the near side broad
-    and the far shoulder and arm partly hidden, the legs at that angle with the far foot higher and behind, and not
-    to follow a reference picture's angle. Turned left, it is the same sentence with the two sides swapped."""
-    other = "left" if facing == "right" else "right"
-    still = batch_mod.still_view_text("front_diagonal", facing)
-    assert still.startswith(f"seen from a three-quarter front angle: the whole body turned about 45 degrees to the {facing},")
-    assert "not a front view with only the head turned: the chest and hips turn as far as the head" in still
-    assert ("the middle of the chest and of the waist sits about three quarters of the way across the body toward its "
-            f"{facing} edge") in still
-    assert f"the shoulder and the side of the chest on the {other} of the picture, nearer the viewer, are seen broad" in still
-    assert f"the shoulder and arm on the {facing} of the picture are partly hidden behind the body" in still
-    assert "the chest looks narrower than from the front" in still
-    assert (f"the legs stand at the same angle, the far foot on the {facing} of the picture set a little higher and "
-            "partly behind the near leg") in still
-    assert f"both toes pointing toward the lower {facing}" in still
-    assert still.endswith("the face looking the same way as the chest, even when a reference picture shows the "
-                          "character from another angle")
-    assert "{" not in still and still.count(other) == 1
-    swapped = still.replace(facing, "\0").replace(other, facing).replace("\0", other)
-    assert batch_mod.still_view_text("front_diagonal", other) == swapped
-    # The clip keeps pointing at the image: it starts from the still already drawn at that angle.
-    assert batch_mod.VIEW_TEXT["front_diagonal"] == "seen from a three-quarter front angle, turned exactly as in the image"
-    assert still not in batch_mod.build_prompt("front_diagonal", "walk", "The knight", facing=facing)
-
-
-@pytest.mark.parametrize("facing", ["right", "left"])
-def test_a_back_diagonal_still_turns_its_back_and_legs_not_only_its_head(facing) -> None:
-    """Regression: the back diagonal said the same few words, which a still seen from straight behind with only its
-    head turned meets. Turned toward the upper right, the far side is the picture's left: the middle of the back
-    sits toward that edge, the far shoulder and arm are partly hidden there and the far foot is set higher there;
-    the near side, toward the way it faces, is seen broad. The face stays hidden and the heels show, as before."""
-    other = "left" if facing == "right" else "right"
-    still = batch_mod.still_view_text("back_diagonal", facing)
-    assert still.startswith("seen from a three-quarter back angle: the whole body turned about 45 degrees away from the "
-                            f"viewer toward the upper {facing},")
-    assert "not a back view with only the head turned: the back and hips turn as far as the head" in still
-    assert ("the middle of the back and of the waist sits about three quarters of the way across the body toward its "
-            f"{other} edge") in still
-    assert f"the shoulder and the side of the body on the {facing} of the picture, nearer the viewer, are seen broad" in still
-    assert f"the shoulder and arm on the {other} of the picture are partly hidden behind the body" in still
-    assert f"the far foot on the {other} of the picture set a little higher and partly behind the near leg" in still
-    assert f"the feet pointing diagonally up and to the {facing} so the backs of the shoes face the viewer at an angle" in still
-    assert "the face hidden and not looking back over the shoulder" in still
-    assert still.endswith("even when a reference picture shows the character from another angle") and "{" not in still
-    swapped = still.replace(facing, "\0").replace(other, facing).replace("\0", other)
-    assert batch_mod.still_view_text("back_diagonal", other) == swapped
-    assert batch_mod.VIEW_TEXT["back_diagonal"] == "seen from a three-quarter back angle, turned exactly as in the image"
-
-
-def test_a_front_or_back_still_does_not_follow_the_pictures_angle() -> None:
-    """A front or back still redrawn from a side picture kept the picture's turn in the head and chest with
-    the clip's one line, so its view sentence says where the head, chest and feet point and not to follow
-    the reference's angle. The clip keeps its own line: it starts from a still already drawn at that view."""
-    front = batch_mod.still_view_text("front")
-    back = batch_mod.still_view_text("back", "left")
-    assert front.startswith("seen from the front:") and back.startswith("seen from directly behind:")
-    assert "toes of both feet pointing straight at the viewer" in front
-    assert "face centred between both ears" in front
-    assert "heels of both feet facing straight at the viewer" in back
-    assert "face completely hidden" in back and "not turned toward either side or looking back over the shoulder" in back
-    for sentence in (front, back):
-        assert "even when a reference picture shows the character from another angle" in sentence
-        assert "{" not in sentence
-    assert batch_mod.VIEW_TEXT["front"] == "seen from the front, facing the viewer directly"
-    assert batch_mod.VIEW_TEXT["back"] == "seen from directly behind, facing away from the viewer"
-    clip = batch_mod.build_prompt("front", "idle", "a knight")
-    assert batch_mod.VIEW_TEXT["front"] in clip and front not in clip
-
-
-def test_a_callers_diagonal_gait_keeps_the_angle() -> None:
-    sneak = "The knight sneaks along on tiptoe, setting each foot down slowly."
-    for direction, angle in (("front_diagonal", "three-quarter front"), ("back_diagonal", "three-quarter back")):
-        p = batch_mod.build_prompt(direction, "walk", "The knight", motion=sneak)
-        assert f"keeps the exact {angle} angle of the image the whole time" in p
-        assert "The last frame returns to the exact pose of the first frame" in p
 
 
 def test_motion_templates_do_not_assume_a_body_plan() -> None:

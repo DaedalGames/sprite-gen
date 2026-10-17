@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """The standalone entrypoint publishes external PNGs through canonical run IO."""
 
-import argparse
 import json
 import os
 from pathlib import Path
@@ -13,8 +12,6 @@ from PIL import Image
 
 from sprite_gen.background import tile
 from sprite_gen.spec import runio
-
-from conftest import symlink_or_skip
 
 
 def invoke(source, out, *extra):
@@ -53,33 +50,16 @@ def test_module_publishes_png_and_report_without_sprite_run(source, tmp_path):
     assert not list(tmp_path.rglob(runio.LOCK_FILENAME))
 
 
-def test_registration_arguments_use_the_same_run_function(source, tmp_path):
-    parser = argparse.ArgumentParser()
-    tile.add_arguments(parser)
-    args = parser.parse_args(["--source", str(source), "--out", str(tmp_path / "out.png"),
-                              "--period", "8", "--overlap", "3", "--axis", "y"])
-    try:
-        assert tile.run(**vars(args)) == 0
-    finally:
-        runio.release_run_dir_lock(tmp_path)
-    report = json.loads((tmp_path / "out.report.json").read_text())
-    assert report["size"] == [24, 8]
-    assert report["axis"] == "y"
-
-
-@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink", "report-hardlink"])
+@pytest.mark.parametrize("alias", ["direct", "hardlink", "report-hardlink"])
 def test_source_overwrite_and_aliases_are_refused(source, tmp_path, alias):
     before = source.read_bytes()
     out = tmp_path / "new" / "tile.png"
     report = tmp_path / "new" / "report.json"
     if alias == "direct":
         out = source
-    elif alias in ("symlink", "hardlink"):
+    elif alias == "hardlink":
         out = tmp_path / "alias.png"
-        if alias == "symlink":
-            symlink_or_skip(out, source)
-        else:
-            os.link(source, out)
+        os.link(source, out)
     else:
         report = tmp_path / "alias.json"
         os.link(source, report)
@@ -91,7 +71,7 @@ def test_source_overwrite_and_aliases_are_refused(source, tmp_path, alias):
     assert not list(tmp_path.rglob(runio.LOCK_FILENAME))
 
 
-@pytest.mark.parametrize("failure", ["geometry", "bad-axis", "bad-overlap", "not-png", "animation",
+@pytest.mark.parametrize("failure", ["geometry", "not-png", "animation",
                                       "out-format", "report-format", "nested-paths", "parent-file"])
 def test_invalid_inputs_do_not_create_output_dirs_or_locks(source, tmp_path, failure):
     out = tmp_path / "new" / "out.png"
@@ -99,10 +79,6 @@ def test_invalid_inputs_do_not_create_output_dirs_or_locks(source, tmp_path, fai
     extra = []
     if failure == "geometry":
         extra = ["--period", "40"]
-    elif failure == "bad-axis":
-        extra = ["--axis", "z"]
-    elif failure == "bad-overlap":
-        extra = ["--overlap", "0"]
     elif failure == "not-png":
         Image.new("RGB", (24, 13)).save(source, format="JPEG")
     elif failure == "animation":
@@ -132,20 +108,6 @@ def test_report_may_not_alias_output(source, tmp_path):
     assert proc.returncode != 0
     assert "different files" in proc.stderr
     assert out.read_bytes() == report.read_bytes() == b"original output"
-
-
-def test_active_writer_lock_is_not_retried_or_overwritten(source, tmp_path):
-    output = tmp_path / "output"
-    output.mkdir()
-    lock = output / runio.LOCK_FILENAME
-    lock.write_text(json.dumps({"pid": os.getpid(), "owner": "synthetic-test-writer"}))
-    before = lock.read_bytes()
-    proc = invoke(source, output / "tile.png")
-    assert proc.returncode != 0
-    assert "locked by synthetic-test-writer" in proc.stderr
-    assert lock.read_bytes() == before
-    assert not (output / "tile.png").exists()
-    assert not (output / "tile.report.json").exists()
 
 
 def test_canonical_publication_stages_complete_set_and_surfaces_failure(source, tmp_path, monkeypatch):

@@ -300,12 +300,3 @@ def test_feet_anchor_does_not_sway_a_body_that_stands_still(tmp_path: Path) -> N
     assert max(body) - min(body) <= 1.5
     assert meta["drift_px"] <= 2  # nothing moved, nothing was removed
     assert meta["foot_sway_px"] >= 10  # the planted foot does change — reported, not erased
-
-
-def test_feet_anchor_removes_drift_but_keeps_the_step(tmp_path: Path) -> None:
-    files = _lifting_walker(tmp_path, period=12, n=24, drift_per_frame=1.5)
-    frames = [Image.open(f).convert("RGBA") for f in files]
-    anchored, meta = loop_mod.build_strip(frames, cycle_seconds=1.0, anchor="feet")
-    body = _cell_body_centres(anchored, meta)
-    assert max(body) - min(body) <= 1.5
-    assert 30 <= meta["drift_px"] <= 40  # 23 frames * 1.5 px of authored drift

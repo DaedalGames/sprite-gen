@@ -83,18 +83,19 @@ def _rgba(image):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
 @pytest.mark.parametrize("build,overrides", [
-    (_humanoid, {}), (_winged, {}), (_dome, {}),
+    (_humanoid, {}), (_winged, {}),
     # 다듬기(_thin_outline_1px/breatheThinOutline)가 **실제로 픽셀을 치환하는** 유일한
-    # 픽스처 — 기본 3종은 depth 0.06 에서 다듬기가 0바이트라, 이 케이스가 없으면
+    # 픽스처 — 기본 도형은 depth 0.06 에서 다듬기가 0바이트라, 이 케이스가 없으면
     # JS 다듬기 미러가 파이썬과 갈라져도 패리티 스위트가 못 잡는다
     # (validator 지정 2026-07-30: depth 0.08 24위상에서 294바이트 치환 실측).
     (_small_outlined, {"depth": 0.08, "breaths": 3}),
     # 가로/세로 진폭 분리 + 수동 밴드 (2026-07-30): 가로 강함 / 가로 항등 / 밴드 앵커 보호.
     # 이 케이스들이 없으면 JS 의 depthX 해석·수동 protect 앵커가 파이썬과 갈라져도 못 잡는다.
+    # 기본값 돔은 따로 두지 않는다 — 날개처럼 자동 램프를 타고, 아래 돔 3칸이 돔을 태운다.
     (_dome, {"depth_x": 0.12}),
     (_dome, {"depth": 0.10, "depth_x": 0.0}),
     (_dome, {"depth": 0.10, "torso_half": 6}),
-], ids=["humanoid", "winged", "dome", "small-outlined-thinning",
+], ids=["humanoid", "winged", "small-outlined-thinning",
         "dome-depth-x", "dome-depth-x-zero", "dome-manual-band"])
 def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path):
     src = build()
@@ -131,15 +132,14 @@ def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
-@pytest.mark.parametrize("build", [_humanoid, _winged, _dome], ids=["humanoid", "winged", "dome"])
-def test_the_mirror_refuses_exactly_what_the_bake_refuses(build, tmp_path):
+def test_the_mirror_refuses_exactly_what_the_bake_refuses(tmp_path):
     """굽기가 `SystemExit` 으로 거부하는 프레임은 미러도 만들어 주면 안 된다.
 
     미러가 조용히 잘라 내보내면 (a) 프리뷰는 멀쩡한데 굽기가 죽고 (b) `row-export` 의
     WebM/MP4 는 서버를 안 거치므로 **잘린 영상이 사용자 손에 들어간다** (validator 실측
     2026-07-25: 여백 0 셀에서 불투명 73px 소실, 오류 0건). 여기서 여백을 없애 그 상황을
-    강제로 만든다."""
-    src = build()
+    강제로 만든다. 거부는 도형과 무관한 `clipped` 계수 하나라 한 도형이면 된다."""
+    src = _humanoid()
     src = src.crop(solid_alpha_bbox(src))            # 여백 0 — 늘어나면 반드시 잘린다
     cfg = dict(CFG)
     cfg["anatomy"] = freeze_anatomy(src, cfg, _key())
@@ -169,15 +169,14 @@ def test_the_mirror_refuses_exactly_what_the_bake_refuses(build, tmp_path):
     for phase, got in zip(PHASES, js):
         py_refused = phase in refused_py
         assert got["ok"] != py_refused, (
-            f"{build.__name__} 위상 {phase:.4f}: 굽기 거부={py_refused} 인데 "
+            f"위상 {phase:.4f}: 굽기 거부={py_refused} 인데 "
             f"미러는 {'거부' if not got['ok'] else '통과'} — 계약이 한쪽에만 있다")
         if not got["ok"]:
             assert got["refused"], f"BreatheRefused 가 아닌 예외로 죽었다: {got['message']}"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
-@pytest.mark.parametrize("build", [_humanoid, _winged], ids=["humanoid", "winged"])
-def test_the_mirror_matches_on_frames_other_than_the_frozen_one(build, tmp_path):
+def test_the_mirror_matches_on_frames_other_than_the_frozen_one(tmp_path):
     """줄의 **다른** 프레임에서도 굽기와 미러가 같아야 한다.
 
     사이드카에는 해부가 한 벌뿐이고 미러는 그걸 그대로 쓴다. 굽기가 프레임마다 다시
@@ -187,7 +186,7 @@ def test_the_mirror_matches_on_frames_other_than_the_frozen_one(build, tmp_path)
 
     기존 미러 테스트는 `freeze_anatomy(src)` 한 프레임만 비교해 이 경로가 통째로
     그물 밖이었다."""
-    frozen_src = build()
+    frozen_src = _humanoid()
     cfg = dict(CFG)
     cfg["anatomy"] = freeze_anatomy(frozen_src, cfg, _key())
 
@@ -225,7 +224,7 @@ def test_the_mirror_matches_on_frames_other_than_the_frozen_one(build, tmp_path)
         assert got["ok"], f"위상 {phase:.4f}: JS 가 거부했다 — {got['message']}"
         py = _rgba(phase_frame(other, cfg, phase, anat))   # 줄 해부 한 벌로 굽는다
         diff = sum(1 for a, b in zip(py, got["data"]) if a != b)
-        assert diff == 0, f"{build.__name__} 위상 {phase:.4f}: 얼린 프레임 밖에서 {diff}바이트 갈렸다"
+        assert diff == 0, f"위상 {phase:.4f}: 얼린 프레임 밖에서 {diff}바이트 갈렸다"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
@@ -391,22 +390,16 @@ def test_the_mirror_refuses_a_stale_reference_frame(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
-@pytest.mark.parametrize("anatomy_shape", ["fingerprint-null", "fingerprint-missing"],
-                         ids=["null", "missing"])
-def test_the_mirror_refuses_when_it_cannot_verify(anatomy_shape, tmp_path):
+def test_the_mirror_refuses_when_it_cannot_verify(tmp_path):
     """지문이 없으면 "확인 불가" 이지 "괜찮음" 이 아니다.
 
     `refreshAnatomy` 가 실패하면 지문만 무효화한 해부가 남는데, 미러가 그걸 조용히
     통과시켜 낡은 숫자로 그렸다 — 굽기와 164바이트, 불투명 픽셀 수까지 불일치
     (validator 실측 2026-07-26). `row-export` 가 같은 함수를 쓰므로 WebM/MP4 가 GIF 와
-    다른 애니메이션으로 나갔다."""
+    다른 애니메이션으로 나갔다. 지문이 null 이든 키째 없든 `!anat.fingerprint` 한 줄이 받는다."""
     src = _humanoid()
     cfg = dict(CFG)
-    frozen = freeze_anatomy(src, cfg, _key())
-    if anatomy_shape == "fingerprint-null":
-        frozen = {**frozen, "fingerprint": None}
-    else:
-        frozen = {k: v for k, v in frozen.items() if k != "fingerprint"}
+    frozen = {**freeze_anatomy(src, cfg, _key()), "fingerprint": None}
     cfg["anatomy"] = frozen
 
     harness = tmp_path / "fresh.cjs"
@@ -435,4 +428,4 @@ def test_the_mirror_refuses_when_it_cannot_verify(anatomy_shape, tmp_path):
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (
-        f"지문 {anatomy_shape} 인데 미러가 신선하다고 판정했다 — 확인 불가는 괜찮음이 아니다")
+        "지문이 null 인데 미러가 신선하다고 판정했다 — 확인 불가는 괜찮음이 아니다")

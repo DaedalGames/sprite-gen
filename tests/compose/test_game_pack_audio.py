@@ -206,16 +206,16 @@ def test_a_version_3_sound_is_packed_by_the_target_it_was_made_for(tmp_path):
         assert -20 < file['true_peak_dbfs'] <= -1
 
 
-@pytest.mark.parametrize('defect', ['quiet', 'peak-limited', 'hot', 'timescale', 'recipe2', 'recipe1'])
+# A processing_version that is neither 3 nor 4 is refused before any version 3 measuring;
+# test_broken_audio_cannot_publish_a_partial_pack[recipe2] and [norecipe] own that.
+@pytest.mark.parametrize('defect', ['quiet', 'peak-limited', 'hot', 'timescale'])
 def test_a_version_3_sound_that_misses_its_rule_is_refused(tmp_path, defect):
     path = version_3_bundle(
         tmp_path, lufs=-21.5 if defect in ('quiet', 'peak-limited') else -18.,
         spike=.94 if defect == 'hot' else None,  # -0.5 dBTP while its manifest says -2
         timescale=1000 if defect == 'timescale' else 48000,  # the millisecond AAC duration of version 2
-        **({'normalization':{'pcm_lufs':-21.5, 'pcm_true_peak_dbtp':-2}} if defect == 'peak-limited' else {}),
-        **({'recipe':{'processing_version':int(defect[-1])}} if defect.startswith('recipe') else {}))
+        **({'normalization':{'pcm_lufs':-21.5, 'pcm_true_peak_dbtp':-2}} if defect == 'peak-limited' else {}))
     with pytest.raises(ValueError, match={'quiet':'does not match', 'peak-limited':'does not match',
-                                          'hot':'does not match', 'timescale':'container duration',
-                                          'recipe2':'version 3 or 4', 'recipe1':'version 3 or 4'}[defect]):
+                                          'hot':'does not match', 'timescale':'container duration'}[defect]):
         pack(path, tmp_path/'bad')
     assert not (tmp_path/'bad').exists()

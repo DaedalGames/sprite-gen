@@ -7,8 +7,9 @@ from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen._deps import np
 
 
-@pytest.mark.parametrize("loop", [None, 0])
-@pytest.mark.parametrize("starts_empty", [False, True])
+# `loop` is one conditional keyword, apart from the opaque/transparent split, so pairing the two axes
+# covers both values of each (the full grid adds nothing).
+@pytest.mark.parametrize("loop,starts_empty", [(None, True), (0, False)])
 def test_opaque_sequence_keeps_black_canvas_and_empty_endpoint(tmp_path, loop, starts_empty):
     frames = []
     for k in range(64):
@@ -36,8 +37,8 @@ def test_opaque_sequence_keeps_black_canvas_and_empty_endpoint(tmp_path, loop, s
             assert preview.info["duration"] == 60
 
 
-@pytest.mark.parametrize("loop", [None, 0])
-def test_default_transparency_clears_moving_subject_and_preserves_playback(tmp_path, loop):
+def test_default_transparency_clears_moving_subject_and_preserves_playback(tmp_path):
+    loop = 0  # the unset `loop` is held by the opaque test above
     frames = []
     for x in (2, 12, None):
         frame = Image.new("RGBA", (24, 24))

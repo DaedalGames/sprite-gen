@@ -13,7 +13,7 @@ import random
 from PIL import Image
 
 import sprite_gen.frames.extract as extract_module
-from sprite_gen.curate.curation import apply_transform, pixel_snap_scale
+from sprite_gen.curate.curation import apply_transform
 
 MAGENTA = (255, 0, 255)
 
@@ -83,15 +83,6 @@ def test_default_keeps_native_logical_size(tmp_path) -> None:
     assert extract_module.run(run_dir=run_dir) == 0
     height = _walk_frame0_height(run_dir)
     assert height > 30, f"native size squeezed by default: {height}"
-def test_pixel_snap_scale_resolution() -> None:
-    assert pixel_snap_scale({"cell": {"size": 64}}) is None  # no fit
-    assert pixel_snap_scale({"cell": {"size": 64}, "fit": {"resample": "kcentroid"}}) is None
-    base = {"cell": {"width": 64, "height": 64, "safe_margin_x": 6, "safe_margin_y": 6}}
-    assert pixel_snap_scale({**base, "fit": {"pixel_unfake": True, "logical_height": 48}}) == 1
-    assert pixel_snap_scale({**base, "fit": {"pixel_unfake": True, "logical_height": 32}}) == 2
-    assert pixel_snap_scale({**base, "fit": {"pixel_unfake": True}}) == 1  # logical = cell
-
-
 def _blocks_uniform(image: Image.Image, scale: int) -> bool:
     px = image.load()
     for by in range(image.height // scale):

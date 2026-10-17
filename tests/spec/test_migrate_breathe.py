@@ -29,26 +29,18 @@ def _sidecar(tmp_path, breathe):
 ALL_RETIRED = {"splits": [0.32, 0.55], "amplitude": 2, "subpixel": True, "hold": 3}
 
 
-@pytest.mark.parametrize("key", sorted(RETIRED_BREATHE_KEYS))
-def test_every_retired_key_is_reported_as_dropped(key):
-    """버린 것을 전부 출력한다 — 목록에서 빠진 키는 조용히 사라진다."""
-    fresh, dropped = migrate_entry({key: ALL_RETIRED[key], "breaths": 3})
-    assert any(line.startswith(f"{key}=") for line in dropped), \
-        f"{key} 를 버렸다는 보고가 없다: {dropped}"
-    assert key not in fresh
-
-
 def test_breaths_survives_and_the_rest_is_reset():
-    fresh, _ = migrate_entry({**ALL_RETIRED, "breaths": 5})
+    # 반공허: 폐기 키가 늘었는데 ALL_RETIRED 가 그대로면 아래 보고 단정이 그 키를 못 본다.
+    assert set(RETIRED_BREATHE_KEYS) <= set(ALL_RETIRED), \
+        f"ALL_RETIRED 에 없는 폐기 키: {sorted(set(RETIRED_BREATHE_KEYS) - set(ALL_RETIRED))}"
+    fresh, dropped = migrate_entry({**ALL_RETIRED, "breaths": 5})
     assert fresh["breaths"] == 5, "사람이 고른 호흡 횟수는 보존한다"
     assert set(fresh) == {"depth", "lag", "breaths"}
     assert not any(k in fresh for k in RETIRED_BREATHE_KEYS)
-
-
-def test_a_non_integer_breaths_falls_back_loudly():
-    fresh, dropped = migrate_entry({"splits": [0.5], "breaths": "셋"})
-    assert fresh["breaths"] == 1
-    assert any("breaths=" in line for line in dropped), "되돌린 사실이 보고돼야 한다"
+    # 버린 것을 전부 출력한다 — 목록에서 빠진 키는 조용히 사라진다.
+    for key in sorted(RETIRED_BREATHE_KEYS):
+        assert any(line.startswith(f"{key}=") for line in dropped), \
+            f"{key} 를 버렸다는 보고가 없다: {dropped}"
 
 
 def test_dry_run_does_not_touch_the_file(tmp_path, capsys):
@@ -98,11 +90,13 @@ def test_a_non_integer_breaths_is_reported_not_truncated() -> None:
     # `nan`/`inf` 도 담는다: `json.loads` 는 기본값으로 `NaN` 리터럴을 받으므로 사이드카에서
     # 실제로 들어오고, `int(nan)` 은 `ValueError` 를 올려 마이그레이션을 **트레이스백으로
     # 죽인다**. 값 목록에 없어서 그 회귀를 그물이 못 봤다 (노을이 실측 2026-07-26 R2).
-    for value in (2.7, "3.5", 1.5, 0.5, float("nan"), float("inf"), float("-inf")):
+    # "셋" 은 `float()` 자체가 실패하는 `except` 분기를 밟는 유일한 값이다.
+    for value in (2.7, "3.5", "셋", 1.5, 0.5, float("nan"), float("inf"), float("-inf")):
         fresh, dropped = migrate_entry({"splits": [10], "breaths": value})
         said = [d for d in dropped if d.startswith("breaths=")]
         assert said, f"breaths={value!r} 를 조용히 {fresh['breaths']} 로 바꿨다 — 버린 걸 안 말한다"
         assert "정수" in said[0], f"breaths={value!r}: 정수 계약이 아닌 사유로 버렸다 ({said[0]})"
+        assert fresh["breaths"] == 1, f"breaths={value!r} 가 1 로 되돌아가지 않았다 ({fresh['breaths']})"
 
     # 정수로 표현되는 실수·정수는 그대로 통과한다 (과잉 거부 금지)
     for value in (3, 3.0):

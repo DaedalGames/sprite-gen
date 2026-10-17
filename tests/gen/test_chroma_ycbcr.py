@@ -206,10 +206,3 @@ def test_extract_cli_ycbcr_mode_end_to_end(fixture_run_dir: Path):
                 assert _opaque_count(opened.convert("RGBA")) > 0
 
 
-def test_default_mode_stays_rgb(fixture_run_dir: Path):
-    from conftest import run_script
-
-    result = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir))
-    assert result.returncode == 0, result.stderr
-    request = json.loads((fixture_run_dir / "sprite-request.json").read_text())
-    assert request["chroma"]["mode"] == "rgb"

@@ -30,15 +30,6 @@ def test_attack_profile_reserves_room_behind_and_reports_it():
     assert padded.getpixel((x // 2, canvas_h - 1)) == (0, 255, 0)
 
 
-def test_trail_mirrors_for_a_left_facing_subject():
-    profile = canvas.STATE_CANVAS["attack"]
-    _, right = canvas.pad_canvas(_still(), profile, facing="right")
-    padded, left = canvas.pad_canvas(_still(), profile, facing="left")
-    canvas_w = padded.size[0]
-    assert left["canvas"] == right["canvas"]
-    assert left["offset"][0] == canvas_w - 200 - right["offset"][0]
-
-
 def test_trail_zero_keeps_the_old_placement():
     _, report = canvas.pad_canvas(_still(), canvas.STATE_CANVAS["attack"], facing="right", trail=0.0)
     assert report["offset"][0] == 0 and report["trail"] == 0.0

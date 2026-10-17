@@ -23,9 +23,14 @@ def offline(monkeypatch):
     monkeypatch.setattr(batch, "_staggered_start", lambda gap: None)
 
 
-@pytest.mark.parametrize("options", [{}, {"facing_fix": "mirror"}])
-@pytest.mark.parametrize("facing", ["left", "right"])
-@pytest.mark.parametrize("direction", ["side", "front", "back"])
+# The side canvas and prompt take the facing; front and back are always canvassed facing right.
+@pytest.mark.parametrize("direction,facing,options", [
+    ("side", "left", {}),
+    ("side", "left", {"facing_fix": "mirror"}),
+    ("side", "right", {}),
+    ("side", "right", {"facing_fix": "mirror"}),
+    ("front", "left", {}),
+], ids=["side-left", "side-left-mirror", "side-right", "side-right-mirror", "front-left"])
 def test_set_facing_reaches_both_real_canvas_and_prompt(tmp_path, offline, facing, direction, options):
     prompts = []
     source_bytes = FIXTURE.read_bytes()

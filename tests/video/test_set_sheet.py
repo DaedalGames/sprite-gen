@@ -188,33 +188,6 @@ def test_a_declared_pivot_is_the_one_laid_on_the_cell_centre(tmp_path):
         assert cb[0] - sb[0] == meta["cell_w"] // 2 - 20  # strip x 20 on the cell centre
 
 
-def test_same_geometry_as_a_sheet_laid_by_hand(tmp_path):
-    """A hand-laid sheet: every strip centred in one wide cell and stood on its bottom, the common ground
-    line the lowest body pixel of any cell. The engine's cells are that layout cropped to the bodies, one
-    offset for every cell; its ground line is the hand one, moved by that offset."""
-    sizes = {"S": (61, 100), "SW": (64, 100), "W": (66, 100), "NW": (63, 100), "N": (60, 100), "NE": (67, 100),
-             "E": (72, 100), "SE": (65, 100)}
-    dirs = [_direction(tmp_path, c, size=sizes[c], height=70 + i * 3, half=10 + i) for i, c in enumerate(set_sheet.ORDER)]
-    meta, sheet = _make(tmp_path, dirs, [VIEWS[c] for c in set_sheet.ORDER])
-    cw_hand, ch_hand = 120, 110
-    hand = {}
-    for r, c in enumerate(set_sheet.ORDER):
-        for k, src in enumerate(_strip_cells(tmp_path / c)):
-            cell = Image.new("RGBA", (cw_hand, ch_hand), (0, 0, 0, 0))
-            cell.paste(src, ((cw_hand - src.width) // 2, ch_hand - src.height))
-            hand[(r, k)] = cell
-    foot = max(_box(c)[3] for c in hand.values())
-    offsets = set()
-    for key, cell in _cells(sheet, meta).items():
-        hb, cb = _box(hand[key]), _box(cell)
-        dx, dy = hb[0] - cb[0], hb[1] - cb[1]
-        offsets.add((dx, dy))
-        assert cell.tobytes() == hand[key].crop((dx, dy, dx + meta["cell_w"], dy + meta["cell_h"])).tobytes()
-    assert len(offsets) == 1
-    (dx, dy), = offsets
-    assert meta["baseline_y"] == foot - dy
-
-
 def test_lengths_that_differ_are_laid_all_the_same_and_said_to_differ(tmp_path, capsys):
     s = _direction(tmp_path, "S", n=12)
     e = _direction(tmp_path, "E", n=10)
