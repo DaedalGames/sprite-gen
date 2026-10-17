@@ -6,7 +6,8 @@ the loop passes the gate, still two steps, its body standing where it stood.
 
 The walker is seen from the front, 26 frames a cycle, its tail swinging round on a beat of 41 frames, in a 73-frame clip.
 The interpolator is a stand-in that draws the walker between two frames the way an optical-flow in-between does: the body
-at the time between them, the tail's tip on the line between its two places. Synthetic frames only."""
+at the time between them, the tail's tip on the line between its two places. A second walker, a big tuft bobbing on a
+short tail, is carried over at the wrap with its torso where it stood, or with its torso sliding. Synthetic frames only."""
 
 from __future__ import annotations
 
@@ -24,6 +25,10 @@ from tests.video.test_loop_repair import _no_rife
 
 FRAMES, CYCLE, TAIL = 73, 26, 41
 REACH, LIFT, TUFT = 40, 14, 18  # the tail's tip swings round this far sideways and up and down, px; its tuft's radius
+# The second walker: a tuft of BIG_TUFT px held at the hips, bobbing BOB px up and down every BOB_FRAMES frames — 2.6 bobs
+# a cut, which starts it at the bottom of its bob and ends it at the top — and a cycle on carried ASIDE px a frame sideways;
+# where its torso slides, the whole walker stands SLID px aside a cycle on (the clip walked on over the cycle).
+BIG_TUFT, BOB, BOB_FRAMES, ASIDE, SLID = 30, 16, 10, 8, 3
 
 
 def _tip(k: float) -> tuple[float, float]:
@@ -31,17 +36,22 @@ def _tip(k: float) -> tuple[float, float]:
     return REACH * math.sin(a), LIFT * math.cos(a)
 
 
-def _walker(body: float, tip: tuple[float, float]) -> Image.Image:
+def _bob(k: float) -> float:
+    return BOB * math.cos(2 * math.pi * k / BOB_FRAMES)
+
+
+def _walker(body: float, tip: tuple[float, float], *, tuft: float = TUFT, hang: int = 72, aside: int = 0) -> Image.Image:
     """The walker at `body` frames into its walk, its tail's tip at `tip`: legs side by side, the nearer foot drawn lower
-    each step, arms swinging opposite, and a tail from the hips ending in a tuft."""
+    each step, arms swinging opposite, and a tail from the hips ending in a tuft of radius `tuft`, `hang` px below the head
+    at rest; the whole walker `aside` px right of its place."""
     ph = 2 * math.pi * (body + 5) / CYCLE
     im = Image.new("RGBA", (300, 240))
     d = ImageDraw.Draw(im)
-    cx, y = 150, 40 + round(2 * math.cos(2 * ph))
+    cx, y = 150 + aside, 40 + round(2 * math.cos(2 * ph))
     drop = round(6 * math.sin(ph))
     tx, ty = tip
-    d.line((cx, y + 60, cx + tx, y + 72 + ty), fill=(180, 120, 40, 255), width=18)
-    d.ellipse((cx + tx - TUFT, y + 72 + ty - TUFT, cx + tx + TUFT, y + 72 + ty + TUFT), fill=(200, 140, 60, 255))
+    d.line((cx, y + 60, cx + tx, y + hang + ty), fill=(180, 120, 40, 255), width=18)
+    d.ellipse((cx + tx - tuft, y + hang + ty - tuft, cx + tx + tuft, y + hang + ty + tuft), fill=(200, 140, 60, 255))
     d.rectangle((cx - 12, y + 80, cx - 1, y + 120 + drop), fill=(60, 60, 70, 255))
     d.rectangle((cx, y + 80, cx + 11, y + 120 - drop), fill=(60, 60, 70, 255))
     d.rectangle((cx - 16, y + 30, cx + 16, y + 84), fill=(200, 80, 80, 255))
@@ -85,6 +95,62 @@ class Between:
         return out
 
 
+def _bobbing(body: float, tip: tuple[float, float], aside: int = 0) -> Image.Image:
+    """The second walker: the walker with a big tuft on a short tail, whose bob moves the picture and not the body's mass."""
+    return _walker(body, tip, tuft=BIG_TUFT, hang=56, aside=aside)
+
+
+def _pixels(frame: Image.Image) -> str:
+    return hashlib.sha256(frame.tobytes()).hexdigest()
+
+
+class Drawn:
+    """A stand-in RIFE for frames drawn here (`draw`), each known by its pixels where it stands: between two of them at t,
+    the walker at the second's time, its tail's tip and its place t of the way along the line between the two's. Records
+    each call as (time of a, time of b, t)."""
+
+    def __init__(self, walker):
+        self.walker = walker
+        self.of: dict[str, tuple[float, tuple[float, float], int]] = {}
+        self.calls: list[tuple[float, float, float]] = []
+
+    def draw(self, body: float, tip: tuple[float, float], aside: int = 0) -> Image.Image:
+        frame = self.walker(body, tip, aside)
+        self.of[_pixels(frame)] = (body, tip, aside)
+        return frame
+
+    def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        (ba, (xa, ya), sa), (bb, (xb, yb), sb) = self.of[_pixels(a)], self.of[_pixels(b)]
+        self.calls.append((ba, bb, round(t, 4)))
+        return self.draw(bb, (xa + t * (xb - xa), ya + t * (yb - ya)), round(sa + t * (sb - sa)))
+
+
+def _second(slid: int = 0) -> tuple[Drawn, list[Image.Image], dict[str, dict[int, Image.Image]]]:
+    """The second walker's loop as cut, its tuft bobbing and the walker in its place; and the clip's frames a cycle after
+    its first ones, the tuft carried on its bob and ASIDE px a frame sideways, the whole walker `slid` px aside."""
+    drawn = Drawn(_bobbing)
+    frames = [drawn.draw(q, (0.0, _bob(q))) for q in range(CYCLE)]
+    after = {q: drawn.draw(q, (ASIDE * (q + 1), _bob(CYCLE + q)), slid) for q in range(max(repair.OVERLAP_WIDTHS) + 1)}
+    return drawn, frames, {"after": after, "before": {}}
+
+
+def _overlapped(drawn: Drawn, frames: list[Image.Image], others: dict) -> tuple[list[Image.Image], dict]:
+    """The overlapped wrap of the second walker's loop, its steps taken as two (the walker shows no crossings)."""
+    return repair.overlap_wrap(frames, others, drawn, seam=loop.wrap_on_cells, steps=lambda f: {"verdict": "two"},
+                               seam_max=loop.SEAM_RATIO_MAX, reads=True)
+
+
+def _places(tried: dict, slid: int) -> list[int]:
+    """Where the walker stands, px aside, on each frame of a try's stretch as it was shown: its place where the loop shows
+    its own frame, and t of the way from SLID to it on a frame made at t."""
+    made = {r["frame"]: r["t"] for r in tried["made"]}
+    return [round((1 - made[q]) * slid) if q in made else 0 for q in tried["stretch"]]
+
+
+def _mass_step(frames: list[Image.Image]) -> float:
+    return float(np.abs(np.diff([loop.body_centre(f, f.getbbox()) for f in frames])).max())
+
+
 def _keyed(root: Path) -> Path:
     keyed = root / "keyed"
     keyed.mkdir(parents=True)
@@ -120,9 +186,9 @@ def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cy
     assert taken["rest"]["faster"] == [] and taken["faults"] == [] and taken["rushes"] == []
     assert taken["part"]["step_max_after"] < taken["part"]["step_max_before"]
     # each frame of a run shown between the clip's frame a cycle apart and the cut's own, at the weight the search chose,
-    # the weights never going back toward the frame a cycle apart; RIFE asked only for a frame between the two
-    assert overlap["calls"] == len(between.calls) == sum(0 < r["t"] < 1 for t in overlap["tries"] for r in t.get("made", []))
-    calls = list(between.calls)
+    # the weights never going back toward the frame a cycle apart; RIFE asked only for a frame between the two, and once
+    # for a frame at one weight, whatever the run
+    calls, asked = list(between.calls), set()
     for tried in overlap["tries"]:
         sign = 1 if tried["side"] == "after" else -1
         assert tried["frames"] == repair.overlap_run(tried["side"], tried["width"], L)
@@ -131,9 +197,11 @@ def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cy
         for r in tried.get("made", []):
             q = r["frame"]
             late, early = (s + q + L, s + q) if sign > 0 else (s + q, s + q - L)
-            if 0 < r["t"] < 1:
+            if 0 < r["t"] < 1 and (tried["side"], q, r["t"]) not in asked:
+                asked.add((tried["side"], q, r["t"]))
                 ka, kb, t = calls.pop(0)
                 assert (ka, kb) == (late, early) and abs(t - r["t"]) < 1e-3
+    assert calls == [] and overlap["calls"] == len(between.calls) == len(asked)
     run = overlap["frames"]
     # every other frame is the clip's own, and nothing else was made
     assert report["jump_repair"]["overlapped"] == run and report["jump_repair"]["replaced"] == []
@@ -141,6 +209,60 @@ def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cy
     assert len(cells) == L
     filmed = {_key(_filmed(k)): k for k in range(FRAMES)}
     assert [filmed.get(_key(Image.open(p).convert("RGBA"))) for p in cells] == [None if q in run else s + q for q in range(L)]
+
+
+def test_the_drift_bound_is_the_stretch_as_the_loop_plays_it_never_the_clips_frames_a_cycle_apart():
+    """(a) The validator's counterexample, in synthetic form: the clip's own step into its frame a cycle on moves the body's
+    mass further than any step of the stretch — the second walker's tuft carried 8 px aside a frame — and a run made near
+    that frame was taken against a bound read off those frames. Every run's bound is the stretch's own, as the loop plays
+    it: the foot line's and the ground's largest steps there, and the torso's, which stands where it stood (the walker is
+    drawn in its place on every frame of the loop); the body's mass is reported beside it, its own largest step there."""
+    drawn, frames, others = _second()
+    new, record = _overlapped(drawn, frames, others)
+    assert record["seam"] > loop.SEAM_RATIO_MAX
+    made = [t for t in record["tries"] if "made" in t]
+    assert made
+    for tried in made:
+        stretch = [frames[q] for q in tried["stretch"]]
+        played = np.abs(np.diff([repair.drift_points(f) for f in stretch], axis=0)).max(axis=0)  # the feet and the ground
+        foot, torso, ground = tried["drift"]["bound"]
+        assert (foot, ground) == pytest.approx((played[0], played[2]), abs=1e-3) and torso < 0.1
+        assert tried["drift"]["body_mass"]["bound"] == pytest.approx(_mass_step(stretch), abs=1e-3)
+
+
+def test_a_torso_that_slides_is_refused_however_the_tail_swings():
+    """(b) The second walker whose frames a cycle on stand SLID px aside as well as carrying the tuft over: the clip walked
+    on over the cycle, and a frame made near those frames slides the torso. Read on the torso, no run moves the walker
+    further in a step than the stretch's own largest step (it stands still there) and a pixel — its place on the frames
+    shown, drawn again — so the frame next to the wrap is held toward the cut's own, off the ease; the wrap stays open and
+    the cut is kept as filmed for the gate to refuse."""
+    drawn, frames, others = _second(slid=SLID)
+    new, record = _overlapped(drawn, frames, others)
+    made = [t for t in record["tries"] if "made" in t]
+    assert made
+    for tried in made:
+        assert np.abs(np.diff(_places(tried, SLID))).max() <= repair.DRIFT_PIXEL
+        assert tried["made"][0]["t"] > tried["eased"][0] + 0.25
+    assert record["frames"] == [] and all(a is b for a, b in zip(new, frames))
+
+
+def test_a_tail_carried_over_alone_is_taken_the_torso_within_its_pixel():
+    """(c) The second walker with only its tuft carried over, the walker in its place: the run is taken near the ease and
+    the loop passes the gate. Its torso moves within the stretch's own largest step and a pixel; the body's mass, which the
+    tuft pulls, moves 2 px and more past its own, reported, not held: moving that part is what the run is for."""
+    drawn, frames, others = _second()
+    new, record = _overlapped(drawn, frames, others)
+    assert record["frames"], [(t["width"], t.get("rejected_for")) for t in record["tries"]]
+    taken = record["tries"][-1]
+    assert taken["outcome"] == "accepted" and taken["seam"] <= loop.SEAM_RATIO_MAX
+    assert taken["made"][0]["t"] <= taken["eased"][0] + 0.1
+    (_, torso, _), (_, moved, _) = taken["drift"]["bound"], taken["drift"]["moved"]
+    assert torso < 0.1 and moved <= torso + repair.DRIFT_PIXEL
+    assert record["torso"]["regions"]
+    stretch = taken["stretch"]
+    assert _mass_step([new[q] for q in stretch]) > _mass_step([frames[q] for q in stretch]) + 2 * repair.DRIFT_PIXEL
+    assert taken["drift"]["body_mass"] == pytest.approx({"bound": _mass_step([frames[q] for q in stretch]),
+                                                         "moved": _mass_step([new[q] for q in stretch])}, abs=1e-3)
 
 
 def test_the_cut_as_filmed_is_refused_at_the_seam_with_the_repair_off(tmp_path):
@@ -179,9 +301,10 @@ def test_a_made_frame_with_a_fault_refuses_the_run_and_the_wrap_is_cut_as_filmed
     overlap = report["wrap_overlap"]
     assert overlap["frames"] == [] and [t["width"] for t in overlap["tries"]] == list(repair.OVERLAP_WIDTHS)
     assert all(t["outcome"] == "rejected" and "fault" in t["rejected_for"] for t in overlap["tries"])
-    # the overlapped wrap's calls first; the jump repair then reads the cut as filmed, its wrap off the flow
-    made = [r["t"] for t in overlap["tries"] for r in t["made"] if 0 < r["t"] < 1]
-    assert overlap["calls"] == len(made) and calls[:len(made)] == pytest.approx(made, abs=1e-3)
+    # the overlapped wrap's calls first, once a frame and weight; the jump repair then reads the cut as filmed, its wrap off
+    # the flow
+    made = list(dict.fromkeys((t["side"], r["frame"], r["t"]) for t in overlap["tries"] for r in t["made"] if 0 < r["t"] < 1))
+    assert overlap["calls"] == len(made) and calls[:len(made)] == pytest.approx([t for _, _, t in made], abs=1e-3)
     assert "the overlapped wrap was refused" in capsys.readouterr().err
 
 

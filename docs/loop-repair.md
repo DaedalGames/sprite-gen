@@ -484,10 +484,10 @@ rush split by it would come out faster in the middle than the search reckoned. E
 stretch is given a time, on a grid of a twentieth of a step (`EASE_GRID`); of the timings that go
 forward and keep, in every step,
 
-- each body measure — the foot line's centre and the body's mass, x (`loop.foot_centre`,
-  `loop.body_centre`: the reference `--anchor feet` reads drift on), and the lowest solid row, y,
-  the ground it stands on (`repair.drift_points`) — within the stretch's largest step as it played,
-  and half a pixel (`DRIFT_PIXEL` − `EASE_MARGIN`), drawn between the frames as filmed, and
+- each body measure — the foot line's centre (`loop.foot_centre`) and the torso (below), x, and the
+  lowest solid row, y, the ground it stands on (`repair.drift_points`) — within the stretch's largest
+  step as it played, and half a pixel (`DRIFT_PIXEL` − `EASE_MARGIN`), drawn between the frames as
+  filmed, and
 - every other window of the flow reading — the rest of the body — within its own largest step in
   the stretch, read on the line between the states of the frames as filmed: no leg or arm hurried
   past what it did there (read again on the frames made, below),
@@ -498,6 +498,21 @@ slows down as gradually as the body lets it, from the speed it came in with to t
 with — an ease in and out whose ends are its own. Of the timings within 2 % of that, the one nearest
 the frames' own times, so a frame the part does not need moved keeps its time.
 
+**The torso.** Drift is the body sliding or lifting off its line. A part that sways on its own beat
+— a tail, the hair's ends — pulls the body's mass along, and moving such a part is what the repair
+is for: that is not drift. The body's point is the torso, the head and torso the motion anchor
+tracks (`repair.Torso`): `auto_motion.discover` on the loop as cut finds the two regions the anchor
+would track — a part swaying on its own beat does not hold still enough to be chosen — and each frame
+is matched by the anchor's masked NCC within the anchor's own fine search (`motion_anchor.SEARCH_RADIUS`:
+14 px across, 28 down — a walk's bob lifts the head further than it sways) of where the loop's first
+frame has them, the two weighted as the anchor weights them (0.7 and 0.3), x to a fraction of a pixel
+on the parabola through the costs either side of the best. Where the anchor finds no such regions,
+or one of them reaches the edge of that search on a frame of the loop, the body's mass
+(`loop.body_centre`) stands in. The round records which (`torso`: `regions`, or
+`stand_in` and `why`), and reports the body's mass beside the drift either way, as information
+(`drift.body_mass`: its largest step over the stretch as it played, `bound`, and on the frames made,
+`moved`). The overlapped wrap below reads the same torso.
+
 **Made, then read again.** Each drawing not at its own time is made by RIFE between the two frames
 as filmed either side of its time, at that fraction of the way between them (in frames), and shown
 on every frame the drawing was; a time on a frame as filmed is that frame. One call a drawing made,
@@ -507,7 +522,7 @@ on the frames made:
 | Read on the frames made | Refused for (`rejected_for`) |
 |---|---|
 | no made frame carries an interpolation fault (section 4) | `fault` |
-| no body measure moves in a step more than a pixel past the stretch's largest step as it played — the measures are read on whole pixels, the ground on a row (`drift`: `bound`, `moved`, `over`) | `drift` |
+| no body measure — the foot line, the torso, the ground — moves in a step more than a pixel past the stretch's largest step as it played — the measures are read on whole pixels, the ground on a row (`drift`: `bound`, `moved`, `over`; the body's mass beside it, `body_mass`) | `drift` |
 | the part's largest step over the stretch falls (`part`) | `no gain` |
 | no frame of the stretch is read further off the flow than before and at or over its limit (`off_max`) | `off the flow` |
 | no rush is read in the stretch in a window the part does not rush in: the rest of the body was hurried | `a new rush` |
@@ -582,27 +597,28 @@ frames.
 |---|---|---|
 | When | `--repair auto` or `on`; a cut whose two steps the clip's crossings show (`cycle.steps.by: crossings`) and whose wrap the gate reads over `--seam-max` on its frames as corrected (`loop.wrap_on_cells`) | the legs close; what does not is a part on its own beat. A cut whose steps are not counted keeps the gate's word |
 | The frames a cycle apart | the clip's frame a cycle after each of the cut's first frames (`after`), or before each of its last (`before`), one past the widest run, as far as the clip after its lead-in holds them; each moved by the analysis translation between the two — the drift the clip walks over a cycle — and corrected as its cut frame was (`loop.cycle_apart`) | placed where the cut frame is, the in-between moves the part, not the body |
-| How many | four frames, then six (`OVERLAP_WIDTHS`), never past half the loop (`MADE_SHARE`), on the side whose frames a cycle apart differ least from the cut's over the run | the fewer made, the more of the loop is the clip's own; six where four rush the part |
-| Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below); a weight of 0 or 1 shows that frame whole, no call | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
-| The weights | in play order, from 0 at the frame before the run to 1 at the frame after it, never going back, on a grid of a twentieth: of those that keep every window of the rest of the body within its own largest step over either run (below) and every body measure within the largest step either run takes and half a pixel, read on the line between the two frames' states, the one nearest the ease in and out x²(3 − 2x), x = p/(width + 1) at the run's p-th frame (`repair.overlap_weight`) | the part goes over in an ease in and out, held off it only in the steps where the rest of the body has no room: a window that closes all but a step still moves by what it differs a cycle apart, and a weight that moves there pushes it past its own step |
+| How many | four frames, then six, eight, ten and twelve (`OVERLAP_WIDTHS`), never past half the loop (`MADE_SHARE`), on the side whose frames a cycle apart differ least from the cut's over the run | the fewer made, the more of the loop is the clip's own; a longer run where a shorter one rushes the part or leaves the body no room, its weights going over in smaller steps |
+| Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below); a weight of 0 or 1 shows that frame whole, no call, and a frame at one weight is made once, whatever the run | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
+| The weights | in play order, from 0 at the frame before the run to 1 at the frame after it, never going back, on a grid of a twentieth: of those that keep every window of the rest of the body within its own largest step over the stretch as the loop plays it and every body measure within the stretch's largest step and half a pixel (below), read on the line between the two frames' states, the one nearest the ease in and out x²(3 − 2x), x = p/(width + 1) at the run's p-th frame (`repair.overlap_weight`) | the part goes over in an ease in and out, held off it only in the steps where the body has no room: a window that closes all but a step still moves by what it differs a cycle apart, and a weight that moves there pushes it past its own step |
 
-The stretch runs from the frame before the run to the frame after it, the wrap inside, and its frames
-are made between two runs the clip filmed: the stretch as the loop plays it, and the frames a cycle
-apart as the clip filmed them, from the loop's own frame on the far side of the wrap (`after`: the
-cut's last frame, then the clip's frames a cycle after the run and one more). A made frame next to the
-wrap stands near the clip's frame a cycle on, and the wrap then plays the clip's own step into it: the
-body moves there as the clip moved it, which the stretch as the loop played it need not show. The run
-is taken only where, on the frames made:
+The stretch runs from the frame before the run to the frame after it, the wrap inside, and the body is
+held to it as the loop plays it — the eased retime's bound, on the same torso ([the
+torso](#the-eased-retime--a-part-that-rushes-on-its-way) above), never on the clip's frames a cycle
+apart. A made frame next to the wrap stands near the clip's frame a cycle on: the part going over
+pulls the body's mass, which is the move the run is made for, reported and not held
+(`drift.body_mass`); a torso the clip's frame a cycle on shows elsewhere — the clip walked on over the
+cycle — would slide, and the bound holds such a frame toward the cut's own, the wrap then closing only
+as far as that lets it. The run is taken only where, on the frames made:
 
 | Read on the frames made | Refused for (`rejected_for`) |
 |---|---|
 | no made frame carries an interpolation fault (section 4) | `fault` |
 | the seam gate's reading passes | `seam` |
 | the loop, played round three times, still covers two steps: the crossings read on it, its middle turn judged `two` (`loop.ring_steps`) | `steps` |
-| no body measure (`repair.drift_points`) moves in a step more than a pixel past the largest step either run takes there | `drift` |
+| no body measure (`repair.drift_points`: the foot line, the torso, the ground) moves in a step more than a pixel past the largest step of the stretch as the loop plays it | `drift` |
 | the part — the windows of the flow reading where the frames a cycle apart differ by a usual step or more somewhere in the run (`OVERLAP_APART`) — steps no further than it did over the stretch as the loop played it | `no gain` |
 | no rush the loop did not have is read across the stretch (`repair.surges`) | `a new rush` |
-| no window of the rest of the body steps further than its own largest step over either run | `the rest faster` |
+| no window of the rest of the body steps further than its own largest step over the stretch as the loop plays it | `the rest faster` |
 | no frame of the stretch is read further off the flow than before and at or over its limit | `off the flow` |
 
 The first run taken ends the search; where none is, the cut is kept as filmed and the gate refuses it
@@ -620,6 +636,15 @@ tail swinging round on a beat of 41 frames, 73 frames, with the stand-in in-betw
 | the jump repair alone: the flow repair takes the frame at the wrap, and the tail turns back there (turn −0.91), so the retime eases nothing | 3.17 | 0.44 | two steps |
 | overlapped: four frames after the wrap refused (`a new rush`), six taken at the ease (weights 0.05, 0.2, 0.4, 0.6, 0.8, 0.95) | 1.04 | 0.30 | two steps |
 
+The file's second walker tells the part from the torso: a tuft of 30 px on a short tail bobs up and
+down on the loop, the walker in its place, and drops at the wrap (3.41 at the gate); a cycle on, the
+clip carries the tuft on its bob and 8 px aside a frame.
+
+| The second walker | The run | Seam gate (2.0) | Torso, largest step (stretch → made) | Body's mass (stretch → made) |
+|---|---|---|---|---|
+| the tuft alone carried over | four frames at the ease (0.1, 0.35, 0.65, 0.9) taken, 4 calls | 3.41 → 1.53 | 0.03 → 0.05 | 0.71 → 3.95, reported |
+| the whole walker also 3 px aside a cycle on (its torso slides) | every run of four to twelve held at 0.85 of the cut's own frame next to the wrap, all refused (`seam`), 15 calls | 3.41 → 3.04 to 3.15 | 0.03 → 0.05 at most | 0.71 → 1.96 to 3.91 |
+
 The report's `wrap_overlap` carries `seam` (the reading that asked for it), `seam_max`, `widths`,
 `calls`, and each try in `tries` — `side`, `width`, `frames`, `stretch`, `eased` and `off_ease` (the
 ease and how far the weights left it), `made` (per frame: `frame`, its weight `t`, `proposal`, `faults`,
@@ -632,8 +657,10 @@ for a run that leaves half of it filmed, the clip holds no frames a cycle from t
 no interpolator). The summary names it. A made frame
 that cross-fades two drawings inside its outline is kept and named in a `warning:` line, as for the
 jump repair. Without RIFE the wrap is cut as filmed with a warning line (`why`: "RIFE not installed —
-the wrap cut as filmed"), and `--repair on` refuses. It costs at most ten RIFE calls, outside the jump
-repair's.
+the wrap cut as filmed"), and `--repair on` refuses. Each run tried makes its frames with RIFE, a frame
+at one weight once: at most forty calls where every width is made and refused, outside the jump
+repair's — the first walker above takes ten, the second four where it is taken and fifteen where its
+torso slides.
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 

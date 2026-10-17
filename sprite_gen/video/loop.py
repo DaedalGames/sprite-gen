@@ -902,7 +902,8 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
     `wrap` (the clip's frames a cycle from the cut's beside its wrap, `cycle_apart`, and the gate's `seam_max`) asks
     first for the overlapped wrap (`repair_mod.overlap_wrap`) of a cut two steps long whose wrap the gate refuses;
     the frames it makes are then neither made from, nor beside, nor again (`overlapped`). Its record is returned
-    third, None where it was not asked.
+    third, None where it was not asked. The overlapped wrap and the eased retime after it read the body's drift on
+    one torso, the cut's as filmed (`repair_mod.Torso`).
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
     each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow), a rush and a wrap that does
@@ -922,9 +923,11 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
 
     overlap: dict[str, Any] | None = None
     overlapped: list[int] = []
+    torso = None
     if wrap is not None:
+        torso = repair_mod.Torso(frames)
         asked = partial(repair_mod.overlap_wrap, others=wrap["others"], seam=wrap_on_cells, steps=ring_steps,
-                        seam_max=wrap["seam_max"], reads=bool(screen["reads"]))
+                        seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso)
         try:
             frames, overlap = asked(frames, interpolate=lazy)
         except rife_mod.RifeNotInstalled as exc:
@@ -937,13 +940,15 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
             overlap["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]} if made_by else {"kind": "injected"}
     wrap_calls = calls
     try:
-        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen, overlapped=overlapped)
+        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen, overlapped=overlapped,
+                                                   torso=torso)
     except rife_mod.RifeNotInstalled as exc:
         if required:
             raise
         # RIFE is located before the first frame is made, so nothing was made yet: the stage runs again
         # with no interpolator, each ghost giving way to the clean frame beside it and a jump left as filmed.
-        repaired, record = repair_mod.repair_jumps(frames, None, facing=facing, screen=screen, overlapped=overlapped)
+        repaired, record = repair_mod.repair_jumps(frames, None, facing=facing, screen=screen, overlapped=overlapped,
+                                                   torso=torso)
         record["applied"] = bool(record["replaced"])
         if "unmade" in record:
             record.update(why="RIFE not installed — cut as filmed" if not record["replaced"] else

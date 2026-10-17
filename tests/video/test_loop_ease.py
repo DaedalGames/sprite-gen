@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The eased retime (docs/loop-repair.md section 2, "The eased retime"): where a part rushes — a run of one or
 two steps far faster than the steps around it, going the way it was going — the frames either side are made
-again at times the search chooses, so the part's speed rises and falls gradually; the body's feet, mass and
+again at times the search chooses, so the part's speed rises and falls gradually; the body's feet, torso and
 ground line move no further in a step than they did anywhere in that stretch, nor any window of the rest of the
 body further than its own largest step there, read on the frames made; the loop keeps its length, and every
 frame outside the stretch is the video's own. A frame flung against the way is the flow repair's, not a rush;
@@ -71,15 +71,10 @@ class Lerp:
         return self.made[-1]
 
 
-def _drift(frames: list[Image.Image], segment: list[int]) -> np.ndarray:
-    """The largest step over the segment's steps, in play order, of where the body stands: the foot line's centre
-    and the body's mass (`--anchor feet`'s drift reference) and the lowest solid row."""
-    def where(f: Image.Image) -> np.ndarray:
-        box = f.getchannel("A").point(lambda v: 255 if v >= 8 else 0).getbbox()
-        rows = np.nonzero((np.asarray(f.getchannel("A")) >= 128).any(axis=1))[0]
-        return np.array([loop_mod.foot_centre(f, box), loop_mod.body_centre(f, box), float(rows.max())])
-
-    points = [where(frames[k]) for k in segment]
+def _drift(frames: list[Image.Image], segment: list[int], torso: repair.Torso) -> np.ndarray:
+    """The largest step over the segment's steps, in play order, of where the body stands: the foot line's centre,
+    the torso (`torso`: the head and torso the motion anchor tracks) and the lowest solid row."""
+    points = [repair.drift_points(frames[k], torso) for k in segment]
     return np.max(np.abs(np.diff(points, axis=0)), axis=0)
 
 
@@ -134,9 +129,13 @@ def test_a_tail_that_rushes_on_at_the_wrap_is_eased_over_the_frames_either_side(
     # from step to step, and no rush is left
     assert round_["part"]["step_max_after"] <= 3 / 4 * round_["part"]["step_max_before"]
     assert round_["accel"]["chosen"] < round_["accel"]["before"] / 2 and record["surge_after"] is None
-    # no drift: the feet, the body's mass and the ground line move no further in a step than they did there, to within
-    # the pixel they are read on; and the rest of the body no faster
-    assert np.all(_drift(out, segment) <= _drift(flow_only, segment) + repair.DRIFT_PIXEL)
+    # no drift: the feet, the torso and the ground line move no further in a step than they did there, to within the pixel
+    # they are read on — the torso read on the loop as filmed, as the round read it; the body's mass reported beside it;
+    # and the rest of the body no faster
+    torso = repair.Torso(frames)
+    assert record["torso"] == torso.said() and record["torso"]["regions"]
+    assert np.all(_drift(out, segment, torso) <= _drift(flow_only, segment, torso) + repair.DRIFT_PIXEL)
+    assert round_["drift"]["measures"] == ["foot_centre", "torso_centre", "ground"] and set(round_["drift"]["body_mass"]) == {"bound", "moved"}
     _kept_rest(frames, flow_only, out, round_)
     changed = {k for k in round_["frames"] if out[k] is not frames[k]}
     assert round_["replaced"] == sorted(changed, key=round_["frames"].index) and len(changed) >= len(round_["frames"]) - 2
