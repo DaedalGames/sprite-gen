@@ -223,7 +223,10 @@ how much a step changes ([the flow reading](#the-flow-reading--a-frame-off-the-w
 below) — are taken out and made again by RIFE between the frames either side. Where a part keeps its way
 and rushes — a tail that runs short of the cycle, rushing on at the wrap — the frames either side of
 the rush are then made again at times that spread it, the body's own steps kept ([the eased
-retime](#the-eased-retime--a-part-that-rushes-on-its-way) below).
+retime](#the-eased-retime--a-part-that-rushes-on-its-way) below). Before all of it, a cut two steps
+long whose wrap a part on its own beat leaves open has the frames beside its wrap made again between
+the clip's frames a cycle apart and its own ([the overlapped
+wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below).
 
 | Rule | Value | Why |
 |---|---|---|
@@ -559,6 +562,79 @@ seam gate reads the rendered cells, and the summary names them (`eased`). Withou
 cut as filmed with a warning line (`why`: "RIFE not installed — the rush cut as filmed"), and
 `--repair on` refuses.
 
+### The overlapped wrap — a part on its own beat that no cut of two steps closes
+
+A walk cut two steps long by the clip's crossings ([the step
+count](#the-step-count--two-steps-read-off-the-clips-crossings), section 3) closes for the legs. A
+part on a beat of its own — a tail swinging round every 41 frames on a walk of 26 — closes on no cut
+of two steps: the cut's last frame and its first show it in two places the clip never filmed side by
+side, and the seam gate refuses every one. Cutting again does not help, and the eased retime does not
+reach it: where the part turns back at the wrap, the frames there read off the flow against the way,
+which the retime never eases over.
+
+The clip goes on past the cut. Its frame a cycle after one of the cut's shows the legs at the same
+point of the walk, and the part where the clip carried it. `video-loop --anchor motion-auto` makes the
+frames beside the wrap again between the two (`repair.overlap_wrap`), before the jump repair: the wrap
+then plays a step the clip filmed, and the part goes over from the clip's way to the cut's over those
+frames.
+
+| Rule | Value | Why |
+|---|---|---|
+| When | `--repair auto` or `on`; a cut whose two steps the clip's crossings show (`cycle.steps.by: crossings`) and whose wrap the gate reads over `--seam-max` on its frames as corrected (`loop.wrap_on_cells`) | the legs close; what does not is a part on its own beat. A cut whose steps are not counted keeps the gate's word |
+| The frames a cycle apart | the clip's frame a cycle after each of the cut's first frames (`after`), or before each of its last (`before`), one past the widest run, as far as the clip after its lead-in holds them; each moved by the analysis translation between the two — the drift the clip walks over a cycle — and corrected as its cut frame was (`loop.cycle_apart`) | placed where the cut frame is, the in-between moves the part, not the body |
+| How many | four frames, then six (`OVERLAP_WIDTHS`), never past half the loop (`MADE_SHARE`), on the side whose frames a cycle apart differ least from the cut's over the run | the fewer made, the more of the loop is the clip's own; six where four rush the part |
+| Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below); a weight of 0 or 1 shows that frame whole, no call | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
+| The weights | in play order, from 0 at the frame before the run to 1 at the frame after it, never going back, on a grid of a twentieth: of those that keep every window of the rest of the body within its own largest step over either run (below) and every body measure within the largest step either run takes and half a pixel, read on the line between the two frames' states, the one nearest the ease in and out x²(3 − 2x), x = p/(width + 1) at the run's p-th frame (`repair.overlap_weight`) | the part goes over in an ease in and out, held off it only in the steps where the rest of the body has no room: a window that closes all but a step still moves by what it differs a cycle apart, and a weight that moves there pushes it past its own step |
+
+The stretch runs from the frame before the run to the frame after it, the wrap inside, and its frames
+are made between two runs the clip filmed: the stretch as the loop plays it, and the frames a cycle
+apart as the clip filmed them, from the loop's own frame on the far side of the wrap (`after`: the
+cut's last frame, then the clip's frames a cycle after the run and one more). A made frame next to the
+wrap stands near the clip's frame a cycle on, and the wrap then plays the clip's own step into it: the
+body moves there as the clip moved it, which the stretch as the loop played it need not show. The run
+is taken only where, on the frames made:
+
+| Read on the frames made | Refused for (`rejected_for`) |
+|---|---|
+| no made frame carries an interpolation fault (section 4) | `fault` |
+| the seam gate's reading passes | `seam` |
+| the loop, played round three times, still covers two steps: the crossings read on it, its middle turn judged `two` (`loop.ring_steps`) | `steps` |
+| no body measure (`repair.drift_points`) moves in a step more than a pixel past the largest step either run takes there | `drift` |
+| the part — the windows of the flow reading where the frames a cycle apart differ by a usual step or more somewhere in the run (`OVERLAP_APART`) — steps no further than it did over the stretch as the loop played it | `no gain` |
+| no rush the loop did not have is read across the stretch (`repair.surges`) | `a new rush` |
+| no window of the rest of the body steps further than its own largest step over either run | `the rest faster` |
+| no frame of the stretch is read further off the flow than before and at or over its limit | `off the flow` |
+
+The first run taken ends the search; where none is, the cut is kept as filmed and the gate refuses it
+as before. The jump repair after it makes nothing from, beside or again over a frame it made
+(`jump_repair.overlapped`); a filmed ghost beside one gives way to the filmed frame on its other side.
+A loop drawn on twos or threes is not overlapped: a frame made beside the wrap would split a drawing.
+
+On the walker of `tests/video/test_loop_overlap.py` — seen from the front, 26 frames a cycle, its
+tail swinging round on a beat of 41 frames, 73 frames, with the stand-in in-between (measured
+2026-10-18):
+
+| The cut 29/26 | Seam gate (2.0) | Jolt index | The loop played round |
+|---|---|---|---|
+| as filmed; every cut of two steps the gate was asked reads 6.0 to 6.2 | 6.23 | 0.71 | two steps |
+| the jump repair alone: the flow repair takes the frame at the wrap, and the tail turns back there (turn −0.91), so the retime eases nothing | 3.17 | 0.44 | two steps |
+| overlapped: four frames after the wrap refused (`a new rush`), six taken at the ease (weights 0.05, 0.2, 0.4, 0.6, 0.8, 0.95) | 1.04 | 0.30 | two steps |
+
+The report's `wrap_overlap` carries `seam` (the reading that asked for it), `seam_max`, `widths`,
+`calls`, and each try in `tries` — `side`, `width`, `frames`, `stretch`, `eased` and `off_ease` (the
+ease and how far the weights left it), `made` (per frame: `frame`, its weight `t`, `proposal`, `faults`,
+`look`), `shown` (the frames shown otherwise than as cut), `seam`, `steps`, `part` (`windows`, `apart`,
+`step_max_before`, `step_max_after`), `rest` (`windows`, `step_max_bound`, `step_max_after`, `faster`),
+`drift`, `off_max`, `rushes`, `faults`, `look`, `outcome` and `rejected_for` (`no weighting keeps the
+body in bound` where the search found none and nothing was made); where a run was taken, `side`,
+`width`, `frames` (those shown otherwise than as cut) and `seam_after`; and `skipped` where none was tried (drawn on twos, a loop too short
+for a run that leaves half of it filmed, the clip holds no frames a cycle from the cut's beside the wrap,
+no interpolator). The summary names it. A made frame
+that cross-fades two drawings inside its outline is kept and named in a `warning:` line, as for the
+jump repair. Without RIFE the wrap is cut as filmed with a warning line (`why`: "RIFE not installed —
+the wrap cut as filmed"), and `--repair on` refuses. It costs at most ten RIFE calls, outside the jump
+repair's.
+
 ## 3. The jolt index — reported on every walk, a gate only when asked
 
 A loop whose steps change unevenly jolts even when no single step is a jump. Every walk or run
@@ -807,8 +883,10 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   (`loop.seam_on_cells`: the cut corrected as it will be, its wrap over its step on the analysis
   thumbnail; `step_count.seam_gate.tried`): the correction of one cut can leave a jump at its wrap that
   no reading of the clip shows. A part on a beat of its own — a tail, a staff — that closes on no cut of
-  two steps leaves every one with a wrap that jumps: the first is cut, still two steps, and the seam gate
-  says whether it closes, as for any cut.
+  two steps leaves every one with a wrap that jumps: the first is cut, still two steps; where the gate
+  would refuse its wrap, the frames beside it are made again from the clip's frames a cycle apart ([the
+  overlapped wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes),
+  section 2), and the seam gate says whether it closes, as for any cut.
   The pixel search's repeat rule is not asked: a part off the legs' beat — a tail on its own beat —
   repeats on its own, and its seam is the flow repair's (section 2). `step_count.repeat` records the
   search's word on the cut, and a cut it would refuse, or one that passed no gate, is a warning line.

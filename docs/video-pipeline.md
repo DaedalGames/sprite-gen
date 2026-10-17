@@ -937,7 +937,11 @@ take a clean frame there. Then a part that keeps its way and rushes — a tail t
 the cycle, rushing on at the wrap — has the three or four drawings either side of the rush made
 again at times that spread it, made from the frames as filmed, the body's feet, mass and ground
 line moving no further in a step, nor the rest of it faster, than they did there (the eased
-retime, up to nine calls of its own). The report's `jump_repair` names the frames. RIFE
+retime, up to nine calls of its own). Before all of it, a cut two steps long whose wrap a part
+on its own beat leaves open — a tail swinging round on a beat of its own, closing on no cut of two
+steps — has the four or six frames beside its wrap made again between the clip's frames a cycle
+apart and its own, so the wrap plays a step the clip filmed (the overlapped wrap, `wrap_overlap`).
+The report's `jump_repair` names the frames. RIFE
 is installed once with `sprite-gen rife install`; without it a loop that needs a frame is cut as
 filmed with a warning, each filmed ghost given way to the clean frame beside it (`--repair on`
 fails instead). A frame shown twice in a row is one frame of the GIF and WebP, checked so, and the seam gate reads a frame given way as filmed (`seam_as_filmed`). See [loop repair](loop-repair.md). The repaired loop's jolt index and the head's frame-to-frame

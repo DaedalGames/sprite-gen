@@ -20,6 +20,11 @@ or four drawings each way, are made again by RIFE at times chosen so the part's 
 faster, than they did in that stretch — read again on the frames made, which go the body's own way between the
 frames as filmed (docs/loop-repair.md section 2, "The eased retime").
 
+A part on a beat of its own — a tail swinging round every 41 frames on a walk of 26 — closes on no cut of two steps,
+and turns back at the wrap, where no retime reaches it. Before the rounds above, the frames beside such a cut's wrap
+are made again between the clip's frames a cycle apart and the cut's own (`overlap_wrap`), so the wrap plays a step
+the clip filmed (docs/loop-repair.md section 2, "The overlapped wrap").
+
 Measured on the loop as it plays — cyclic, the last frame followed by the first — and inside
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
 score does not depend on where the canvas put the body.
@@ -31,7 +36,7 @@ It picked the frames until the flow reading did, and names a fast swing a jump; 
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from PIL import Image
@@ -724,19 +729,265 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
     return out
 
 
+# --- the overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap") ---------------------------------------
+
+# A cut two steps long closes for the legs; a part on a beat of its own — a tail swinging every 41 frames on a walk of 26 —
+# closes on no cut of two steps, and the seam gate refuses every one. The clip goes on past the cut: its frame a cycle
+# after one of the cut's shows the legs at the same point of the walk and the part where the clip carried it. The frames
+# beside the wrap are made again between the two, each at its own time, the weight going over from the clip's frame a
+# cycle on, next to the wrap, to the cut's own frame away from it: the wrap plays a step the clip filmed, and the part goes
+# over from the clip's way to the cut's over those frames, the legs where they were on both.
+OVERLAP_WIDTHS = (4, 6)  # frames beside the wrap made again, the fewer first
+OVERLAP_SIDES = ("after", "before")  # the clip's frames a cycle after the loop's first frames, or a cycle before its last
+OVERLAP_APART = 1.0  # usual steps: a window whose frames a cycle apart differ by this much somewhere in the run is the part
+OVERLAP_GRID = 20  # weights the search tries between a frame's two, 0 and 1 included: OVERLAP_GRID + 1 points
+
+
+def overlap_run(side: str, width: int, length: int) -> list[int]:
+    """The loop frames the overlapped wrap makes on `side`, from the one next to the wrap away from it."""
+    return list(range(width)) if side == "after" else [length - 1 - j for j in range(width)]
+
+
+def overlap_weight(p: int, width: int) -> float:
+    """The ease in and out the weights search keeps nearest to: of the run's `p`-th frame in play order (1..width), the
+    share of the early frame of its two — 0 the late, 1 the early — x²(3 − 2x), x = p/(width + 1)."""
+    x = p / (width + 1)
+    return x * x * (3 - 2 * x)
+
+
+def overlap_weights(step: np.ndarray, body: np.ndarray, rest: list[int], rest_bound: np.ndarray,
+                    body_bound: np.ndarray) -> dict[str, Any] | None:
+    """The weights to make the overlapped wrap's frames at (docs/loop-repair.md section 2, "The overlapped wrap").
+
+    The stretch's positions in play order, 0 and P (the frames either side of the run, kept), hold each two frames of one
+    time: the late and the early, shown at weight u of the early (0..1, OVERLAP_GRID + 1 points), u 0 at position 0 and
+    1 at P. `step[p, i, k]` (windows, usual steps) is the step from position p at grid point i to position p + 1 at grid
+    point k, read on the line between the two frames' states, and `body[p, i, k]` (measures) how far each body measure
+    moves over it.
+
+    Of the weightings that never go back toward the late frame and keep every window of the `rest` within `rest_bound`
+    and every body measure within `body_bound` in each step, the one nearest the ease `overlap_weight` (the least sum of
+    squares): the part goes over from the late way to the early in an ease in and out, moved off it only as far as the
+    rest of the body needs. None where no weighting keeps in bound."""
+    P, G = step.shape[0], step.shape[1]
+    ok = np.triu(np.ones((G, G), dtype=bool))[None] & np.ones((P, 1, 1), dtype=bool)
+    if rest:
+        ok &= np.all(step[..., rest] <= rest_bound + 1e-9, axis=-1)
+    ok &= np.all(body <= body_bound + 1e-9, axis=-1)
+    own = np.array([overlap_weight(p, P - 1) * (G - 1) for p in range(1, P)])
+    cost = np.where(np.arange(G) == 0, 0.0, np.inf)  # position 0: the late frame
+    back = []
+    for p in range(P):
+        c = np.where(ok[p], cost[:, None], np.inf)  # (i, k)
+        arg = c.argmin(axis=0)
+        cost = c[arg, np.arange(G)] + ((np.arange(G) - own[p]) ** 2.0 if p < P - 1 else 0.0)
+        back.append(arg)
+    if not np.isfinite(cost[-1]):
+        return None
+    path = [G - 1]  # position P: the early frame
+    for arg in reversed(back):
+        path.append(int(arg[path[-1]]))
+    weights = [k / (G - 1) for k in reversed(path[:-1])][:-1]
+    return {"weights": weights, "eased": [round(float(v / (G - 1)), 4) for v in own],
+            "off_ease": round(float(np.abs(np.array(weights) - own / (G - 1)).max()), 4)}
+
+
+def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Image]], interpolate: Interpolate | None, *,
+                 seam: Callable[[list[Image.Image]], float], steps: Callable[[list[Image.Image]], dict[str, Any]],
+                 seam_max: float, reads: bool) -> tuple[list[Image.Image], dict[str, Any]]:
+    """The overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap") of a loop cut two steps long whose wrap
+    the seam gate refuses (`seam`: the gate's reading of a loop, over `seam_max`).
+
+    `others[side][q]` is the clip's frame a cycle from loop frame q — a cycle after it for the first frames ("after"), a
+    cycle before it for the last ("before"), one frame past the widest run — placed where frame q is. One run is tried a
+    width (OVERLAP_WIDTHS, the fewer first), on the side whose frames a cycle apart differ least from the loop's over it,
+    and never past MADE_SHARE of the loop. The stretch runs from the frame before the run to the frame after it, the wrap
+    inside; each of its frames has two of one time, the late (the clip's frame a cycle after, or the loop's own before the
+    wrap) and the early (the loop's own, or the clip's frame a cycle before), and two runs the clip filmed pass through
+    them: the stretch as the loop plays it, and the frames a cycle apart as the clip filmed them, from the loop's own frame
+    on the far side of the wrap. Each frame of the run is shown at the weight of its early frame `overlap_weights` chooses
+    on the line between the two frames' states — an ease in and out, moved off it only as far as the rest of the body and
+    the body's measures need — as RIFE's frame between them (`interpolate`), or either one whole at 0 or 1.
+
+    The run is taken only where, on the frames made: no frame has an interpolation fault; the gate passes it; the loop
+    played round still covers two steps (`steps`, the clip's crossings read on it); no body measure moves in a step more
+    than a pixel past the largest step either run takes there (`drift_points`); the part — the windows where the frames a
+    cycle apart differ by OVERLAP_APART usual steps or more — steps no further than it did over the stretch (`no gain`);
+    no window of the rest of the body steps further than its own largest step over either run (`the rest faster`); no
+    rush the loop did not have is read across the stretch (`a new rush`); and no frame of it is read further off the flow
+    than before and at or over the limit. The first run taken ends the search. Returns the loop and the record (`frames`:
+    the frames shown otherwise than as cut)."""
+    n = len(frames)
+    record: dict[str, Any] = {"seam": round(float(seam(frames)), 4), "seam_max": seam_max, "widths": list(OVERLAP_WIDTHS),
+                              "tries": [], "frames": [], "calls": 0}
+    box = union_box(frames)
+    flow = _flow(frames, box)
+    if flow["hold"] > 1:
+        record["skipped"] = f"drawn on {flow['hold']}s: a frame made beside the wrap would split a drawing"
+        return frames, record
+    images = {**{("loop", q): f for q, f in enumerate(frames)}, **{(side, q): f for side in OVERLAP_SIDES for q, f in others.get(side, {}).items()}}
+    keys = list(images)
+    at = {key: k for k, key in enumerate(keys)}
+    states = flow_states([images[key] for key in keys], box)
+    points = {key: drift_points(images[key]) for key in keys}
+    windows, scale = flow["windows"], flow["scale"]
+
+    def between(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return np.array([np.linalg.norm(b[y0:y1, x0:x1] - a[y0:y1, x0:x1]) for y0, y1, x0, x1 in windows])
+
+    def apart(side: str, q: int) -> np.ndarray:
+        return between(states[at[side, q]], states[at["loop", q]]) / scale
+
+    widths = [width for width in OVERLAP_WIDTHS if width + 2 <= n and width <= int(n * MADE_SHARE)]
+    if not widths:
+        record["skipped"] = f"a loop of {n} frames has no run beside its wrap that leaves half of it filmed"
+        return frames, record
+    plans = []
+    for width in widths:
+        sides = [(float(sum(apart(side, q).max() for q in overlap_run(side, width, n))), side) for side in OVERLAP_SIDES
+                 if all(q in others.get(side, {}) for q in overlap_run(side, width + 1, n))]
+        if sides:
+            plans.append((width, min(sides)[1]))
+    if not plans:
+        record["skipped"] = "the clip holds no frames a cycle from the loop's beside the wrap"
+        return frames, record
+    if interpolate is None:
+        record["skipped"] = "no interpolator"
+        return frames, record
+    rel = flow["step"] / scale
+    off_before = (flow["off"] / scale).max(axis=1)
+    grid = np.linspace(0.0, 1.0, OVERLAP_GRID + 1)
+
+    def touching(fl: dict[str, Any], steps_at: set[int]) -> list[dict[str, Any]]:
+        return [x for x in _surges(fl) if {(x["d"] + i) % n for i in range(x["r"])} & steps_at]
+
+    for width, side in plans:
+        run = overlap_run(side, width, n)
+        # in play order, from the frame before the run to the frame after it, the wrap inside
+        first = 0 if side == "after" else n - width
+        stretch = [(first - 1 + i) % n for i in range(width + 2)]
+        inner = set(stretch[1:-1])
+        late = [(side, q) if side == "after" and q in inner else ("loop", q) for q in stretch]
+        early = [("before", q) if side == "before" and q in inner else ("loop", q) for q in stretch]
+        # the same stretch as the clip filmed it a cycle apart: the loop's own frame on the far side of the wrap
+        apart_at = set(overlap_run(side, width + 1, n))
+        filmed = [(side, q) if q in apart_at else ("loop", q) for q in stretch]
+        played = [("loop", q) for q in stretch]
+        diff = np.stack([apart(side, q) for q in run]).max(axis=0)
+        part = [w for w in range(len(windows)) if diff[w] >= OVERLAP_APART]
+        rest = [w for w in range(len(windows)) if w not in part]
+        steps_at = stretch[:-1]
+
+        def run_steps(run_keys: list[tuple[str, int]]) -> np.ndarray:
+            return np.array([between(states[at[a]], states[at[b]]) for a, b in zip(run_keys, run_keys[1:])])
+
+        filmed_step = run_steps(filmed)
+        step_bound = np.maximum(flow["step"][steps_at], filmed_step).max(axis=0) / scale
+        bound = np.max([np.abs(np.diff(np.array([points[key] for key in keys_]), axis=0)).max(axis=0) for keys_ in (played, filmed)], axis=0)
+        # the line between each position's two frames, a step at a time, on the weight grid (`overlap_weights`)
+        L_ = [states[at[key]] for key in late]
+        E_ = [states[at[key]] for key in early]
+        P = len(stretch) - 1
+        line = np.zeros((P, len(grid), len(grid), len(windows)))
+        moves = np.zeros((P, len(grid), len(grid), len(DRIFT_MEASURES)))
+        for p in range(P):
+            for w, (y0, y1, x0, x1) in enumerate(windows):
+                a = (L_[p + 1] - L_[p])[y0:y1, x0:x1].ravel()
+                b = (E_[p + 1] - L_[p + 1])[y0:y1, x0:x1].ravel()
+                c = (E_[p] - L_[p])[y0:y1, x0:x1].ravel()
+                u, v = grid[:, None], grid[None, :]
+                sq = a @ a + v * v * (b @ b) + u * u * (c @ c) + 2 * v * (a @ b) - 2 * u * (a @ c) - 2 * u * v * (b @ c)
+                line[p, :, :, w] = np.sqrt(np.maximum(sq, 0.0)) / scale[w]
+            dl, de = points[late[p]], points[early[p]]
+            nl, ne = points[late[p + 1]], points[early[p + 1]]
+            moves[p] = np.abs((nl + grid[None, :, None] * (ne - nl)) - (dl + grid[:, None, None] * (de - dl)))
+        chosen = overlap_weights(line, moves, rest, step_bound[rest], bound + DRIFT_PIXEL - EASE_MARGIN)
+        tried: dict[str, Any] = {"side": side, "width": width, "frames": run, "stretch": stretch,
+                                 "part": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in part],
+                                          "apart": [round(float(diff[w]), 4) for w in part]}}
+        if chosen is None:
+            tried.update(outcome="rejected", rejected_for=["no weighting keeps the body in bound"])
+            record["tries"].append(tried)
+            continue
+        new = list(frames)
+        made_rows = []
+        for p, u in enumerate(chosen["weights"], start=1):
+            q = stretch[p]
+            a, b = images[late[p]], images[early[p]]
+            row: dict[str, Any] = {"frame": q, "t": round(u, 4), "proposal": None, "faults": [], "look": []}
+            if u <= 0.0:
+                frame = a
+            elif u >= 1.0:
+                frame = b
+            else:
+                frame = interpolate(a, b, u)
+                record["calls"] += 1
+                if frame.mode != "RGBA" or frame.size != b.size:
+                    raise ValueError("repair interpolator must return an RGBA frame of the original size")
+                measure = {**smear(frame, a, b), "outline_shift": outline_shift(frame, a, b),
+                           "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, a, b, u)}
+                row.update(proposal=measure, faults=faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"]),
+                           look=looks(measure))
+            made_rows.append(row)
+            new[q] = frame
+        shown = [q for q in run if new[q] is not frames[q]]
+        after_flow = _flow(new, box, (flow["runs"], flow["hold"]))
+        rel_after = after_flow["step"] / scale
+        moved = np.abs(np.diff(np.array([drift_points(new[q]) for q in stretch]), axis=0)).max(axis=0)
+        over = bool(np.any(~np.isfinite(moved)) or np.any(moved > bound + DRIFT_PIXEL + 1e-9))
+        part_before = float(rel[steps_at][:, part].max()) if part else 0.0
+        part_after = float(rel_after[steps_at][:, part].max()) if part else 0.0
+        rest_after = rel_after[steps_at][:, rest].max(axis=0) if rest else np.zeros(0)
+        faster = [w for w, a in zip(rest, rest_after) if a > step_bound[w] + 1e-9]
+        off_after = (after_flow["off"] / scale).max(axis=1)
+        had = {(x["d"], x["r"]) for x in touching(flow, set(steps_at))}
+        rushes = [_said_surge(x, after_flow) for x in touching(after_flow, set(steps_at)) if (x["d"], x["r"]) not in had]
+        seam_after = float(seam(new))
+        counted = steps(new)
+        wrong = sorted({f for r in made_rows for f in r["faults"]})
+        rejected = ((["fault"] if wrong else []) + (["seam"] if seam_after > seam_max else [])
+                    + (["steps"] if counted.get("verdict") != "two" else []) + (["drift"] if over else [])
+                    + (["no gain"] if part and part_after >= part_before else [])
+                    + (["off the flow"] if off_after[stretch].max() >= FLOW_LIMIT and off_after[stretch].max() > off_before[stretch].max() else [])
+                    + (["a new rush"] if rushes else []) + (["the rest faster"] if faster else []))
+        tried.update({
+            "eased": chosen["eased"], "off_ease": chosen["off_ease"], "made": made_rows, "shown": shown, "seam": round(seam_after, 4),
+            "steps": {key: counted.get(key) for key in ("verdict", "k", "ring", "why")}})
+        tried["part"].update(step_max_before=round(part_before, 4), step_max_after=round(part_after, 4))
+        tried.update({
+            "rest": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in rest],
+                     "step_max_bound": [round(float(step_bound[w]), 4) for w in rest],
+                     "step_max_after": [round(float(v), 4) for v in rest_after],
+                     "faster": [[round(v, 4) for v in flow["fractions"][w]] for w in faster]},
+            "drift": {"measures": list(DRIFT_MEASURES), "bound": [round(float(v), 3) for v in bound],
+                      "moved": [round(float(v), 3) for v in moved], "over": over},
+            "off_max": {"before": round(float(off_before[stretch].max()), 4), "after": round(float(off_after[stretch].max()), 4)},
+            "rushes": rushes, "faults": wrong, "look": sorted({w for r in made_rows for w in r["look"]}),
+            "outcome": "rejected" if rejected else "accepted"})
+        if rejected:
+            tried["rejected_for"] = rejected
+        record["tries"].append(tried)
+        if not rejected:
+            record.update(side=side, width=width, frames=shown, seam_after=round(seam_after, 4))
+            return new, record
+    return frames, record
+
+
 def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], interpolate: Interpolate | None,
-              out: list[Image.Image]) -> dict[str, Any]:
+              out: list[Image.Image], overlapped: set[int] = frozenset()) -> dict[str, Any]:
     """The round of a filmed ghost at `j` (`why` ghost), its cell replaced in `out` where it gives way.
 
     Where both frames beside it are clean, RIFE's frame half way between them is proposed and taken
     without a fault (`taken` rife); else, or where there is no interpolator, the clean frame beside it
     the cycle alignment would take (`interpolation_quality.clean_beside`, `taken` {source}); where
-    both are filmed ghosts too it is kept (`taken` None)."""
+    both are filmed ghosts too it is kept (`taken` None). A frame the overlapped wrap made (`overlapped`) is not
+    filmed: nothing is made from it, and a ghost beside it gives way to the filmed frame on its other side."""
     n = len(frames)
     a, b = (j - 1) % n, (j + 1) % n
     measure: dict[str, Any] | None = None
     wrong: list[str] = []
     no_proposal = ("a frame beside it is a filmed ghost too" if a in ghosts or b in ghosts
+                   else "a frame beside it was made at the wrap" if a in overlapped or b in overlapped
                    else "no interpolator" if interpolate is None else None)
     if no_proposal is None:
         assert interpolate is not None
@@ -748,7 +999,7 @@ def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], inter
         wrong = faults(measure)
         if not made.getchannel("A").getbbox():
             wrong.append("empty")
-    beside = clean_beside(j, ghosts, n)
+    beside = clean_beside(j, set(ghosts) | overlapped, n)
     taken: Any = "rife" if measure is not None and not wrong else {"source": beside} if beside is not None else None
     if taken == "rife":
         out[j] = made
@@ -764,7 +1015,8 @@ def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], inter
 
 def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, facing: str = "right",
                  limit: float = FLOW_LIMIT, span: int = FLOW_SPAN, max_frames: int = MAX_REPAIRS,
-                 screen: dict[str, Any] | None = None, ease: bool = True) -> tuple[list[Image.Image], dict[str, Any]]:
+                 screen: dict[str, Any] | None = None, ease: bool = True,
+                 overlapped: Iterable[int] = ()) -> tuple[list[Image.Image], dict[str, Any]]:
     """Replace each filmed ghost the screen names, then take out each group of frames off the loop's flow and
     make it again with RIFE between the frames either side, worst first (docs/loop-repair.md section 2).
 
@@ -809,16 +1061,19 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
         record.update(stopped="loop shorter than 4 frames", off_max_after=record["off_max_before"])
         return out, record
     replaced: list[int] = []
-    ghosts = {g["frame"]: g["ghost"] for g in screen["ghosts"]}
+    overlapped = set(overlapped)
+    if overlapped:
+        record["overlapped"] = sorted(overlapped)
+    ghosts = {g["frame"]: g["ghost"] for g in screen["ghosts"] if g["frame"] not in overlapped}
     for j in sorted(ghosts):
-        round_ = _give_way(frames, j, ghosts, interpolate, out)
+        round_ = _give_way(frames, j, ghosts, interpolate, out, overlapped)
         record["rounds"].append(round_)
         if "replaced" in round_:
             replaced.append(j)
     refused: list[int] = []
     calls = 0
     while True:
-        plan = flow_targets(out, limit=limit, span=span, box=box, fixed=[*replaced, *refused])
+        plan = flow_targets(out, limit=limit, span=span, box=box, fixed=[*replaced, *refused, *overlapped])
         record.setdefault("hold", plan["hold"])
         record.setdefault("drawings", plan["drawings"])
         if not plan["groups"]:
@@ -866,8 +1121,8 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     record.update(replaced=replaced, refused=refused, attempts=calls, stopped=stopped, unfixed=plan["unfixed"],
                   off_max_after=plan["off_max_before"])
     given = {j for j in replaced if j in ghosts}
-    blocked = given | set(refused)
-    out = _ease(frames, out, interpolate, box, blocked, set(replaced) - given, set(replaced), reads, record, ease)
+    blocked = given | set(refused) | overlapped
+    out = _ease(frames, out, interpolate, box, blocked, set(replaced) - given, set(replaced) | overlapped, reads, record, ease)
     eased = [r for r in record["rounds"] if r["why"] == "ease" and r["outcome"] == "accepted"]
     if eased:
         record["replaced"] = [*replaced, *(t for t in eased[0]["replaced"] if t not in replaced)]
