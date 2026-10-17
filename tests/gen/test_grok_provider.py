@@ -231,6 +231,9 @@ def test_access_uses_api_key_without_grok_binary(api, monkeypatch):
 
 def test_image_guide_requires_explicit_api_billing_confirmation(tmp_path, api, monkeypatch):
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path))
+    # What a default codex that cannot run turns into is answered here, so the guide asks only about billing;
+    # the guide asking that is tests/gen/test_codex_unavailable.py's.
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")
     options = {"choices": {"image_provider": "grok"}, "confirmed_access": ("grok",)}
     pending = guide.guide("image", **options)
     assert pending["status"] != "ready"
@@ -265,6 +268,7 @@ def test_images_use_subscription_even_with_api_key(tmp_path, api, monkeypatch, s
 def test_guide_prefers_subscription_without_api_billing_question(tmp_path, api, monkeypatch, kind):
     _subscription_login(tmp_path, monkeypatch)
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path / "settings"))
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")  # answered: this test is about billing questions
     choices = {"image_provider": "grok"}
     if kind == "sprite":
         choices["motion_method"] = "grok-video"
