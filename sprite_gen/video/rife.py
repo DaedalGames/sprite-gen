@@ -25,11 +25,20 @@ RIFE that is found and then fails is `RifeUnavailable` and always an error.
 
 The interpolator is a plain callable `(a, b, t) -> frame`, so a caller can be handed a stand-in
 (`Interpolate`), and a test needs no binary.
+
+A frame made between two frames can be kept and taken again (`Cache`): an alignment run twice on
+the same source frames — again with the feet told — makes the same frames a second time, two RIFE
+calls each (section 1 of docs/loop-repair.md has their cost; section 4 the cache). It is kept under
+everything it is made from, the interpolator's `identity()` included, so it is taken only where
+making it again would give the same bytes.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -37,7 +46,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from PIL import Image, ImageFilter
+import PIL
+from PIL import Image, ImageFilter, PngImagePlugin
 
 from sprite_gen._deps import np
 
@@ -69,6 +79,10 @@ CROSSFADE_RANGE = 7
 CROSSFADE_WINDOW = 0.08
 CROSSFADE_KEEP = 0.6
 CALL_TIMEOUT_SECONDS = 120
+# `Cache`: the first thing a kept frame's key is made from — another way of keying or keeping frames is another
+# name, so no frame kept the old way is taken — and the PNG text a kept frame names its own pixels' sha256 under.
+CACHE_FORMAT = "sprite-gen frame between, 1"
+PIXELS_TEXT = "sprite-gen-pixels-sha256"
 
 Interpolate = Callable[[Image.Image, Image.Image, float], Image.Image]
 
@@ -313,6 +327,14 @@ def crossfade(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> fl
     return round(lost / max(1, int(solid.sum())), 5)
 
 
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 class Rife:
     """A located RIFE as an `Interpolate` callable. Counts the frames it made (`made`)."""
 
@@ -321,6 +343,7 @@ class Rife:
             binary, model = locate()
         self.binary, self.model = binary, model
         self.made = 0
+        self._identity: str | None = None
 
     def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
@@ -330,3 +353,92 @@ class Rife:
 
     def describe(self) -> dict[str, str]:
         return {"binary": str(self.binary), "model": self.model.name}
+
+    def identity(self) -> str:
+        """What a frame this RIFE makes depends on besides its two frames and t, as one string (`Cache` keys
+        on it): the binary's and the model's files by sha256, this module's code by sha256 (it turns a frame
+        into RIFE's two runs and back), NumPy's and Pillow's versions, and the machine — the Apple GPU and
+        llvmpipe are only measured to agree to the third decimal of an error (docs/loop-repair.md section 1),
+        so a frame made on one is not taken on another."""
+        if self._identity is None:
+            model = sorted(p for p in self.model.iterdir() if p.is_file())
+            self._identity = json.dumps({
+                "binary": _file_sha256(self.binary), "model": {p.name: _file_sha256(p) for p in model},
+                "code": _file_sha256(Path(__file__)), "numpy": np.__version__, "pillow": PIL.__version__,
+                "machine": [platform.node(), platform.machine(), sys.platform]}, sort_keys=True)
+        return self._identity
+
+
+def _kept(path: Path, size: tuple[int, int]) -> Image.Image | None:
+    """The frame kept at `path`, or None where it is not one: not a PNG, not RGBA at `size`, cut short, or
+    its pixels not the ones its PIXELS_TEXT names."""
+    try:
+        with Image.open(path) as im:
+            if im.format != "PNG" or im.mode != "RGBA" or im.size != size:
+                return None
+            im.load()
+            data, named = im.tobytes(), im.info.get(PIXELS_TEXT)
+    except (OSError, SyntaxError, ValueError, EOFError):
+        return None
+    if named != hashlib.sha256(data).hexdigest():
+        return None
+    return Image.frombytes("RGBA", size, data)
+
+
+class Cache:
+    """Frames made between two frames, kept in `directory` and taken from there when the same frame is
+    asked for again (`video-cycle-align --between-cache`, docs/loop-repair.md section 4).
+
+    A frame is kept under the sha256 of everything it is made from: CACHE_FORMAT, the interpolator's
+    `identity()`, each of the two frames' mode, size and bytes, and `t` exactly. Another frame, fraction,
+    RIFE or machine is another key, so a frame kept for other inputs is never taken. A kept frame is a
+    PNG naming its own pixels' sha256, written whole or not at all; a file that does not read back as
+    that frame (cut short, written over) is made again and kept over it, counted `unreadable`. A frame
+    taken is a new image of the kept pixels, as the interpolator's own frame is.
+
+    Nothing is kept unless a caller names the directory, and nothing here removes it: it belongs to the
+    caller, who gives each alignment its own. It is created readable by this user only. Counts the frames
+    taken (`hits`) and made (`misses`)."""
+
+    def __init__(self, directory: Path):
+        self.directory = Path(directory).expanduser().resolve()
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.hits = self.misses = self.unreadable = 0
+
+    def key(self, interpolate: Interpolate, a: Image.Image, b: Image.Image, t: float) -> str:
+        h = hashlib.sha256()
+        for part in (CACHE_FORMAT, interpolate.identity(), a.mode, *map(str, a.size), b.mode, *map(str, b.size), float(t).hex()):  # type: ignore[attr-defined]
+            h.update(part.encode() + b"\0")
+        h.update(a.tobytes())
+        h.update(b.tobytes())
+        return h.hexdigest()
+
+    def frame(self, interpolate: Interpolate, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        """The frame at `t` between `a` and `b`: the one kept for exactly these, else `interpolate`'s, kept."""
+        path = self.directory / f"{self.key(interpolate, a, b, t)}.png"
+        if path.exists():
+            kept = _kept(path, a.size)
+            if kept is not None:
+                self.hits += 1
+                return kept
+            self.unreadable += 1
+        made = interpolate(a, b, t)
+        if made.mode != "RGBA" or made.size != a.size:
+            raise ValueError(f"rife: a frame between is kept as RGBA at its frames' size {a.size}, not {made.mode} at {made.size}")
+        self.misses += 1
+        # saved from a copy of its pixels, so the frame handed on carries nothing of this save
+        pixels = made.tobytes()
+        info = PngImagePlugin.PngInfo()
+        info.add_text(PIXELS_TEXT, hashlib.sha256(pixels).hexdigest())
+        fd, staged = tempfile.mkstemp(prefix=".", suffix=".tmp", dir=self.directory)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                Image.frombytes("RGBA", made.size, pixels).save(out, format="PNG", pnginfo=info)
+            os.replace(staged, path)
+        except BaseException:
+            Path(staged).unlink(missing_ok=True)
+            raise
+        return made
+
+    def record(self) -> dict[str, object]:
+        return {"dir": str(self.directory), "hits": self.hits, "misses": self.misses, "unreadable": self.unreadable}

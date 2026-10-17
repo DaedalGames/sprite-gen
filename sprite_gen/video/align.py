@@ -73,6 +73,12 @@ says which own foot lands on the first candidate, and that loop alone starts as 
 
 A set that needs a made frame where no RIFE is installed raises `rife.RifeNotInstalled` with
 nothing rewritten: this command fails on it, `video-set` skips the alignment with a warning.
+
+A caller that aligns a set more than once — again with the feet told, or with a retake in place of
+one loop — names one directory for every pass (`--between-cache`): each frame made between two source
+frames is kept there (`rife.Cache`), and a later pass takes it instead of making it again where both
+source frames, the fraction and the RIFE that made it are byte for byte the same. The report counts
+the frames taken and made (`between_cache`). Nothing is kept without it.
 """
 
 from __future__ import annotations
@@ -772,7 +778,7 @@ def _ghost_line(name: str, g: dict[str, Any]) -> str:
 def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: rife_mod.Interpolate | None = None,
               report_path: Path | None = None, between: str = DEFAULT_BETWEEN, views: list[str | None] | None = None,
               start_foot: str = START_FOOT, multi_cycle: str = "fail", cycles: dict[str, int] | None = None,
-              state: str | None = None, feet: dict[str, str] | None = None) -> dict[str, Any]:
+              state: str | None = None, feet: dict[str, str] | None = None, between_cache: Path | None = None) -> dict[str, Any]:
     """Resample every loop of a set to one length (default: the median), turned to a foot strike —
     where `views` (one per loop: `front`, `back`, `side@right`, `front_diagonal@left`, …) lets it,
     the strike of the same own foot (`start_foot`) in every loop.
@@ -788,9 +794,18 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     whoever looked saw it (`--foot`): that loop starts where `start_foot` lands, recorded
     `start_foot_source` "given" (`foot_strike`). A loop whose foot nobody named is listed under the
     report's `unnamed_feet`, with its two strike frames in the rebuilt `cycle/` (`candidates`) and the
-    `--foot` arguments that settle it."""
+    `--foot` arguments that settle it.
+
+    `between_cache` is a directory every frame made between two source frames is kept in and taken from
+    (`rife.Cache`), for a caller that aligns the same set again: a frame is taken only for the same two
+    source frames, fraction and interpolator (its `identity()`, which an injected one must have). The
+    report's `between_cache` counts the frames taken (`hits`), made (`misses`) and kept but unreadable;
+    it is None without a directory, and nothing is kept."""
     if len(loop_dirs) < 1:
         raise SystemExit("video-cycle-align: at least one --loop-dir")
+    if between_cache is not None and interpolate is not None and not callable(getattr(interpolate, "identity", None)):
+        raise SystemExit("video-cycle-align: --between-cache keeps each frame under what made it, and the interpolator given "
+                         "names no identity (`identity()`, as rife.Rife names its binary, model and machine)")
     if views is not None and len(views) != len(loop_dirs):
         raise SystemExit(f"video-cycle-align: {len(views)} --view for {len(loop_dirs)} --loop-dir; give one per loop, in the same order")
     if start_foot not in handed_mod.SIDES:
@@ -801,6 +816,10 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         if v is not None:
             name, _, facing = v.partition("@")
             handed_mod.validate_view(name, facing or None)
+    try:
+        cache = rife_mod.Cache(between_cache) if between_cache is not None else None
+    except OSError as exc:
+        raise SystemExit(f"video-cycle-align: --between-cache {between_cache}: {exc}") from exc
     loops = []
     for d in loop_dirs:
         d = d.expanduser().resolve()
@@ -857,6 +876,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                  *(f"--view {v}" for v in (views or []) if v is not None), *([f"--length {length}"] if length is not None else []),
                  *([f"--between {between}"] if between != DEFAULT_BETWEEN else []), *([f"--start-foot {start_foot}"] if start_foot != START_FOOT else []),
                  *([f"--state {state}"] if state else []), *([f"--report {report_path}"] if report_path is not None else []),
+                 *([f"--between-cache {cache.directory}"] if cache is not None else []),
                  *(f"--cycles {loops[i][0]}={k}" for i, k in sorted(given.items())),
                  *(f"--foot {loops[i][0]}={f}" for i, f in sorted(told.items())),
                  *(f"--cycles {e['dir']}=<{'|'.join(s.rpartition('=')[2] for s in e['settle'])}>" for e in stopped)]
@@ -887,7 +907,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
             found = rife_mod.Rife()
             located.append(found.describe())
             interpolate = found
-        return interpolate(a, b, t)
+        return cache.frame(interpolate, a, b, t) if cache is not None else interpolate(a, b, t)
 
     # Every loop is resampled before any is rewritten: a loop that cannot be made leaves the set as it was. The cut
     # each is aligned from is read first, while its strip is still the cut's.
@@ -967,6 +987,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
               "fps": round(fps, 4), "cycle_seconds": round(target / fps, 4),
               "interpolator": ({"kind": "rife-ncnn-vulkan", **located[0]} if located else
                                {"kind": "injected"} if any(r.get("smear") for r in rows) else None),
+              "between_cache": cache.record() if cache is not None else None,
               "made_by_rife": sum(r["made_by_rife"] for r in rows),
               "replaced": sum(1 for r in rows for m in r.get("smear", []) if m["method"] == "nearest"), "loops": rows}
     if report_path is not None:
@@ -1005,6 +1026,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "measured in the report (`smear`); under auto and nearest a filmed ghost frame gives way to a clean source "
                              "frame beside it (`ghost_at`); a made frame kept that cross-fades two drawings inside its outline is kept "
                              "and named to look at (`look`)")
+    parser.add_argument("--between-cache", type=Path, metavar="DIR",
+                        help="a directory every frame RIFE makes between two source frames is kept in, for aligning the same set "
+                             "again: a later alignment given the same DIR (the feet told, a retake in place of one loop) takes a "
+                             "kept frame instead of making it, only where both source frames, the fraction, and the RIFE binary, "
+                             "model, engine code and machine are byte for byte the same; the report counts `between_cache` hits "
+                             "and misses. Give each alignment its own DIR and remove it after; nothing is kept without it")
 
 
 def parse_cycles(values: list[str]) -> dict[str, int]:
@@ -1039,7 +1066,8 @@ def run(**kwargs: object) -> int:
                            between=str(kwargs.get("between") or DEFAULT_BETWEEN), views=kwargs.get("view"),  # type: ignore[arg-type]
                            start_foot=str(kwargs.get("start_foot") or START_FOOT),
                            multi_cycle=str(kwargs.get("multi_cycle") or "fail"), cycles=parse_cycles(list(kwargs.get("cycles") or [])),  # type: ignore[arg-type]
-                           state=kwargs.get("state"), feet=parse_feet(list(kwargs.get("foot") or [])))  # type: ignore[arg-type]
+                           state=kwargs.get("state"), feet=parse_feet(list(kwargs.get("foot") or [])),  # type: ignore[arg-type]
+                           between_cache=kwargs.get("between_cache"))  # type: ignore[arg-type]
     except rife_mod.RifeNotInstalled as exc:
         # Asked for by name, so no RIFE is a failure, never a quiet skip (video-set skips with a warning).
         raise SystemExit(f"video-cycle-align: {exc}; frames between source frames are made by RIFE — "
@@ -1047,7 +1075,7 @@ def run(**kwargs: object) -> int:
     for line in report["warnings"]:
         print(f"video-cycle-align: warning: {line}", file=sys.stderr)
     print(json.dumps({k: report[k] for k in ("length", "lengths", "cycles_given", "feet_given", "between", "made_by_rife", "replaced", "retake",
-                                             "unnamed_feet", "cycle_seconds")}
+                                             "unnamed_feet", "cycle_seconds", "between_cache")}
                      | {"loops": [{k: r[k] for k in ("name", "from", "to", "made_by_rife", "turned_by", "turned_on", "start_foot", "start_foot_source",
                                                      "seam_ratio")} for r in report["loops"]]},
                      ensure_ascii=False, indent=2))
