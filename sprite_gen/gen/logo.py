@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import sys
@@ -44,7 +43,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 from . import chroma as chroma_mod
 from . import codex_provider, openai_provider, xai
-from .base import QUALITIES, RESOLUTIONS, PROVIDER_SWITCH_WORDS, print_json
+from .base import QUALITIES, RESOLUTIONS, print_json
 
 REPORT_KIND = "sprite-gen-logo-report"
 COMPOSITIONS: dict[str, dict[str, str]] = {
@@ -445,22 +444,7 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
 
 
 def _run(args: argparse.Namespace) -> int:
-    provider = args.provider
-    fallback: dict[str, str] | None = None
-    if provider is not None:
-        resolved_from = "explicit"
-    else:
-        provider, fallback = gen_pkg.resolve_default_provider()
-        if fallback:
-            resolved_from = f"fallback-from-{fallback['from']}"
-            print(f"sprite-gen logo: default provider '{fallback['from']}' unavailable ({fallback['reason']}) "
-                  f"{PROVIDER_SWITCH_WORDS} '{fallback['to']}'. Set {gen_pkg.DEFAULT_PROVIDER_ENV} or pass --provider "
-                  "to control this.", file=sys.stderr)
-        elif os.environ.get(gen_pkg.DEFAULT_PROVIDER_ENV, "").strip():
-            resolved_from = gen_pkg.DEFAULT_PROVIDER_ENV
-        else:
-            resolved_from = "hard-default"
-    report = make_logo(
+    report, _, _ = gen_pkg.run_on_default("logo", args.provider, lambda provider, resolved_from, fallback: make_logo(
         provider, text=args.text or "", out_dir=Path(args.out_dir), subtitle=args.subtitle, style=args.style,
         scene=args.scene, composition=args.composition, language=args.language,
         mood=Path(args.mood) if args.mood else None, lettering=Path(args.lettering) if args.lettering else None,
@@ -468,7 +452,7 @@ def _run(args: argparse.Namespace) -> int:
         aspect_ratio=args.aspect_ratio, quality=args.quality, resolution=args.resolution,
         keep_session=args.keep_session, report_path=args.report, provider_resolved_from=resolved_from,
         provider_fallback=fallback,
-    )
+    ))
     print_json(report)
     return 0
 
@@ -491,7 +475,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "keeps the hue of longest. With --lettering, auto reads the key off its border")
     parser.add_argument("--provider", choices=gen_pkg.PROVIDERS, default=None,
                         help="generation backend for both images and both text checks; resolved as `gen` resolves "
-                             "it (openai only when named: it bills per call)")
+                             "it (openai only when chosen: it bills per call)")
     parser.add_argument("--model")
     parser.add_argument("--aspect-ratio", help="override the composition's ratio (grok and openai; codex ignores it)")
     parser.add_argument("--quality", choices=QUALITIES, default=None, help="as `gen --quality`, for both images")
