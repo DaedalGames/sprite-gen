@@ -14,11 +14,12 @@ transparent|opaque|auto and transparency needs `output_format` png or webp, and 
 custom `size` must have both sides divisible by 16, an aspect ratio within
 1:3..3:1, and a total pixel count between 655,360 and 8,294,400.
 
-This backend is for servers and SaaS and is billed per call, so sprite-gen keeps it
-explicit-only (구독 우선 불변식, 수홍 2026-09-20): it runs when `--provider openai`
-names it and never as a default, a saved preference, a guided-flow option or a
-fallback target, and every call announces the charge on stderr before it leaves.
-Personal use belongs on a subscription provider (`codex`, `grok`).
+This backend is for servers and SaaS and is billed per call, so sprite-gen runs it
+only when the user chose it (구독 우선 불변식, 수홍 2026-09-20, 2026-10-16): when
+`--provider openai` names it, or as the user's own answer for a default codex that
+cannot run (`gen.codex_unavailable_choice`) — never as a default, never as the guided
+flow's image provider, never unasked — and every call announces the charge on stderr
+before it leaves. Personal use belongs on a subscription provider (`codex`, `grok`).
 
 This provider never falls back to codex or to another key: a missing credential, a
 rejected key or a failed request is the observable outcome. A refusal OpenAI documents as

@@ -22,7 +22,7 @@ from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import retry, xai
+from sprite_gen.gen import base, retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -339,15 +339,17 @@ def test_provider_is_registered_everywhere_a_provider_must_be(api):
                                                        "API credit; confirm this billing choice."}
 
 
-# --- 구독 우선 불변식 (수홍 2026-09-20) --------------------------------------
+# --- 구독 우선 불변식 (수홍 2026-09-20, 2026-10-16) ---------------------------
 # sprite-gen runs on subscriptions people already pay for. The API-key backend is
-# for servers and SaaS and is billed per call, so nothing may route to it on its
-# own. These two tests are the guard rails for invariants 1 and 2; invariant 3 (the
-# Grok login wins over XAI_API_KEY) is tests/gen/test_grok_provider.py's.
+# for servers and SaaS and is billed per call, so nothing routes to it unless the
+# user chose it: by naming it (`--provider openai`), or as the answer to "codex
+# cannot run here, what now?" (`--codex-unavailable openai`). These two tests are
+# the guard rails for invariants 1 and 2; invariant 3 (the Grok login wins over
+# XAI_API_KEY) is tests/gen/test_grok_provider.py's.
 
 
-def test_openai_is_explicit_only_and_never_a_default(monkeypatch, api):
-    """불변식 1: no default, no saved preference, no guided-flow option."""
+def test_openai_is_never_a_default_and_runs_only_when_chosen(monkeypatch, api):
+    """불변식 1: no default, no guided-flow image provider; only a choice the user made reaches it."""
     assert gen.HARD_DEFAULT_PROVIDER == "codex"
     assert gen.EXPLICIT_ONLY_PROVIDERS == ("openai",)
     monkeypatch.delenv("SPRITE_GEN_DEFAULT_PROVIDER", raising=False)
@@ -357,22 +359,27 @@ def test_openai_is_explicit_only_and_never_a_default(monkeypatch, api):
     monkeypatch.setenv("SPRITE_GEN_DEFAULT_PROVIDER", "openai")
     with pytest.raises(SystemExit, match=r"--provider openai"):
         gen.resolve_default_provider()
-    # Not offered by the guided flow, so it can never be saved as a preference.
+    # Not offered by the guided flow as the image provider, so it is never saved as one.
     assert "openai" not in GUIDED_PROVIDERS
     assert "openai" not in FIELDS["image_provider"]["options"]
     with pytest.raises(ValueError):
         validate_choices("image", {"image_provider": "openai"})
+    # It is one of the answers to a codex that cannot run, and never the one taken unasked.
+    assert "openai" in gen.CODEX_UNAVAILABLE_CHOICES and gen.CODEX_UNAVAILABLE_DEFAULT == "ask"
 
 
 @pytest.mark.parametrize("configured", [None, "codex"])
 def test_an_api_key_in_the_environment_reroutes_nothing(monkeypatch, api, configured):
-    """불변식 2: a codex outage reaches grok, never the metered key."""
+    """불변식 2: a codex outage asks, or reaches what the user chose; the metered key alone changes nothing."""
     assert "OPENAI_API_KEY" in os.environ  # the fixture set it
     if configured is None:
         monkeypatch.delenv("SPRITE_GEN_DEFAULT_PROVIDER", raising=False)
     else:
         monkeypatch.setenv("SPRITE_GEN_DEFAULT_PROVIDER", configured)
     monkeypatch.setattr(gen, "_codex_available", lambda: (False, "synthetic outage"))
+    with pytest.raises(base.CodexUnavailableAsk):
+        gen.resolve_default_provider()
+    monkeypatch.setenv(gen.CODEX_UNAVAILABLE_ENV, "grok")
     provider, fallback = gen.resolve_default_provider()
     assert provider == "grok"
     assert fallback["from"] == "codex" and fallback["to"] == "grok"

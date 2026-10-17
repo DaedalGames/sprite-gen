@@ -1000,8 +1000,8 @@ def test_unknown_provider_fails_loud(tmp_path: Path) -> None:
         gen._make_provider("gemini", keep_session=False)
 
 
-# ── Default-provider policy (maintainer 2026-07-17): default = codex, observable grok
-# fallback when codex is unavailable, SPRITE_GEN_DEFAULT_PROVIDER override. ──────
+# ── Default-provider policy (maintainer 2026-07-17): default = codex, SPRITE_GEN_DEFAULT_PROVIDER override;
+# a codex that cannot run turns into what the user chose for that (2026-10-16, tests/gen/test_codex_unavailable.py). ──
 
 def test_resolve_default_provider_env_override(monkeypatch) -> None:
     monkeypatch.setenv(gen.DEFAULT_PROVIDER_ENV, "grok")
@@ -1016,10 +1016,13 @@ def test_resolve_default_provider_invalid_env_fails_loud(monkeypatch) -> None:
         gen.resolve_default_provider()
 
 
-def test_resolve_default_provider_env_codex_still_falls_back(monkeypatch) -> None:
-    # An env that pins codex still gets the availability fallback (default_source=env).
+def test_resolve_default_provider_env_codex_down_follows_the_codex_choice(monkeypatch) -> None:
+    # An env that pins codex is the same default: down, it asks, or runs what was chosen (default_source=env).
     monkeypatch.setenv(gen.DEFAULT_PROVIDER_ENV, "codex")
     monkeypatch.setattr(gen, "_codex_available", lambda: (False, "codex CLI not found on PATH"))
+    with pytest.raises(gen_base.CodexUnavailableAsk):
+        gen.resolve_default_provider()
+    monkeypatch.setenv(gen.CODEX_UNAVAILABLE_ENV, "grok")
     provider, fallback = gen.resolve_default_provider()
     assert provider == "grok"
     assert fallback["default_source"] == gen.DEFAULT_PROVIDER_ENV
@@ -1071,8 +1074,9 @@ def test_run_default_uses_codex_when_available(tmp_path: Path, monkeypatch) -> N
     assert "provider_fallback" not in payload
 
 
-def test_run_default_falls_back_to_grok_and_reports_it(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_run_default_falls_back_to_the_chosen_grok_and_reports_it(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.delenv(gen.DEFAULT_PROVIDER_ENV, raising=False)
+    monkeypatch.setenv(gen.CODEX_UNAVAILABLE_ENV, "grok")
     requested = _install_recording_provider(monkeypatch)
     monkeypatch.setattr(gen, "_codex_available", lambda: (False, "codex not logged in (test)"))
     report = tmp_path / "r.json"
@@ -1085,6 +1089,7 @@ def test_run_default_falls_back_to_grok_and_reports_it(tmp_path: Path, monkeypat
     assert payload["provider_fallback"]["from"] == "codex"
     assert payload["provider_fallback"]["to"] == "grok"
     assert "codex not logged in" in payload["provider_fallback"]["reason"]
+    assert payload["provider_fallback"]["chosen_by"] == gen.CODEX_UNAVAILABLE_ENV
     # And the fallback is loud on stderr (No Silent Fallback).
     assert "falling back to 'grok'" in capsys.readouterr().err
 
