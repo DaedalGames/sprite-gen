@@ -748,6 +748,85 @@ closes: the top band's cut stands, and it is warned about.
   (below). `--cycle fixed` cuts any window ([loop review](loop-review.md)); a two-step cut made that
   way carries no `steps`, and the set alignment asks for its count.
 
+### The step count — two steps, read off the clip's crossings
+
+A walk cycle is two steps: the left foot forward once and the right once. Seen from the side or a
+diagonal, left foot forward and right foot forward are nearly the same silhouette, so a cut chosen by
+how its shape matches at the wrap can be one step (a half step loop: one foot goes forward) or three
+(the wrap puts the nearer foot back: a stomp in place), and a walk whose cycle the search window cannot
+hold, or whose tail repeats on its own beat, is cut one step long or not at all. Pixels cannot count
+the steps. The feet can: each step they pass each other once, a **crossing**, and a cut that covers two
+crossings, joined at the wrap where the walk itself goes on, is one cycle (`crossings.py`).
+
+`--anchor motion-auto` reads the crossings of the frames it searched and records them in the report
+(`cycle.step_count`), whatever it cuts:
+
+| Field | What |
+|---|---|
+| `mode` | `gap`: the feet are seen apart (the foot band's widest gap, `legs.FEET_APART`, in at least a fifth of the frames: side and diagonal views); `sign`: they are not, and the foot band's lean about the body's axis says which foot is nearer (front and back views) |
+| `crossings` | where the feet pass, in the search's frames (`read_from`: after a lead-in); a pair is a crossing whose middle the clip bounds but does not show |
+| `unconfirmed` | frames no reading confirms: a run of feet together cut by the clip's first or last frame that its twin does not confirm, the frames before the first side is seen, a change the clip ends on |
+| `step_range` | the clip's own step (the median between crossings) and the range a step must lie in, a factor of √2 either way |
+| `readable`, `why`, `alternation` | whether the clip shows its steps: three crossings or more, and in sign mode a lean that turns over a step on (correlation one step on at most **−0.7**, `crossings.ALTERNATION_MAX`) |
+| `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring` |
+| `chosen_by` | `search` (kept), `two steps` (chosen on the count), and the search again where the count refutes its cut (`searched_again`) |
+
+**Counting a cut.** Every crossing counted is one the clip shows whole. A cut s/L plays frames s to
+s+L−1 and then frame s again where the clip itself plays frame s+L; the wrap joins two frames the clip
+never filmed side by side, so nothing the loop shows across it counts as a step. Every step the cut
+plays, on both sides of the wrap, lies in the step range (a stall, a stand with the feet together, a
+stomp fail it: `step-long`, `step-short`, `stand`, `head-stall`, `tail-stall`); the walk's phase
+(crossings so far, plus how far into the step) advances by k steps over the cut, and the wrap joins two
+points of a step that far apart, which must lie within [1/√2 − 1, √2 − 1] of a step (`seam`). What the
+clip does not show — a bounded crossing's middle, an open step's other end — is tried across its bound,
+and the verdict is the one every value gives (`bounds`, `open-count`). A **two** is k = 2 that way,
+with the loop as played showing exactly two crossings as well (`ring`); **refuted** is k steps, each
+seen (`one step`, `three steps`); anything else is **uncertain** and never taken as two. `phase` is how
+far the wrap is from joining the same point of the walk, in frames, the worst over the bounds.
+
+**Choosing the cut.**
+
+- The clip does not show its steps (no feet seen, a legless body, a lean that does not turn over, under
+  three crossings): the search's cut, exactly as before. Only `cycle.step_count` is new.
+- The search's cut is a two within **1.5** frames of phase (`crossings.PHASE_TOLERANCE`): kept, every
+  image and frame as the search alone cuts it.
+- Otherwise the cut is among the cuts that cover two steps — any start, any length the count allows,
+  inside an explicit `--min-len`/`--max-len` but not the state's window, half the clip or the gait
+  fallback's ceiling (a walk slower than the window is cut two steps long). Those in phase, if any, are
+  read at the wrap: the flow off of the cut's last and first frames (section 2, "The flow reading", on
+  the clip's own path and box, its frames moved as the cut will be corrected, read once:
+  `repair.clip_flow_states`, `repair.ring_scores`), the top band's jump (`repair.seam_pop`, "The seam
+  pop" below) and the wrap over the cut's step (`ratio`, what the seam gate holds a loop to). The cuts in
+  phase whose top does not pop, whose `ratio` is at most the seam gate's **2.0** (`--seam-max`) and whose
+  two seam frames are both under **3.0** (`repair.FLOW_LIMIT`), the worse within **0.5** of the smoothest
+  such cut's (`local_cycle.SEAM_FLOW_BAND`), are taken nearest the clip's own way on at the wrap
+  (`closure`, as for a counted cut); where none passes, in phase first, then a calm top, then the flow
+  limit, then the seam gate, then the smoothest seam (`method: observed-two-steps-v1`, `cycle.candidates`
+  ranked, `review_recommended` when none passed). Of the first four (`local_cycle.SEAM_TRIES`) the first
+  whose seam the gate will pass is taken, read as the gate reads it before anything is cut
+  (`loop.seam_on_cells`: the cut corrected as it will be, its wrap over its step on the analysis
+  thumbnail; `step_count.seam_gate.tried`): the correction of one cut can leave a jump at its wrap that
+  no reading of the clip shows. A part on a beat of its own — a tail, a staff — that closes on no cut of
+  two steps leaves every one with a wrap that jumps: the first is cut, still two steps, and the seam gate
+  says whether it closes, as for any cut.
+  The pixel search's repeat rule is not asked: a part off the legs' beat — a tail on its own beat —
+  repeats on its own, and its seam is the flow repair's (section 2). `step_count.repeat` records the
+  search's word on the cut, and a cut it would refuse, or one that passed no gate, is a warning line.
+- The clip shows its steps but no cut of two: the search's cut, unless the count refutes it — then the
+  search runs again refusing what the crossings refute, and a search that finds nothing lists each
+  refused window's count (`cycle.candidates[].step_count`), those the crossings refute last.
+
+A cut taken on two steps records `cycle.steps` (`{"count": 2, "by": "crossings"}`) and `strip.json`
+says `steps: 2`: `video-cycle-align` reads its return half way as the step it is (section 4). The step
+screen below then has its word only where the count does not: its pixel suspicion is kept as
+`pixel_suspect`, `suspect` false. A count given (`--steps`) is the word on the search's cut, and the
+crossings are not asked.
+
+**What crossings cannot see**: a hold the step range absorbs (a 13-frame step held to 17), a still run of
+the feet together inside the clip as long as a pass, and a wobble that reaches the reading's sides at a
+step's beat read as steps; a narrow step that opens the feet only just past the reading's threshold
+reads at that threshold. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+
 ### The step screen — a slow walk cut one step long
 
 The walk window is 0.5 to 1.6 s, and at most half the clip: a cycle has to be seen repeating. A
@@ -758,6 +837,8 @@ directions play two, and nothing said so: the two-cycle screen looks only below 
 fundamental period", [video pipeline](video-pipeline.md) section 4), and the gait fallback's longer
 window runs only when the first search finds nothing.
 
+Where the clip shows its steps the count above settles it, and a walk slower than the window is cut two
+steps long. Where it does not (the feet hidden, a lean that does not turn over),
 `--anchor motion-auto` screens the cut it takes the other way, over the whole clip rather than the
 window (`cycle.step_screen`, `period.step_screen`):
 
@@ -779,9 +860,10 @@ by eye, or a vision call). Its images, `strip.json`, warnings and stderr are wha
 it; the report's `cycle`, and the summary `video-loop` prints, gain `step_screen`. A twice-the-cut
 lag past the clip (fewer than 4 pairs) is not read: `lag` null, not a suspect. The synthetic walker
 of `tests/video/test_one_step_cut.py` — a 42-frame cycle, legs drawn alike and arms shaded apart, 73
-frames — is cut at 21 (`ratio` 0.48, a suspect); the same drawing on a 25-frame cycle is cut at 25
-(`ratio` 1.53), and on 23.5 frames at 24 (`ratio` 0.66: a suspect that is a cycle), each written
-exactly as with no screen at all.
+frames, its feet read as unseen — is cut at 21 (`ratio` 0.48, a suspect); the same drawing on a
+25-frame cycle is cut at 25 (`ratio` 1.53), and on 23.5 frames at 24 (`ratio` 0.66: a suspect that is a
+cycle), each written exactly as with no screen at all. With its feet read, the 42-frame walker is cut
+two steps long, 42 frames, on the count.
 
 **`video-loop --steps 1|2`** is the count coming back, with `--anchor motion-auto`: how many steps
 the cut it takes without `--steps` holds.

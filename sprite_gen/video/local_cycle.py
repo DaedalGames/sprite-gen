@@ -9,7 +9,10 @@ recorded (`fundamental`, sprite_gen/video/period.py), never cut shorter; the
 legs are read off `signals` (`legs.strike_signals` of the analysed frames).
 The cut taken is screened the other way too, for one step of a cycle twice as
 long that the window could not hold (`step_screen`), never cut longer on it:
-only a count of the steps (`video-loop --steps`) cuts again.
+only a count of the steps cuts again — given (`video-loop --steps`), or read off
+the clip's own crossings (`by_steps`, sprite_gen/video/crossings.py): where the
+clip shows its steps, the cut is two of them, joined at the walk's own point,
+the smoothest seam first.
 """
 from __future__ import annotations
 import math
@@ -17,6 +20,11 @@ from sprite_gen._deps import np
 from sprite_gen.video import period as period_mod
 
 REFUSED_SHOWN = 12  # refused windows a failed search reports, as many as a found cycle's candidates
+# A two-step cut's seam is as smooth as the smoothest in-phase one's within this much more flow off (`_rank`): about
+# what an ordinary frame of a walk lies off the line between its neighbours, in its window's usual steps.
+SEAM_FLOW_BAND = 0.5
+REPEAT_OVER_STEP_MAX = 2  # `detect` refuses a repeat further off than two playback steps ('repeat error over two steps')
+SEAM_TRIES = 4  # two-step cuts, best first, whose seam is read as the seam gate reads it before one is taken (`by_steps`)
 
 
 def _around(start, length):
@@ -231,9 +239,32 @@ def counted(distances, trajectory, *, min_len, max_len, periodicity_min, signals
                                                   periodicity_min=periodicity_min, signals=signals)}
 
 
+def _screens(distances, chosen, *, lo, hi, gait_floor, periodicity_min, signals):
+    """The cut's two screens, as `detect` records them: below it for two or three cycles (`fundamental`,
+    period.screen on the local profile about it) and above it for one step of a cycle twice as long
+    (`step_screen`, period.step_screen over the whole clip)."""
+    radius, js = _around(chosen['start'], chosen['length'])
+    profile = _profile(distances, js, radius, lo, hi)
+    fundamental = period_mod.screen(
+        chosen['period_local'], D=distances, prof=profile, minima=period_mod.local_minima(profile),
+        mean=float(np.mean(list(profile.values()))), lowest=max(lo, gait_floor), periodicity_min=periodicity_min,
+        signals=signals, gait=True, js=js, floor_why='the gait floor' if gait_floor >= lo else 'the window')
+    steps = period_mod.step_screen(distances, start=chosen['start'], length=chosen['length'],
+                                   periodicity_min=periodicity_min, signals=signals)
+    return fundamental, steps
+
+
+def judged(rows, judge):
+    """Each window row's steps as the clip's crossings count them (`step_count`: verdict, code, k, phase)."""
+    for row in rows:
+        counted = judge(row['start'], row['length'])
+        row['step_count'] = {k: counted[k] for k in ('verdict', 'code', 'k', 'phase') if k in counted}
+    return rows
+
+
 def detect(distances, trajectory, *, min_len, max_len, gait_floor,
            periodicity_min, double_tolerance, double_search, max_fraction=.5, signals=None, wrap_pop=None,
-           held_edge=None, length_cap=None, double=True, closure=False):
+           held_edge=None, length_cap=None, double=True, closure=False, judge=None):
     """`wrap_pop(start, length)`, when given, is the top band's jump at that cut's wrap
     (repair.seam_pop): a chosen cut that pops is chosen again (`_shape_rank`), and a search that finds
     nothing raises with the windows it refused, popping ones last (`ValueError.diagnostics`).
@@ -249,7 +280,11 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
     Among the equivalent candidates the earliest is taken; with `closure` (a length the caller counted,
     `video-loop --steps`), the one whose wrap is nearest the clip's own way on there (`_closure`). The
     cut taken is screened for one step of a cycle twice as long (`step_screen`, period.step_screen,
-    over the whole clip); nothing is cut on it."""
+    over the whole clip); nothing is cut on it.
+
+    `judge(start, length)` (crossings.Reading.judge), when given, refuses a window whose steps the clip's
+    crossings count as other than two ('one step', 'three steps': `refuted`), and a search that finds
+    nothing names each refused window's count (`step_count`), those the crossings refute last."""
     n = len(distances)
     # A cycle has to be seen repeating: half the clip by default, more for the gait fallback, and as
     # long as the caller's own ceiling allows.
@@ -306,6 +341,11 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
             if min(first_motion, second_motion) < .25*step:
                 refuse('a still segment')
                 continue
+            if judge is not None:
+                counted = judge(start, length)
+                if counted['verdict'] == 'refuted':
+                    refuse(f"{counted['why']} in the clip's crossings")
+                    continue
             ratio = float(distances[start+length-1, start])/step
             x = np.arange(length)
             segment = trajectory[start:start+length]
@@ -324,6 +364,8 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
         # (a forced cut) takes one the engine measured instead of the whole clip.
         refused.sort(key=lambda row: (row['score'], row['start'], row['length']))
         shown = refused[:REFUSED_SHOWN]
+        if judge is not None:
+            judged(shown, judge)
         if wrap_pop is not None:
             # Those whose top closes first, then those whose top could not be read, then those that pop.
             rank = {}
@@ -332,10 +374,13 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
                 _mark(row, measured)
                 rank[row['start'], row['length']] = 1 if 'skipped' in measured else 2 if measured['pops'] else 0
             shown.sort(key=lambda row: (rank[row['start'], row['length']], row['score'], row['start'], row['length']))
+        if judge is not None:
+            shown.sort(key=lambda row: row['step_count']['verdict'] == 'refuted')
         exc.diagnostics = {'kind': 'periodic', 'method': 'local-repeat-drift-v1', 'status': 'refused',
                            'window': [lo, hi], 'refused_count': len(refused),
                            'order': 'score' + (', windows whose top could not be read after those whose top closes,'
-                                               ' windows whose top pops at the wrap last' if wrap_pop is not None else ''),
+                                               ' windows whose top pops at the wrap last' if wrap_pop is not None else '')
+                                    + (', windows whose steps the crossings refute after the rest' if judge is not None else ''),
                            'candidates': shown}
         raise exc
     candidates.sort(key=lambda row: (row['score'], row['start'], row['length']))
@@ -357,14 +402,8 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
         # A window two lengths long (`_held_rank`) was not a candidate: its wrap over its step, as a candidate's.
         s, L = chosen['start'], chosen['length']
         chosen['ratio'] = float(distances[s+L-1, s])/float(np.diag(distances[s:s+L, s:s+L], 1).mean())
-    radius, js = _around(chosen['start'], chosen['length'])
-    profile = _profile(distances, js, radius, lo, hi)
-    fundamental = period_mod.screen(
-        chosen['period_local'], D=distances, prof=profile, minima=period_mod.local_minima(profile),
-        mean=float(np.mean(list(profile.values()))), lowest=max(lo, gait_floor), periodicity_min=periodicity_min,
-        signals=signals, gait=True, js=js, floor_why='the gait floor' if gait_floor >= lo else 'the window')
-    steps = period_mod.step_screen(distances, start=chosen['start'], length=chosen['length'],
-                                   periodicity_min=periodicity_min, signals=signals)
+    fundamental, steps = _screens(distances, chosen, lo=lo, hi=hi, gait_floor=gait_floor,
+                                  periodicity_min=periodicity_min, signals=signals)
     return {
         **chosen, 'fundamental': fundamental, 'kind': 'periodic', 'method': 'local-repeat-drift-v1',
         'period_global': None, 'periodicity_min': periodicity_min,
@@ -375,3 +414,150 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
         **({'seam_pop': shape} if shape is not None else {}),
         'step_screen': steps,
     }
+
+
+def _worse(row):
+    return max(row['seam_flow']['off'])
+
+
+def _calm(row):
+    """The cut's top band was read at the wrap and does not pop (`wrap_pop`)."""
+    return 'pops' in row['top'] and not row['top']['pops']
+
+
+def _rank(rows, *, flow_limit, seam_max, in_phase):
+    """Two-step cuts, best first, and whether the first passed the gates: in phase (`in_phase`), its top band calm at
+    the wrap (`_calm`: a thin part the flow hardly sees, a staff, does not jump), its wrap over its step (`ratio`) at
+    most `seam_max` (what the seam gate holds a loop to) and both seam frames' flow off under `flow_limit`, the worse
+    within SEAM_FLOW_BAND of the smoothest such cut's, then the wrap nearest the clip's own way on (`_closure`); after
+    those the rest, in phase first, then calm, then under the flow limit, then under `seam_max`, then by the worse flow."""
+    gated = [row for row in rows if in_phase(row) and _calm(row) and row['ratio'] <= seam_max and _worse(row) < flow_limit]
+    best = min((_worse(row) for row in gated), default=None)
+    band = sorted((row for row in gated if _worse(row) <= best + SEAM_FLOW_BAND),
+                  key=lambda row: (row['closure'] is None, row['closure'] or 0.0, _worse(row), row['start'], row['length']))
+    rest = sorted((row for row in rows if row not in band),
+                  key=lambda row: (not in_phase(row), not _calm(row), _worse(row) >= flow_limit, row['ratio'] > seam_max, _worse(row),
+                                   row['start'], row['length']))
+    return band + rest, bool(band)
+
+
+def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len, seam_flow, wrap_pop, seam_gate, flow_limit,
+             seam_max, gait_floor, periodicity_min, signals):
+    """The cut the clip's own steps choose (`reading`, crossings.Reading), after the pixel search: `found`, its cut,
+    or `refused`, why it found none. Returns (the cut, or None where the search's word stands and it found none;
+    `step_count`, the record).
+
+    - The clip does not show its steps (`reading.readable` false: no feet seen, a lean that is not feet stepping,
+      under two steps): the search's cut, as it chose it.
+    - The search's cut covers two steps (`two`) and its wrap joins the walk at its own point (`reading.in_phase`):
+      that cut, as it chose it.
+    - Else the cuts [min_len, max_len] frames long that cover two steps, any start, however long — the window that
+      binds the search binds no count; none, and the search's word stands. Those in phase, if any, else all, are
+      read at the wrap (`seam_flow(start, length)`: the flow off of the cut's last and first frames; `wrap_pop`, the
+      top band's jump, repair.seam_pop) and ranked (`_rank`). Of the first SEAM_TRIES the first whose seam the seam
+      gate passes (`seam_gate`: its wrap over its step as the gate will read the cut, at most `seam_max`) is taken,
+      where none the first, and the gate says whether it closes (`method: observed-two-steps-v1`). The pixel
+      search's own repeat rule is not asked: a part off the legs' beat (a tail) repeats on its own and its seam is
+      the flow repair's; `repeat` records it.
+
+    A cut taken on two steps records `steps` (count 2, by crossings): `video-cycle-align` reads a return half way
+    as its step, and the step screen's pixel suspicion of one step (`step_screen`) is settled, kept as
+    `pixel_suspect`."""
+    record = reading.record()
+    record['search'] = ({'cut': [found['start'], found['length']]} if found is not None else {'refused': str(refused)})
+    if not reading.readable:
+        record['chosen_by'] = 'search'
+        if found is not None:
+            record['cut'] = reading.judge(found['start'], found['length'])
+        return found, record
+    if found is not None:
+        counted = reading.judge(found['start'], found['length'])
+        record['search'].update({k: counted[k] for k in ('verdict', 'code', 'k', 'phase') if k in counted})
+        if reading.in_phase(counted):
+            record.update(chosen_by='search', cut=counted)
+            return _two_steps(found, record), record
+    twos = reading.twos(min_len, max_len)
+    record['two_cuts'] = len(twos)
+    if not twos:
+        record['chosen_by'] = 'search'
+        if found is not None:
+            record['cut'] = reading.judge(found['start'], found['length'])
+        return found, record
+    pool = [row for row in twos if reading.in_phase(row)]
+    record['in_phase'] = len(pool)
+    rows = []
+    for counted in pool or twos:
+        start, length = counted['cut']
+        step = float(np.diag(distances[start:start+length, start:start+length], 1).mean())
+        rows.append({'start': start, 'length': length, 'phase': counted['phase'], 'counted': counted,
+                     'seam_flow': seam_flow(start, length), 'top': wrap_pop(start, length), 'closure': _closure(distances, start, length),
+                     'ratio': float(distances[start+length-1, start])/step if step > 1e-10 else math.inf})
+    ranked, gated = _rank(rows, flow_limit=flow_limit, seam_max=seam_max, in_phase=lambda row: reading.in_phase(row['counted']))
+    tried = []
+    for row in ranked[:SEAM_TRIES]:
+        tried.append({'start': row['start'], 'length': row['length'], 'seam': round(seam_gate(row['start'], row['length']), 3)})
+        if tried[-1]['seam'] <= seam_max:
+            break
+    passed = [t for t in tried if t['seam'] <= seam_max]
+    picked = next(row for row in ranked if (row['start'], row['length']) == ((passed[0]['start'], passed[0]['length']) if passed
+                                                                           else (tried[0]['start'], tried[0]['length'])))
+    record['seam_gate'] = {'max': seam_max, 'tried': tried}
+    start, length = picked['start'], picked['length']
+    record.update(chosen_by='two steps', cut=picked['counted'], gated=gated, flow_limit=flow_limit, seam_max=seam_max)
+    # The pixel search's own word on this cut: its repeat, read as `detect` reads a window it refused.
+    radius, js = _around(start, length)
+    measured = _measure(distances, trajectory, start, length, _profile(distances, js, radius, max(6, min_len), length))
+    if measured is not None:
+        over = measured['context_repeat_over_step']
+        record['repeat'] = {'over_step': round(over, 3), 'max': REPEAT_OVER_STEP_MAX,
+                            **({'why': f'about its start the clip a cut length on is {over:.2f} playback steps off, over '
+                                       f'{REPEAT_OVER_STEP_MAX}: the pixel search refuses it (repeat error over two steps) — a part '
+                                       'off the legs\' beat repeats on its own'} if over > REPEAT_OVER_STEP_MAX else {})}
+    cycle = {'start': start, 'length': length, 'period_local': length, 'ratio': picked['ratio'],
+             'closure': picked['closure'], 'seam_flow': picked['seam_flow'], 'top': picked['top'], 'kind': 'periodic', 'method': 'observed-two-steps-v1',
+             'repeat': 'two steps seen in the clip, joined at the walk\'s own point',
+             'period_global': None, 'periodicity_min': periodicity_min, 'review_recommended': not gated,
+             'candidate_count': len(rows),
+             'candidates': [{'start': row['start'], 'length': row['length'], 'phase': row['phase'], 'seam_flow': row['seam_flow']['off'],
+                             'seam_pop': row['top'].get('pop'), 'ratio': round(row['ratio'], 3),
+                             'closure': None if row['closure'] is None else round(row['closure'], 3)}
+                            for row in ranked[:REFUSED_SHOWN]]}
+    cycle['fundamental'], cycle['step_screen'] = _screens(distances, cycle, lo=max(6, min_len), hi=max(length, min_len),
+                                                          gait_floor=gait_floor, periodicity_min=periodicity_min, signals=signals)
+    return _two_steps(cycle, record), record
+
+
+def _two_steps(cycle, record):
+    """A cut the crossings count two steps: `steps` recorded, the step screen's pixel suspicion settled."""
+    cycle.setdefault('steps', {'count': 2, 'by': 'crossings'})
+    screen = cycle.get('step_screen')
+    if screen and screen.get('suspect'):
+        screen.update(suspect=False, pixel_suspect=True, settled_by='crossings',
+                      why=f"two steps counted on the clip's crossings (cycle.step_count); the pixels alone: {screen['why']}")
+    return cycle
+
+
+def step_verdict(cycle):
+    """The step count's warnings, in words: a cut taken on two steps whose seam the pixel search refuses (a part off
+    the legs' beat) or that passed no gate, and a clip that shows its steps but no cut of two."""
+    counted = cycle.get('step_count')
+    if not counted or not counted.get('readable'):
+        return []
+    s, L = cycle['start'], cycle['length']
+    out = []
+    if counted.get('chosen_by') == 'two steps':
+        if not counted.get('gated'):
+            out.append(f"the cut {s}/{L} covers two steps by the clip's crossings, but no two-step cut joins the walk within "
+                       f"its phase, its top calm, its wrap within {counted['seam_max']:g} of its step and its seam under the flow "
+                       f"limit {counted['flow_limit']:g} (phase {counted['cut']['phase']:+.1f} frames, wrap {cycle['ratio']:.2f}, "
+                       f"seam flow {cycle['seam_flow']['off']}, top {cycle['top'].get('pop', cycle['top'].get('skipped'))}): "
+                       "a part on a beat of its own closes on no cut of two steps — look at the wrap")
+        if 'why' in counted.get('repeat', {}):
+            worst = int(np.argmax(cycle['seam_flow']['off']))
+            out.append(f"the cut {s}/{L} covers two steps by the clip's crossings, and {counted['repeat']['why']}; the seam's "
+                       f"worst window is {cycle['seam_flow']['window'][worst]} of the body's box, turning "
+                       f"{cycle['seam_flow']['turn'][worst]:+.2f} there — the flow repair reads it")
+    elif 'two_cuts' in counted and counted['two_cuts'] == 0:
+        out.append(f"the clip shows its steps (crossings {counted['crossings']}) but no cut of two: the cut {s}/{L} is "
+                   f"{counted['cut']['verdict']} ({counted['cut']['why']}) — count its steps")
+    return out

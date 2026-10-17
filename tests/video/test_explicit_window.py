@@ -22,7 +22,7 @@ from tests.video.test_video_pipeline import _one_shot_frames
 
 
 def _slow(root: Path) -> Path:
-    return step_clips._keyed(root)  # a 42-frame cycle the walk window cuts one step (21) long
+    return step_clips._keyed(root)  # a 42-frame cycle the walk window holds one step (21) of; its feet pass every 21
 
 
 def _short(root: Path) -> Path:
@@ -51,7 +51,9 @@ MOTION = ("--anchor", "motion-auto", "--repair", "off")
 
 # path, clip, arguments, what the report shows the path ran, and whether the cut is made at all
 ROWS = [
-    ("first", _slow, ("--state", "walk", *MOTION, "--max-len", "25"), lambda r: "gait_fallback" not in r, True),
+    # A window that holds one step of a walk whose steps are seen: no cut of two steps there, and none of one.
+    ("first", _slow, ("--state", "walk", *MOTION, "--max-len", "25"),
+     lambda r: "gait_fallback" not in r and r["error"].startswith("no cut of two steps in --max-len 25"), False),
     ("first", _slow, ("--state", "walk", *MOTION, "--min-len", "18"), lambda r: "gait_fallback" not in r, True),
     ("two-step", _held, ("--state", "walk", *MOTION, "--max-len", "25"),
      lambda r: r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"]["max_len"] == 25, True),

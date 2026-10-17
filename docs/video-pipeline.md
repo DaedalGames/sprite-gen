@@ -761,9 +761,11 @@ was 17). `video-loop` therefore:
    reports that jump and warns on it ([loop repair](loop-repair.md) section 3,
    "The seam pop"). Once the top jumps, the held part is read below its top too, and a staff
    that closes only on two steps is cut two steps long — one cycle (`cycle.steps`, "The held
-   side"). The cut taken is screened for one step of a cycle twice as long, over the whole clip
-   (`cycle.step_screen`, "The step screen"); nothing is cut on it, and `--steps` is the count
-   that cuts again.
+   side"). Where the clip shows its steps, the cut is two of them — read off the crossings of the
+   feet, joined at the walk's own point, the smoothest seam first — and the search's cut is kept
+   where it already is that (`cycle.step_count`, "The step count"). Where it does not, the cut taken
+   is screened for one step of a cycle twice as long, over the whole clip (`cycle.step_screen`, "The
+   step screen"); nothing is cut on it, and `--steps` is the count that cuts again.
 
 This neighbourhood check measures temporal consistency, not anatomical leg
 identity. A consistently repeated malformed motion can still score well; visual
@@ -840,8 +842,9 @@ swings the stride twice a step; a diagonal view's two steps open the feet unequa
 the set stage: `video-cycle-align` screens every loop by the same rule, stops a set on a suspect,
 and takes one cycle out of a loop only when told how many it holds (`--cycles`, [loop
 repair](loop-repair.md) section 4). The local search of `--anchor motion-auto` records the same. A
-loop whose steps are known (`steps: 2` in `strip.json`: cut two steps long so a held part closes, or
-cut again on a count with `video-loop --steps`) returns half way at its second step; the set stage
+loop whose steps are known (`steps: 2` in `strip.json`: cut two steps long on the clip's crossings or
+so a held part closes, or cut again on a count with `video-loop --steps`) returns half way at its
+second step; the set stage
 reads that return as the step it is, not a second cycle. The screen also looks the other way there:
 a cut that may be one step of a cycle twice as long (`cycle.step_screen`, read over the whole clip)
 stops the set the same way, and only a count — `video-loop --steps 1` — cuts it again.

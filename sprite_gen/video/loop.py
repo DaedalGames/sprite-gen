@@ -49,6 +49,7 @@ from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
+from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
@@ -969,12 +970,29 @@ def _ghost_lines(jump_repair: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _shifts(analysis: dict[str, Any]) -> tuple[np.ndarray, int]:
+    """The analysis translation `auto_motion.analyse` measured, whole pixels a frame, and the room it needs."""
+    shifts = np.rint(np.asarray(analysis["analysis_only_translation_xy"], dtype=np.float64)).astype(int)
+    return shifts, int(np.abs(shifts).max()) + 1
+
+
+def moved_frames(frames: list[Image.Image], analysis: dict[str, Any]) -> list[Image.Image]:
+    """Every frame whole, moved as `moved_alpha` moves its alpha, on one canvas: what `SeamFlow` reads a cut's wrap
+    on, so a body that walks across the frame or toward it is read at the wrap as the cut will be corrected."""
+    shifts, pad = _shifts(analysis)
+    out = []
+    for f, (dx, dy) in zip(frames, shifts):
+        canvas = Image.new("RGBA", (f.width + 2 * pad, f.height + 2 * pad))
+        canvas.paste(f, (pad + int(dx), pad + int(dy)))
+        out.append(canvas)
+    return out
+
+
 def moved_alpha(frames: list[Image.Image], analysis: dict[str, Any]) -> list[np.ndarray]:
     """The alpha of every frame, each moved by the analysis translation `auto_motion.analyse` measured
     (its drift taken out, the way the cut will be corrected), cropped once to the clip's subject:
     what `wrap_pop_on` and `HeldEdge` read a cut on."""
-    shifts = np.rint(np.asarray(analysis["analysis_only_translation_xy"], dtype=np.float64)).astype(int)
-    pad = int(np.abs(shifts).max()) + 1
+    shifts, pad = _shifts(analysis)
     boxes = [f.getchannel("A").point(lambda v: 255 if v >= repair_mod.ALPHA_SOLID else 0).getbbox() for f in frames]
     boxes = [b for b in boxes if b]
     box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
@@ -1034,6 +1052,96 @@ class HeldEdge:
             return repair_mod.held_edge(self._edges[side], start, length)
         except ValueError as exc:
             return {"skipped": str(exc), "reference": repair_mod.HELD_EDGE_REFERENCE}
+
+
+class SeamFlow:
+    """The flow at a cut's wrap, for `local_cycle.by_steps` to rank two-step cuts by: the flow off of the cut's last and
+    first frames (`off`), their worst windows (`window`, fractions of the clip's union box) and turns there (`turn`) —
+    `repair.ring_scores` on the clip's path, its frames moved as the cut will be corrected (`moved_frames`), read once
+    on first use (`repair.clip_flow_states`)."""
+
+    def __init__(self, frames: list[Image.Image], analysis: dict[str, Any]):
+        self.frames, self.analysis = frames, analysis
+        self._states: np.ndarray | None = None
+
+    def __call__(self, start: int, length: int) -> dict[str, Any]:
+        if self._states is None:
+            self._states = repair_mod.clip_flow_states(moved_frames(self.frames, self.analysis))
+        scores = repair_mod.ring_scores(self._states[start:start + length])
+        at = (length - 1, 0)
+        return {"off": [round(float(scores["off"][k]), 3) for k in at], "turn": [round(float(scores["turn"][k]), 3) for k in at],
+                "window": [[round(v, 3) for v in scores["windows"][int(scores["window"][k])]] for k in at]}
+
+
+def seam_on_cells(frames: list[Image.Image]) -> float:
+    """The seam gate's reading of a motion-auto cut before it is cut: its frames corrected as the cut will be
+    (`auto_motion.discover`, `auto_motion.correct_cycle`), cropped to their union box, the wrap over the mean step on
+    the analysis thumbnail — the rendered cells the gate reads, short of the strip's scale and the jump repair.
+    Infinite where the frames cannot be corrected."""
+    try:
+        regions, _ = auto_motion.discover(frames, reference_index=0)
+        frames, _ = auto_motion.correct_cycle(frames, regions, coarse_dx=body_wrap_offset(frames, search=motion_anchor.COARSE_SEARCH))
+    except ValueError:
+        return math.inf
+    boxes = [f.getbbox() for f in frames]
+    boxes = [b for b in boxes if b]
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    flat = np.stack([_small_features(f.crop(box)) for f in frames])
+    step = float(np.abs(flat[1:] - flat[:-1]).mean())
+    return float(np.abs(flat[-1] - flat[0]).mean()) / step if step > 0 else math.inf
+
+
+def _by_steps(cycle: dict[str, Any] | None, refused: ValueError | None, *, frames: list[Image.Image], analysis: dict[str, Any],
+              D: np.ndarray, trajectory: np.ndarray, window: CutWindow, searched: dict[str, Any], detect: dict[str, Any],
+              seam_max: float) -> dict[str, Any]:
+    """The cut the clip's own steps choose (`local_cycle.by_steps`, the crossings of the frames the search read,
+    sprite_gen/video/crossings.py), recorded `step_count`, from the search's cut or its refusal (`refused`).
+
+    Where the clip shows its steps but no cut of two, and the search's cut is one they refute (one step, three), the
+    search runs again on the window it searched (`searched`) refusing such cuts (`detect`'s `judge`). A search that
+    finds nothing names each refused window's count, those the crossings refute last, and raises."""
+    signals = leg_signals(frames)
+    try:
+        reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
+    except ValueError:
+        reading = crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
+    moved = moved_alpha(frames, analysis)
+    picked, record = local_cycle.by_steps(
+        D, trajectory, reading, found=cycle, refused=refused, min_len=window.lo, max_len=window.max_len or len(frames),
+        seam_flow=SeamFlow(frames, analysis), wrap_pop=wrap_pop_on(moved), seam_gate=lambda s, L: seam_on_cells(frames[s:s + L]),
+        flow_limit=repair_mod.FLOW_LIMIT, seam_max=seam_max,
+        gait_floor=detect["gait_floor"], periodicity_min=detect["periodicity_min"], signals=signals)
+    if picked is not None and record.get("cut", {}).get("verdict") == "refuted":
+        first = record["cut"]
+        try:
+            picked = local_cycle.detect(D, trajectory, signals=signals, wrap_pop=wrap_pop_on(moved), held_edge=HeldEdge(moved),
+                                        length_cap=window.max_len, judge=reading.judge, **searched, **detect)
+        except ValueError as exc:
+            picked, refused = None, exc
+        record["searched_again"] = {"refuted": first, "why": f"no cut of two steps, and the search's cut is {first['why']}: "
+                                                              "searched again, refusing the cuts the crossings refute"}
+        if picked is not None:
+            record["cut"] = reading.judge(picked["start"], picked["length"])
+        elif window.said() and record.get("two_cuts") == 0 and reading.twos(1, len(frames)):
+            # The caller's window holds none of the walk's two steps: the window and the walk disagree.
+            lengths = sorted({row["cut"][1] for row in reading.twos(1, len(frames))})
+            failed = ValueError(f"no cut of two steps in {window.said()}: the clip's crossings show two steps take "
+                                f"{lengths[0]}-{lengths[-1]} frames, and every cut the window holds that the search found is "
+                                f"{first['why']} — widen the window, or count the steps (--steps)")
+            failed.diagnostics = getattr(refused, "diagnostics", {})  # type: ignore[attr-defined]
+            refused = failed
+    if picked is None:
+        diagnostics = getattr(refused, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            if reading.readable and diagnostics.get("candidates") and "step_count" not in diagnostics["candidates"][0]:
+                local_cycle.judged(diagnostics["candidates"], reading.judge)
+                diagnostics["candidates"].sort(key=lambda row: row["step_count"]["verdict"] == "refuted")
+                diagnostics["order"] = f"{diagnostics.get('order', 'score')}, windows whose steps the crossings refute after the rest"
+            diagnostics["step_count"] = record
+        assert refused is not None
+        raise refused
+    picked["step_count"] = record
+    return picked
 
 
 def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndarray, trajectory: np.ndarray,
@@ -1259,6 +1367,8 @@ def run_loop(
             report_base["automatic_motion_analysis"] = analysis
             detect = dict(gait_floor=round(prof.min_seconds*fps), periodicity_min=PERIODICITY_MIN,
                           double_tolerance=GAIT_DOUBLE_TOL, double_search=GAIT_DOUBLE_SEARCH)
+            searched: dict[str, Any] = {"min_len": lo, "max_len": hi}
+            refused: ValueError | None = None
             try:
                 moved = moved_alpha(source_frames, analysis)
                 cycle = local_cycle.detect(D, trajectory, min_len=lo, max_len=hi, signals=leg_signals(source_frames),
@@ -1280,6 +1390,7 @@ def run_loop(
                 hi_long = window.past(gait_fallback.long_window(lo, len(files), fps))
                 fallback["window"] = [lo, hi_long]
                 report_base["gait_fallback"] = fallback
+                searched = {"min_len": lo, "max_len": hi_long, "max_fraction": gait_fallback.LONG_CYCLE_FRACTION}
                 try:
                     moved = moved_alpha(source_frames, analysis)
                     cycle = local_cycle.detect(D, trajectory, min_len=lo, max_len=hi_long,
@@ -1292,9 +1403,16 @@ def run_loop(
                     # The windows the wider search measured and refused go into the report's `cycle`.
                     if hasattr(second, "diagnostics"):
                         failed.diagnostics = second.diagnostics  # type: ignore[attr-defined]
-                    raise failed from first
+                    failed.__cause__ = first
+                    refused, cycle = failed, None
             if steps is not None:
+                # A count given is the word on the search's cut; the crossings are not asked.
+                if refused is not None:
+                    raise refused
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
+            else:
+                cycle = _by_steps(cycle, refused, frames=source_frames, analysis=analysis, D=D, trajectory=trajectory,
+                                  window=window, searched=searched, detect=detect, seam_max=seam_max)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             boxes = [nonloop.body_box(frame) for frame in source_frames]
@@ -1336,6 +1454,9 @@ def run_loop(
                     )
         if skip:
             cycle, shifted = _from_lead_in(cycle, skip), True
+            if "step_count" in cycle:
+                # Its frame numbers are the search's: the clip's after its lead-in.
+                cycle["step_count"]["read_from"] = skip
         # Whatever chose the cut — a search, a count, --cycle fixed or pinned — it is inside the caller's bounds.
         window.hold(cycle)
     except (SystemExit, ValueError) as exc:
@@ -1483,6 +1604,7 @@ def run_loop(
         # The held side below the top, read on the source frames when the cut was chosen again (local_cycle).
         warnings += repair_mod.held_edge_verdict(cycle.get("seam_pop"))
         warnings += coverage_verdict(cycle)
+        warnings += local_cycle.step_verdict(cycle)
         gated = repair != "off" and (jolt_max is not None or head_step_max is not None)
         over = repair_mod.jolt_verdict(jolt, jolt_max=jolt_max, head_step_max=head_step_max) if gated else []
         report_base["jolt"] = {**jolt, "reference": reference, "warnings": warnings,
@@ -1739,6 +1861,9 @@ def run(**kwargs: object) -> int:
         summary["cycle"]["coverage"] = payload["cycle"]["coverage"]
     if "step_screen" in payload["cycle"]:
         summary["cycle"]["step_screen"] = payload["cycle"]["step_screen"]
+    if "step_count" in payload["cycle"]:
+        counted = payload["cycle"]["step_count"]
+        summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
     if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:
         summary["ghost_screen"] = payload["ghost_screen"]
     for key in ("ghost_given_way", "ghost_kept"):

@@ -106,6 +106,7 @@ FLOW_BLUR = 0.03  # the blur's sigma, of the body height: a shape moved one ordi
 FLOW_GRID = 4  # the union box in FLOW_GRID x FLOW_GRID cells, read in windows of 2 x 2 cells at a stride of one cell
 FLOW_LIMIT = 3.0  # a frame this many of its window's usual steps off the line between its neighbours leaves the flow
 FLOW_SPAN = 2  # frames in a row a group takes out at most, to be made again between the frames either side
+FLOW_CHUNK = 12  # frames a whole clip's path is read in at a time (`clip_flow_states`): a clip's pixels whole are gigabytes
 # The share of a held loop's runs that show their drawing for the hold, a frame more or less (a slip): under it the
 # runs are not the hold, and the loop is read a drawing a frame (`flow_drawings`).
 HELD_RUNS = 0.75
@@ -131,11 +132,28 @@ def flow_states(frames: list[Image.Image], box: tuple[int, int, int, int] | None
     (luma times coverage) inside `box` (the union box), averaged down to a grid of a third of the blur
     and blurred by FLOW_BLUR of the body height. Raises ValueError for a loop with no body."""
     pixels = np.stack([np.asarray(f.crop(box or union_box(frames)), dtype=np.float64) / 255.0 for f in frames])
-    alpha = pixels[..., 3]
-    rows = np.where(alpha.max(axis=(0, 2)) > 0.1)[0]
+    rows = np.where(pixels[..., 3].max(axis=(0, 2)) > 0.1)[0]
+    if rows.size == 0:
+        raise ValueError("every loop frame is fully transparent")
+    return _states(pixels, FLOW_BLUR * max(1, int(rows.max() - rows.min())))
+
+
+def clip_flow_states(frames: list[Image.Image]) -> np.ndarray:
+    """`flow_states` of a whole clip in one box, its union box, and one blur, read FLOW_CHUNK frames at a time: the path
+    every cut of the clip is read on (`ring_scores`), so a choice among its cuts reads each seam alike without reading
+    the clip again for each one."""
+    box = union_box(frames)
+    rows = np.where(np.max([np.asarray(f.crop(box), dtype=np.float64)[..., 3].max(axis=1) / 255.0 for f in frames], axis=0) > 0.1)[0]
     if rows.size == 0:
         raise ValueError("every loop frame is fully transparent")
     sigma = FLOW_BLUR * max(1, int(rows.max() - rows.min()))
+    return np.concatenate([_states(np.stack([np.asarray(f.crop(box), dtype=np.float64) / 255.0 for f in frames[k:k + FLOW_CHUNK]]), sigma)
+                           for k in range(0, len(frames), FLOW_CHUNK)])
+
+
+def _states(pixels: np.ndarray, sigma: float) -> np.ndarray:
+    """The frames' points (`flow_states`) from their pixels in the box, 0..1, blurred by `sigma` px."""
+    alpha = pixels[..., 3]
     planes = np.stack([alpha, (pixels[..., :3] @ _LUMA) * alpha], axis=-1)
     n, height, width, c = planes.shape
     f = max(1, min(int(round(sigma / 1.5)), height, width))
@@ -215,7 +233,11 @@ def _flow(frames: list[Image.Image], box: tuple[int, int, int, int] | None,
     """The loop's path read on its drawings: their states, the runs of frames that show them, the windows,
     and per drawing and window the distance off the path, the step out and the turn, and the windows' usual
     step. `drawings` (runs, hold) reads it on those drawings instead of the ones `flow_drawings` finds."""
-    states = flow_states(frames, box)
+    return _flow_on(flow_states(frames, box), drawings)
+
+
+def _flow_on(states: np.ndarray, drawings: tuple[list[list[int]], int] | None = None) -> dict[str, Any]:
+    """`_flow` of a loop whose path is read already."""
     runs, hold = drawings if drawings is not None else flow_drawings(states)
     path = states[[run[0] for run in runs]]
     windows = flow_windows(states.shape[1], states.shape[2])
@@ -242,9 +264,19 @@ def flow_scores(frames: list[Image.Image], *, box: tuple[int, int, int, int] | N
     the step into the drawing and the step out of it (`turn`, below 0 against the way it came, 1 where
     either is still) and the two steps in the window's usual steps (`into`, `out`). Every frame that
     shows a drawing (`flow_drawings`, `hold`) reads the drawing's values."""
-    flow = _flow(frames, box)
+    return _frame_scores(_flow(frames, box), len(frames))
+
+
+def ring_scores(states: np.ndarray) -> dict[str, Any]:
+    """`flow_scores` of a loop whose path is read already: a cut of the clip's path (`clip_flow_states`), read as the
+    ring the cut plays. The box and the blur are the clip's, not the cut's own, so a frame of one cut reads as it does
+    in another; the values are the cut's `flow_scores` within what a box a little larger moves the windows by."""
+    return _frame_scores(_flow_on(states), len(states))
+
+
+def _frame_scores(flow: dict[str, Any], frames: int) -> dict[str, Any]:
     per = _drawing_scores(flow)
-    of = np.zeros(len(frames), dtype=int)
+    of = np.zeros(frames, dtype=int)
     for d, run in enumerate(flow["runs"]):
         of[run] = d
     return {**{k: v[of] for k, v in per.items()}, "windows": flow["fractions"], "hold": flow["hold"]}

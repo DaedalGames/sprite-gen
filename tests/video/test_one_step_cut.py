@@ -9,6 +9,10 @@ search finds the step and cuts it: the loop walks on one leg, and its arms jump 
 cut, read over the whole clip, repeats better than the cut: the screen names it, the cut stays, and
 `--steps 1` — the count from whoever looked — cuts the cycle.
 
+The screen is the word where the clip does not show its steps: these tests read the walker's feet as unseen
+(`crossings.read`), so the search's cut is the pixels' alone. With its feet read the walker is cut two steps long
+on the count (tests/video/test_walk_steps.py).
+
 Synthetic frames only; the arm's place is known in closed form, so the tests read the cut against it."""
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from conftest import feet_unseen
 from sprite_gen.video import align, batch, loop, period
 
 CYCLE, FRAMES = 42, 73
@@ -48,6 +53,13 @@ def _strider(k: int, cycle: float = CYCLE) -> Image.Image:
     d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))  # near arm, in front
     d.point((x + 6, y + 40 + k % 11), fill=(250, 250, 250, 255))  # no two frames the same picture
     return im
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _feet_unseen():
+    """Every cut in this module is the pixel search's: the walker's feet are read as unseen."""
+    with feet_unseen():
+        yield
 
 
 def _keyed(root: Path, cycle: float = CYCLE, frames: int = FRAMES) -> Path:
