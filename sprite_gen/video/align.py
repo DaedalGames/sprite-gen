@@ -799,8 +799,9 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     `between_cache` is a directory every frame made between two source frames is kept in and taken from
     (`rife.Cache`), for a caller that aligns the same set again: a frame is taken only for the same two
     source frames, fraction and interpolator (its `identity()`, which an injected one must have). The
-    report's `between_cache` counts the frames taken (`hits`), made (`misses`) and kept but unreadable;
-    it is None without a directory, and nothing is kept."""
+    report's `between_cache` counts the frames taken (`hits`), made (`misses`), kept but unreadable, and
+    made while what they are made from changed, so not kept (`not_kept`); it is None without a
+    directory, and nothing is kept."""
     if len(loop_dirs) < 1:
         raise SystemExit("video-cycle-align: at least one --loop-dir")
     if between_cache is not None and interpolate is not None and not callable(getattr(interpolate, "identity", None)):
