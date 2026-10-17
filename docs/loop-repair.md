@@ -535,11 +535,11 @@ were still refused.
 | 16 frames, a fifth short | 3.1 → 1.5, no rush left | 6, 6 calls |
 | 14 frames, 15 % short | 3.1 → 1.5, no rush left | 6, 6 calls |
 | 48 frames on twos, a quarter short, after the flow repair | 5.3 → 3.4 (on its drawings), no rush left | 8 drawings, 16 frames, 8 calls |
-| 36 frames, 5 % to 30 % short, drawn every frame or on twos | refused: the rest of the body 1.5 % to 19 % past its own largest step on the frames made | 6 to 9 calls, none kept |
+| 36 frames, 5 % to 30 % short drawn every frame, 10 % to 30 % on twos | refused: the rest of the body 1.5 % to 19 % past its own largest step on the frames made | 6 to 9 calls, none kept |
 
-Over 36 frames a cycle the stand-in's legs, arm and head move far between frames, and every stretch
-there is refused: the loop keeps the flow repair, `surge_after` names the rush, and the calls the
-stretch made are spent. On a Mac's GPU a call is a second or so; on Modal's CPU with `-x -z` twelve to thirty seconds a
+Over 36 frames a cycle every stretch of the stand-in is refused: the loop keeps the flow repair,
+`surge_after` names the rush, and the calls the stretch made are spent. On a Mac's GPU a call is a
+second or so; on Modal's CPU with `-x -z` twelve to thirty seconds a
 280 × 520 frame (section 1), so a loop that rushes costs two to four and a half minutes more, and a
 loop that does not, nothing.
 

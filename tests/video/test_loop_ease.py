@@ -10,10 +10,10 @@ an ordinary walk has none.
 The loops are the walker of tests/video/test_loop_flow.py, whose tail can run short of the cycle so that it
 rushes on at the wrap (`lag`). The interpolator is a stand-in that draws the walker between two frames the way
 an optical-flow in-between does: the body at the time between them, the tail moved on between its two places.
-Drawn over 36 frames a cycle, its legs, arm and head move far between frames, and the stand-in's frames made
-there, the body's own way, step further than the line between the frames as filmed the search reads them on:
-every such stretch is refused on the frames made. The walkers eased here are drawn over 14 to 48 frames, where
-the frames made keep the rest of the body within its own steps."""
+Drawn over 36 frames a cycle, the stand-in's frames made at the times the search chooses step further in the
+legs, the arm and the head than the line between the frames as filmed the search reads them on, and every such
+stretch is refused on the frames made. The walkers eased here are drawn over 14 to 48 frames, where the frames
+made keep the rest of the body within its own steps."""
 
 from __future__ import annotations
 
@@ -157,11 +157,11 @@ def test_a_rush_the_flow_reading_lets_pass_is_eased_too():
 
 
 def test_a_stretch_whose_frames_made_hurry_the_rest_of_the_body_is_refused():
-    # Over 36 frames the legs, the arm and the head move far between frames. Easing a tail a tenth of a cycle short gives
-    # the rush more time and the steps around it less; the search reads the rest of the body on the line between the
-    # frames as filmed and finds times that keep it, and the frames made, which go the body's own way between them, step
-    # further there (a validator's counterexample on 9dd5050: the arm's window 1.736 to 2.030, the stretch taken). Read
-    # on the frames made, the stretch is refused for that alone, and the loop stays as the flow left it.
+    # Over 36 frames, easing a tail a tenth of a cycle short gives the rush more time and the steps around it less; the
+    # search reads the rest of the body on the line between the frames as filmed and finds times that keep it, and the
+    # frames made, which go the body's own way between them, step further there (a validator's counterexample on 9dd5050:
+    # the arm's window 1.736 to 2.030, the stretch taken). Read on the frames made, the stretch is refused for that alone,
+    # and the loop stays as the flow left it.
     frames = _walk(lag=0.1)
     flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=0.1), ease=False)
     out, record = repair.repair_jumps(frames, Lerp(frames, lag=0.1))
