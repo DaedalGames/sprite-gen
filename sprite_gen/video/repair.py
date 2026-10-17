@@ -364,6 +364,9 @@ EASE_SLACK = 0.02  # of the timings within this share of the least change of the
 DRIFT_PIXEL = 1.0
 EASE_MARGIN = 0.5
 DRIFT_MEASURES = ("foot_centre", "body_centre", "ground")
+# With the frames the ghost and flow rounds replaced, a stretch leaves at most this share of the loop made:
+# `video-loop-compare` reads no more back as the repair's (`source.py`, "repair-locations-unverified").
+MADE_SHARE = 0.5
 
 
 def drift_points(frame: Image.Image) -> np.ndarray:
@@ -519,13 +522,15 @@ def _part_accel(progress: np.ndarray, at: list[float], times: np.ndarray, into: 
 
 
 def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interpolate | None,
-          box: tuple[int, int, int, int], blocked: set[int], made: set[int], reads: bool,
+          box: tuple[int, int, int, int], blocked: set[int], made: set[int], taken: set[int], reads: bool,
           record: dict[str, Any], ease: bool) -> list[Image.Image]:
     """The eased retime stage of `repair_jumps`, on the loop `out` as the ghost and flow rounds left it.
 
     `blocked` holds the frames no stretch may hold (given way, refused; the frames read off the flow against the way
     are added here), `made` the frames the flow rounds made: a stretch makes them again, never from them, and never
-    ends on one. Records `surge` and, where a stretch was made, an `ease` round (`ease_calls`); `ease_skipped` says why
+    ends on one. `taken` holds every frame the rounds replaced: with the stretch they are at most MADE_SHARE of the
+    loop. Records `surge` and, where a stretch
+    was made, an `ease` round (`ease_calls`); `ease_skipped` says why
     none was. With `ease` false the surge is read and nothing made."""
     flow = _flow(out, box)
     found = _surges(flow)
@@ -549,10 +554,10 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
     for s in found:
         for k in EASE_WIDTHS:
             T = s["r"] + 2 * k
-            if T >= n:
-                why = "the loop is too short to ease it"
-                continue
             stretch = [(s["d"] - k + i) % n for i in range(T + 1)]  # drawings in play order, the two kept at the ends
+            if T >= n or len(taken | {t for d in stretch[1:-1] for t in runs[d]}) > int(count * MADE_SHARE):
+                why = "the stretch would leave more than half the loop made"
+                continue
             ends = (stretch[0], stretch[-1])
             if any(t in blocked for d in stretch for t in runs[d]) or any(t in made for d in ends for t in runs[d]):
                 continue
@@ -817,7 +822,7 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
                   off_max_after=plan["off_max_before"])
     given = {j for j in replaced if j in ghosts}
     blocked = given | set(refused)
-    out = _ease(frames, out, interpolate, box, blocked, set(replaced) - given, reads, record, ease)
+    out = _ease(frames, out, interpolate, box, blocked, set(replaced) - given, set(replaced), reads, record, ease)
     eased = [r for r in record["rounds"] if r["why"] == "ease" and r["outcome"] == "accepted"]
     if eased:
         record["replaced"] = [*replaced, *(t for t in eased[0]["replaced"] if t not in replaced)]

@@ -290,3 +290,16 @@ def test_repair_on_without_rife_refuses_a_rush(tmp_path, monkeypatch):
     _no_rife(monkeypatch, tmp_path)
     with pytest.raises(SystemExit, match=r"for a part that rushes.*sprite-gen rife install"):
         _cut(tmp_path, _walk(lag=0.1), repair="on")
+
+
+def test_a_stretch_never_leaves_more_than_half_the_loop_made(monkeypatch):
+    # Fourteen frames: four drawings a side would remake eight, more than the seven video-loop-compare reads back as the
+    # repair's; three a side remakes six.
+    frames = _walk(14, lag=0.15)
+    monkeypatch.setattr(repair, "MADE_SHARE", 1.0)
+    _, unbound = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14))
+    assert _ease(unbound)["width"] == 4 and len(unbound["replaced"]) == 8
+    monkeypatch.setattr(repair, "MADE_SHARE", 0.5)
+    _, record = repair.repair_jumps(frames, Lerp(frames, lag=0.15, n=14))
+    round_ = _ease(record)
+    assert round_["outcome"] == "accepted" and round_["width"] == 3 and len(record["replaced"]) <= 14 // 2

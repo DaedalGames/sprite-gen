@@ -470,7 +470,9 @@ for a two-step one nine. It is made from the frames as filmed: a drawing the flo
 inside it is made again (`supersedes`), never made from, and a stretch never ends on one. A stretch
 never holds a frame given way, refused, or read off the flow turning back. Four a side is taken
 only where it eases the part more than three by over 2 % (`EASE_SLACK`); one stretch a loop, the
-worst rush that has one.
+worst rush that has one. With the frames the ghost and flow rounds replaced, a stretch makes at
+most half the loop (`MADE_SHARE`): `video-loop-compare` reads no more than that back as the
+repair's (its source restoration, [loop comparison](loop-comparison.md)).
 
 **The times.** How far the part has gone is the path of its coverage's centre inside each window
 that reads the rush, in px, through the frames as filmed: a centre moves as far as the part does,
@@ -526,8 +528,8 @@ loop that does not, nothing.
 `jump_repair` carries `surge` (the worst rush on the loop the flow groups left: `from`, `to`,
 `steps`, `frames`, `windows`, `ratio`, `speed`, `around`), `surge_after` (on the loop as it now
 plays, or `null`), and `ease_skipped` where a rush was read and no stretch was made (`no
-interpolator`, `the loop is too short to ease it`, `the frames around it were given way, refused,
-or flung against the way`, `no timing keeps the body in bound`). The round `why: ease` carries the
+interpolator`, `the stretch would leave more than half the loop made`, `the frames around it were
+given way, refused, or flung against the way`, `no timing keeps the body in bound`). The round `why: ease` carries the
 `surge` it eased, `width`, `anchors` (the frames kept at its ends), `frames` and `drawings` (the
 stretch in play order), `sources` (the frames as filmed it was made from), `supersedes`, `span`
 (frames from anchor to anchor), `made` (per drawing: `frames`, `time` and `own` in frames from the
