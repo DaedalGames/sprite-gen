@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -220,7 +220,10 @@ cyclic, the last frame followed by the first, inside the union box of the body o
 (the strip cells' own crop). The frames that leave the loop's flow — one or two drawings in a row
 that lie far off the line between the frames either side of them, by direction and speed, not by
 how much a step changes ([the flow reading](#the-flow-reading--a-frame-off-the-walks-way-not-a-large-step)
-below) — are taken out and made again by RIFE between the frames either side.
+below) — are taken out and made again by RIFE between the frames either side. Where a part keeps its way
+and rushes — a tail that runs short of the cycle, rushing on at the wrap — the frames either side of
+the rush are then made again at times that spread it, the body's own steps kept ([the eased
+retime](#the-eased-retime--a-part-that-rushes-on-its-way) below).
 
 | Rule | Value | Why |
 |---|---|---|
@@ -433,6 +436,107 @@ of the same blurred path, over the same usual step unless said otherwise.
 | A Hampel test (median and MAD) of the acceleration | Hampel, JASA 1974; Leys et al., JESP 2013 | ordinary walks up to 10; flung 3 % 20 | no: an even walk's acceleration varies so little that its z has no fixed bound. The median stays, as the usual step |
 | Frame deletion and insertion by optical-flow consistency | Chao, Jiang and Sun, IWDW 2012 | not run | no: the same question for edited video, answered on flow (above) |
 | Outermost points (each row's outermost column) fitted on a periodic curve | — | not run on these loops | no: the outermost point of a row switches from one part to another (a foot leaving the row), a jump on an ordinary step |
+
+### The eased retime — a part that rushes on its way
+
+The flow reading names a frame that leaves the way a part is going. A part can keep its way and
+still jump: a tail that runs short of the cycle — swinging on a beat of its own, as a generated
+clip's tail can — rushes on at the wrap, covering in one step what it covers in eight elsewhere.
+Each frame there lies near enough the line between its neighbours that the flow reading lets it
+pass, or takes the frame at the wrap out and leaves the rush over two steps, half as fast and still
+far faster than the steps around it. `repair.surges` reads the speed itself, and a stage after the
+flow groups makes the frames either side of the rush again, at times that spread it.
+
+**The rush.** On the flow reading's own path, windows and usual steps, on the loop as the ghost and
+flow rounds left it: a run of one or two steps (`SURGE_SPAN`) whose mean step in a window is at
+least **3.0** usual steps (`SURGE_LIMIT`) and **3.0** times the mean of the three steps either side
+of it (`SURGE_RATIO`, `SURGE_AROUND`), and through which the part goes on the way it came — no
+drawing from the run's first to its last turns back (the flow reading's `turn` at least 0; a step
+that turns back is a frame flung, the flow repair's). Rushes are taken worst first by that ratio,
+none sharing a step. On the synthetic walker of the tests (measured 2026-10-17):
+
+| Loop | Largest step, usual steps | Largest run over 2 against the steps either side | Read |
+|---|---|---|---|
+| ordinary — drawn every frame, at 24 frames, on twos | 2.1 to 2.4 | 1.9 to 2.2 | no rush |
+| a frame flung 5 % of the body height against the sway | 5.0 | 3.9 | not a rush: it turns back (the flow repair takes it) |
+| the tail 5 % of a cycle short | 3.8 at the wrap | 3.2 | a rush |
+| 8 % short | 4.9 | 4.4 | a rush |
+| a tenth short — the flow reading's 2.6, under its limit | 5.8 | 5.8 | a rush |
+| a quarter short — the flow repair makes a frame at the wrap, and two steps of 5.8 are left | 10.6 (7.2 after the flow repair) | 13.2 (6.6) | a rush |
+
+**The stretch.** Three or four drawings either side of the rush (`EASE_WIDTHS`), between the two
+drawings at its ends, which are kept: three a side for a one-step rush is six frames, four a side
+for a two-step one nine. It is made from the frames as filmed: a drawing the flow repair made
+inside it is made again (`supersedes`), never made from, and a stretch never ends on one. A stretch
+never holds a frame given way, refused, or read off the flow turning back. Four a side is taken
+only where it eases the part more than three by over 2 % (`EASE_SLACK`); one stretch a loop, the
+worst rush that has one.
+
+**The times.** How far the part has gone is the path of its coverage's centre inside each window
+that reads the rush, in px, through the frames as filmed: a centre moves as far as the part does,
+where the distance between two blurred states stops growing once they no longer overlap, and a
+rush split by it would come out faster in the middle than the search reckoned. Every frame of the
+stretch is given a time, on a grid of a twentieth of a step (`EASE_GRID`); of the timings that go
+forward and keep, in every step,
+
+- each body measure — the foot line's centre and the body's mass, x (`loop.foot_centre`,
+  `loop.body_centre`: the reference `--anchor feet` reads drift on), and the lowest solid row, y,
+  the ground it stands on (`repair.drift_points`) — within the stretch's largest step as it played,
+  and half a pixel (`DRIFT_PIXEL` − `EASE_MARGIN`), drawn between the frames as filmed, and
+- every other window of the flow reading — the rest of the body — within its own largest step in
+  the stretch: no leg or arm hurried past what it did there,
+
+`repair.ease_times` takes the one whose largest change of the part's step from one step to the next,
+from the step into the stretch to the step out of it, is least (`accel`): the part speeds up and
+slows down as gradually as the body lets it, from the speed it came in with to the speed it goes on
+with — an ease in and out whose ends are its own. Of the timings within 2 % of that, the one nearest
+the frames' own times, so a frame the part does not need moved keeps its time.
+
+**Made, then read again.** Each drawing not at its own time is made by RIFE between the two frames
+as filmed either side of its time, at that fraction of the way between them (in frames), and shown
+on every frame the drawing was; a time on a frame as filmed is that frame. One call a drawing made,
+at most nine, outside the three of the flow groups (`ease_calls`). The stretch is taken only where,
+on the frames made:
+
+| Read on the frames made | Refused for (`rejected_for`) |
+|---|---|
+| no made frame carries an interpolation fault (section 4) | `fault` |
+| no body measure moves in a step more than a pixel past the stretch's largest step as it played — the measures are read on whole pixels, the ground on a row (`drift`: `bound`, `moved`, `over`) | `drift` |
+| the part's largest step over the stretch falls (`part`) | `no gain` |
+| no frame of the stretch is read further off the flow than before and at or over its limit (`off_max`) | `off the flow` |
+| no rush is read in the stretch in a window the part does not rush in: the rest of the body was hurried | `a new rush` |
+
+A refused stretch keeps the loop as the flow groups left it; the loop keeps its length and every
+frame outside the stretch is as it was.
+
+| On the synthetic walker (the stand-in in-between of `tests/video/test_loop_ease.py`) | Part's largest step | Frames made |
+|---|---|---|
+| the tail 5 % of a cycle short | 3.8 → 2.6 | 8, at four a side, 7 calls |
+| 8 % | 4.9 → 2.6 | 8, 8 calls |
+| a tenth | 5.8 → 2.7, no rush left | 8, 8 calls |
+| a quarter, after the flow repair | 7.2 → 5.0, still read a rush (3.7) | 9, 9 calls |
+| a quarter, on twos | 3.4 → 1.6 (on its drawings) | 8 drawings, 16 frames, 8 calls |
+
+A quarter of a cycle is too far to spread out of sight over four drawings a side without hurrying
+the legs past their own largest step: the rush falls by three tenths and is left, named in `surge_after`.
+On a Mac's GPU a call is a second or so; on Modal's CPU with `-x -z` twelve to thirty seconds a
+280 × 520 frame (section 1), so a loop that rushes costs two to four and a half minutes more, and a
+loop that does not, nothing.
+
+`jump_repair` carries `surge` (the worst rush on the loop the flow groups left: `from`, `to`,
+`steps`, `frames`, `windows`, `ratio`, `speed`, `around`), `surge_after` (on the loop as it now
+plays, or `null`), and `ease_skipped` where a rush was read and no stretch was made (`no
+interpolator`, `the loop is too short to ease it`, `the frames around it were given way, refused,
+or flung against the way`, `no timing keeps the body in bound`). The round `why: ease` carries the
+`surge` it eased, `width`, `anchors` (the frames kept at its ends), `frames` and `drawings` (the
+stretch in play order), `sources` (the frames as filmed it was made from), `supersedes`, `span`
+(frames from anchor to anchor), `made` (per drawing: `frames`, `time` and `own` in frames from the
+first anchor, `from`, `t`, `proposal`, `faults`, `look`), `accel` (`before`, `chosen`), `part`
+(`windows`, `step_max_before`, `step_max_after`), `drift`, `off_max`, `calls`, `faults`, `look` and
+`outcome`, and `replaced` or `rejected_for`. The record's `replaced` holds the frames it changed, the
+seam gate reads the rendered cells, and the summary names them (`eased`). Without RIFE the rush is
+cut as filmed with a warning line (`why`: "RIFE not installed — the rush cut as filmed"), and
+`--repair on` refuses.
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 

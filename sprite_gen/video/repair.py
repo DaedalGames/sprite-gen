@@ -13,6 +13,12 @@ ghost screen names a filmed ghost is replaced in the same stage, before the flow
 RIFE's frame between its neighbours where both are clean and it has no fault, else by the clean
 frame beside it (docs/loop-repair.md section 4).
 
+A part can also keep its way and still rush: a tail that runs short of the cycle covers at the wrap in one step what
+it covers in eight elsewhere. The surge reading (`surges`) reads that speed; the frames either side of the rush, three
+or four drawings each way, are made again by RIFE at times chosen so the part's speed rises and falls gradually
+(`ease_times`), while the body's feet, mass and ground line move no further in a step, nor the rest of the body
+faster, than they did in that stretch (docs/loop-repair.md section 2, "The eased retime").
+
 Measured on the loop as it plays — cyclic, the last frame followed by the first — and inside
 the union box of the body over the whole loop, the way the strip cells are cut, so a frame's
 score does not depend on where the canvas put the body.
@@ -31,6 +37,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.video import held as held_mod
+from sprite_gen.video import legs as legs_mod
 from sprite_gen.video.rife import Interpolate, crossfade, ghost, outline_shift, smear
 from sprite_gen.video.interpolation_quality import clean_beside, faults, ghost_screen, looks
 
@@ -202,12 +209,13 @@ def flow_drawings(states: np.ndarray) -> tuple[list[list[int]], int]:
     return runs, hold
 
 
-def _flow(frames: list[Image.Image], box: tuple[int, int, int, int] | None) -> dict[str, Any]:
+def _flow(frames: list[Image.Image], box: tuple[int, int, int, int] | None,
+          drawings: tuple[list[list[int]], int] | None = None) -> dict[str, Any]:
     """The loop's path read on its drawings: their states, the runs of frames that show them, the windows,
     and per drawing and window the distance off the path, the step out and the turn, and the windows' usual
-    step."""
+    step. `drawings` (runs, hold) reads it on those drawings instead of the ones `flow_drawings` finds."""
     states = flow_states(frames, box)
-    runs, hold = flow_drawings(states)
+    runs, hold = drawings if drawings is not None else flow_drawings(states)
     path = states[[run[0] for run in runs]]
     windows = flow_windows(states.shape[1], states.shape[2])
     off, step, turn = _flow_read(path, windows)
@@ -335,6 +343,338 @@ def flow_targets(frames: list[Image.Image], *, limit: float = FLOW_LIMIT, span: 
     return record
 
 
+# --- the eased retime (docs/loop-repair.md section 2, "The eased retime") ---------------------------------------
+
+# A part can go on the way it was going and still jump: a tail that runs short of the cycle rushes on at the wrap,
+# covering in one step what it covers in eight elsewhere. A frame there lies near enough the line between its
+# neighbours that the flow reading lets it pass, or takes it out and leaves the rush halved over two steps. The
+# surge reading reads the speed itself: a run of one or two steps over the steps either side of it, in a window
+# where it goes on the way it came. The frames either side of it are then made again at times chosen so the part's
+# speed rises and falls gradually, as far as the body's own steps there allow.
+SURGE_LIMIT = 3.0  # a run's mean step, in its window's usual steps, at or over which a part may rush ...
+SURGE_RATIO = 3.0  # ... and that many times the mean of the SURGE_AROUND steps either side of it: it rushes
+SURGE_AROUND = 3
+SURGE_SPAN = 2  # steps in a row a rush is read over at most
+EASE_WIDTHS = (3, 4)  # drawings either side of the rush made again, between two frames as filmed
+EASE_GRID = 20  # times the search tries per step between two drawings
+EASE_SLACK = 0.02  # of the timings within this share of the least change of the part's step, the nearest its own
+# A made frame's body measures may move in a step up to the stretch's largest step as it played and DRIFT_PIXEL more:
+# they are read on whole pixels (the ground is a row). The search keeps EASE_MARGIN inside that, as a made frame's feet
+# and mass land a little off the line between its two frames that the search reads them on.
+DRIFT_PIXEL = 1.0
+EASE_MARGIN = 0.5
+DRIFT_MEASURES = ("foot_centre", "body_centre", "ground")
+
+
+def drift_points(frame: Image.Image) -> np.ndarray:
+    """Where the body stands in `frame`: the foot line's centre and the body's mass, x (`loop.foot_centre`,
+    `loop.body_centre`, the reference `--anchor feet` reads drift on), and the lowest solid row (`legs.LOW_ALPHA`), y,
+    the ground it stands on. NaN for an empty frame."""
+    from sprite_gen.video import loop as loop_mod  # loop imports this module
+
+    box = frame.getchannel("A").point(lambda v: 255 if v >= ALPHA_SOLID else 0).getbbox()
+    rows = np.nonzero((np.asarray(frame.getchannel("A")) >= legs_mod.LOW_ALPHA).any(axis=1))[0]
+    if box is None or rows.size == 0:
+        return np.full(len(DRIFT_MEASURES), np.nan)
+    return np.array([loop_mod.foot_centre(frame, box), loop_mod.body_centre(frame, box), float(rows.max())])
+
+
+def _surges(flow: dict[str, Any]) -> list[dict[str, Any]]:
+    """The rushes of a loop's path (`_flow`), worst first, none sharing a step: per run of 1..SURGE_SPAN steps from
+    drawing `d`, the windows where its mean step is at least SURGE_LIMIT usual steps and SURGE_RATIO times the
+    mean of the SURGE_AROUND steps either side, and no drawing from its first to its last turns back."""
+    rel = flow["step"] / flow["scale"]
+    turn = flow["turn"]
+    n = len(rel)
+    if n < 2 * SURGE_AROUND + SURGE_SPAN + 1:
+        return []
+    found = []
+    for r in range(1, SURGE_SPAN + 1):
+        for d in range(n):
+            run = [(d + i) % n for i in range(r)]
+            around = [(d - 1 - i) % n for i in range(SURGE_AROUND)] + [(d + r + i) % n for i in range(SURGE_AROUND)]
+            speed, base = rel[run].mean(axis=0), rel[around].mean(axis=0)
+            ratio = speed / np.maximum(base, 1e-12)
+            onward = (turn[[(d + i) % n for i in range(r + 1)]] >= 0).all(axis=0)
+            hit = np.nonzero((speed >= SURGE_LIMIT) & (ratio >= SURGE_RATIO) & onward)[0]
+            if hit.size:
+                w = int(hit[ratio[hit].argmax()])
+                found.append({"d": d, "r": r, "W": [int(x) for x in hit], "ratio": float(ratio[w]),
+                              "speed": float(speed[w]), "around": float(base[w])})
+    taken: list[dict[str, Any]] = []
+    for s in sorted(found, key=lambda s: (-s["ratio"], s["r"], s["d"])):
+        steps = {(s["d"] + i) % n for i in range(s["r"])}
+        if not any(steps & {(t["d"] + i) % n for i in range(t["r"])} for t in taken):
+            taken.append(s)
+    return taken
+
+
+def _said_surge(s: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any]:
+    runs, n = flow["runs"], len(flow["runs"])
+    return {"from": runs[s["d"]][0], "to": runs[(s["d"] + s["r"]) % n][0], "steps": s["r"],
+            "frames": [t for i in range(s["r"] + 1) for t in runs[(s["d"] + i) % n]],
+            "windows": [[round(v, 4) for v in flow["fractions"][w]] for w in s["W"]],
+            "ratio": round(s["ratio"], 4), "speed": round(s["speed"], 4), "around": round(s["around"], 4)}
+
+
+def surges(frames: list[Image.Image], *, box: tuple[int, int, int, int] | None = None) -> list[dict[str, Any]]:
+    """The runs of steps where a part of the loop rushes (docs/loop-repair.md section 2, "The eased retime"), worst
+    first, none sharing a step: one or two steps in a row whose mean step, in a window of the flow reading, is at
+    least SURGE_LIMIT of its usual steps and SURGE_RATIO times the mean of the SURGE_AROUND steps either side, where
+    the part goes on the way it came through them (a step that turns back is a frame flung, the flow repair's). Read
+    on the loop's drawings (`flow_drawings`). Each: the frames it runs `from` and `to` (first frames of its drawings),
+    its `steps`, the `frames` of its drawings, the `windows` that read it (fractions of the box), and in the one that
+    reads it most its `ratio`, `speed` and `around` (usual steps)."""
+    flow = _flow(frames, box)
+    return [_said_surge(s, flow) for s in _surges(flow)]
+
+
+def ease_times(times: np.ndarray, progress: np.ndarray, body: np.ndarray, bound: np.ndarray, into: np.ndarray,
+               out: np.ndarray, *, own: Iterable[float], allowed: np.ndarray | None = None,
+               slack: float = EASE_SLACK) -> dict[str, Any] | None:
+    """The times to make a stretch's frames at (docs/loop-repair.md section 2, "The eased retime").
+
+    `times` is the grid searched, 0 (the drawing before the stretch) to T (the drawing after), EASE_GRID points a step;
+    `progress` (windows, times) how far the part has gone there in each window it rushes in, and `into` and `out` its
+    step into the first time and out of the last, in one unit; `body` (measures, times) where the body stands there and
+    `bound` how far each measure may move in a step; `allowed` (times, times), where given, the steps from one time to a
+    later one the rest of the body allows; `own` the frames' own times, on the grid, in order.
+
+    Of the timings that go forward and keep every step in bound and allowed, the one whose largest change of the part's
+    step from one step to the next — from `into`, through the stretch, to `out` — is least (`accel`): its speed rises and
+    falls as gradually as the body lets it. Of those within `slack` of that, the one nearest the frames' own times (the
+    least sum of squares), so a frame the part does not need moved keeps its time. None where no timing keeps in bound."""
+    own_at = [int(round(float(np.interp(t, times, np.arange(len(times)))))) for t in own]
+    m, G = len(own_at), len(times)
+    if m == 0:
+        return {"accel": 0.0, "times": []}
+    later = np.arange(G)[None, :] > np.arange(G)[:, None]
+    ok = later & np.all(np.abs(body[:, None, :] - body[:, :, None]) <= bound[:, None, None] + 1e-9, axis=0)
+    if allowed is not None:
+        ok &= allowed
+    step = progress[:, None, :] - progress[:, :, None]  # (windows, p, q): the part's step from time p to time q
+    end = G - 1
+
+    def solve(limit: float | None) -> tuple[float, list[int]] | None:
+        cost = np.full((G, G), np.inf)  # cost[p, q]: the frame before at p, this one at q
+        first = np.abs(step[:, 0, :] - into[:, None]).max(axis=0)
+        live = ok[0] & (True if limit is None else first <= limit)
+        cost[0, live] = first[live] if limit is None else (np.arange(G)[live] - own_at[0]) ** 2.0
+        back = []
+        for i in range(1, m):
+            new, arg = np.full((G, G), np.inf), np.zeros((G, G), dtype=np.int64)
+            for p in range(G):
+                before = np.nonzero(np.isfinite(cost[:, p]))[0]
+                after = np.nonzero(ok[p])[0]
+                if not before.size or not after.size:
+                    continue
+                acc = np.abs(step[:, p, after][:, None, :] - step[:, before, p][:, :, None]).max(axis=0)
+                if limit is None:
+                    c = np.maximum(cost[before, p][:, None], acc)
+                else:
+                    c = np.where(acc <= limit, cost[before, p][:, None] + (after[None, :] - own_at[i]) ** 2.0, np.inf)
+                j = c.argmin(axis=0)
+                new[p, after] = c[j, np.arange(after.size)]
+                arg[p, after] = before[j]
+            back.append(arg)
+            cost = new
+        ps, qs = np.nonzero(np.isfinite(cost) & ok[:, end][None, :])
+        if not ps.size:
+            return None
+        last = np.maximum(np.abs(step[:, qs, end] - step[:, ps, qs]).max(axis=0),
+                          np.abs(out[:, None] - step[:, qs, end]).max(axis=0))
+        total = np.maximum(cost[ps, qs], last) if limit is None else np.where(last <= limit, cost[ps, qs], np.inf)
+        k = int(total.argmin())
+        if not np.isfinite(total[k]):
+            return None
+        path = [int(qs[k]), int(ps[k])]
+        for arg in reversed(back):
+            path.append(int(arg[path[-1], path[-2]]))
+        return float(total[k]), list(reversed(path))[1:]
+
+    least = solve(None)
+    if least is None:
+        return None
+    near = solve(least[0] * (1 + slack) + 1e-9)
+    chosen = near[1] if near is not None else least[1]
+    return {"accel": least[0], "times": [float(times[g]) for g in chosen]}
+
+
+def _part_places(path: np.ndarray, window: tuple[int, int, int, int]) -> np.ndarray:
+    """Per drawing of a path (`_flow`), the centre of its coverage inside `window` (y0, y1, x0, x1 of the path's grid),
+    (y, x) in cells. Where a part moves through the window its centre moves with it, as far as it goes: a step's
+    distance between two blurred states stops growing once they no longer overlap, the centre's does not."""
+    y0, y1, x0, x1 = window
+    a = path[:, y0:y1, x0:x1, 0]
+    ys, xs = np.mgrid[y0:y1, x0:x1]
+    mass = np.maximum(a.sum(axis=(1, 2)), 1e-12)
+    return np.stack([(a * ys).sum(axis=(1, 2)) / mass, (a * xs).sum(axis=(1, 2)) / mass], axis=1)
+
+
+def _part_accel(progress: np.ndarray, at: list[float], times: np.ndarray, into: np.ndarray, out: np.ndarray) -> float:
+    """The largest change of the part's step from one step to the next over a stretch shown at `at` (with 0 and T)."""
+    reached = np.stack([np.interp([0.0, *at, float(times[-1])], times, p) for p in progress])
+    steps = np.concatenate([into[:, None], np.diff(reached, axis=1), out[:, None]], axis=1)
+    return float(np.abs(np.diff(steps, axis=1)).max())
+
+
+def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interpolate | None,
+          box: tuple[int, int, int, int], blocked: set[int], made: set[int], reads: bool,
+          record: dict[str, Any], ease: bool) -> list[Image.Image]:
+    """The eased retime stage of `repair_jumps`, on the loop `out` as the ghost and flow rounds left it.
+
+    `blocked` holds the frames no stretch may hold (given way, refused; the frames read off the flow against the way
+    are added here), `made` the frames the flow rounds made: a stretch makes them again, never from them, and never
+    ends on one. Records `surge` and, where a stretch was made, an `ease` round (`ease_calls`); `ease_skipped` says why
+    none was. With `ease` false the surge is read and nothing made."""
+    flow = _flow(out, box)
+    found = _surges(flow)
+    record["surge"] = _said_surge(found[0], flow) if found else None
+    if not found:
+        return out
+    if not ease:
+        record["ease_skipped"] = "not asked"
+        return out
+    runs, n = flow["runs"], len(flow["runs"])
+    count = len(out)
+    first = [run[0] for run in runs]
+    rel = flow["step"] / flow["scale"]
+    # a drawing off the flow that turns back is a frame flung, not the rush: nothing is eased over it
+    read = _drawing_scores(flow)
+    blocked = blocked | {t for d in range(n) if read["off"][d] >= FLOW_LIMIT and read["turn"][d] < 0 for t in runs[d]}
+    points = [drift_points(out[t]) for t in first]
+    cell = (box[2] - box[0]) / flow["path"].shape[2]  # px a cell of the path's grid
+    plans = []
+    why = "the frames around it were given way, refused, or flung against the way"
+    for s in found:
+        for k in EASE_WIDTHS:
+            T = s["r"] + 2 * k
+            if T >= n:
+                why = "the loop is too short to ease it"
+                continue
+            stretch = [(s["d"] - k + i) % n for i in range(T + 1)]  # drawings in play order, the two kept at the ends
+            ends = (stretch[0], stretch[-1])
+            if any(t in blocked for d in stretch for t in runs[d]) or any(t in made for d in ends for t in runs[d]):
+                continue
+            sources = [i for i, d in enumerate(stretch) if not set(runs[d]) & made]
+            W = s["W"]
+            # how far the part has gone: the path of its window's coverage centre, px, through the frames as filmed
+            places = [_part_places(flow["path"], flow["windows"][w]) * cell for w in W]
+            progress_at = np.array([[0.0, *np.cumsum([float(np.linalg.norm(pl[stretch[j]] - pl[stretch[i]]))
+                                                      for i, j in zip(sources, sources[1:])])] for pl in places])
+            grid = np.arange(0, T * EASE_GRID + 1) / EASE_GRID
+            progress = np.stack([np.interp(grid, sources, p) for p in progress_at])
+            seen = np.array([points[d] for d in stretch])
+            if not np.isfinite(seen).all():
+                continue
+            bound = np.abs(np.diff(seen, axis=0)).max(axis=0)
+            body = np.stack([np.interp(grid, sources, seen[sources, j]) for j in range(seen.shape[1])])
+            into = np.array([float(np.linalg.norm(pl[stretch[0]] - pl[(stretch[0] - 1) % n])) for pl in places])
+            after = np.array([float(np.linalg.norm(pl[(stretch[-1] + 1) % n] - pl[stretch[-1]])) for pl in places])
+            own = list(range(1, T))
+            # the rest of the body, window by window, moves in no step further than it did in a step of the stretch
+            rest = [w for w in range(len(flow["windows"])) if w not in W]
+            allowed = np.ones((len(grid), len(grid)), dtype=bool)
+            for w in rest:
+                y0, y1, x0, x1 = flow["windows"][w]
+                x = np.stack([flow["path"][stretch[i]][y0:y1, x0:x1].ravel() for i in sources])
+                at = np.stack([np.interp(grid, sources, x[:, j]) for j in range(x.shape[1])], axis=1)
+                sq = (at * at).sum(axis=1)
+                dist = np.sqrt(np.maximum(sq[:, None] + sq[None, :] - 2 * at @ at.T, 0.0)) / flow["scale"][w]
+                allowed &= dist <= max(float(rel[d, w]) for d in stretch[:-1]) + 1e-9
+            result = ease_times(grid, progress, body, bound + DRIFT_PIXEL - EASE_MARGIN, into, after, own=own,
+                                allowed=allowed)
+            if result is None:
+                why = "no timing keeps the body in bound"
+                continue
+            plans.append({"surge": s, "k": k, "stretch": stretch, "sources": sources, "W": W, "progress": progress,
+                          "grid": grid, "bound": bound, "into": into, "after": after, "result": result,
+                          "accel_before": _part_accel(progress, [float(t) for t in own], grid, into, after)})
+        if plans:
+            break
+    if not plans:
+        record["ease_skipped"] = why
+        return out
+    least = min(p["result"]["accel"] for p in plans)
+    plan = next(p for p in plans if p["result"]["accel"] <= least * (1 + EASE_SLACK) + 1e-9)  # the narrower, as good
+    if interpolate is None:
+        record["ease_skipped"] = "no interpolator"
+        return out
+    s, stretch, sources = plan["surge"], plan["stretch"], plan["sources"]
+    span_frames = (first[stretch[-1]] - first[stretch[0]]) % count
+    at_frames = [((first[d] - first[stretch[0]]) % count) for d in stretch]
+    new = list(out)
+    made_rows, calls = [], 0
+    for i, d in enumerate(stretch[1:-1], start=1):
+        tau = plan["result"]["times"][i - 1]
+        drawing = runs[d]
+        row: dict[str, Any] = {"frames": drawing, "time": round(float(np.interp(tau, range(len(stretch)), at_frames)), 4),
+                               "own": at_frames[i]}
+        if abs(tau - i) < 1e-9:
+            row.update({"from": None, "t": None, "proposal": None, "faults": [], "look": []})
+            made_rows.append(row)
+            continue
+        j = max(x for x in range(len(sources) - 1) if sources[x] <= tau + 1e-9)
+        p, q = stretch[sources[j]], stretch[sources[j + 1]]
+        fp, fq = at_frames[sources[j]], at_frames[sources[j + 1]]
+        t = (float(np.interp(tau, range(len(stretch)), at_frames)) - fp) / (fq - fp)
+        a, b = frames[first[p]], frames[first[q]]
+        if t < 1e-9:
+            frame = a
+            row.update({"from": [first[p], first[p]], "t": 0.0, "proposal": None, "faults": [], "look": []})
+        else:
+            frame = interpolate(a, b, t)
+            calls += 1
+            if frame.mode != "RGBA" or frame.size != out[drawing[0]].size:
+                raise ValueError("repair interpolator must return an RGBA frame of the original size")
+            measure = {**smear(frame, a, b), "outline_shift": outline_shift(frame, a, b),
+                       "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, a, b, t)}
+            row.update({"from": [first[p], first[q]], "t": round(t, 4), "proposal": measure,
+                        "faults": faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"]),
+                        "look": looks(measure)})
+        made_rows.append(row)
+        for k in drawing:
+            new[k] = frame
+    after_flow = _flow(new, box, (runs, flow["hold"]))
+    moved = np.abs(np.diff(np.array([drift_points(new[first[d]]) for d in stretch]), axis=0)).max(axis=0)
+    over = bool(np.any(~np.isfinite(moved)) or np.any(moved > plan["bound"] + DRIFT_PIXEL + 1e-9))
+    W = plan["W"]
+    part_before = float(max(rel[d, w] for d in stretch[:-1] for w in W))
+    rel_after = after_flow["step"] / after_flow["scale"]
+    part_after = float(max(rel_after[d, w] for d in stretch[:-1] for w in W))
+    off_before = float(read["off"][stretch].max())
+    off_after = float((after_flow["off"] / after_flow["scale"]).max(axis=1)[stretch].max())
+    wrong = sorted({f for r in made_rows for f in r["faults"]})
+    inside = set(stretch)
+    # a rush the stretch did not have, in a window the part does not rush in: the retime hurried the rest of the body
+    rushes = [x for x in _surges(after_flow)
+              if {(x["d"] + i) % n for i in range(x["r"] + 1)} & inside and set(x["W"]) - set(W)]
+    rejected = ((["fault"] if wrong else []) + (["drift"] if over else []) + (["no gain"] if part_after >= part_before else [])
+                + (["off the flow"] if off_after >= FLOW_LIMIT and off_after > off_before else [])
+                + (["a new rush"] if rushes else []))
+    changed = [t for d in stretch[1:-1] for t in runs[d] if new[t] is not out[t]]
+    round_: dict[str, Any] = {
+        "why": "ease", "surge": _said_surge(s, flow), "width": plan["k"], "anchors": [first[stretch[0]], first[stretch[-1]]],
+        "frames": [t for d in stretch[1:-1] for t in runs[d]], "drawings": [runs[d] for d in stretch[1:-1]],
+        "sources": [first[stretch[i]] for i in sources], "supersedes": sorted(t for t in changed if t in made),
+        "span": span_frames, "made": made_rows,
+        "accel": {"before": round(plan["accel_before"], 4), "chosen": round(plan["result"]["accel"], 4)},
+        "part": {"windows": [[round(v, 4) for v in flow["fractions"][w]] for w in W],
+                 "step_max_before": round(part_before, 4), "step_max_after": round(part_after, 4)},
+        "drift": {"measures": list(DRIFT_MEASURES), "bound": [round(float(v), 3) for v in plan["bound"]],
+                  "moved": [round(float(v), 3) for v in moved], "over": over},
+        "off_max": {"before": round(off_before, 4), "after": round(off_after, 4)}, "calls": calls, "faults": wrong,
+        "look": sorted({w for r in made_rows for w in r["look"]}), "outcome": "rejected" if rejected else "accepted"}
+    if rejected:
+        round_["rejected_for"] = rejected
+    else:
+        round_["replaced"] = changed
+        out = new
+    record["rounds"].append(round_)
+    record["ease_calls"] = calls
+    return out
+
+
 def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], interpolate: Interpolate | None,
               out: list[Image.Image]) -> dict[str, Any]:
     """The round of a filmed ghost at `j` (`why` ghost), its cell replaced in `out` where it gives way.
@@ -375,7 +715,7 @@ def _give_way(frames: list[Image.Image], j: int, ghosts: dict[int, float], inter
 
 def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, facing: str = "right",
                  limit: float = FLOW_LIMIT, span: int = FLOW_SPAN, max_frames: int = MAX_REPAIRS,
-                 screen: dict[str, Any] | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+                 screen: dict[str, Any] | None = None, ease: bool = True) -> tuple[list[Image.Image], dict[str, Any]]:
     """Replace each filmed ghost the screen names, then take out each group of frames off the loop's flow and
     make it again with RIFE between the frames either side, worst first (docs/loop-repair.md section 2).
 
@@ -395,8 +735,16 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     (`refused`); a made drawing that cross-fades two drawings inside its silhouette is still taken,
     its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
     beside it, and the flow search stops at the first group it would make, naming it (`unmade`). The
-    flow is read again after each group, on the union box of the original loop. `facing` reads nothing
-    here: it is recorded for the jump guard of `video-loop-compare` (`restoration.jump`)."""
+    flow is read again after each group, on the union box of the original loop. Then, on the loop as the rounds left
+    it, the eased retime (`why` ease, `_ease`; `ease` false reads the rush and makes nothing): the worst rush
+    (`surges`, recorded as `surge`) is eased over a stretch of EASE_WIDTHS drawings either side, made from the frames
+    as filmed (a frame the flow made inside it is made again, `supersedes`), each drawing at the time `ease_times`
+    chooses and shown on every frame it was; the stretch is taken only where no made frame has a fault, no body
+    measure moves further than the stretch did and a pixel (`drift`), the part's largest step falls (`part`), no
+    frame is left further off the flow than the limit and before, and no new rush appears in the rest of the body
+    (`rejected_for` names what failed). Its calls are its own, outside `max_frames` (`ease_calls`). `surge_after`
+    is the reading of the loop as it now plays. `facing` reads nothing here: it is recorded for the jump guard of
+    `video-loop-compare` (`restoration.jump`)."""
     out = list(frames)
     n = len(out)
     box = union_box(frames)
@@ -467,6 +815,16 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
         record["rounds"].append(round_)
     record.update(replaced=replaced, refused=refused, attempts=calls, stopped=stopped, unfixed=plan["unfixed"],
                   off_max_after=plan["off_max_before"])
+    given = {j for j in replaced if j in ghosts}
+    blocked = given | set(refused)
+    out = _ease(frames, out, interpolate, box, blocked, set(replaced) - given, reads, record, ease)
+    eased = [r for r in record["rounds"] if r["why"] == "ease" and r["outcome"] == "accepted"]
+    if eased:
+        record["replaced"] = [*replaced, *(t for t in eased[0]["replaced"] if t not in replaced)]
+        record["off_max_after"] = round(float(flow_scores(out, box=box)["off"].max()), 4)
+    if record["surge"] is not None:
+        later = _flow(out, box)
+        record["surge_after"] = next((_said_surge(s, later) for s in _surges(later)), None)
     return out, record
 
 

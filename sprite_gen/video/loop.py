@@ -894,11 +894,12 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
                   required: bool, screen: dict[str, Any]) -> tuple[list[Image.Image], dict[str, Any]]:
     """`repair_mod.repair_jumps` on the cut as filmed and its ghost `screen`, with RIFE located only
     once a frame is to be made: a loop with no frame off its flow and no ghost between two clean frames
-    needs no binary. The report names the interpolator that made the frames.
+    needs no binary, nor one with no part that rushes (the eased retime, `repair.surges`). The report names the
+    interpolator that made the frames.
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
-    each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow) stays as
-    filmed, and the record says why where a jump was left (`rife`, `install`; `applied` false where
+    each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow) and a rush stay as
+    filmed, and the record says why where a jump or a rush was left (`rife`, `install`; `applied` false where
     nothing was replaced)."""
     made_by: list[dict[str, str]] = []
     calls = 0
@@ -924,6 +925,11 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
         if "unmade" in record:
             record.update(why="RIFE not installed — cut as filmed" if not record["replaced"] else
                           "RIFE not installed — the jump cut as filmed, each filmed ghost given way to the clean frame beside it",
+                          rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+        elif record.get("ease_skipped") == "no interpolator":
+            # no jump, but a part that rushes: the frames either side of it were to be made again at eased times
+            record.update(why="RIFE not installed — the rush cut as filmed" if not record["replaced"] else
+                          "RIFE not installed — the rush cut as filmed, each filmed ghost given way to the clean frame beside it",
                           rife=str(exc), install=rife_mod.INSTALL_COMMAND)
         return repaired, record
     frames = repaired
@@ -1420,8 +1426,8 @@ def run_loop(
         except (ValueError, rife_mod.RifeUnavailable) as exc:
             fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
-            error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, or for a filmed ghost between two clean "
-                     f"frames) — {fix} (docs/loop-repair.md)")
+            error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, for a part that rushes, or for a filmed "
+                     f"ghost between two clean frames) — {fix} (docs/loop-repair.md)")
             shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
@@ -1452,11 +1458,16 @@ def run_loop(
                 print(f"video-loop: warning: {what} with RIFE's frame between its neighbours, which may "
                       f"cross-fade two drawings inside its outline (crossfade {proposal['crossfade']:.4f}); kept, a reading to "
                       "look at — see it in the loop, or cut it with --repair off (docs/loop-repair.md section 4)", file=sys.stderr)
-        if "rife" in report_base["jump_repair"]:
+        if "unmade" in report_base["jump_repair"]:
             unmade = report_base["jump_repair"]["unmade"]
             print(f"video-loop: warning: a jump frame was not repaired (frames {unmade['frames']}, {unmade['off']:.2f}x its "
                   "region's usual step off the line between its neighbours) — RIFE is not installed, so the loop is cut as filmed; "
                   f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md)", file=sys.stderr)
+        elif "rife" in report_base["jump_repair"]:
+            rush = report_base["jump_repair"]["surge"]
+            print(f"video-loop: warning: a part of the loop rushes (frames {rush['frames']}, {rush['ratio']:.1f}x its steps "
+                  "either side) and was not eased — RIFE is not installed, so the loop is cut as filmed; "
+                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md section 2)", file=sys.stderr)
     else:
         report_base["jump_repair"] = {"applied": False, "why": "--repair off" if repair == "off" else f"not a gait state ({state})"}
     if prof.gait:
@@ -1735,6 +1746,9 @@ def run(**kwargs: object) -> int:
             summary[key] = payload[key]
     if payload.get("jump_repair", {}).get("replaced"):
         summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
+        eased = [r for r in payload["jump_repair"]["rounds"] if r.get("why") == "ease" and r["outcome"] == "accepted"]
+        if eased:
+            summary["jump_repair"]["eased"] = eased[0]["replaced"]
     summary["strip"] = {k: payload["strip"][k] for k in ("path", "frames", "w", "h", "body_h", "delay_ms")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

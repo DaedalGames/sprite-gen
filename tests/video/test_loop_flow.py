@@ -24,9 +24,11 @@ W, H, N = 240, 300, 36
 SIZE_JUMP = 1.4  # a step this many times the loop's median: the size reading's jump, which picked frames before the flow reading
 
 
-def _frame(t: int, n: int, *, tail_off: float = 0.0, tail_lag: float = 0.0) -> Image.Image:
+def _frame(t: float, n: int, *, tail_off: float = 0.0, tail_lag: float = 0.0, dark_whole: bool = False) -> Image.Image:
     """Phase t/n of one gait cycle; `tail_off` puts the tail that many px off its sway, `tail_lag` its sway
-    that many cycles behind."""
+    that many cycles behind. The arm is drawn over the torso's outline and the second leg over the first leg (as dark
+    as a line) and foot, each covering more or less of them by the phase; `dark_whole` draws the arm behind the torso,
+    the first leg lighter than a line and both feet over both legs, so every phase shows its dark parts whole."""
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     phi = 2 * math.pi * t / n
@@ -35,16 +37,25 @@ def _frame(t: int, n: int, *, tail_off: float = 0.0, tail_lag: float = 0.0) -> I
     tx, ty = 70 + 22 * math.sin(sway) + tail_off, 130 + bob - 10 * math.cos(sway)
     d.polygon([(110, 120 + bob), (110, 150 + bob), (tx - 20, ty + 20), (tx - 30, ty - 25)], fill=(220, 120, 40, 255))
     d.ellipse((tx - 50, ty - 40, tx - 10, ty + 10), fill=(240, 150, 60, 255))
+    arm = 0.4 * math.sin(phi + math.pi + 0.6 * math.sin(phi)) + 0.3
+    if dark_whole:
+        d.line((150, 110 + bob, 150 + 60 * math.sin(arm), 110 + bob + 60 * math.cos(arm)), fill=(240, 210, 180, 255), width=12)
     # quick through the swing, slow through the stance: the coverage step varies a lot over an ordinary cycle
     swing = 0.5 * math.sin(phi + 0.6 * math.sin(phi))
-    for hip, angle, colour in ((120, swing, (70, 60, 120, 255)), (128, -swing, (90, 80, 150, 255))):
+    feet = []
+    near = (80, 70, 130, 255) if dark_whole else (70, 60, 120, 255)  # the darker is as dark as a line
+    for hip, angle, colour in ((120, swing, near), (128, -swing, (90, 80, 150, 255))):
         x1, y1 = hip + 95 * math.sin(angle), 175 + bob + 95 * math.cos(angle)
         d.line((hip, 175 + bob, x1, y1), fill=colour, width=16)
-        d.ellipse((x1 - 12, y1 - 7, x1 + 14, y1 + 7), fill=(40, 30, 30, 255))
+        feet.append((x1 - 12, y1 - 7, x1 + 14, y1 + 7))
+        if not dark_whole:
+            d.ellipse(feet[-1], fill=(40, 30, 30, 255))
+    for foot in feet if dark_whole else ():
+        d.ellipse(foot, fill=(40, 30, 30, 255))
     d.rectangle((100, 100 + bob, 150, 185 + bob), fill=(200, 200, 220, 255), outline=(20, 20, 20, 255), width=3)
     d.ellipse((96, 40 + bob, 156, 102 + bob), fill=(240, 210, 180, 255), outline=(20, 20, 20, 255), width=3)
-    arm = 0.4 * math.sin(phi + math.pi + 0.6 * math.sin(phi)) + 0.3
-    d.line((150, 110 + bob, 150 + 60 * math.sin(arm), 110 + bob + 60 * math.cos(arm)), fill=(240, 210, 180, 255), width=12)
+    if not dark_whole:
+        d.line((150, 110 + bob, 150 + 60 * math.sin(arm), 110 + bob + 60 * math.cos(arm)), fill=(240, 210, 180, 255), width=12)
     return im
 
 

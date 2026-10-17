@@ -930,7 +930,11 @@ most three calls and never made from or beside a frame made (`--repair auto`, th
 the cut as filmed, is replaced in the same stage first: by RIFE's frame between the two clean
 frames beside it, else by the clean frame beside it, else kept and named (`ghost_given_way`,
 `ghost_kept`) — a walk of one direction is delivered as cut and never meets the alignment that would
-take a clean frame there. The report's `jump_repair` names the frames. RIFE
+take a clean frame there. Then a part that keeps its way and rushes — a tail that runs short of
+the cycle, rushing on at the wrap — has the three or four drawings either side of the rush made
+again at times that spread it, made from the frames as filmed, the body's feet, mass and ground
+line moving no further in a step, nor the rest of it faster, than they did there (the eased
+retime, up to nine calls of its own). The report's `jump_repair` names the frames. RIFE
 is installed once with `sprite-gen rife install`; without it a loop that needs a frame is cut as
 filmed with a warning, each filmed ghost given way to the clean frame beside it (`--repair on`
 fails instead). A frame shown twice in a row is one frame of the GIF and WebP, checked so, and the seam gate reads a frame given way as filmed (`seam_as_filmed`). See [loop repair](loop-repair.md). The repaired loop's jolt index and the head's frame-to-frame
