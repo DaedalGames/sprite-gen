@@ -133,7 +133,7 @@ def test_stop_plays_the_start_backwards_from_the_loop_to_the_first_frame(tmp_pat
     assert all(j > out["rest"]["end"] for j in shown[:-1]) and out["rest"]["end"] >= REST - 1
     # The cell it leaves is the loop's cell at the entry's phase: the run is cut a cycle on, so the same phase.
     assert out["entry"]["from_cell"] == (out["entry"]["frame"] - (run_from + PERIOD)) % PERIOD
-    assert out["seam"]["steps"] <= stop.JUMP_RATIO and out["run_up"]["cycles"] <= stop.RUN_UP_MAX_CYCLES
+    assert out["seam"]["steps"] <= stop.SEAM_MAX and out["run_up"]["cycles"] <= stop.RUN_UP_MAX_CYCLES
     # The last cell is the clip's first frame — the still as filmed — at the loop's scale, pixel for pixel.
     smeta, cells = cells_of(tmp_path / "stop" / "stop.strip.json")
     lmeta = json.loads(meta.read_text())
@@ -240,7 +240,7 @@ def test_stop_refuses_a_seam_past_the_jump_line(tmp_path):
     with pytest.raises(SystemExit, match="jump line"):
         make(tmp_path, keyed, meta)
     report = json.loads((tmp_path / "stop" / "stop.stop.report.json").read_text())
-    assert report["status"] == "failed" and report["seam"]["steps"] > stop.JUMP_RATIO
+    assert report["status"] == "failed" and report["seam"]["steps"] > stop.SEAM_MAX
 
 
 def test_stop_leaves_an_aligned_loop_from_the_cell_nearest_the_entry(tmp_path):

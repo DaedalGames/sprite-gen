@@ -16,7 +16,7 @@ and a report.
   to the end of the loop's window (`source_cut`): where the clip reaches the loop. The stop leaves the
   loop from the cell nearest to it (`from_cell`) — a player shows the loop through that cell, then the
   stop — and its first frame is the clip frame before the entry. The seam, from that cell into that
-  frame, is reported in steps; past the jump line (`repair.JUMP_RATIO`, `--seam-max`) the stop is refused.
+  frame, is reported in steps; past the jump line (SEAM_MAX, `--seam-max`) the stop is refused.
 - **Another motion**: a setting-off goes one way, from the still into the loop; the body does not come
   back to a pose it has left. A run-up frame within SAME_POSE of an earlier frame of the clip — the still,
   or a pose of the run-up — after the body went TURN_BACK_AWAY steps or more from it in between is a
@@ -72,7 +72,7 @@ from sprite_gen.video import gait_fallback
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video.interpolation_quality import ghost_screen
-from sprite_gen.video.repair import ALPHA_SOLID, JUMP_RATIO
+from sprite_gen.video.repair import ALPHA_SOLID
 
 PROG = "video-stop"
 KIND = "stop"
@@ -84,6 +84,9 @@ TURN_BACK_AWAY = 1.0
 # A body sets off into its gait within about a cycle; past one and a half of the clip's own cycles the run-up
 # plays strides unlike the loop's.
 RUN_UP_MAX_CYCLES = 1.5
+# A seam past this many of the clip's steps is a jump, and the stop is refused: the line a loop's step read by its
+# size was judged a jump at, 2.44.0's `repair.JUMP_RATIO` (the jump repair now reads a loop's flow and keeps no line).
+SEAM_MAX = 1.4
 SPEEDS = (1, 2)
 MARGIN = 8  # px of transparent room around the bodies, the strip cells' own side and top margin
 REGISTER_SEARCH = 0.12  # of the cell height: how far the entry is searched for on its cell
@@ -224,7 +227,7 @@ def turn_back(poses: np.ndarray, rest_end: int, entry: int, step: float) -> dict
 
 
 def find_stop(cells: list[Image.Image], frames: list[Image.Image], *, start: int, length: int,
-              seam_max: float = JUMP_RATIO, run_up_max: float = RUN_UP_MAX_CYCLES) -> dict[str, Any]:
+              seam_max: float = SEAM_MAX, run_up_max: float = RUN_UP_MAX_CYCLES) -> dict[str, Any]:
     """Rest, entry, the cell left from, the seam, the turn-back and the run-up of a clip whose frames (`frames`,
     from the first, at the loop's scale, through the frame after the window) reach the loop's `cells` in the window
     [start, start + length). Refused (`StopRefused`) where no frame reaches the loop, the seam is past `seam_max`
@@ -337,7 +340,7 @@ def pick(played: list[int], *, speed: int, max_frames: int | None) -> list[int]:
 
 def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "stop", speed: int = 1,
               max_frames: int | None = None, fps: float | None = None, report_path: Path | None = None,
-              seam_max: float = JUMP_RATIO, run_up_max: float = RUN_UP_MAX_CYCLES) -> dict[str, Any]:
+              seam_max: float = SEAM_MAX, run_up_max: float = RUN_UP_MAX_CYCLES) -> dict[str, Any]:
     """Cut the stop and write `<name>.strip.png`, `<name>.strip.json`, `<name>.gif`, `<name>.webp` and the report
     (`<name>.stop.report.json`, or `report_path`) into `out_dir`. A refusal writes the report and exits."""
     if speed not in SPEEDS:
@@ -461,8 +464,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--name", default="stop", help="basename of the strip, sidecar, GIF, WebP and report (default stop)")
     parser.add_argument("--speed", type=int, choices=SPEEDS, default=1, help="1: every frame; 2: every other frame, the still kept last")
     parser.add_argument("--max-frames", type=int, help="at most this many frames, evenly spaced from the first to the still")
-    parser.add_argument("--seam-max", type=float, default=JUMP_RATIO,
-                        help=f"refuse a seam (the last loop cell into the stop's first frame) over this many of the clip's steps (default {JUMP_RATIO}, the jump line)")
+    parser.add_argument("--seam-max", type=float, default=SEAM_MAX,
+                        help=f"refuse a seam (the last loop cell into the stop's first frame) over this many of the clip's steps (default {SEAM_MAX}, the jump line)")
     parser.add_argument("--run-up-max", type=float, default=RUN_UP_MAX_CYCLES,
                         help=f"refuse a stop whose frames between the rest and the loop's frames are longer than this many of the clip's cycles (default {RUN_UP_MAX_CYCLES})")
     parser.add_argument("--fps", type=float, help="the frames' rate (default: the loop's source_cut, else 24)")
@@ -473,7 +476,7 @@ def run(**kwargs: object) -> int:
     payload = make_stop(Path(str(kwargs["frames_dir"])), Path(str(kwargs["loop"])), Path(str(kwargs["out_dir"])),
                         name=str(kwargs.get("name") or "stop"), speed=int(kwargs.get("speed") or 1),  # type: ignore[arg-type]
                         max_frames=kwargs.get("max_frames"), fps=kwargs.get("fps"), report_path=kwargs.get("report"),  # type: ignore[arg-type]
-                        seam_max=float(JUMP_RATIO if kwargs.get("seam_max") is None else kwargs["seam_max"]),  # type: ignore[arg-type]
+                        seam_max=float(SEAM_MAX if kwargs.get("seam_max") is None else kwargs["seam_max"]),  # type: ignore[arg-type]
                         run_up_max=float(RUN_UP_MAX_CYCLES if kwargs.get("run_up_max") is None else kwargs["run_up_max"]))  # type: ignore[arg-type]
     print(json.dumps({"strip": payload["strip"]["path"], "frames": payload["strip"]["frames"], "seconds": payload["seconds"],
                       "from_cell": payload["entry"]["from_cell"], "entry": payload["entry"]["frame"], "rest_end": payload["rest"]["end"],
