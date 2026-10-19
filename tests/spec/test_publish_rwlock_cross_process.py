@@ -37,7 +37,6 @@ class ChildGuard:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
-            encoding="utf-8",
         )
         self.thread = threading.Thread(target=self._drain, daemon=True)
         self.thread.start()
