@@ -121,7 +121,7 @@ def test_a_horse_walk_row_and_wave(rows) -> None:
 
 
 def _prepare_cli(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "sprite_gen.cli", "prepare", *args], text=True, capture_output=True)
+    return subprocess.run([sys.executable, "-m", "sprite_gen.cli", "prepare", *args], encoding="utf-8", capture_output=True)
 
 
 def test_the_sheet_cli_takes_records_and_carries_the_body_plan(tmp_path) -> None:

@@ -215,7 +215,7 @@ def test_cli_dispatch_and_real_files(tmp_path):
     strip(tmp_path)
     src = request(tmp_path, [{"id": "walk", "source": "walk.strip.json", "display": {"height": 10}}])
     call = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "game-pack", "--request", str(src),
-                           "--out-dir", str(tmp_path / "out")], capture_output=True, text=True)
+                           "--out-dir", str(tmp_path / "out")], capture_output=True, encoding="utf-8")
     assert call.returncode == 0, call.stderr
     assert json.loads(call.stdout)["ok"] is True
     assert (tmp_path / "out" / "game-pack.json").is_file()

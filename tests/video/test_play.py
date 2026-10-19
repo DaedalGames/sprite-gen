@@ -275,11 +275,11 @@ def test_a_once_return_cut_keeps_both_ends_and_plays_once(tmp_path) -> None:
 
 def test_the_clis_take_the_play_mode(tmp_path) -> None:
     out = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "video-prompt", "--direction", "side", "--state", "punch",
-                          "--play", "once-return", "--motion", PUNCH, "--json"], capture_output=True, text=True)
+                          "--play", "once-return", "--motion", PUNCH, "--json"], capture_output=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     record = json.loads(out.stdout)
     assert record["play"] == "once-return" and record["cycle"] == "once-return" and PUNCH in record["prompt"]
     refused = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "video-set", "--base", f"side={still(tmp_path / 's.png')}",
                               "--states", "death", "--play", "death=loop", "--out-dir", str(tmp_path / "set")],
-                             capture_output=True, text=True)
+                             capture_output=True, encoding="utf-8")
     assert refused.returncode != 0 and "death plays once-hold only" in refused.stderr

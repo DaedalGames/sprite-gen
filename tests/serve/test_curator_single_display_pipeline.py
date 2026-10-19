@@ -129,7 +129,7 @@ def test_server_snapshot_grid_behavior(tmp_path):
     r = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "unpack_atlas_run.py"),
          "--pngs-dir", str(tmp_path / "pngs"), "--out-dir", str(out), "--force"],
-        capture_output=True, text=True)
+        capture_output=True, encoding="utf-8")
     assert r.returncode == 0, r.stderr
     import sprite_gen.serve.serve_curation as serve_curation
     snap = serve_curation.build_run_state(out)

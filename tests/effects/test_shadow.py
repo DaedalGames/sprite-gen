@@ -378,7 +378,7 @@ def test_module_cli_executes_the_real_publication_path(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "sprite_gen.effects.shadow", "--source", str(source),
          "--out-dir", str(out_dir), "--shear", "-0.8", "--color", "10,20,30"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, encoding="utf-8", check=False,
     )
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)

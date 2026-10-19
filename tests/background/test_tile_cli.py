@@ -18,7 +18,7 @@ def invoke(source, out, *extra):
     return subprocess.run(
         [sys.executable, "-m", "sprite_gen.background.tile", "--source", str(source),
          "--out", str(out), "--period", "8", "--overlap", "3", *map(str, extra)],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True, encoding="utf-8", timeout=20,
     )
 
 

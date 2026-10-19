@@ -229,7 +229,7 @@ def _cli(run_dir: Path, *args: str):
 
     return subprocess.run([sys.executable, "-m", "sprite_gen.cli", "anchor",
                            "--run-dir", str(run_dir), *args],
-                          capture_output=True, text=True, cwd=str(ROOT))
+                          capture_output=True, encoding="utf-8", cwd=str(ROOT))
 
 
 def test_cli_pending_failure_prints_the_guidance(ungenerated_run: Path) -> None:

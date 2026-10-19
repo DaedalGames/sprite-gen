@@ -71,7 +71,7 @@ def wheel_names(tmp_path_factory: pytest.TempPathFactory) -> set[str]:
                     ignore=shutil.ignore_patterns("__pycache__"))
     out = tmp_path_factory.mktemp("wheel")
     built_by = subprocess.run([sys.executable, "-c", _BUILD_WHEEL, str(out)],
-                              cwd=project, capture_output=True, text=True)
+                              cwd=project, capture_output=True, encoding="utf-8")
     assert built_by.returncode == 0, (
         f"the declared build backend could not build this project:\n{built_by.stderr}")
     built = list(out.glob("*.whl"))

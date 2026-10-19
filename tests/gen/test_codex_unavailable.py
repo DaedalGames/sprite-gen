@@ -49,7 +49,7 @@ NOT_SIGNED_IN = "codex not logged in (codex login status exit 1)"
 
 
 def _cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "sprite_gen.cli", *args], capture_output=True, text=True,
+    return subprocess.run([sys.executable, "-m", "sprite_gen.cli", *args], capture_output=True, encoding="utf-8",
                           encoding="utf-8", env=env, cwd=REPO_ROOT)
 
 

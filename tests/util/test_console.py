@@ -12,8 +12,6 @@ import sys
 import pytest
 from PIL import Image
 
-from sprite_gen.util import console
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -32,6 +30,8 @@ def test_a_command_on_a_cp949_stream_prints_its_em_dash_as_utf8(tmp_path, entry)
 
 
 def test_only_a_stream_that_is_not_utf8_is_reopened(monkeypatch):
+    from sprite_gen.util import console
+
     legacy = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
     already = io.TextIOWrapper(io.BytesIO(), encoding="UTF8", errors="surrogateescape")
     monkeypatch.setattr(sys, "stdout", legacy)

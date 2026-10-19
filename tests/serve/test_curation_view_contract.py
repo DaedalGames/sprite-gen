@@ -135,7 +135,7 @@ def _run_import(pngs: Path, out: Path, *extra: str) -> subprocess.CompletedProce
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "unpack_atlas_run.py"),
          "--pngs-dir", str(pngs), "--out-dir", str(out), *extra],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8",
     )
 
 
