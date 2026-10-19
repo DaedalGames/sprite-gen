@@ -5,10 +5,12 @@ import io
 import json
 import subprocess
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import base as gen_base
 from sprite_gen.gen import grok_provider as grok, retry, xai
@@ -34,22 +36,11 @@ def api(monkeypatch, tmp_path):
     state = {"status": 200, "body": {"data": [{"b64_json": encoded_image()}]}, "calls": [], "slept": []}
     monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
-    class Response:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        @property
-        def status(self):
-            return state["status"]
-        def read(self):
-            return json.dumps(state["body"]).encode()
-
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
         if state.get("script"):  # one (status, body) per request, in order
             state["status"], state["body"] = state["script"].pop(0)
-        return Response()
+        return Answer(state["body"], status=state["status"])
 
     monkeypatch.setattr(xai.urllib.request, "urlopen", open_request)
     return state
@@ -63,7 +54,7 @@ def test_generation_decodes_jpeg_to_png_without_agent(tmp_path, api):
     assert request.get_header("Authorization") == "Bearer synthetic-secret"
     assert body == {"model": grok.DEFAULT_MODEL, "prompt": "a blue square", "n": 1,
                     "response_format": "b64_json", "aspect_ratio": "3:2"}
-    assert timeout == grok.GEN_TIMEOUT_SECONDS
+    assert timeout == pytest.approx(grok.GEN_TIMEOUT_SECONDS, abs=1)  # the first send waits the whole time limit
     with Image.open(result.out) as image, Image.open(io.BytesIO(base64.b64decode(encoded_image()))) as original:
         assert image.format == "PNG" and image.size == (12, 8)
         assert image.tobytes() == original.tobytes()
@@ -74,7 +65,8 @@ def test_generation_decodes_jpeg_to_png_without_agent(tmp_path, api):
     assert "synthetic-secret" not in json.dumps(report)
 
 
-@pytest.mark.parametrize("count", [1, 2, 5])
+# `count == 1` sends `image`, more send `images`.
+@pytest.mark.parametrize("count", [1, 5])
 def test_reference_edit_preserves_order_and_model(tmp_path, api, count):
     refs = []
     for i in range(count):
@@ -104,7 +96,8 @@ def test_direct_output_keeps_chroma_pipeline(tmp_path, api):
         assert image.getpixel((6, 4))[3] == 255
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 500, 503])
+# Two branches: 401/403 the credential, the rest a refusal; which are sent again is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [401, 503])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": "synthetic-secret https://signed.invalid/private?sig=abc"})
     out = tmp_path / "existing.png"
@@ -136,7 +129,56 @@ def test_a_rate_limit_still_there_after_two_more_sends_ends_the_call(tmp_path, a
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
-@pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
+def test_a_rate_limit_is_sent_again_only_within_the_time_limit_of_the_image(tmp_path, api, monkeypatch, capsys):
+    """SPRITE_GEN_GEN_TIMEOUT_SECONDS is the image's time limit from its first send (gen.retry): the 8 s wait
+    leaves 12 s of 20 for the second send to wait in, the 16 s one would reach it, so the second 429 ends
+    the call with its status and its stderr line says why it was not sent again."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds
+
+    for module in (grok, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(grok, "GEN_TIMEOUT_SECONDS", 20)
+    limited = (429, {"code": "resource-exhausted", "error": "slow down"})
+    api["script"] = [limited, limited, (200, api["body"])]
+    with pytest.raises(SystemExit) as error:
+        gen.generate_image("grok", "x", tmp_path / "out.png")
+    assert [timeout for _request, timeout in api["calls"]] == [20, 12] and api["slept"] == [8.0]
+    assert "(HTTP 429) code=resource-exhausted; sent 2 times, no provider fallback" in str(error.value)
+    assert ("[gen] grok refused the request (429 resource-exhausted); nothing was made — not asking again: "
+            "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
+
+
+def test_a_rate_limit_whose_wait_woke_past_the_time_limit_is_not_sent_again(tmp_path, api, monkeypatch, capsys):
+    """A sleep may wake later than asked: with 8.01 s, the 8 s wait after a 429 woke 20 ms late, past the
+    image's time limit. Nothing is sent then: the 429 ends the call as it came and its stderr line says why —
+    not a send that finds no time left and ends as a request the server may have taken."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds + 0.020
+
+    for module in (grok, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(grok, "GEN_TIMEOUT_SECONDS", 8.010)
+    api["script"] = [(429, {"code": "resource-exhausted", "error": "slow down"}), (200, api["body"])]
+    with pytest.raises(SystemExit) as error:
+        gen.generate_image("grok", "x", tmp_path / "out.png")
+    assert len(api["calls"]) == 1 and api["slept"] == [8.0]
+    assert "(HTTP 429) code=resource-exhausted; no retry or provider fallback" in str(error.value)
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[gen] grok refused the request (429 resource-exhausted); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not (tmp_path / "out.png").exists()
+
+
+@pytest.mark.parametrize("body", [{}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
                                   {"data": [{"url": "https://signed.invalid/private"}]}])
@@ -189,6 +231,9 @@ def test_access_uses_api_key_without_grok_binary(api, monkeypatch):
 
 def test_image_guide_requires_explicit_api_billing_confirmation(tmp_path, api, monkeypatch):
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path))
+    # What a default codex that cannot run turns into is answered here, so the guide asks only about billing;
+    # the guide asking that is tests/gen/test_codex_unavailable.py's.
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")
     options = {"choices": {"image_provider": "grok"}, "confirmed_access": ("grok",)}
     pending = guide.guide("image", **options)
     assert pending["status"] != "ready"
@@ -202,7 +247,8 @@ def _subscription_login(tmp_path, monkeypatch):
         "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
 
 
-@pytest.mark.parametrize("status", [200, 403, 503])
+# 403 and 503 both end on the first call, on the subscription token.
+@pytest.mark.parametrize("status", [200, 403])
 def test_images_use_subscription_even_with_api_key(tmp_path, api, monkeypatch, status):
     _subscription_login(tmp_path, monkeypatch)
     api["status"] = status
@@ -222,6 +268,7 @@ def test_images_use_subscription_even_with_api_key(tmp_path, api, monkeypatch, s
 def test_guide_prefers_subscription_without_api_billing_question(tmp_path, api, monkeypatch, kind):
     _subscription_login(tmp_path, monkeypatch)
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path / "settings"))
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")  # answered: this test is about billing questions
     choices = {"image_provider": "grok"}
     if kind == "sprite":
         choices["motion_method"] = "grok-video"
@@ -236,8 +283,8 @@ def _sent(api, index=0):
     return json.loads(api["calls"][index][0].data)
 
 
-@pytest.mark.parametrize("resolution", grok.SUPPORTED_RESOLUTIONS)
-@pytest.mark.parametrize("quality", grok.SUPPORTED_QUALITIES)
+# A level is checked against the declared subset, then passed on with no branch on its value.
+@pytest.mark.parametrize(("quality", "resolution"), [("auto", "1k")])
 def test_every_priced_level_reaches_the_request_and_the_report(tmp_path, api, quality, resolution):
     """The two knobs Imagine prices on arrive verbatim — no normalising, no default."""
     result = gen.generate_image("grok", "x", tmp_path / f"{quality}-{resolution}.png",
@@ -256,14 +303,10 @@ def test_asking_for_neither_leaves_the_request_and_report_as_they_were(tmp_path,
     assert "quality" not in result.extra and "resolution" not in result.extra
 
 
+# One `not in` per knob.
 @pytest.mark.parametrize("options, expected", [
     ({"quality": "high"}, "openai"),
-    ({"quality": "xhigh"}, "openai"),
-    ({"quality": "max"}, "openai"),
-    ({"quality": "bogus"}, "openai"),
     ({"resolution": "4k"}, "1.5k"),
-    ({"resolution": "1024"}, "1.5k"),
-    ({"resolution": "1K"}, "1.5k"),
 ])
 def test_a_level_grok_cannot_serve_fails_before_upload(tmp_path, api, options, expected):
     with pytest.raises(SystemExit) as error:

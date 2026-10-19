@@ -77,24 +77,6 @@ def test_both_request_keys_present_fails_loud(tmp_path) -> None:
     assert "two truths" in str(excinfo.value)
 
 
-def test_reading_is_unaffected_by_a_pipeline_writer_lock(tmp_path) -> None:
-    """락이 있든 없든 읽기 결과는 같다 — 읽기가 쓰지 않으니 락을 볼 이유가 없다.
-
-    예전엔 로더가 락 유무로 재기록 여부를 갈랐고, 그래서 "락이 없을 때만 파일이 바뀐다" 는
-    상태 의존 부작용이 조회 경로에 있었다."""
-    from sprite_gen.spec.runio import LOCK_FILENAME
-
-    run_dir = tmp_path / "run"
-    _write_request(run_dir, {"pixel_perfect": True})
-    unlocked = load_request(run_dir)
-
-    (run_dir / LOCK_FILENAME).write_text("held by another writer", encoding="utf-8")
-    assert load_request(run_dir) == unlocked
-    assert unlocked["fit"]["pixel_unfake"] is True
-    assert "pixel_perfect" in json.loads(
-        (run_dir / "sprite-request.json").read_text(encoding="utf-8"))["fit"]
-
-
 def _write_curation(run_dir, doc: dict) -> None:
     """현재 세대 도장을 찍어 둔다 — 스탬프 없는 사이드카는 세대 게이트가 (정상적으로) 드롭해서
     이관 여부를 볼 수 없다. 여기서 검증하려는 건 이관이고 세대 판정이 아니다."""
@@ -259,7 +241,10 @@ def test_no_production_path_reads_the_request_outside_the_gate() -> None:
     파일을 가리키면서(`REQUEST_FILENAME` 또는 리터럴 파일명) `json.load(s)` 를 호출하면 그것이
     게이트 우회다. 쓰기 경로는 `json.dumps` 를 쓰므로 걸리지 않는다.
 
-    테스트 코드는 예외다: 테스트는 "디스크에 실제로 무엇이 쓰였는가" 를 검사해야 한다."""
+    테스트 코드는 예외다: 테스트는 "디스크에 실제로 무엇이 쓰였는가" 를 검사해야 한다.
+
+    두 트리를 **재귀로** 훑는다 — `glob` 은 최상위만 봐서 `reroll.py` 같은 하위 패키지
+    모듈이 통째로 그물 밖이었다."""
     import ast
     from pathlib import Path as _Path
 
@@ -275,7 +260,7 @@ def test_no_production_path_reads_the_request_outside_the_gate() -> None:
 
     root = _Path(__file__).resolve().parents[2]
     offenders: list[str] = []
-    for path in sorted(list((root / "sprite_gen").glob("*.py")) + list((root / "scripts").glob("*.py"))):
+    for path in sorted(list((root / "sprite_gen").rglob("*.py")) + list((root / "scripts").rglob("*.py"))):
         if path.name == "runio.py":            # 게이트 자신이 사는 곳
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))

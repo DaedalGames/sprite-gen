@@ -30,17 +30,20 @@ def _ci_python_versions() -> list[str]:
 
 
 def test_ci_versions_are_supported_and_documented() -> None:
-    minimum_tuple = _version_tuple(_declared_min_python())
+    minimum = _declared_min_python()
+    minimum_tuple = _version_tuple(minimum)
     versions = _ci_python_versions()
     assert all(_version_tuple(version) >= minimum_tuple for version in versions)
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert len(versions) == 1, "CI intentionally tests a single Python version"
     assert f"CI runs only {versions[0]}" in readme
-
-
-def test_readme_names_declared_python_support_and_venv_requirement() -> None:
-    minimum = _declared_min_python()
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
+    # The README also names the declared floor and the venv requirement.
     assert f"CPython {minimum}+" in readme
     assert "`venv`/`ensurepip`" in readme
+
+
+def test_the_test_timeout_leaves_its_method_to_the_platform(pytestconfig) -> None:
+    """`timeout_method = "signal"` stopped pytest on Windows, which has no SIGALRM, before its first
+    test. Left unset, pytest-timeout takes signal where SIGALRM exists and thread elsewhere."""
+    assert pytestconfig.getini("timeout")
+    assert not pytestconfig.getini("timeout_method")

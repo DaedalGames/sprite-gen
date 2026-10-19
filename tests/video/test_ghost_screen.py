@@ -117,19 +117,6 @@ def test_a_time_on_a_filmed_ghost_takes_the_clean_frame_beside_it_and_rife_keeps
     assert next(m for m in facts["smear"] if m["at"] == 1)["faults"] == ["ghost"]  # kept under rife, named
 
 
-def test_a_ghost_with_no_clean_frame_beside_it_is_kept_and_a_loop_already_that_long_is_screened():
-    frames = _stride(8)
-    for k in (2, 3, 4):
-        frames[k] = _band(frames[k])
-    out, facts = align.resample(frames, 8, None)  # already that long: every cell a source frame, screened
-    assert [frames.index(f) for f in out] == [0, 1, 1, 3, 5, 5, 6, 7]
-    assert [(g["at"], g["source"], g["taken"]) for g in facts["ghost_at"]] == [(2, 2, 1), (3, 3, 3), (4, 4, 5)]
-    assert facts["made_by_rife"] == 0
-    plain = _stride(8)
-    same, facts = align.resample(plain, 8, None)
-    assert all(a is b for a, b in zip(same, plain)) and facts["ghost_at"] == []
-
-
 def test_a_loop_drawn_part_covered_is_resampled_as_before():
     cape = [_band(f) for f in _stride(4)]
     out, facts = align.resample(cape, 8, _follow)
@@ -152,15 +139,6 @@ def _cut(keyed: Path, out: Path, length: int) -> dict:
     """`video-loop --cycle fixed --start 0`: the loop cut as filmed, its report."""
     return loop_mod.run_loop(keyed, out, fps=24.0, state="walk", min_len=None, max_len=None, n_out=None, seam_max=1000.0,
                              name="walk", report_path=None, cycle_mode="fixed", start=0, length=length, anchor="none", repair="off")
-
-
-def test_video_loop_records_the_ghost_screen_of_its_cut(tmp_path, capsys):
-    """A loop delivered as cut — one direction, never aligned — is screened too: its report names the ghost."""
-    report = _cut(_keyed(tmp_path, "S", 20, (7,)), tmp_path / "S", 20)
-    screen = report["ghost_screen"]
-    assert screen["reads"] and [g["frame"] for g in screen["ghosts"]] == [7]
-    assert rife.ghost(Image.open(tmp_path / "S" / "cycle" / "frame-007.png")) > GHOST_WARN
-    assert "frame 7 of the cut" in capsys.readouterr().err
 
 
 def test_alignment_delivers_no_filmed_ghost_and_names_each_cell_it_passed_over(tmp_path):

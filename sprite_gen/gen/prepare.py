@@ -999,8 +999,10 @@ def _outline_config(value: str):
     return strength
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """prepare's arguments: one declaration for `sprite-gen prepare`, `scripts/prepare_sprite_run.py`
+    and `run(**kwargs)`. A flag the caller does not give stays None, so it never reads as given over
+    the key a request sets (`request_with_flags`)."""
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--character-id", required=True)
     parser.add_argument("--base-image", type=Path)
@@ -1033,6 +1035,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--request", type=Path)
     parser.add_argument("--request-json")
     parser.add_argument("--force", action="store_true")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_arguments(parser)
     return parser
 
 

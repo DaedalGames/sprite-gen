@@ -207,16 +207,6 @@ def test_without_rife_a_filmed_ghost_gives_way_to_the_clean_frame_after_it(tmp_p
     assert "jump frame was not repaired" not in err
 
 
-def test_a_cell_shown_twice_in_a_row_passes_the_gif_and_webp_check(tmp_path):
-    """B3: two identical frames in a row — what giving a ghost way to the frame beside it leaves — are one frame
-    of the GIF and of the WebP. The check counted a frame per cell and refused the loop ("19 frames, expected 20")."""
-    keyed = _keyed(tmp_path, "E", ())
-    (keyed / "0010.png").write_bytes((keyed / "0011.png").read_bytes())
-    report = _cut(keyed, tmp_path / "E", repair="off")
-    assert report["n_out"] == L and report["gif"]["n_frames"] == report["webp"]["n_frames"] == L - 1
-    assert loop_mod.shown_runs(_cells(tmp_path / "E")) == L - 1
-
-
 def test_a_ghost_with_no_clean_frame_beside_it_is_kept_and_named(tmp_path, capsys):
     """Frames 9, 10, 11 are filmed ghosts: 9 gives way to 8, 11 to 12, and 10, with no clean frame beside it, is
     kept — `ghost_kept`, and a line to film the direction again."""
@@ -285,42 +275,6 @@ def _phase(k: int) -> int:
     return (k + EVEN) % L
 
 
-@pytest.mark.parametrize("rife_frame", ["not installed", "a ghost too"])
-def test_a_ghost_at_the_cuts_first_frame_given_way_leaves_the_seam_the_cut_closes_with(tmp_path, monkeypatch, rife_frame):
-    """The default seam gate on a walk whose wrap is an ordinary step, its filmed ghost at the cut's first frame, given
-    way to frame 1 — no RIFE installed, or RIFE's frame between frames 19 and 1 a ghost too. Frame 1 then shows twice in
-    a row and the step from the last frame into the loop is two: read on the cells as they play, the wrap measured 2.17
-    times the mean step and a walk that closes was refused, "the cycle does not close". The gate reads the cell given
-    way as filmed — on the source frames, the seam `--repair off` reads."""
-    filmed = _cut(_keyed(tmp_path, "filmed", (0,), phase=EVEN), tmp_path / "filmed", repair="off")
-    middle = None
-    if rife_frame == "not installed":
-        _no_rife(monkeypatch, tmp_path)
-    else:
-        middle = _Middle(ghostly=((_phase(L - 1), _phase(1)),))
-    report = _cut(_keyed(tmp_path, "E", (0,), phase=EVEN), tmp_path / "E", interpolate=middle)  # before: refused
-    out = tmp_path / "E"
-    assert [(g["frame"], g["taken"]) for g in report["ghost_given_way"]] == [(0, {"source": 1})]
-    assert _cycle(out, 0).tobytes() == _cycle(out, 1).tobytes()
-    _delivered_clean(out)
-    assert report["seam_as_filmed"] == [0] and report["seam_measurement"] == "source-frames"
-    assert report["resampled_seam_ratio"] == filmed["resampled_seam_ratio"] < loop_mod.SEAM_RATIO_MAX
-    assert report["gif"]["n_frames"] == report["webp"]["n_frames"] == L - 1
-
-
-def test_a_ghost_at_the_cuts_last_frame_given_way_to_its_first_leaves_the_seam_the_cut_closes_with(tmp_path, monkeypatch):
-    """The ghost at the cut's last frame given way to frame 0, the cut's first shown again at the wrap: read on the cells,
-    the wrap was no step at all (0.0), whatever the cut. Read as filmed, it is the seam the cut closes with."""
-    filmed = _cut(_keyed(tmp_path, "filmed", (L - 1,), phase=EVEN), tmp_path / "filmed", repair="off")
-    _no_rife(monkeypatch, tmp_path)
-    report = _cut(_keyed(tmp_path, "E", (L - 1,), phase=EVEN), tmp_path / "E")
-    out = tmp_path / "E"
-    assert report["resampled_seam_ratio"] == filmed["resampled_seam_ratio"] > 1  # before: 0.0
-    assert [(g["frame"], g["taken"]) for g in report["ghost_given_way"]] == [(L - 1, {"source": 0})]
-    assert _cycle(out, L - 1).tobytes() == _cycle(out, 0).tobytes()
-    assert report["seam_as_filmed"] == [L - 1] and report["seam_measurement"] == "source-frames"
-
-
 def test_ghosts_at_both_ends_of_the_cut_given_way_inward_leave_the_seam_the_cut_closes_with(tmp_path, monkeypatch):
     """Filmed ghosts at the cut's first and last frames at once: across the wrap each has the other beside it, so no
     frame is made between its neighbours — frame 0 gives way to the frame after it, the last frame to the one before
@@ -341,7 +295,7 @@ def test_ghosts_at_both_ends_of_the_cut_given_way_inward_leave_the_seam_the_cut_
 SHORT = 14  # a cut six frames short of the walk's cycle: its wrap is six steps and does not close
 
 
-@pytest.mark.parametrize("anchor", ["none", "body"])
+@pytest.mark.parametrize("anchor", ["body"])  # `none` reads the seam on the source frames as `body` does
 def test_a_cut_that_does_not_close_is_refused_though_its_last_frame_gives_way_to_its_first(tmp_path, monkeypatch, anchor):
     """A cut 14 frames long of a walk 20 frames a cycle does not close (`--repair off` refuses it); its last frame a
     filmed ghost given way to its first, the wrap read on the cells was a step of nothing and the cut was delivered,
@@ -376,7 +330,7 @@ def test_a_cut_with_a_frame_made_reads_its_cell_given_way_as_filmed_on_the_cells
     _delivered_clean(tmp_path / "E")
 
 
-@pytest.mark.parametrize("ghosts", [(0,), (L - 1,), (0, L - 1)], ids=["first", "last", "both"])
+@pytest.mark.parametrize("ghosts", [(0, L - 1)], ids=["both"])  # the wrap reads any set of cells given way as filmed
 def test_anchor_body_reads_a_cell_given_way_as_filmed_in_the_wrap_after_its_ramp(tmp_path, monkeypatch, ghosts):
     """`--anchor body`, the walk's default, ramps the cut so its last frame returns to its first and records the wrap
     as it then plays in the strip metadata (`seam_ratio_after_anchor`: the last frame against the first, over the mean

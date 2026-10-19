@@ -16,7 +16,7 @@ from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
 from sprite_gen.frames import cutout, extract, slice_sheet, ui_kit, unpack_atlas
-from sprite_gen.gen import gen_set, pixel_draw, prepare, video
+from sprite_gen.gen import gen_set, logo, pixel_draw, prepare, video
 from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
@@ -26,6 +26,7 @@ from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
 from sprite_gen.video import follow_inspect as video_follow_inspect
 from sprite_gen.video import set_sheet as video_set_sheet
+from sprite_gen.video import stop as video_stop
 from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
@@ -34,8 +35,6 @@ from sprite_gen.effects import recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
-from sprite_gen.gen.prepare import BODY_PLAN_HELP, STYLE_DEFAULT, _outline_config
-from sprite_gen.spec.subject import SUBJECTS
 from sprite_gen.workflow import guide, preferences
 
 
@@ -60,40 +59,6 @@ def _parse_frame_order(value: str) -> list[int]:
 def _parse_grid(value: str) -> tuple[int, int]:
     cols, rows = value.lower().split("x")
     return int(cols), int(rows)
-
-
-def _add_prepare(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--out-dir", required=True, type=Path)
-    p.add_argument("--character-id", required=True)
-    p.add_argument("--base-image", type=Path)
-    p.add_argument("--description", default="")
-    p.add_argument("--style", default=STYLE_DEFAULT)
-    p.add_argument("--subject", choices=SUBJECTS, default=None,
-                   help="what the run draws: character (default) or effect — "
-                        "sets validation defaults like the sparse-frame floor")
-    p.add_argument("--cell-size", type=int, default=256)
-    p.add_argument("--cell-width", type=int)
-    p.add_argument("--cell-height", type=int)
-    p.add_argument("--safe-margin", type=int, default=None, help="absolute px override; default is 9.4%% of the cell dimension, floored")
-    p.add_argument("--chroma-key", default="auto", help="auto or #RRGGBB")
-    p.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None)
-    p.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None)
-    p.add_argument("--fit-align-y", choices=["center", "bottom"], default=None)
-    p.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None)
-    # 은퇴한 이름. 조용한 별칭으로 살려두지 않는다 — 두 이름이 공존하면 문서와 스크립트가
-    # 갈라진다. 대신 무엇으로 바뀌었는지 말하며 죽는다 (숨은 인자라 --help 를 어지럽히지 않음).
-    p.add_argument("--fit-pixel-perfect", "--no-fit-pixel-perfect", dest="_retired_pp",
-                   action="store_true", help=argparse.SUPPRESS)
-    p.add_argument("--fit-logical-height", type=int, default=None)
-    p.add_argument("--fit-palette-size", type=int, default=None)
-    p.add_argument("--fit-detail-bias", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--fit-outline", type=_outline_config, default=None, metavar="{on,off,STRENGTH}")
-    p.add_argument("--fit-pitch-hint", type=int, default=None)
-    p.add_argument("--body-plan", action="append", default=[], metavar="PLAN | FIGURE=PLAN", help=BODY_PLAN_HELP)
-    p.add_argument("--request", type=Path)
-    p.add_argument("--request-json")
-    p.add_argument("--force", action="store_true")
 
 
 def _add_extract(p: argparse.ArgumentParser) -> None:
@@ -258,7 +223,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     "scene-inspect": ("Measure scene loops, viewport clipping and repeated joins.", inspect_scene.add_arguments, inspect_scene.run),
     "workflow": ("Resolve image/sprite choices, check access and guide the next conversation step.", guide.add_arguments, guide.run),
     "defaults": ("Show, explicitly save or clear the defaults for each user workflow.", preferences.add_arguments, preferences.run),
-    "prepare": ("Prepare a sprite-gen component-row run.", _add_prepare, prepare.run),
+    "prepare": ("Prepare a sprite-gen component-row run.", prepare.add_arguments, prepare.run),
     "extract": ("Extract component-row sprite strips into clean RGBA frames.", _add_extract, extract.run),
     "compose-atlas": (
         "Compose component-row frames into a game atlas and runtime manifest.",
@@ -332,6 +297,12 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Generate every state row of a prepared run, N at a time — one report per row, table.md, non-zero exit on any failure.",
         gen_set.add_arguments,
         gen_set.run,
+    ),
+    # Same declaration-once rule (docs/logo.md): a mood image with the title in it, its lettering redrawn on a key, the key removed.
+    "logo": (
+        "Typography logo: a title screen or poster with the title lettered in it, only its lettering redrawn on a chroma key, the key removed with glows and partial alpha kept; the text is read back and a misspelt logo refused.",
+        logo.add_arguments,
+        logo.run,
     ),
     # Same declaration-once rule: the module owns its argument surface (docs/pixel-draw.md).
     "pixel-draw": (
@@ -429,6 +400,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "The directions of one set on one sheet: rows in compass order (S SW W NW N NE E SE), one cell holding every body box, one ground line under every cell, no row scaled; an optional centre picture stood on the same line at the rows' standing height.",
         video_set_sheet.add_arguments,
         video_set_sheet.run,
+    ),
+    "video-stop": (
+        "A walk or run that stops: the clip's own start played backwards from where it reaches the loop to the still it was filmed from, cut as a one-shot strip beside the loop (seam, drift, speed and refusals reported).",
+        video_stop.add_arguments,
+        video_stop.run,
     ),
     "rife": (
         "install: download the pinned RIFE (rife-ncnn-vulkan, sha256-checked) into the user data directory, where the loop repair finds it.",

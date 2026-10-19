@@ -6,8 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
+from sprite_gen.gen import CODEX_UNAVAILABLE_SETTING, codex_unavailable_choice
+
 from .access import probe_access
-from .catalog import FIELDS, FLOWS, MOTION_METHODS, validate_choices
+from .catalog import FIELDS, FLOWS, GENERAL_FIELDS, MOTION_METHODS, validate_choices
 from .preferences import read_settings
 
 
@@ -28,10 +30,16 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
     if base_image is not None:
         active_fields.remove("image_provider")
     questions, blocked, access = [], [], []
+    # Asked once, before the first generation, and saved: what a call that names no provider does when codex cannot
+    # run. The environment answers it as well; it is never asked over a saved or given answer.
+    codex_choice, codex_choice_source = codex_unavailable_choice()
     if stage == "start":
         for field in active_fields:
             if field not in selected:
                 questions.append({"field": field, **FIELDS[field]})
+        if codex_choice_source == "default":
+            questions.append({"field": CODEX_UNAVAILABLE_SETTING, **GENERAL_FIELDS[CODEX_UNAVAILABLE_SETTING],
+                              "save": "general"})
         # Report both candidates while choosing, then only the services actually
         # used. One probe per provider: its images and videos share one credential.
         required = set()
@@ -77,6 +85,7 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
     return {"kind": kind, "stage": stage, "status": "blocked" if blocked else "needs-input" if questions else "ready",
             "notice": " / ".join(labels), "selected": selected, "sources": sources,
             "settings_revision": snapshot["revision"], "settings_path": snapshot["path"],
+            "codex_unavailable": {"choice": codex_choice, "source": codex_choice_source},
             "access": access, "blocked": blocked, "questions": questions, "pipeline": pipeline,
             "curation": selected.get("curation", "ask") if stage == "finish" else "after-result",
             "save_candidate": selected if stage == "finish" and "curation" in selected else None}

@@ -32,11 +32,7 @@ def test_extraction_matches_golden_manifest(fixture_run_dir: Path) -> None:
         _row.pop("engine_revision", None)
     assert manifest == EXPECTED
 
-
-def test_extracted_frames_are_cell_sized_rgba(fixture_run_dir: Path) -> None:
-    result = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir))
-    assert result.returncode == 0, result.stdout + result.stderr
-
+    # every frame the manifest names is written, cell-sized and RGBA
     for row in EXPECTED["rows"]:
         for relative in row["files"]:
             frame_path = fixture_run_dir / relative

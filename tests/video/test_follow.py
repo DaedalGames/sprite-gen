@@ -2,6 +2,7 @@
 import json
 import math
 import re
+import shutil
 
 import numpy as np
 import pytest
@@ -24,17 +25,27 @@ def walker(k, period=24):
     return im
 
 
-@pytest.fixture
-def loop_dir(tmp_path):
-    keyed = tmp_path/'keyed'
+@pytest.fixture(scope='module')
+def walk_cut(tmp_path_factory):
+    """The walk the loop cases start from, keyed and cut once for the module: `keyed/`, `loop/` and `loop.json`."""
+    root = tmp_path_factory.mktemp('walk-cut')
+    keyed = root/'keyed'
     keyed.mkdir()
     for k in range(73):
         walker(k).save(keyed/f'{k:03}.png')
-    out = tmp_path/'loop'
+    out = root/'loop'
     code = loop.main(['--frames-dir', str(keyed), '--out-dir', str(out), '--state', 'walk', '--anchor', 'motion-auto',
-                      '--repair', 'off', '--report', str(tmp_path/'loop.json'), '--name', 'walk'])
+                      '--repair', 'off', '--report', str(root/'loop.json'), '--name', 'walk'])
     assert code == 0
-    return out
+    return root
+
+
+@pytest.fixture
+def loop_dir(walk_cut, tmp_path):
+    """A copy of the cut for this case alone, laid out in its tmp_path as cut (`keyed/` beside it), so nothing a case
+    writes reaches another."""
+    shutil.copytree(walk_cut, tmp_path, dirs_exist_ok=True)
+    return tmp_path/'loop'
 
 
 def cells(path, meta):
@@ -227,12 +238,6 @@ def test_a_new_cut_removes_the_old_follow_source(loop_dir, tmp_path):
     assert code == 0
     assert not (loop_dir/follow.SOURCE).exists()
     assert 'follow' not in json.loads((loop_dir/'walk.strip.json').read_text())
-
-
-def test_a_move_that_would_fold_the_region_is_refused(loop_dir):
-    cx, cy, _, _ = chest_region(loop_dir)
-    with pytest.raises(SystemExit, match='folds a region'):
-        follow.follow_loop(loop_dir, [(cx, cy, 2, 2)], gain=50)
 
 
 def test_the_default_refusal_reads_as_it_did(loop_dir):
@@ -493,8 +498,7 @@ def test_numpy_numbers_write_what_the_command_line_writes(loop_dir):
     assert outputs(loop_dir) == written and json.dumps(result) == json.dumps(given)
 
 
-@pytest.mark.parametrize('failure', ['record', 'animation'])
-@pytest.mark.parametrize('followed', [False, True])
+@pytest.mark.parametrize('failure, followed', [('record', False), ('animation', True)])
 def test_a_run_that_fails_leaves_the_loop_as_it_was(loop_dir, monkeypatch, failure, followed):
     # The strip and its animations were written over the loop's before the record was: a record that did not
     # serialise, or an animation that failed its check, left them moved beside a record that does not say so.

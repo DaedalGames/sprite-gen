@@ -14,10 +14,11 @@ codex needs an interactive ChatGPT login and the `codex` CLI on PATH, openai nee
 only an API key, which is what a headless container (Modal worker, CI) can have.
 
 sprite-gen is subscription-first (수홍 2026-09-20). openai exists for servers and
-SaaS and is billed per call, so it runs ONLY when `--provider openai` names it: it
-is never a default, never a saved preference, never an offered choice in the guided
-flow, and never the target of an availability fallback. Having OPENAI_API_KEY in
-the environment changes no route by itself.
+SaaS and is billed per call, so it runs ONLY when the user chose it (수홍 2026-10-16):
+`--provider openai` names it, or it is the user's answer for a default codex that
+cannot run (`codex_unavailable_choice`). It is never a default, never the guided
+flow's image provider, and never reached unasked. Having OPENAI_API_KEY in the
+environment changes no route by itself.
 
 Transparency is a per-provider strategy (`Provider.transparency`, declared once
 in each adapter): codex `image_gen` and openai (`background: transparent`) return a
@@ -43,7 +44,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
@@ -56,6 +57,7 @@ from . import facing as facing_mod
 from . import handedness as handed_mod
 from . import prompt_parts
 from .base import (
+    CODEX_UNAVAILABLE_EXIT,
     QUALITIES,
     RESOLUTIONS,
     TRANSPARENCY_CHROMA,
@@ -65,6 +67,8 @@ from .base import (
     GenResult,
     PROVIDER_SWITCH_WORDS,
     GenTimeoutError,
+    ask_codex_unavailable,
+    codex_unavailable_question,
     print_json,
     verify_png,
 )
@@ -80,18 +84,25 @@ ALPHA_MODE_AUTO = "auto"
 ALPHA_MODES = (ALPHA_MODE_AUTO, *TRANSPARENCY_STRATEGIES)
 
 # Default-provider policy (maintainer 확정 2026-07-17): the default backend is codex
-# (GPT `image_gen`). If codex is unavailable in the environment (CLI missing or
-# not logged in) the default resolution falls back to grok — but OBSERVABLY, never
-# silently (No Silent Fallback): the chosen provider and the fallback reason are
-# reported. A user can change the default with SPRITE_GEN_DEFAULT_PROVIDER. An
-# EXPLICIT `--provider` is always honored exactly (no availability fallback) — an
-# explicitly named provider that is down fails loud at generation time.
+# (GPT `image_gen`); a user can change the default with SPRITE_GEN_DEFAULT_PROVIDER.
+# An EXPLICIT `--provider` is always honored exactly — an explicitly named provider
+# that is down fails loud at generation time.
 DEFAULT_PROVIDER_ENV = "SPRITE_GEN_DEFAULT_PROVIDER"
 HARD_DEFAULT_PROVIDER = "codex"
-# Providers that may be reached without being named. A per-call API-billed backend
-# is not one of them: it is explicit-only, so no default, preference or fallback
-# can route a subscription user onto metered credit (구독 우선 불변식 1-2).
+# A per-call API-billed backend is never a default: only a choice the user made
+# reaches it, so nothing routes a subscription user onto metered credit unasked
+# (구독 우선 불변식 1-2).
 EXPLICIT_ONLY_PROVIDERS = ("openai",)
+# What a default codex that cannot run here turns into (수홍 2026-10-16, docs/gen.md "When codex cannot run"):
+# codex is not signed in (`codex_provider.codex_login`), or `codex exec` said its usage is used up
+# (`codex_provider.CodexUsageLimit`). `ask` (the default) ends the call with one question and nothing generated
+# (`base.ask_codex_unavailable`); `grok` and `openai` run that provider, said on stderr and kept in the report
+# (`provider_fallback`). The choice is SPRITE_GEN_CODEX_UNAVAILABLE, else the saved one (`sprite-gen defaults`,
+# key CODEX_UNAVAILABLE_SETTING), else `ask`. Until 2.44.0 it went to grok unasked.
+CODEX_UNAVAILABLE_ENV = "SPRITE_GEN_CODEX_UNAVAILABLE"
+CODEX_UNAVAILABLE_SETTING = "codex_unavailable"
+CODEX_UNAVAILABLE_CHOICES = ("ask", "grok", "openai")
+CODEX_UNAVAILABLE_DEFAULT = "ask"
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
 # (`draw_guide`, the same 9.4 % safe margin), attached after the caller's refs, with
@@ -284,13 +295,14 @@ def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
     """Resolve the provider to use when `--provider` is not given.
 
     Precedence: SPRITE_GEN_DEFAULT_PROVIDER env > hard default (codex). When the
-    resolved default is codex but codex is unavailable, fall back to grok and return
-    fallback metadata (from/to/reason/default_source) so the switch is observable.
-    Returns (provider, fallback_or_None).
+    resolved default is codex but codex is not signed in here, it is what the user
+    chose for that (`codex_unavailable`): the question, raised, or the chosen
+    provider with the switch (from/to/cause/reason/default_source/chosen_by).
+    Returns (provider, switch_or_None).
 
-    An EXPLICIT_ONLY provider can never come out of here: not as the hard default,
-    not out of the env, and not as a fallback target. A codex outage reaches grok
-    (another subscription route) or nothing at all — never metered API credit.
+    An EXPLICIT_ONLY provider is never a default: not the hard default, not out of
+    DEFAULT_PROVIDER_ENV. It comes out of here only as the user's own answer for a
+    codex that cannot run.
     """
     configured = os.environ.get(DEFAULT_PROVIDER_ENV, "").strip()
     if configured:
@@ -302,28 +314,90 @@ def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
         if configured in EXPLICIT_ONLY_PROVIDERS:
             raise SystemExit(
                 f"gen: {DEFAULT_PROVIDER_ENV}={configured!r} is refused — {configured} bills per call "
-                f"against an API key and must be named explicitly (`--provider {configured}`), never "
-                f"stood up as a default. Use {', '.join(p for p in PROVIDERS if p not in EXPLICIT_ONLY_PROVIDERS)} "
-                "for a subscription route."
+                f"against an API key and is never a default: name it (`--provider {configured}`), or choose it "
+                f"for when codex cannot run (`sprite-gen defaults save --codex-unavailable {configured}`). Use "
+                f"{', '.join(p for p in PROVIDERS if p not in EXPLICIT_ONLY_PROVIDERS)} for a subscription route."
             )
         default, source = configured, DEFAULT_PROVIDER_ENV
     else:
         default, source = HARD_DEFAULT_PROVIDER, "hard-default"
 
-    # The availability-driven fallback is codex -> grok only (the mandated default):
-    # one subscription route to another, never to a per-call API key. A grok default
-    # that is down fails loud at generation time rather than silently reverse-falling
-    # back to codex.
+    # Only a codex default turns into the user's choice. A grok default that is down
+    # fails loud at generation time rather than reverse-falling back to codex.
     if default == "codex":
         ok, reason = _codex_available()
         if not ok:
-            return "grok", {
-                "from": "codex",
-                "to": "grok",
-                "reason": reason,
-                "default_source": source,
-            }
+            return codex_unavailable("login", reason, default_source=source)
     return default, None
+
+
+def codex_unavailable_choice() -> tuple[str, str]:
+    """What a default codex that cannot run turns into, and who said so: (choice, `CODEX_UNAVAILABLE_ENV` | `saved`
+    | `default`). The environment first, then the saved preference (`workflow.preferences`, its general settings),
+    then `ask`. Read only when codex cannot run, so a broken settings file stops nothing else."""
+    configured = os.environ.get(CODEX_UNAVAILABLE_ENV, "").strip()
+    if configured:
+        if configured not in CODEX_UNAVAILABLE_CHOICES:
+            raise SystemExit(f"gen: {CODEX_UNAVAILABLE_ENV}={configured!r} is not a choice; "
+                             f"expected one of {', '.join(CODEX_UNAVAILABLE_CHOICES)}")
+        return configured, CODEX_UNAVAILABLE_ENV
+    # The settings owner imports this package (its catalog names the choices), so it is imported here.
+    from sprite_gen.workflow.preferences import read_settings
+
+    try:
+        saved = read_settings()["general"].get(CODEX_UNAVAILABLE_SETTING)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"gen: {exc}") from exc
+    if saved:
+        return saved, "saved"
+    return CODEX_UNAVAILABLE_DEFAULT, "default"
+
+
+def codex_unavailable(cause: str, reason: str, *, default_source: str) -> tuple[str, dict[str, str]]:
+    """A default codex that cannot run (`cause` `login` or `usage-limit`, `reason` the reading's words), turned into
+    the user's choice: raises the question (`CodexUnavailableAsk`) for `ask`, else returns the chosen provider and
+    the switch the report keeps as `provider_fallback`."""
+    choice, chosen_by = codex_unavailable_choice()
+    if choice == "ask":
+        raise ask_codex_unavailable(codex_unavailable_question(cause, reason))
+    return choice, {"from": "codex", "to": choice, "cause": cause, "reason": reason,
+                    "default_source": default_source, "chosen_by": chosen_by}
+
+
+def _announce_switch(verb: str, switch: dict[str, str]) -> None:
+    print(f"sprite-gen {verb}: default provider '{switch['from']}' cannot run ({switch['reason']}) "
+          f"{PROVIDER_SWITCH_WORDS} '{switch['to']}', the choice for when codex cannot run "
+          f"({'saved with sprite-gen defaults' if switch['chosen_by'] == 'saved' else switch['chosen_by']}). "
+          "Pass --provider to name one, or change the choice with `sprite-gen defaults save --codex-unavailable`.",
+          file=sys.stderr, flush=True)
+
+
+def run_on_default(verb: str, provider: str | None, call: Callable[[str, str, dict[str, str] | None], Any],
+                   ) -> tuple[Any, str, dict[str, str] | None]:
+    """`call(provider, resolved_from, switch)` on the provider `--provider` named, else on the default one: returns
+    (its result, how the provider was chosen — `provider_resolved_from` — and the switch or None).
+
+    The one place a call that names no provider is resolved (`gen`, `logo`). A default codex that is not signed in
+    is the user's choice before anything runs (`resolve_default_provider`); one whose `codex exec` says its usage is
+    used up (`codex_provider.CodexUsageLimit`) is the same choice where it is found, and `call` runs again on the
+    chosen provider. A named provider runs as named: its usage limit is its failure."""
+    if provider is not None:
+        return call(provider, "explicit", None), "explicit", None
+    provider, switch = resolve_default_provider()
+    if switch:
+        _announce_switch(verb, switch)
+        resolved_from = f"fallback-from-{switch['from']}"
+    elif os.environ.get(DEFAULT_PROVIDER_ENV, "").strip():
+        resolved_from = DEFAULT_PROVIDER_ENV
+    else:
+        resolved_from = "hard-default"
+    try:
+        return call(provider, resolved_from, switch), resolved_from, switch
+    except codex_provider.CodexUsageLimit as exc:
+        provider, switch = codex_unavailable("usage-limit", exc.said, default_source=resolved_from)
+        _announce_switch(verb, switch)
+        resolved_from = f"fallback-from-{switch['from']}"
+        return call(provider, resolved_from, switch), resolved_from, switch
 
 
 def trim_to_alpha(path: Path, *, threshold: int = 8) -> dict[str, Any]:
@@ -637,27 +711,7 @@ def _run(args: argparse.Namespace) -> int:
     prompt = args.prompt
     if args.prompt_file:
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
-    # Explicit --provider is honored verbatim; only the unspecified case resolves the
-    # default (env > codex) with an observable codex->grok availability fallback.
-    provider = args.provider
-    fallback: dict[str, str] | None = None
-    if provider is not None:
-        resolved_from = "explicit"
-    else:
-        provider, fallback = resolve_default_provider()
-        if fallback:
-            resolved_from = f"fallback-from-{fallback['from']}"
-            print(
-                f"sprite-gen gen: default provider '{fallback['from']}' unavailable "
-                f"({fallback['reason']}) {PROVIDER_SWITCH_WORDS} '{fallback['to']}'. "
-                f"Set {DEFAULT_PROVIDER_ENV} or pass --provider to control this.",
-                file=sys.stderr,
-            )
-        elif os.environ.get(DEFAULT_PROVIDER_ENV, "").strip():
-            resolved_from = DEFAULT_PROVIDER_ENV
-        else:
-            resolved_from = "hard-default"
-    result = generate_image(
+    result, resolved_from, fallback = run_on_default("gen", args.provider, lambda provider, *_: generate_image(
         provider,
         prompt or "",
         args.out,
@@ -680,12 +734,13 @@ def _run(args: argparse.Namespace) -> int:
         workdir=args.workdir,
         decontam=str(getattr(args, "decontam", None) or "off"),
         layout_guide=getattr(args, "layout_guide", None),
-    )
+    ))
     payload = result.to_dict()
     # `provider` in the payload is always the backend that actually generated the
     # image; `provider_resolved_from` records HOW it was chosen and
-    # `provider_fallback` records a default->fallback switch when one happened
-    # (No Silent Fallback — the report names which provider was used and why).
+    # `provider_fallback` records the switch from a codex that could not run to the
+    # provider the user chose for that (No Silent Fallback — the report names which
+    # provider was used and why).
     payload["provider_resolved_from"] = resolved_from
     if fallback:
         payload["provider_fallback"] = fallback
@@ -710,9 +765,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             f"generation backend; default resolves via {DEFAULT_PROVIDER_ENV} env "
-            "then codex, with an observable grok fallback if codex is unavailable. "
+            "then codex. A default codex that cannot run (not signed in, or its usage used up) "
+            f"asks (exit {CODEX_UNAVAILABLE_EXIT}) or runs what was chosen for that "
+            f"(`sprite-gen defaults save --codex-unavailable`, {CODEX_UNAVAILABLE_ENV}). "
             "codex and grok run on a subscription login; openai is for servers and SaaS "
-            "and is billed per call on OPENAI_API_KEY, so it runs only when named here"
+            "and is billed per call on OPENAI_API_KEY, so it runs only when chosen"
         ),
     )
     parser.add_argument("--prompt")

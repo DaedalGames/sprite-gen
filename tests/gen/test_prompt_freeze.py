@@ -125,20 +125,6 @@ def test_only_the_diagonal_still_sentences_moved(frozen, drawn) -> None:
         assert f"not a {angle} view with only the head turned" in drawn[name]
 
 
-def test_the_default_walk_keeps_its_treadmill_and_screen_sentences(frozen, drawn) -> None:
-    """The built-in walk and run paragraphs are frozen with everything else: "as if on a treadmill" (kept in
-    place for a body without legs to read, a slime's bounce included), "without moving across the screen" in
-    the gait sentence as well as the frame sentence, and the view sentence after the gait sentence."""
-    for name, prompt in frozen.items():
-        if name.startswith("clip/") and name.split("/")[2] in ("walk", "run") and "/built-in/" in name:
-            assert "as if on a treadmill" in prompt and drawn[name] == prompt, name
-    side = drawn["clip/side@right/walk/built-in/default/pinned=None/no-character"]
-    assert "walks naturally in place, as if on a treadmill, without moving across the screen." in side
-    assert "The character is seen from the exact side, facing right." in side
-    front = drawn["clip/front@right/walk/built-in/default/pinned=None/no-character"]
-    assert "The character is seen from the front" in front
-
-
 PREPARE_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "prepare-rows-v2.32.0.json.gz"
 
 

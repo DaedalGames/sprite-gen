@@ -51,13 +51,13 @@ def test_the_child_runs_without_a_key_and_without_the_calling_session():
                      "CLAUDE_CODE_USE_VERTEX": "1"}
 
 
+# `method not in SUBSCRIPTION_METHODS` is one check: each method it lets in, one it keeps out.
 @pytest.mark.parametrize("answer, expected", [
     (SIGNED_IN, claude_login.Login("claude.ai", "max")),
     (status(0, {"loggedIn": True, "authMethod": "oauth_token", "subscriptionType": "team"}),
      claude_login.Login("oauth_token", "team")),
     (SIGNED_OUT, None),
     (status(0, {"loggedIn": True, "authMethod": "api_key"}), None),
-    (status(0, {"loggedIn": True, "authMethod": "third_party"}), None),
     (FileNotFoundError("claude"), None),
 ])
 def test_the_login_is_a_subscription_or_none(answer, expected):
@@ -68,8 +68,9 @@ def test_the_login_is_a_subscription_or_none(answer, expected):
     assert "ANTHROPIC_API_KEY" not in call["env"]  # the status of the login the child would use
 
 
+# A timeout and an OSError share one `except`.
 @pytest.mark.parametrize("answer", [status(0, "not json"), status(2, {"loggedIn": False}),
-                                    subprocess.TimeoutExpired(["claude"], 30), PermissionError("denied")])
+                                    subprocess.TimeoutExpired(["claude"], 30)])
 def test_an_unreadable_status_is_refused_not_read_as_no_login(answer):
     with pytest.raises(SystemExit, match="refusing to guess whether your Claude subscription is signed in"):
         claude_login.login({}, run=Run(answer))

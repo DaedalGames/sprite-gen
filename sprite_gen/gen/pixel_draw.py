@@ -725,9 +725,11 @@ class Calls:
 
     def _collect(self, record: dict[str, Any], asks: dict[str, Ask], wait: float) -> dict[str, Reply | ApiError]:
         started = time.monotonic()
+        # --batch-wait holds the reads too: a refused one is asked again only while its wait ends before it.
+        deadline = started + wait
         while True:
             try:
-                batch = api.get_batch(self.token, record["id"], sleep=self.sleep, label=VERB)
+                batch = api.get_batch(self.token, record["id"], sleep=self.sleep, label=VERB, deadline=deadline)
             except ApiError as exc:
                 self.note(f"batch {record['id']}: status not read ({exc.line}); asking again")
                 batch = {}
@@ -737,7 +739,7 @@ class Calls:
                 raise Unfinished(record["id"], time.monotonic() - started, "has not ended")
             self.sleep(BATCH_POLL_SECONDS)
         try:
-            results = api.batch_results(self.token, batch, sleep=self.sleep, label=VERB)
+            results = api.batch_results(self.token, batch, sleep=self.sleep, label=VERB, deadline=deadline)
         except ApiError as exc:
             raise Unfinished(record["id"], time.monotonic() - started, f"has ended but its results were not read ({exc.line})") from exc
         seconds = round(time.monotonic() - started, 3)

@@ -15,11 +15,11 @@ from keyed_figure import colour_outside_mapped, figure
 from sprite_gen.curate.curation import apply_transform, normalize_transform, transform_matrix
 from sprite_gen.util.resample import transform_cell
 
+# Every transform kind goes through the one affine map into `transform_cell`, so a pure
+# sub-pixel move and a combined scale + rotation cover it; the shrink direction is held by
+# tests/video/test_gait_fallback_resample.py.
 TRANSFORMS = {
     "move half a pixel": {"dx": 0.5, "dy": -0.5},
-    "rotate": {"rotate": 10},
-    "shrink": {"scale": 0.75},
-    "shear": {"shx": 0.2, "shy": -0.1},
     "grow and rotate": {"scale": 1.3, "rotate": 15},
 }
 

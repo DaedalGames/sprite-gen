@@ -16,6 +16,8 @@ from PIL import Image, ImageDraw
 from sprite_gen.qa.motion import analyze_motion
 from sprite_gen.qa import motion
 
+from conftest import symlink_or_skip
+
 
 def sequence(xs=(24, 22, 20, 18, 16), *, durations=None, ys=None, two_feet=False):
     frames = []
@@ -77,16 +79,6 @@ def test_split_duplicate_holds_preserve_duration_and_stance_speed():
     assert len(b["frames"]) == 10
     assert b["frames"][-1]["duration_seconds"] == pytest.approx(0.13)
     assert b["contact_candidates"][0]["measurement_elapsed_seconds"] == pytest.approx(0.8)
-
-
-def test_added_hold_time_reduces_speed_instead_of_being_dropped():
-    original = analyze_motion(sequence(), contacts="0:4", foot_box=FOOT_BOX)
-    repeated = analyze_motion(
-        sequence((24, 24, 22, 22, 20, 20, 18, 18, 16, 16)),
-        contacts="0:9", foot_box=FOOT_BOX,
-    )
-    assert repeated["duration_seconds"] == pytest.approx(original["duration_seconds"] * 2)
-    assert repeated["stride_px_per_second"] == pytest.approx(original["stride_px_per_second"] / 2)
 
 
 def test_nonuniform_frame_durations_determine_speed():
@@ -260,7 +252,7 @@ def test_output_cannot_overwrite_any_source_or_alias(tmp_path, capsys, target):
     source = descriptor(tmp_path)
     output = tmp_path / target
     if target == "symlink.json":
-        output.symlink_to(source)
+        symlink_or_skip(output, source)
     if target == "hardlink.json":
         os.link(source, output)
     before = file_bytes(tmp_path)

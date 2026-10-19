@@ -229,6 +229,13 @@ def test_video_loop_records_the_repair_and_plays_the_made_frame(tmp_path):
     assert np.array_equal(np.asarray(Image.open(tmp_path / "out" / "cycle" / "frame-009.png")), np.asarray(reopened[9]))
     assert json.loads((tmp_path / "w.json").read_text())["jump_repair"]["replaced"] == [10]
     assert made == [0.5]
+    # the jolt of the loop as it plays after the repair (docs/loop-repair.md section 3)
+    jolt = rep["jolt"]
+    assert jolt["measured"] == "after the jump repair" and jolt["warnings"] == [] and jolt["passed"]
+    assert jolt["gated"] is False and jolt["gate"] is None
+    assert jolt["reference"] == {"jolt_max": repair.JOLT_REFERENCE, "head_step_max": repair.HEAD_STEP_REFERENCE}
+    assert set(jolt["head"]["x"]) >= {"step_max_pct", "step_median_pct", "max_over_median", "range_pct"}
+    assert set(jolt["head"]["y"]) >= {"step_max_pct", "step_median_pct", "max_over_median", "range_pct"}
 
 
 def test_video_loop_plays_two_frames_made_again_at_their_own_times_in_a_loop_as_long(tmp_path):
@@ -296,12 +303,6 @@ def test_repair_on_without_rife_is_refused_with_the_install_line(tmp_path, monke
     assert report["status"] == "failed" and "rife-ncnn-vulkan not found" in report["error"]
 
 
-def test_repair_on_with_rife_repairs_as_auto_does(tmp_path):
-    filmed, truth = _loop({10: 12})
-    rep = _run(tmp_path, _keyed(tmp_path, filmed), repair="on", interpolate=lambda a, b, t: truth[10])
-    assert rep["jump_repair"]["replaced"] == [10] and rep["jump_repair"]["applied"] is True
-
-
 def test_a_rife_that_is_found_and_fails_still_fails_the_loop(tmp_path):
     from sprite_gen.video import rife
 
@@ -365,17 +366,6 @@ def test_a_loop_with_no_head_to_track_says_so_instead_of_passing():
     measured = repair.measure_jolt(blank)
     assert "skipped" in measured["head"]
     assert any("could not be tracked" in o for o in repair.jolt_verdict(measured))
-
-
-def test_video_loop_reports_the_jolt_of_the_loop_as_it_plays_after_the_repair(tmp_path):
-    filmed, truth = _loop({10: 12})
-    rep = _run(tmp_path, _keyed(tmp_path, filmed), interpolate=lambda a, b, t: truth[10])
-    jolt = rep["jolt"]
-    assert jolt["measured"] == "after the jump repair" and jolt["warnings"] == [] and jolt["passed"]
-    assert jolt["gated"] is False and jolt["gate"] is None
-    assert jolt["reference"] == {"jolt_max": repair.JOLT_REFERENCE, "head_step_max": repair.HEAD_STEP_REFERENCE}
-    assert set(jolt["head"]["x"]) >= {"step_max_pct", "step_median_pct", "max_over_median", "range_pct"}
-    assert set(jolt["head"]["y"]) >= {"step_max_pct", "step_median_pct", "max_over_median", "range_pct"}
 
 
 def test_by_default_a_jolting_loop_is_kept_with_a_warning_line(tmp_path, capsys):

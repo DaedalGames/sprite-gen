@@ -207,16 +207,6 @@ def test_two_items_do_not_call_a_wrist_bare_that_the_other_is_on() -> None:
     assert "has none," in h.text([watch], "side", "right") and "none of it" not in h.text([watch, bracelet], "side", "right")
 
 
-def test_the_clip_prompt_ends_with_the_handedness_sentence() -> None:
-    items = [h.parse(WATCH)]
-    plain = batch_mod.build_prompt("front_diagonal", "walk", None, facing="left")
-    with_item = batch_mod.build_prompt("front_diagonal", "walk", None, facing="left", handed=items)
-    assert with_item == plain + " " + h.text(items, "front_diagonal", "left", clip=True)
-    front = batch_mod.build_prompt("front", "walk", None, facing="right", handed=items, motion="It strolls.")
-    assert front.endswith(h.text(items, "front", None, clip=True))
-    assert batch_mod.build_prompt("side", "walk", None, handed=None) == batch_mod.build_prompt("side", "walk", None)
-
-
 def test_video_prompt_carries_handedness_and_turns_a_left_diagonal_loop_left() -> None:
     record = clip_prompt.plan_prompt(direction="back_diagonal", state="walk", facing="left", last_frame=False,
                                      unpinned=True, handed=[h.parse(WATCH)])

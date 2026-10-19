@@ -21,10 +21,12 @@ The fixtures are 1/8-size NEAREST copies of the repro raws (1024x1536 ->
 Source raws: moe-test ``raw-green.png`` (magenta key) / ``raw-red.png``
 (green key), generated at cell 1024x1536, idle single frame.
 
-The third test pins the v1.10.1 guardrail from the other side: on these
+Partial alpha on both keys is pinned on the sibling moe fixtures
+(``test_chroma_extraction.py::test_moe_fixtures_keep_meaningful_mid_alpha_edges``).
+The second test pins the v1.10.1 guardrail from the other side: on these
 fixtures, pixels deeper than any plausible fringe peel must come out
 byte-identical. The one sanctioned interior treatment is the trapped-spill
-despill (fourth test): a *small* cluster with a strongly key-tinted pixel,
+despill (third test): a *small* cluster with a strongly key-tinted pixel,
 buried inside the subject, is generator spill and gets its color corrected
 in place (alpha kept — no pinholes); marginally warm subject colors (skin)
 and large key-tinted material regions are never touched.
@@ -126,16 +128,6 @@ def _keyed_distance_map(image: Image.Image, chroma_key: tuple[int, int, int]) ->
                         distance[neighbor] = distance[index] + 1
                         frontier.append(neighbor)
     return distance
-
-
-@pytest.mark.parametrize("name, chroma_key", CASES)
-def test_boundary_blend_pixels_get_partial_alpha(name: str, chroma_key) -> None:
-    # ① Antialiased edges must survive as partial alpha. A hard binary cut
-    # leaves zero mid-alpha pixels and the silhouette staircases.
-    out = _clean(_open(name), chroma_key)
-    histogram = out.getchannel("A").histogram()
-    mid_alpha = sum(histogram[1:255])
-    assert mid_alpha > 0, f"{name}: no partial alpha anywhere — edges are a binary cut"
 
 
 @pytest.mark.parametrize("name, chroma_key", CASES)

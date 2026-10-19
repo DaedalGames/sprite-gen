@@ -27,6 +27,11 @@ from PIL import Image, ImageDraw
 
 from conftest import feet_unseen
 from sprite_gen.video import align, batch, loop, period
+from tests.video.test_video_pipeline import HAS_IMG2WEBP
+
+# Every test here cuts a loop, and a loop is written with img2webp: without it they skip, as the
+# other loop tests do, rather than fail.
+pytestmark = pytest.mark.skipif(not HAS_IMG2WEBP, reason="img2webp not installed")
 
 CYCLE, FRAMES = 42, 73
 
@@ -116,7 +121,10 @@ def _same_but_the_screen(a: Path, b: Path) -> None:
     frames = sorted(p.name for p in (a / "cycle").glob("*.png"))
     assert frames == sorted(p.name for p in (b / "cycle").glob("*.png"))
     assert all((a / "cycle" / f).read_bytes() == (b / "cycle" / f).read_bytes() for f in frames)
-    left, right = (json.loads((d / "loop.loop.report.json").read_text().replace(str(d), "@")) for d in (a, b))
+    # The report is JSON text, so the run dir appears in it JSON-escaped: on Windows its
+    # backslashes are doubled, and a raw str(d) would match nothing.
+    left, right = (json.loads((d / "loop.loop.report.json").read_text(encoding="utf-8").replace(json.dumps(str(d))[1:-1], "@"))
+                   for d in (a, b))
     for report in (left, right):
         # The gait observation keeps a copy of the screen's record (sprite_gen/video/evidence.py): each
         # report's copy is its own record, and nothing else of the gait is set aside with it.
@@ -125,18 +133,24 @@ def _same_but_the_screen(a: Path, b: Path) -> None:
     assert left == right
 
 
-@pytest.mark.parametrize("cycle, suspect", [(CYCLE, True), (23.5, True), (25, False)])
+@pytest.mark.parametrize("cycle, suspect", [(CYCLE, True)])
 def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatch, cycle, suspect):
-    """A one-step cut, a cycle on a frame count that is not whole (23.5 frames: twice it repeats
-    better, being whole there — a suspect that is no step) and a whole cycle of 25: with the screen
-    or without it, every image, the strip metadata and the report are the same but for its record, and
-    the gait observation's copy of it."""
+    """A one-step cut: with the screen or without it, every image, the strip metadata and the report
+    are the same but for its record, and the gait observation's copy of it. The screen is computed
+    after the cut is chosen and only stored (`local_cycle.py`), so one cut answers for any cycle."""
     keyed = _keyed(tmp_path, cycle)
     report = _cut(tmp_path / "screened", keyed)
     assert report["cycle"]["step_screen"]["suspect"] is suspect
     monkeypatch.setattr(period, "step_screen", lambda *a, **k: {"stubbed": True})
     _cut(tmp_path / "unscreened", keyed)
     _same_but_the_screen(tmp_path / "screened", tmp_path / "unscreened")
+
+
+@pytest.mark.parametrize("cycle, suspect", [(23.5, True), (25, False)])
+def test_the_step_screen_reads_a_cycle_on_a_frame_count_that_is_not_whole(tmp_path, cycle, suspect):
+    """A cycle of 23.5 frames repeats better twice over, being whole there: a suspect that is no step.
+    A whole cycle of 25 is no suspect."""
+    assert _cut(tmp_path / "out", _keyed(tmp_path, cycle))["cycle"]["step_screen"]["suspect"] is suspect
 
 
 def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, tmp_path):

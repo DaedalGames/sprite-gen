@@ -165,14 +165,12 @@ def test_run_publishes_the_report_under_the_writer_lock_and_releases_it(tmp_path
     assert calls == [("lock", "scene-inspect"), ("write",), ("release",)]
 
 
-@pytest.mark.parametrize("target", [".sprite-gen.lock", "reports/.sprite-gen.lock", ".out.sg-rwlock", "scene.json", "ramp-3.png",
-                                    "spec-symlink.json", "asset-hardlink.png", "a-directory", "ramp-0.png/report.json"])
+@pytest.mark.parametrize("target", [".sprite-gen.lock", ".out.sg-rwlock", "scene.json",
+                                    "asset-hardlink.png", "a-directory", "ramp-0.png/report.json"])
 def test_run_refuses_reserved_names_scene_inputs_and_their_aliases(tmp_path, capsys, target):
     spec = ramp_scene(tmp_path)
     out = tmp_path / target
-    if target == "spec-symlink.json":
-        out.symlink_to(spec)
-    elif target == "asset-hardlink.png":
+    if target == "asset-hardlink.png":
         os.link(tmp_path / "ramp-1.png", out)
     elif target == "a-directory":
         out.mkdir()

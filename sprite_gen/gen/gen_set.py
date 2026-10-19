@@ -11,8 +11,11 @@ Same contract as `video-set`: items are idempotent (an existing row is reused un
 `--force`), every item gets its own report, `table.md` names failures by stage, and the
 exit code is non-zero when any item failed. There is no fallback provider: `--provider`
 is honoured verbatim and the unspecified case resolves exactly like `gen` does
-(`SPRITE_GEN_DEFAULT_PROVIDER` > codex, with the same observable codex→grok
-availability failover recorded per item).
+(`SPRITE_GEN_DEFAULT_PROVIDER` > codex; a codex that cannot run turns into what the user
+chose for that, recorded per item). When that choice is to ask, every row's `gen` asks
+instead of generating, and the set stops with the same question and exit code
+(`base.CODEX_UNAVAILABLE_EXIT`) once the rows under way have ended, naming `--provider` as
+the way to answer it.
 
 Direction-contract runs follow the run's own `references/generation-plan.json`: stage 1
 (direction anchors, base-referenced) must be generated, extracted and an anchor frame
@@ -32,7 +35,7 @@ from typing import Any, Callable
 
 from sprite_gen import gen as gen_mod
 from sprite_gen.curate import anchor as anchor_mod
-from sprite_gen.gen.base import run_logged
+from sprite_gen.gen.base import ask_codex_unavailable, child_asked, codex_unavailable_question, run_logged
 from sprite_gen.spec import layout
 from sprite_gen.spec.runio import atomic_write_text
 
@@ -170,6 +173,10 @@ def run_item(
                 if partial.exists():
                     partial.unlink()
             if rc != 0:
+                if (question := child_asked(rc, log)) is not None:
+                    result["asked"] = question
+                    raise SystemExit(f"gen asked what to do instead of generating: codex cannot run here "
+                                     f"({question['reason']})")
                 tail = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:] if log.exists() else []
                 raise SystemExit(f"gen exited {rc}; " + (" | ".join(tail) if tail else f"see {log}") + " — the row and its report were removed")
             raise SystemExit(f"gen exited 0 but its {why or bad_image}; the row and the report were removed so the next run regenerates")
@@ -192,6 +199,9 @@ def write_table(results: list[dict[str, Any]], path: Path) -> str:
     for r in results:
         if r.get("ok") and r.get("reused"):
             lines.append(f"| {r['state']} | - | - | - | reused |")
+        elif r.get("asked"):
+            lines.append(f"| {r['state']} | - | - | {r.get('elapsed_seconds', '-')} | ASKED: codex cannot run here "
+                         f"({r['asked']['reason'][:80]}) |")
         elif r.get("ok"):
             lines.append(f"| {r['state']} | {r.get('provider') or '-'} | {r.get('provider_resolved_from') or '-'} | {r.get('elapsed_seconds', '-')} | OK |")
         else:
@@ -225,6 +235,8 @@ def run_set(
                 r = fut.result()
                 results.append(r)
                 print(json.dumps({k: r[k] for k in ("state", "ok") if k in r} | ({"error": r["error"]} if not r.get("ok") else {}), ensure_ascii=False), flush=True)
+        if any(r.get("asked") for r in results):
+            break  # every row would ask the same: the set asks it once, below
         if any(not r.get("ok") for r in results if r["state"] in stage) and len(_stages(request, ordered)) > 1:
             # a failed anchor stage cannot feed stage 2 — stop here and say so, do not attach the base instead
             break
@@ -233,6 +245,9 @@ def run_set(
     report_dir.mkdir(parents=True, exist_ok=True)
     table = write_table(results, report_dir / "table.md")
     skipped = [s for s in ordered if s not in {r["state"] for r in results}]
+    # the set's own question, its flag to answer it: the same as its rows', which ran `gen` with gen-set's --provider
+    asked = next((codex_unavailable_question(r["asked"]["cause"], r["asked"]["reason"]) for r in results
+                  if r.get("asked")), None)
     payload = {
         "kind": "sprite-gen-gen-set-report",
         "run_dir": str(run_dir),
@@ -240,17 +255,21 @@ def run_set(
         "ok": sum(1 for r in results if r.get("ok")),
         "failed": [r["state"] for r in results if not r.get("ok")],
         "not_started": skipped,
+        **({"asked": asked} if asked else {}),
         "items": results,
     }
     atomic_write_text(report_dir / "set.report.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     print(table)
+    if asked:
+        raise ask_codex_unavailable(asked)
     return payload
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run-dir", required=True, type=Path, help="a prepared run (sprite-request.json, prompts/, references/layout-guides/)")
     parser.add_argument("--states", help="comma list; default = every non-mirrored state in the request")
-    parser.add_argument("--provider", choices=("codex", "grok"), help="honoured verbatim; default resolves like `gen` (env > codex, observable failover)")
+    parser.add_argument("--provider", choices=gen_mod.PROVIDERS, help="honoured verbatim (openai bills per call); default "
+                        "resolves like `gen`: env > codex, and a codex that cannot run asks or runs what was chosen for that")
     parser.add_argument("--model")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help=f"rows generated at once (default {DEFAULT_CONCURRENCY})")
     parser.add_argument("--force", action="store_true", help="regenerate rows that already exist")

@@ -71,6 +71,7 @@ _ORCHESTRATOR_SESSION_ENV_SUFFIXES = (
 # (회귀 2026-07-19: 15행 배치 중 1행의 codex exec 이 1시간 38분 무출력 — 같은 env
 # 로 14행이 성공했으니 세션/훅 충돌이 아니라 provider 측 산발 스톨. 킬 외엔 답이
 # 없으므로 바운드가 유일한 방어). 기본 180초 (maintainer 확정 2026-07-19; 실측 정상 최장 129초).
+# OpenAI·Grok 직접 호출(이미지, OpenAI 방향 검사)에는 첫 전송부터 센 호출 기한 — 다시 보내기 전 대기 포함 (gen.retry).
 GEN_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_GEN_TIMEOUT_SECONDS", "180"))
 
 
@@ -125,6 +126,60 @@ def provider_binary(name: str) -> str:
 # child's output in a log (`run_logged`): a call billed per call, and a default provider switched.
 API_CHARGE_WORDS = "this is a per-call API charge, not a subscription"
 PROVIDER_SWITCH_WORDS = "— falling back to"
+
+# The one question sprite-gen hands back instead of an image (docs/gen.md "When codex cannot run"): a call that
+# named no provider found codex unable to run, and what the user chose for that is to be asked. Nothing was
+# generated. It is one stderr line, these words and a JSON object (`cause`, `reason`, `question`, and `choices`:
+# the flag that runs each answer), and this exit code. A batch verb whose child asked reads the child's line from
+# its log and stops with the same question, naming its own flag.
+CODEX_UNAVAILABLE_EXIT = 75
+CODEX_UNAVAILABLE_ASK = "sprite-gen ask codex-unavailable: "
+
+
+class CodexUnavailableAsk(SystemExit):
+    """The question was asked instead of generating; `question` is the JSON object of its line."""
+
+    def __init__(self, question: dict[str, Any]) -> None:
+        super().__init__(CODEX_UNAVAILABLE_EXIT)
+        self.question = question
+
+
+def codex_unavailable_question(cause: str, reason: str, *, flag: str = "--provider") -> dict[str, Any]:
+    """The question's JSON object. `cause` is `login` (codex is not signed in here: `codex_provider.codex_login`) or
+    `usage-limit` (codex said its usage is used up: `codex_provider.usage_limit`); `reason` says which, in the
+    reading's own words; `flag` is the asking verb's flag that runs an answer."""
+    return {
+        "cause": cause,
+        "reason": reason,
+        "question": f"codex cannot run here ({reason}). Generate with the OpenAI API (billed per call), "
+                    "with Grok, or stop?",
+        "choices": {"openai": f"{flag} openai", "grok": f"{flag} grok", "stop": None},
+    }
+
+
+def ask_codex_unavailable(question: dict[str, Any]) -> CodexUnavailableAsk:
+    """Print the question (`codex_unavailable_question`) on stderr and return the exit that ends the call with it."""
+    print(CODEX_UNAVAILABLE_ASK + json.dumps(question, ensure_ascii=False), file=sys.stderr, flush=True)
+    return CodexUnavailableAsk(question)
+
+
+def asked_codex_unavailable(output: str) -> dict[str, Any] | None:
+    """The question in a call's output (its last question line), or None when it asked none."""
+    for line in reversed(output.splitlines()):
+        if line.startswith(CODEX_UNAVAILABLE_ASK):
+            try:
+                return json.loads(line[len(CODEX_UNAVAILABLE_ASK):])
+            except ValueError:
+                return None
+    return None
+
+
+def child_asked(rc: int, log: Path) -> dict[str, Any] | None:
+    """The question a child `sprite-gen gen` run through `run_logged` asked instead of generating: its exit code is
+    CODEX_UNAVAILABLE_EXIT and its line is in `log`. None for any other ending."""
+    if rc != CODEX_UNAVAILABLE_EXIT or not log.is_file():
+        return None
+    return asked_codex_unavailable(log.read_text(encoding="utf-8", errors="replace"))
 
 
 def announce_api_billing(provider: str, env_name: str, detail: str = "") -> None:
@@ -281,6 +336,11 @@ class Provider(Protocol):
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun: ...
 
     def inspect_facing(self, path: Path, workdir: Path) -> tuple[str, dict[str, Any]]: ...
+
+    # One vision call asking `prompt` about the image at `path`, on this provider's own login
+    # (the facing check asks its own question through `inspect_facing`; `logo` asks what the
+    # lettering spells). `label` names the call in a billing line and a failure.
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = ...) -> tuple[str, dict[str, Any]]: ...
 
 
 @dataclass

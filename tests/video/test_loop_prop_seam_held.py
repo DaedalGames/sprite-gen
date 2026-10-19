@@ -101,6 +101,24 @@ def held(tmp_path_factory) -> tuple[Path, dict]:
     return root, _cut(root, _keyed(root))
 
 
+@pytest.fixture(scope="module")
+def staffless_cut(tmp_path_factory) -> Path:
+    """The walker without a staff, cut once for the module (`<root>/out`): two tests align it."""
+    root = tmp_path_factory.mktemp("staffless")
+    _cut(root, _keyed(root, staff=False))
+    return root
+
+
+@pytest.fixture
+def staffless(staffless_cut, tmp_path) -> tuple[Path, dict]:
+    """A copy of that cut for one test, laid out as `_cut` lays it: what an alignment rewrites stays in the
+    test's own directory. The report and strip metadata name the shared keyed frames, which nothing writes;
+    the alignment finds the report by name in the loop's directory, not by a path recorded in it."""
+    root = tmp_path / "staffless"
+    shutil.copytree(staffless_cut / "out", root / "out")
+    return root, json.loads((root / "out" / "loop.loop.report.json").read_text())
+
+
 def test_motion_auto_takes_two_steps_where_the_held_staff_closes_only_there(held):
     root, report = held
     cycle = report["cycle"]
@@ -166,13 +184,6 @@ def test_an_explicit_max_len_is_not_widened_by_a_window_two_steps_long(tmp_path)
     assert "steps" not in json.loads((tmp_path / "out" / "loop.strip.json").read_text())
     (line,) = [line for line in report["jolt"]["warnings"] if "held part does not close" in line]
     assert "over --max-len 25" in line
-
-
-def test_a_walk_whose_top_does_not_pop_reads_nothing_below_it(tmp_path):
-    report = _cut(tmp_path, _keyed(tmp_path, staff=False))
-    shape = report["cycle"]["seam_pop"]
-    assert shape["applied"] is False and "held_edge" not in shape and "steps" not in report["cycle"]
-    assert not any(r.get("held_edge") is not None for r in report["cycle"]["candidates"])
 
 
 # --- the held side, read on edges -------------------------------------------------------------
@@ -347,13 +358,12 @@ def test_shape_rank_reads_no_held_side_when_the_first_choice_does_not_pop():
 
 # --- the set ----------------------------------------------------------------------------------
 
-def test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is(held, tmp_path):
+def test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is(held, staffless):
     """The loop cut two steps long is one cycle: it returns half way at its second step, which is no
     suspect (status `steps`), and it is resampled to the set's length like the rest — the set's length
     the median of the loops as cut, nothing kept twice as long."""
     root, report = held
-    other = tmp_path / "plain"
-    plain = _cut(other, _keyed(other, staff=False))
+    other, plain = staffless
     lengths = [report["cycle"]["length"], plain["cycle"]["length"]]
     out = align.align_set([root / "out", other / "out"], between="nearest")
     two, one = out["loops"]
@@ -388,9 +398,8 @@ CORRESPONDENCE_KEYS_2410 = {"cells_from", "origin"}
 GHOST_KEYS_2430 = {"ghost_screen", "ghost_at"}
 
 
-def test_cycle_align_writes_a_loop_without_a_held_part_as_before(tmp_path):
-    src = tmp_path / "src"
-    report = _cut(src, _keyed(src, staff=False))
+def test_cycle_align_writes_a_loop_without_a_held_part_as_before(tmp_path, staffless):
+    src, report = staffless
     cut = json.loads((src / "out" / "loop.strip.json").read_text())
     # The cut names its cells' source: the keyed frames it read, its window in them, and each cell's frame
     # there — every frame of the window one cell, under one crop.

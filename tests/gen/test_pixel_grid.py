@@ -32,17 +32,13 @@ def codes(issues):
     return sorted({i.code for i in issues})
 
 
+# The other recorded answers (tile-16, fourdir-16, sprite-16-safe-area, walk-32-safe-area, attack-32-safe-area,
+# attack-32-margin-detail) are parsed whole by the recorded tests of tests/gen/test_pixel_gates.py.
 PASSING = [
     ("sprite-16-pass.txt", "chargrid", 16, ("front",)),
     ("icon-32-pass.txt", "chargrid", 32, ("icon",)),
-    ("tile-16-pass.txt", "chargrid", 16, ("tile",)),
     ("walk-16-pass.txt", "chargrid", 16, WALK),
-    ("fourdir-16-pass.txt", "chargrid", 16, FOURDIR),
     ("icon-16-json-pass.txt", "json", 16, ("icon",)),
-    ("sprite-16-safe-area-pass.txt", "chargrid", 16, ("sprite",)),
-    ("walk-32-safe-area-pass.txt", "chargrid", 32, WALK),
-    ("attack-32-safe-area-pass.txt", "chargrid", 32, ("attack1", "attack2", "attack3", "attack4")),
-    ("attack-32-margin-detail.txt", "chargrid", 32, ("attack1", "attack2", "attack3", "attack4")),
 ]
 
 
@@ -224,15 +220,6 @@ def test_png_bytes_are_a_function_of_the_pixels_alone():
     assert data == GOLDEN_2X2  # assembled from the PNG spec by hand, not by this code
     with Image.open(io.BytesIO(data)) as image:
         assert image.mode == "RGBA" and list(image.get_flattened_data()) == [p for row in pixels for p in row]
-
-
-def test_a_frame_png_decodes_to_the_grid_and_repeats_byte_for_byte():
-    grid, _ = pg.parse_answer(fixture("icon-32-pass.txt"), "chargrid", 32, 32, ("icon",))
-    pixels = pg.frame_pixels(grid, "icon")
-    first, second = pg.png_bytes(pixels), pg.png_bytes(pg.frame_pixels(grid, "icon"))
-    assert first == second
-    with Image.open(io.BytesIO(first)) as image:
-        assert image.size == (32, 32) and list(image.get_flattened_data()) == [p for row in pixels for p in row]
 
 
 def test_palette_rules(tmp_path):

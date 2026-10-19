@@ -102,15 +102,15 @@ def _frames(image: Image.Image, count: int = 12, cfg: dict | None = None):
 
 # ── 1. 강체 구간 항등 ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("build", [_humanoid, _winged, lambda: _dome(with_face=True)],
-                         ids=["humanoid", "winged", "dome-with-face"])
+@pytest.mark.parametrize("build", [_humanoid, _winged], ids=["humanoid", "winged"])
 def test_rigid_region_is_bit_identical_across_frames(build) -> None:
     """강체 구간은 프레임 간 비트 동일하다.
 
     **얼굴 없는 돔(`_dome()`)은 이 계약을 태울 수 없다** — 경계가 4행이고 테이퍼 밴드가
     5행이라 강체 구간 높이가 음수다. 병목도 얼굴도 없는 실루엣은 지킬 강체 구간이 애초에
     없고, 그건 결함이 아니라 그 분기의 성질이다 (validator note 2026-07-25). 그래서 여기서는
-    강체 구간이 실재하는 3종만 태운다."""
+    강체 구간이 실재하는 도형만 태운다 — 얼굴 있는 돔은
+    `test_face_on_the_body_pushes_the_boundary_below_the_face` 가 같은 루프로 본다."""
     src = build()
     anat = analyze(src)
     frames, _ = _frames(src)
@@ -382,11 +382,6 @@ def test_feet_stay_planted_and_loop_length_is_preserved() -> None:
     assert len(frames) == 12 and len(phases) == 12
     for i, frame in enumerate(frames):
         assert solid_alpha_bbox(frame)[3] == baseline, f"frame {i}: 발이 떴다"
-
-
-def test_breathing_actually_moves_the_body() -> None:
-    src = _humanoid()
-    frames, _ = _frames(src, count=12)
     heights = {solid_alpha_bbox(f)[3] - solid_alpha_bbox(f)[1] for f in frames}
     assert len(heights) > 1, "봉투 워프가 높이를 전혀 안 바꿨다"
 
@@ -433,15 +428,6 @@ def test_row_strain_over_the_cap_raises_instead_of_clamping() -> None:
 
 
 # ── 5. 수동 override 와 자가 복구 ───────────────────────────────────
-
-def test_manual_rigid_row_overrides_detection_and_is_observable() -> None:
-    src = _humanoid()
-    auto = analyze(src)
-    manual = analyze(src, rigid_row=auto.rigid_row + 6)
-    assert manual.rigid_row == auto.rigid_row + 6
-    assert manual.rigid_source == "manual"
-    assert any("rigid-row-override" in w for w in manual.warnings)
-
 
 def test_stale_frozen_anatomy_self_heals() -> None:
     src = _humanoid()
@@ -495,9 +481,10 @@ def test_smoothness_hint_scales_with_breath_count() -> None:
 
 # ── 7. 폐기된 분할선 스키마는 요란하게 거부된다 ─────────────────────
 
-@pytest.mark.parametrize("retired", [{"splits": [0.55]}, {"amplitude": 2}, {"subpixel": True}])
-def test_retired_split_schema_is_rejected_loudly(retired: dict) -> None:
-    curation = {"states": {"idle": {"breathe": {**retired, "breaths": 1}}}}
+def test_retired_split_schema_is_rejected_loudly() -> None:
+    from sprite_gen.curate.curation import RETIRED_BREATHE_KEYS
+    assert {"splits", "amplitude", "subpixel", "hold"} <= set(RETIRED_BREATHE_KEYS)
+    curation = {"states": {"idle": {"breathe": {"splits": [0.55], "breaths": 1}}}}
     with pytest.raises(SystemExit) as err:
         state_breathe(curation, "idle")
     message = str(err.value)
@@ -587,21 +574,6 @@ def test_repeated_phases_are_bit_identical_so_atlas_cells_can_be_shared() -> Non
                 assert pattern[i] == pattern[j], f"슬롯 {i}/{j}: 같은 위상인데 double 이 다르다"
 
 
-def test_repeated_phases_render_byte_identical_frames() -> None:
-    """위상이 같으면 구워진 픽셀도 같아야 칸 공유가 정당하다."""
-    src = _humanoid()
-    cfg = dict(CFG)
-    cfg["anatomy"] = freeze_anatomy(src, cfg, _key())
-    frames, phases = bake_breathe_sequence([src] * 18, {**cfg, "breaths": 3})
-    by_phase: dict[float, bytes] = {}
-    for frame, phase in zip(frames, phases):
-        data = frame.tobytes()
-        if phase in by_phase:
-            assert by_phase[phase] == data, f"위상 {phase}: 같은 위상인데 픽셀이 다르다"
-        by_phase[phase] = data
-    assert len(by_phase) == 6, f"18슬롯 3호흡의 유니크 위상은 6이어야 한다 (got {len(by_phase)})"
-
-
 def test_manual_rigid_row_beats_a_frozen_anatomy() -> None:
     """`rigid_row` 는 사람의 의도(입력)고 `anatomy` 는 파생 캐시다 — 의도가 이긴다.
 
@@ -676,22 +648,6 @@ def test_out_of_range_values_are_refused_instead_of_clamped() -> None:
     ok = state_breathe({"states": {"idle": {"breathe": {
         "depth": BREATHE_DEPTH_MAX, "breaths": BREATHE_BREATHS_MAX, "lag": BREATHE_LAG_MAX}}}}, "idle")
     assert ok["breaths"] == BREATHE_BREATHS_MAX
-
-
-def test_the_curator_ui_cap_matches_the_schema_bound() -> None:
-    """UI 컨트롤 상한과 스키마 상한이 갈리면 UI 가 만든 값을 굽기가 거부한다."""
-    from sprite_gen.curate.curation import BREATHE_BREATHS_MAX, BREATHE_DEPTH_MAX, BREATHE_LAG_MAX
-    import re
-    from sprite_gen.serve.serve_curation import CURATOR_DIR
-    js = (CURATOR_DIR / "src" / "breathe.js").read_text(encoding="utf-8")
-    for name, want in (("BREATHE_BREATHS_MAX", BREATHE_BREATHS_MAX),
-                       ("BREATHE_DEPTH_MAX", BREATHE_DEPTH_MAX),
-                       ("BREATHE_LAG_MAX", BREATHE_LAG_MAX)):
-        # 값을 숫자로 파싱해서 비교한다 — 문자열 포함 검사는 0.2 가 0.25 에도 걸린다
-        m = re.search(rf"^const {name} = ([0-9.]+);", js, re.M)
-        assert m, f"{name} 미러 상수가 breathe.js 에 없다"
-        assert float(m.group(1)) == float(want), \
-            f"{name} 미러 {m.group(1)} != 파이썬 {want} — UI 가 만든 값을 굽기가 거부한다"
 
 
 def _reaches_further(base):

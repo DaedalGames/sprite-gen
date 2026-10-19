@@ -131,6 +131,42 @@ def test_version_2_pack_with_sound_adds_only_the_tile_files(tmp_path):
     assert result['tiles']['ground']['image'] == 'tile-ground.png'
 
 
+SOUND_ONLY_FILES = ['audio-hit.m4a', 'audio-hit.ogg', 'game-pack.json', 'sprite-gen-audio-v2.mjs']
+
+
+@pytest.mark.parametrize('version,assets', [(1, []), (1, None), (2, []), (2, None)])
+def test_a_sound_only_request_packs_the_manifest_sound_and_helper(tmp_path, version, assets):
+    path, request = with_sound(tmp_path)
+    request['version'] = version
+    path.write_text(json.dumps(request))
+    pictured = pack(path, tmp_path/'pictured')
+    assert pictured['version'] == version and pictured['textures']
+    if assets is None:
+        del request['assets']
+    else:
+        request['assets'] = assets
+    path.write_text(json.dumps(request))
+    out = tmp_path/'sound'
+    result = pack(path, out)
+    assert sorted(p.name for p in out.iterdir()) == SOUND_ONLY_FILES
+    # the manifest a pack with pictures has, its textures and animations empty
+    assert result == {**pictured, 'textures': [], 'animations': {}}
+    assert json.loads((out/'game-pack.json').read_bytes()) == result
+    for name in ('audio-hit.m4a', 'audio-hit.ogg', 'sprite-gen-audio-v2.mjs'):
+        assert (out/name).read_bytes() == (tmp_path/'pictured'/name).read_bytes(), name
+    assert pack(path, out) == result
+
+
+@pytest.mark.parametrize('document', [{'version': 1, 'assets': []}, {'version': 1, 'assets': [], 'audio': []},
+                                      {'version': 1}, {'version': 2, 'assets': [], 'audio': []}, {'version': 2}])
+def test_a_request_with_neither_pictures_nor_sound_is_refused(tmp_path, document):
+    path = tmp_path/'request.json'
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='nothing to pack'):
+        pack(path, tmp_path/'out')
+    assert not (tmp_path/'out').exists()
+
+
 def version_3_bundle(tmp_path, lufs=-18., spike=None, timescale=48000, **changes):
     """A sound made by processing version 3: real encodes of a synthetic tone, the file numbers that
     version's loudnorm check recorded, and no PCM loudness record. 48003 frames are no whole
@@ -170,16 +206,16 @@ def test_a_version_3_sound_is_packed_by_the_target_it_was_made_for(tmp_path):
         assert -20 < file['true_peak_dbfs'] <= -1
 
 
-@pytest.mark.parametrize('defect', ['quiet', 'peak-limited', 'hot', 'timescale', 'recipe2', 'recipe1'])
+# A processing_version that is neither 3 nor 4 is refused before any version 3 measuring;
+# test_broken_audio_cannot_publish_a_partial_pack[recipe2] and [norecipe] own that.
+@pytest.mark.parametrize('defect', ['quiet', 'peak-limited', 'hot', 'timescale'])
 def test_a_version_3_sound_that_misses_its_rule_is_refused(tmp_path, defect):
     path = version_3_bundle(
         tmp_path, lufs=-21.5 if defect in ('quiet', 'peak-limited') else -18.,
         spike=.94 if defect == 'hot' else None,  # -0.5 dBTP while its manifest says -2
         timescale=1000 if defect == 'timescale' else 48000,  # the millisecond AAC duration of version 2
-        **({'normalization':{'pcm_lufs':-21.5, 'pcm_true_peak_dbtp':-2}} if defect == 'peak-limited' else {}),
-        **({'recipe':{'processing_version':int(defect[-1])}} if defect.startswith('recipe') else {}))
+        **({'normalization':{'pcm_lufs':-21.5, 'pcm_true_peak_dbtp':-2}} if defect == 'peak-limited' else {}))
     with pytest.raises(ValueError, match={'quiet':'does not match', 'peak-limited':'does not match',
-                                          'hot':'does not match', 'timescale':'container duration',
-                                          'recipe2':'version 3 or 4', 'recipe1':'version 3 or 4'}[defect]):
+                                          'hot':'does not match', 'timescale':'container duration'}[defect]):
         pack(path, tmp_path/'bad')
     assert not (tmp_path/'bad').exists()

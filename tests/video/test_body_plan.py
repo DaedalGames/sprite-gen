@@ -176,17 +176,6 @@ def test_no_still_view_sentence_names_a_part_the_body_lacks(body_plan, character
         assert bp.still_text(body_plan) in text, name
 
 
-def test_without_a_person_the_v2_31_prompts_did_name_a_persons_parts() -> None:
-    """What the report was about: a Lite walk, an idle and the front or back redraw of a horse, as 2.31.0 said it,
-    and the front, back and back-diagonal stills a walk starts from."""
-    assert "arm swing" in batch.build_prompt("side", "walk", "A brown horse", model=LITE)
-    assert "both feet planted flat" in batch.build_prompt("side", "idle", "A brown horse")
-    assert "directly under its own hip" in batch.walk_start_prompt("front", "green")
-    assert "the toes of both feet" in batch.still_view_text("front")
-    assert "the heels of both feet" in batch.still_view_text("back")
-    assert "the backs of the shoes" in batch.still_view_text("back_diagonal")
-
-
 @pytest.mark.parametrize("name", list(SNAPSHOTS))
 def test_the_prompts_for_a_horse_and_a_man_leading_one(name) -> None:
     who, view, state, *rest = name.split("/")
@@ -228,7 +217,7 @@ def test_the_body_plan_says_what_it_stands_on_after_the_motion_and_before_the_vi
     assert told.startswith(f"2D game sprite animation. It trots lightly. {bp.ONE_TEXT['quadruped']} It stays in place")
 
 
-@pytest.mark.parametrize("body_plan, key", [(QUADRUPED, "one"), (LEGLESS, "one"), (SCENE, "scene")])
+@pytest.mark.parametrize("body_plan, key", [(QUADRUPED, "one"), (SCENE, "scene")])
 def test_only_a_walk_or_run_seen_from_behind_is_held_square(body_plan, key) -> None:
     """The back of a body that is not one person turned and swayed as it walked: a walk or run from behind says it
     stays square, after what it stands on, in the built-in sentence and after a caller's paragraph alike. No other

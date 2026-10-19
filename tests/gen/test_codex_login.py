@@ -15,7 +15,7 @@ from PIL import Image
 
 from sprite_gen import gen
 from sprite_gen.gen import codex_provider
-from sprite_gen.gen.base import GenRequest
+from sprite_gen.gen.base import CodexUnavailableAsk, GenRequest
 from sprite_gen.workflow.access import probe_access
 
 
@@ -49,8 +49,14 @@ def test_no_cli_and_a_failed_probe_are_not_usable_with_the_reason(monkeypatch):
 def test_the_default_resolution_asks_the_same_question(monkeypatch):
     monkeypatch.delenv(gen.DEFAULT_PROVIDER_ENV, raising=False)
     monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin(None, "codex CLI not found on PATH"))
-    assert gen.resolve_default_provider() == ("grok", {"from": "codex", "to": "grok", "default_source": "hard-default",
-                                                       "reason": "codex CLI not found on PATH"})
+    with pytest.raises(CodexUnavailableAsk) as asked:  # nothing chosen for a codex that cannot run: the question
+        gen.resolve_default_provider()
+    assert asked.value.question["cause"] == "login" and asked.value.question["reason"] == "codex CLI not found on PATH"
+    monkeypatch.setenv(gen.CODEX_UNAVAILABLE_ENV, "grok")
+    assert gen.resolve_default_provider() == ("grok", {"from": "codex", "to": "grok", "cause": "login",
+                                                       "reason": "codex CLI not found on PATH",
+                                                       "default_source": "hard-default",
+                                                       "chosen_by": gen.CODEX_UNAVAILABLE_ENV})
     monkeypatch.setattr(codex_provider, "codex_login", lambda: codex_provider.CodexLogin("codex-api-key"))
     assert gen.resolve_default_provider() == ("codex", None)
 

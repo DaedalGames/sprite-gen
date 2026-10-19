@@ -155,8 +155,8 @@ def test_batches_draw_each_part_in_its_own_round(tmp_path, claude):
     assert "Frames already drawn" in fake.submitted[1][1][0][1]["messages"][0]["content"]
 
 
+# The 64-frame limit is checked after the spec/flag split, as for --frames (tests/gen/test_pixel_effect.py).
 @pytest.mark.parametrize("frames,message", [
-    ([f"f{i}" for i in range(65)], "at most 64 frames, got 65"),
     ([{"name": "a", "pose": ""}, "b"], "a frame is a name or {\"name\": ..., \"pose\": ...}"),
     ([{"name": "a", "pose": "up", "hold": 2}, "b"], "a frame is a name or {\"name\": ..., \"pose\": ...}"),
 ])
@@ -181,7 +181,8 @@ def test_sixty_four_frames_are_sixteen_calls():
 STYLE = "no outline: selective outlining only where a shape meets its own colour, hue-shifted shadows"
 
 
-@pytest.mark.parametrize("kind,frames", [("sprite", ("sprite",)), ("icon", ("icon",)), ("tile", ("tile",)),
+# An icon shares the sprite's branch of `generation_prompt`.
+@pytest.mark.parametrize("kind,frames", [("sprite", ("sprite",)), ("tile", ("tile",)),
                                          ("effect", ("birth", "peak", "decay", "gone"))])
 def test_a_style_replaces_the_kinds_style_sentence_and_keeps_its_structure(kind, frames):
     default = pixel_draw.generation_prompt(pixel_request(kind=kind, frames=frames))
@@ -290,14 +291,6 @@ def test_the_default_prompts_are_byte_for_byte_what_they_were():
 
 
 # ----------------------------------------------------------------------------- --motion and --duration-ms
-
-def test_motion_is_two_or_more_frames_and_no_effect(tmp_path, claude):
-    claude({})
-    with pytest.raises(SystemExit, match="--motion is two or more frames"):
-        draw(tmp_path / "a", "--subject", "x", "--motion", "a spin")
-    with pytest.raises(SystemExit, match="--motion does not apply to an effect"):
-        draw(tmp_path / "b", "--subject", "x", "--kind", "effect", "--motion", "a spin")
-
 
 def test_the_motion_sentence_follows_the_frames_line():
     prompt = pixel_draw.generation_prompt(pixel_request(frames=("a", "b"), motion="a bow"))

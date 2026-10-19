@@ -122,9 +122,8 @@ def test_refusals_past_the_retries_end_the_call(server):
     assert waits == [8.0, 16.0]
 
 
+# Which statuses are asked again is tests/gen/test_retry.py's table; the spend cap shows the body reaches it.
 @pytest.mark.parametrize(("status", "error"), [
-    (502, {}), (503, {}),
-    (504, {"type": "timeout_error"}),  # "The request timed out while processing": it was worked on
     (429, {"type": "rate_limit_error", "details": {"error_code": "enforced_spend_limit_reached"}}),  # the spend cap
 ])
 def test_a_refusal_anthropic_does_not_document_as_not_taken_is_not_asked_again(server, status, error):
@@ -134,13 +133,6 @@ def test_a_refusal_anthropic_does_not_document_as_not_taken_is_not_asked_again(s
     with pytest.raises(api.ApiError) as caught:
         api.stream_message(KEY, body(), sleep=lambda s: pytest.fail(f"a {status} is not asked again"))
     assert caught.value.status == status and len(server.asked) == 1
-
-
-def test_a_retry_after_longer_than_the_run_waits_is_not_waited_out_early(server):
-    server.script.append(("json", 429, {"retry-after": "600"}, {"type": "error", "error": {"type": "rate_limit_error"}}))
-    with pytest.raises(api.ApiError, match=r"\(HTTP 429\)"):
-        api.stream_message(KEY, body(), sleep=lambda s: pytest.fail("never asked again sooner than it said"))
-    assert len(server.asked) == 1
 
 
 def test_a_batch_read_refused_on_the_providers_side_is_read_again(server):

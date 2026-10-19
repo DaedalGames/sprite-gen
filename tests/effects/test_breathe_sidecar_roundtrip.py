@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sprite_gen.effects.breathe import fit_breathe_pattern  # noqa: E402
-from sprite_gen.curate.curation import RETIRED_BREATHE_KEYS, state_breathe  # noqa: E402
+from sprite_gen.curate.curation import state_breathe  # noqa: E402
 from sprite_gen.serve.serve_curation import CURATOR_DIR  # noqa: E402
 
 CURATOR = CURATOR_DIR / "src"
@@ -33,21 +33,38 @@ node = pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 
 HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const P = process.argv[2] + "/";
-const sb = { console, document: { createElement: () => ({ getContext: () => ({}) }) },
-  window: {}, __status: [], setStatus: (m, k) => sb.__status.push([k || "", String(m)]),
-  t: () => "", fetch: () => {}, alert: () => {}, lang: "ko", STR: { ko: {} },
-  entries: {}, anchorPicks: {}, previews: {} };
-sb.globalThis = sb; vm.createContext(sb);
-for (const f of ["util.js", "store.js", "persistence.js"]) {
-  try { vm.runInContext(fs.readFileSync(P + f, "utf8"), sb); } catch (e) {}
+const SOURCES = ["util.js", "store.js", "persistence.js"].map((f) => fs.readFileSync(P + f, "utf8"));
+
+// 왕복 하나 = 새 vm 컨텍스트 하나. 여러 왕복을 node 한 프로세스에 묶어도
+// `run`·`entries`·상태 알림이 다음 왕복으로 새지 않는다.
+function boot() {
+  const sb = { console, document: { createElement: () => ({ getContext: () => ({}) }) },
+    window: {}, __status: [], setStatus: (m, k) => sb.__status.push([k || "", String(m)]),
+    t: () => "", fetch: () => {}, alert: () => {}, lang: "ko", STR: { ko: {} },
+    entries: {}, anchorPicks: {}, previews: {} };
+  sb.globalThis = sb; vm.createContext(sb);
+  for (const src of SOURCES) {
+    try { vm.runInContext(src, sb); } catch (e) {}
+  }
+  return sb;
 }
+
 const input = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 if (input.mode === "roundtrip") {
-  vm.runInContext(`run = ${JSON.stringify(input.run)};`, sb);
-  sb.seedEntries();
-  const payload = sb.buildPayload();
-  fs.writeFileSync(input.out, JSON.stringify({ payload, status: sb.__status }));
+  // 한 왕복이 터져도 나머지 왕복은 돈다 — 실패는 그 자리에 `error` 로 남는다.
+  const out = input.runs.map((run) => {
+    try {
+      const sb = boot();
+      vm.runInContext(`run = ${JSON.stringify(run)};`, sb);
+      sb.seedEntries();
+      return { payload: sb.buildPayload(), status: sb.__status };
+    } catch (e) {
+      return { error: String((e && e.stack) || e) };
+    }
+  });
+  fs.writeFileSync(input.out, JSON.stringify(out));
 } else {
+  const sb = boot();
   vm.runInContext(fs.readFileSync(P + "breathe.js", "utf8"), sb);
   const out = input.cases.map((c) => sb.breathePattern({ breaths: c.breaths }, c.seq));
   fs.writeFileSync(input.out, JSON.stringify(out));
@@ -67,126 +84,69 @@ def _run(payload, tmp_path):
     return json.loads(Path(payload["out"]).read_text(encoding="utf-8"))
 
 
+def _roundtrips(runs, tmp_path):
+    """웹뷰 왕복 여러 개를 node 한 프로세스에서 — 왕복마다 새 vm 컨텍스트.
+
+    결과는 왕복마다 `{"payload", "status"}` 또는 `{"error"}`."""
+    return _run({"mode": "roundtrip", "runs": runs}, tmp_path)
+
+
+def _roundtrip(run, tmp_path):
+    [got] = _roundtrips([run], tmp_path)
+    assert "error" not in got, f"왕복이 터졌다:\n{got['error']}"
+    return got
+
+
 @node
-@pytest.mark.parametrize("retired_key", sorted(RETIRED_BREATHE_KEYS))
-def test_curator_preserves_a_retired_breathe_sidecar(retired_key, tmp_path):
-    """구 스키마 키가 있는 사이드카를 웹뷰가 읽고 되쓰면 그 키가 그대로 남아야 한다."""
-    breathe = {retired_key: {"splits": [0.55], "amplitude": 2,
-                             "subpixel": True, "hold": 2}[retired_key], "breaths": 3}
+def test_curator_preserves_a_retired_breathe_sidecar(tmp_path):
+    """구 스키마 키가 있는 사이드카를 웹뷰가 읽고 되쓰면 그 키가 그대로 남아야 한다.
+    조용히 넘어가지도 않는다 — 마이그레이션 경로를 화면에 알린다.
+
+    폐기 키 하나로 충분하다: 큐레이터는 키 목록 `RETIRED_BREATHE_KEYS.filter` 한 줄로
+    거르고, 그 목록이 파이썬과 같은지는
+    `test_breathe_reference_key.py::test_the_mirrored_limits_are_the_same_numbers` 가 본다."""
+    breathe = {"splits": [0.55], "breaths": 3}
     run = {"schemaVersion": 1, "fps": 6,
            "states": [{"name": "idle", "fps": 6,
                        "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
            "curation": {"states": {"idle": {"selected": [0, 1], "breathe": breathe}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
+    got = _roundtrip(run, tmp_path)
     saved = got["payload"]["states"]["idle"].get("breathe")
-    assert saved is not None, f"{retired_key}: 저장 payload 에서 breathe 가 통째로 사라졌다"
-    assert retired_key in saved, f"{retired_key}: 폐기 키가 삭제됐다 — migrate 근거가 파괴된다"
+    assert saved is not None, "splits: 저장 payload 에서 breathe 가 통째로 사라졌다"
+    assert "splits" in saved, "splits: 폐기 키가 삭제됐다 — migrate 근거가 파괴된다"
     assert saved == breathe, "폐기 사이드카는 정규화도 하지 않고 원본 그대로여야 한다"
     # 굽기 쪽 loud reject 가 여전히 걸리는지 (계약이 왕복 후에도 성립)
     with pytest.raises(SystemExit):
         state_breathe({"states": {"idle": {"breathe": saved}}}, "idle")
-
-
-@node
-def test_curator_tells_the_user_about_a_retired_sidecar(tmp_path):
-    """조용히 넘어가지 않는다 — 마이그레이션 경로를 화면에 알린다."""
-    run = {"schemaVersion": 1, "fps": 6,
-           "states": [{"name": "idle", "fps": 6, "frames": [{"index": 0, "present": True}]}],
-           "curation": {"states": {"idle": {"selected": [0],
-                                            "breathe": {"splits": [0.55], "breaths": 1}}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
     errs = [m for kind, m in got["status"] if kind == "err"]
     assert errs, "폐기 스키마를 만났는데 아무 알림도 없다"
     assert any("migrate-breathe" in m for m in errs), f"마이그레이션 경로 안내가 없다: {errs}"
 
 
-@node
-@pytest.mark.parametrize("seq,breaths", [(18, 3), (30, 7), (12, 2), (12, 4), (7, 2), (20, 5)])
-def test_js_phase_pattern_is_bit_identical_to_python(seq, breaths, tmp_path):
-    """위상식 미러 — 부동소수 표현까지 같아야 프리뷰가 굽기와 안 갈린다."""
-    got = _run({"mode": "pattern", "cases": [{"seq": seq, "breaths": breaths}]}, tmp_path)[0]
-    want = fit_breathe_pattern(seq, {"breaths": breaths})
-    assert len(got) == len(want)
-    for i, (a, b) in enumerate(zip(want, got)):
-        assert a == b, f"seq={seq} breaths={breaths} slot {i}: py={a!r} js={b!r}"
-    assert len(set(got)) == len(set(want)), "유니크 위상 개수가 다르다 (표현 노이즈)"
+PATTERN_CASES = [(18, 3), (30, 7), (12, 2), (12, 4), (7, 2), (20, 5)]
 
 
 @node
-@pytest.mark.parametrize("bad", [
-    {"depth": 0.5, "breaths": 12, "lag": 0.9},
-    {"depth": 0},
-    {"breaths": 12},
-], ids=["all-three", "depth-zero", "breaths-over"])
-def test_the_curator_never_clamps_an_out_of_range_sidecar(bad, tmp_path):
-    """굽기가 요란하게 거부하는 값을 웹뷰가 조용히 깎아 되쓰면 원본이 파괴된다.
+def test_js_phase_pattern_is_bit_identical_to_python(tmp_path):
+    """위상식 미러 — 부동소수 표현까지 같아야 프리뷰가 굽기와 안 갈린다.
 
-    실측 (validator 2026-07-25): `depth 0.5 / breaths 12 / lag 0.9` 를 웹뷰가 `0.2 / 8 / 0.45`
-    로 조용히 로드하고(status 0건) 첫 autosave 가 그 값으로 사이드카를 갈아치웠다 —
-    loud reject 자체가 사라진다. round-3 A(폐기 키 삼킴)와 같은 경로다."""
-    breathe = {"depth": 0.06, "breaths": 1, "lag": 0.1, **bad}
-    run = {"schemaVersion": 1, "fps": 6,
-           "states": [{"name": "idle", "fps": 6,
-                       "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
-           "curation": {"states": {"idle": {"selected": [0, 1], "breathe": breathe}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
-
-    saved = got["payload"]["states"]["idle"].get("breathe")
-    assert saved == breathe, f"웹뷰가 범위 밖 사이드카를 바꿔 썼다: {saved}"
-    errs = [m for kind, m in got["status"] if kind == "err"]
-    assert errs, "범위 밖인데 아무 알림도 없다"
-
-    # 굽기 쪽 게이트가 왕복 후에도 그대로 걸린다
-    with pytest.raises(SystemExit):
-        state_breathe({"states": {"idle": {"breathe": saved}}}, "idle")
-
-
-@node
-def test_the_curator_accepts_what_the_bake_accepts(tmp_path):
-    """굽기가 받는 값(숫자 문자열 포함)을 웹뷰도 호흡 켜짐으로 읽어야 한다.
-
-    `typeof !== "number"` 게이트는 `"0.08"` 을 호흡 없음으로 읽고 저장에서 breathe 키를
-    통째로 지웠다 — 굽기는 정상 수용하는 값이라 켜짐/꺼짐 자체가 반대였다."""
-    breathe = {"depth": "0.08", "breaths": 3, "lag": 0.1}
-    run = {"schemaVersion": 1, "fps": 6,
-           "states": [{"name": "idle", "fps": 6, "frames": [{"index": 0, "present": True}]}],
-           "curation": {"states": {"idle": {"selected": [0], "breathe": breathe}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
-    saved = got["payload"]["states"]["idle"].get("breathe")
-    assert saved is not None, "굽기가 받는 값을 웹뷰가 호흡 없음으로 읽고 지웠다"
-    assert float(saved["depth"]) == 0.08
-    assert state_breathe({"states": {"idle": {"breathe": saved}}}, "idle")["depth"] == 0.08
-
-
-@node
-@pytest.mark.parametrize("sidecar", [
-    {"breaths": 2},
-    {"breaths": 2, "lag": 0.1},
-    {"depth": 0.06, "breaths": 2},
-], ids=["depth-omitted", "depth-omitted-with-lag", "depth-explicit"])
-def test_an_omitted_depth_survives_the_round_trip(sidecar, tmp_path):
-    """`depth` 생략은 굽기에서 기본값 0.06 이다 — 왕복이 그걸 파괴하면 안 된다.
-
-    `Number(undefined)` 는 NaN 이고 `JSON.stringify(NaN)` 은 `null` 이라, 기본값 분기가
-    없으면 첫 autosave 가 사이드카에 `depth: null` 을 박는다. 그러면 **굽기가 정상 수용하던
-    사이드카를 큐레이터로 한 번 여는 것만으로 굽기가 죽는 사이드카로 바꿔놓고 아무 말도
-    안 한다** (validator 실측 2026-07-26). `SKILL.md` 가 문서화한 "뷰 없이 에이전트가 breathe
-    만 쓴 런" 이 정확히 이 모양이다."""
-    before = state_breathe({"states": {"idle": {"breathe": sidecar}}}, "idle")
-    assert before is not None, "이 사이드카는 굽기가 받아야 의미가 있다"
-
-    run = {"schemaVersion": 1, "fps": 6,
-           "states": [{"name": "idle", "fps": 6,
-                       "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
-           "curation": {"states": {"idle": {"selected": [0, 1], "breathe": sidecar}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
-    saved = got["payload"]["states"]["idle"].get("breathe")
-    assert saved is not None, "왕복이 호흡 설정을 통째로 지웠다"
-    assert saved.get("depth") is not None, f"왕복이 depth 를 null 로 박았다: {saved}"
-
-    after = state_breathe({"states": {"idle": {"breathe": saved}}}, "idle")
-    assert after["depth"] == before["depth"], "왕복이 굽기가 쓰는 값을 바꿨다"
-    assert after["breaths"] == before["breaths"]
+    여섯 칸을 node 한 번에 돌린다(하네스가 원래 `cases` 를 받는다). 갈린 칸은
+    `seq-breaths` 이름으로 전부 보고한다."""
+    got_all = _run({"mode": "pattern",
+                    "cases": [{"seq": seq, "breaths": breaths} for seq, breaths in PATTERN_CASES]},
+                   tmp_path)
+    assert len(got_all) == len(PATTERN_CASES)
+    failures = []
+    for (seq, breaths), got in zip(PATTERN_CASES, got_all):
+        want = fit_breathe_pattern(seq, {"breaths": breaths})
+        if len(got) != len(want):
+            failures.append(f"[{seq}-{breaths}] 길이가 다르다: py={len(want)} js={len(got)}")
+            continue
+        failures += [f"[{seq}-{breaths}] slot {i}: py={a!r} js={b!r}"
+                     for i, (a, b) in enumerate(zip(want, got)) if a != b]
+        if len(set(got)) != len(set(want)):
+            failures.append(f"[{seq}-{breaths}] 유니크 위상 개수가 다르다 (표현 노이즈)")
+    assert not failures, "위상식 미러가 갈렸다:\n" + "\n".join(failures)
 
 
 # ── 왕복 계약 전수 매트릭스 ─────────────────────────────────────────
@@ -251,23 +211,17 @@ def _bake_verdict(sidecar):
         return False, None
 
 
-@node
-@pytest.mark.parametrize("shape", sorted(_VALUE_SHAPES))
-@pytest.mark.parametrize("key", MATRIX_KEYS)
-def test_the_curator_agrees_with_the_bake_on_every_value_shape(key, shape, tmp_path):
-    """굽기가 거부하는 사이드카는 큐레이터도 **원본 그대로 두고 알린다**.
-    굽기가 받는 사이드카는 큐레이터도 받고, 왕복해도 굽기가 쓰는 값이 안 바뀐다.
+def _matrix_run(sidecar):
+    return {"schemaVersion": 1, "fps": 6,
+            "states": [{"name": "idle", "fps": 6,
+                        "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
+            "curation": {"states": {"idle": {"selected": [0, 1], "breathe": sidecar}}}}
 
-    어느 쪽이든 **첫 autosave 가 사용자의 원래 숫자를 바꾸면 안 된다** — 그게 이
-    플랜에서 네 번 반복된 실패 모드다(굽기가 거부하던 근거가 조용히 사라진다)."""
-    sidecar = _sidecar_for(key, shape)
+
+def _check_matrix_cell(key, shape, sidecar, got):
+    """매트릭스 한 칸의 판정 — 어긋나면 `AssertionError` 로 그 칸의 사유를 말한다."""
+    assert "error" not in got, f"{key}={shape}: 왕복이 터졌다\n{got.get('error')}"
     accepted, before = _bake_verdict(sidecar)
-
-    run = {"schemaVersion": 1, "fps": 6,
-           "states": [{"name": "idle", "fps": 6,
-                       "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
-           "curation": {"states": {"idle": {"selected": [0, 1], "breathe": sidecar}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
     saved = got["payload"]["states"]["idle"].get("breathe")
     errs = [m for kind, m in got["status"] if kind == "err"]
 
@@ -289,6 +243,34 @@ def test_the_curator_agrees_with_the_bake_on_every_value_shape(key, shape, tmp_p
 
 
 @node
+def test_the_curator_agrees_with_the_bake_on_every_value_shape(tmp_path):
+    """굽기가 거부하는 사이드카는 큐레이터도 **원본 그대로 두고 알린다**.
+    굽기가 받는 사이드카는 큐레이터도 받고, 왕복해도 굽기가 쓰는 값이 안 바뀐다.
+
+    어느 쪽이든 **첫 autosave 가 사용자의 원래 숫자를 바꾸면 안 된다** — 그게 이
+    플랜에서 네 번 반복된 실패 모드다(굽기가 거부하던 근거가 조용히 사라진다).
+    범위 밖 값 깎기(`huge`/`zero`), 숫자 문자열 수용(`depth-string`), `depth`·`lag`
+    생략(`*-omitted`)도 이 표의 칸이다.
+
+    키 × 값 모양 36칸은 node 한 프로세스에서 돈다 — 칸마다 새 vm 컨텍스트라 칸끼리
+    상태가 안 샌다. 칸은 하나도 줄이지 않고, 갈린 칸은 제 이름(`key-shape`)으로
+    전부 보고한다."""
+    cells = [(key, shape, _sidecar_for(key, shape))
+             for key in MATRIX_KEYS for shape in sorted(_VALUE_SHAPES)]
+    results = _roundtrips([_matrix_run(sidecar) for _, _, sidecar in cells], tmp_path)
+    assert len(results) == len(cells)
+
+    failures = []
+    for (key, shape, sidecar), got in zip(cells, results):
+        try:
+            _check_matrix_cell(key, shape, sidecar, got)
+        except Exception as exc:          # 한 칸의 실패가 나머지 칸을 가리면 안 된다
+            failures.append(f"[{key}-{shape}] {type(exc).__name__}: {exc}")
+    assert not failures, (
+        f"매트릭스 {len(cells)}칸 중 {len(failures)}칸이 갈렸다:\n" + "\n\n".join(failures))
+
+
+@node
 def test_a_valid_anatomy_survives_the_round_trip_verbatim(tmp_path):
     """서버가 얼린 해부는 왕복에서 **한 글자도** 안 바뀐다.
 
@@ -305,7 +287,7 @@ def test_a_valid_anatomy_survives_the_round_trip_verbatim(tmp_path):
            "states": [{"name": "idle", "fps": 6,
                        "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
            "curation": {"states": {"idle": {"selected": [0, 1], "breathe": sidecar}}}}
-    got = _run({"mode": "roundtrip", "run": run}, tmp_path)
+    got = _roundtrip(run, tmp_path)
     saved = got["payload"]["states"]["idle"].get("breathe")
     assert saved.get("anatomy") == anatomy, (
         f"왕복이 해부를 바꿨다 — 신선도 판정의 근거가 사라진다\n"

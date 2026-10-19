@@ -1259,6 +1259,32 @@ def _alpha_centroid_x(sprite: Image.Image, bottom_fraction: float = 1.0, min_alp
     return (weighted / total) if total else width / 2.0
 
 
+def _anchor_x(sprite: Image.Image, align_x: str) -> float:
+    """The x of `sprite` (cropped to its bbox) that `fit_to_cell` puts on the cell's centre line."""
+    if align_x == "foot-centroid":
+        return _alpha_centroid_x(sprite, 0.2)
+    if align_x == "centroid":
+        return _alpha_centroid_x(sprite)
+    if align_x == "alpha-centroid":
+        return _alpha_centroid_x(sprite, 1.0, ALPHA_CENTROID_MIN_ALPHA)
+    return sprite.width / 2.0
+
+
+def fit_scale(sprites: list[Image.Image], cell_width: int, cell_height: int, safe_margin_x: int,
+              safe_margin_y: int, align_x: str) -> float:
+    """The one scale (at most 1) at which every sprite, cropped to its bbox and placed with its anchor
+    (`_anchor_x`) on the cell's centre line, stays inside the safe area: the reach on either side of the
+    anchor within half the safe width, the height within the safe height. A frame alone is a row of one.
+    With `bbox-center` the reach is half the width, so this is the safe width over the widest frame."""
+    half = max(0.5, cell_width / 2.0 - safe_margin_x)
+    max_height = max(1, cell_height - safe_margin_y * 2)
+    scale = 1.0
+    for sprite in sprites:
+        anchor = _anchor_x(sprite, align_x)
+        scale = min(scale, half / max(anchor, sprite.width - anchor, 0.5), max_height / sprite.height)
+    return scale
+
+
 def _alpha_centroid_row_left(frame: Image.Image, cell_width: int, scale: int) -> int:
     # 픽셀 언페이크 행 경로의 프레임별 가로 배치 (align_x: alpha-centroid 전용).
     # 행 union 공동 left 는 register_row_frames 의 정합 잔차가 그대로 지터로
@@ -1306,6 +1332,8 @@ def fit_to_cell(
     safe_margin_x: int,
     safe_margin_y: int,
     fit: dict[str, Any] | None = None,
+    *,
+    scale: float | None = None,
 ) -> Image.Image:
     # `fit` comes from sprite-request.json ("fit" object):
     #   resample: "lanczos" (default) | "nearest" | "kcentroid" — kcentroid is the
@@ -1330,9 +1358,8 @@ def fit_to_cell(
     if bbox is None:
         return target
     sprite = image.crop(bbox)
-    max_width = max(1, cell_width - safe_margin_x * 2)
-    max_height = max(1, cell_height - safe_margin_y * 2)
-    scale = min(max_width / sprite.width, max_height / sprite.height, 1.0)
+    if scale is None:
+        scale = fit_scale([sprite], cell_width, cell_height, safe_margin_x, safe_margin_y, align_x)
     if scale != 1.0:
         new_size = (max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale)))
         if resample_name == "kcentroid":
@@ -1347,14 +1374,8 @@ def fit_to_cell(
         cropped = sprite.getbbox()
         if cropped is not None:
             sprite = sprite.crop(cropped)
-    if align_x == "foot-centroid":
-        left = round(cell_width / 2.0 - _alpha_centroid_x(sprite, 0.2))
-        left = max(0, min(cell_width - sprite.width, left))
-    elif align_x == "centroid":
-        left = round(cell_width / 2.0 - _alpha_centroid_x(sprite))
-        left = max(0, min(cell_width - sprite.width, left))
-    elif align_x == "alpha-centroid":
-        left = round(cell_width / 2.0 - _alpha_centroid_x(sprite, 1.0, ALPHA_CENTROID_MIN_ALPHA))
+    if align_x in ("foot-centroid", "centroid", "alpha-centroid"):
+        left = round(cell_width / 2.0 - _anchor_x(sprite, align_x))
         left = max(0, min(cell_width - sprite.width, left))
     else:
         left = (cell_width - sprite.width) // 2
@@ -2605,21 +2626,34 @@ def extract_component_images(strip: Image.Image, frame_count: int) -> list[Image
     return [component_group_image(strip, group) for group in groups]
 
 
+def fit_row_to_cells(images: list[Image.Image], cell_width: int, cell_height: int,
+                     safe_margin_x: int, safe_margin_y: int,
+                     fit: dict[str, Any] | None = None) -> list[Image.Image]:
+    # The prop's reach changes a pose's bounds, not the character's physical size. One scale for the
+    # complete row (fit_scale) keeps every pose inside the safe area where its anchor puts it, so a
+    # weapon held far out neither shrinks its pose alone nor pushes that pose off its anchor.
+    align_x = str((fit or {}).get("align_x", "foot-centroid")).lower()
+    sprites = [image.crop(bbox) for image in images if (bbox := image.getbbox()) is not None]
+    scale = fit_scale(sprites, cell_width, cell_height, safe_margin_x, safe_margin_y, align_x) if sprites else 1.0
+    return [fit_to_cell(image, cell_width, cell_height, safe_margin_x, safe_margin_y,
+                        fit, scale=scale) for image in images]
+
+
 def extract_component_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None) -> list[Image.Image] | None:
     images = extract_component_images(strip, frame_count)
     if images is None:
         return None
-    return [fit_to_cell(image, cell_width, cell_height, safe_margin_x, safe_margin_y, fit) for image in images]
+    return fit_row_to_cells(images, cell_width, cell_height, safe_margin_x, safe_margin_y, fit)
 
 
 def extract_slot_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None) -> list[Image.Image]:
     slot_width = strip.width / frame_count
-    frames = []
+    images = []
     for index in range(frame_count):
         left = round(index * slot_width)
         right = round((index + 1) * slot_width)
-        frames.append(fit_to_cell(strip.crop((left, 0, right, strip.height)), cell_width, cell_height, safe_margin_x, safe_margin_y, fit))
-    return frames
+        images.append(strip.crop((left, 0, right, strip.height)))
+    return fit_row_to_cells(images, cell_width, cell_height, safe_margin_x, safe_margin_y, fit)
 
 
 def chroma_adjacent_count(image: Image.Image, chroma_key: tuple[int, int, int], threshold: float) -> int:

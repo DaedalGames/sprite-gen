@@ -102,12 +102,14 @@ MODE_RESUME = "resume"
 # What `video-resume` takes for an id: it goes into the `/videos/{id}` path, so no `/`, `?`, `#` or `%`.
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 POLL_INTERVAL_SECONDS = 4.0
-# The poll timeout is the one time limit of an accepted request: it counts from the moment the request is
-# sent (a resume: its first poll) and bounds its polls, their waits and the clip's downloads alike. Each
-# poll and download reads only what is left of it (xai.read_whole), and one whose wait would reach it is
-# not asked: the run ends unfinished on the request_id instead. So a caller that stops the run at a hard
-# limit gets the id back when it sets the timeout under that limit. The POST is not cut by it — its
-# answer is the one way to the id; an answer that comes after the whole timeout ends the run at once.
+# The poll timeout is the one time limit of a request: it counts from the POST's first send (a resume: its
+# first poll) and bounds the waits before a refused POST goes again (`retry`), the polls, their waits and
+# the clip's downloads alike. Each poll and download reads only what is left of it (xai.read_whole), and a
+# send, poll or download whose wait would reach it, or woke at it or past it, is not asked (`retry.too_late`,
+# read before the wait and again after it): the run ends on the refusal, or unfinished on the request_id.
+# So a caller that stops the run at a hard limit gets its line back when it sets the timeout under that
+# limit. The POST is not cut by it — its answer is the one way to the id; an answer that comes after the
+# whole timeout ends the run at once.
 POLL_TIMEOUT_SECONDS = int(os.environ.get("SPRITE_GEN_VIDEO_TIMEOUT_SECONDS", "600"))
 # A poll xAI throttles (429) or fails on its own side (5xx, `retry.GET_AGAIN`), or one that gets no answer
 # it can read (the connection failed or timed out, the answer broke on the way or was not JSON —
@@ -518,17 +520,12 @@ def _submit_poll_publish(
         announce_api_billing(verb, AUTH_ENV,
                              f"{f' ({priced})' if priced else ''} — "
                              f"`{GROK_LOGIN_COMMAND}` signs your Grok subscription in.")
-    sent: list[float] = []
-
-    def send(*args: Any) -> tuple[int, Any]:
-        sent.append(time.monotonic())
-        return call(*args)
-
-    # A refusal xAI documents as a request not taken (429) is sent again (`retry`); the poll timeout counts
-    # from the send it answered.
-    status, reply, _sends = post(send, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
-                                 sleep=sleep)
-    started = sent[-1]
+    # A refusal xAI documents as a request not taken (429) is sent again (`retry`) while its wait leaves
+    # some of the poll timeout, which counts from the first send.
+    started = time.monotonic()
+    timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
+    status, reply, _sends = post(call, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
+                                 sleep=sleep, deadline=started + timeout)
     if status in (401, 403):
         raise SystemExit(
             f"{verb}: xAI rejected the credential ({credential.source}) with HTTP {status}: {_error_detail(reply, credential.token)}\n"
@@ -542,7 +539,7 @@ def _submit_poll_publish(
         )
     return _poll_publish(
         verb=verb, request_id=str(request_id), model=body.get("model"), out=out, credential=credential, call=call,
-        download=download, sleep=sleep, poll_timeout=poll_timeout, started=started, accept=accept,
+        download=download, sleep=sleep, poll_timeout=timeout, started=started, accept=accept,
     )
 
 
@@ -566,12 +563,12 @@ def _poll_publish(
     still the `.part` file — `video-extend` measures the staged bytes with ffprobe; the
     staged file is removed and `out` is never written.
 
-    The poll timeout counts from `started`, when the request was sent (a resume: its first poll), and
+    The poll timeout counts from `started`, the POST's first send (a resume: its first poll), and
     is one deadline for the polls and the downloads: `call` (as http_json) and `download` take it as
-    `deadline=` and read only what is left of it, and a poll or download whose wait would reach it is
-    not asked. A run that ends before the request does — the deadline came, xAI rejected the credential,
-    the done poll named no URL, or the clip it made could not be downloaded (DOWNLOAD_ATTEMPTS) — raises
-    GenerationUnfinished naming the request."""
+    `deadline=` and read only what is left of it, and a poll or download whose wait would reach it, or
+    woke at it or past it, is not asked (`retry.too_late`). A run that ends before the request does — the
+    deadline came, xAI rejected the credential, the done poll named no URL, or the clip it made could not
+    be downloaded (DOWNLOAD_ATTEMPTS) — raises GenerationUnfinished naming the request."""
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
     deadline = started + timeout
     polls = polls_refused = polls_unanswered = failed_in_a_row = downloads = 0
@@ -589,7 +586,7 @@ def _poll_publish(
             elapsed_seconds=time.monotonic() - started, downloads=downloads, last_download=last_download,
         )
 
-    if time.monotonic() >= deadline:
+    if retry.too_late(deadline):
         # The POST is not cut by the deadline (its answer is the one way to the id); this one came after it.
         raise unfinished(f"was accepted after the poll timeout ({timeout:g}s) had run out, before any poll; "
                          f"it may still finish and be billed — {_ask_again(request_id, out)}", None, None, None)
@@ -641,23 +638,27 @@ def _poll_publish(
         else:
             failed_in_a_row = 0
         wait = retry.backoff(failed_in_a_row) if failed_in_a_row else POLL_INTERVAL_SECONDS
-        if time.monotonic() + wait >= deadline:
-            # The next poll would leave no time to read its answer: the run ends here, not at the deadline.
-            if failed_in_a_row:
-                last = f"got no answer (last: {lost})" if lost is not None else f"were refused (last answer {http})"
-                stopped = f"was accepted, but its polls {last} until the poll timeout ({timeout:g}s, {polls} polls)"
-            else:
-                stopped = f"still {poll_status!r} after {polls} polls — poll timeout"
-            raise unfinished(f"{stopped}; it may still finish and be billed — {_ask_again(request_id, out)}",
-                             http, poll_status, lost)
-        if lost is not None:
-            print(f"[{verb}] poll {polls} of generation {request_id} got no answer ({lost}); "
-                  f"asking again in {wait:g}s", file=sys.stderr)
-        elif failed_in_a_row:
-            # The status in plain digits: `(HTTP 429)` on this stream reads as a refused request to send again.
-            print(f"[{verb}] poll {polls} of generation {request_id} was refused ({http}); "
-                  f"asking again in {wait:g}s", file=sys.stderr)
-        sleep(wait)
+        # The next poll goes only before the poll timeout (`retry.too_late`): one whose wait would reach it would
+        # leave no time to read its answer, and a wait that woke at it or past it sends none.
+        if not retry.too_late(deadline, wait):
+            if lost is not None:
+                print(f"[{verb}] poll {polls} of generation {request_id} got no answer ({lost}); "
+                      f"asking again in {wait:g}s", file=sys.stderr)
+            elif failed_in_a_row:
+                # The status in plain digits: `(HTTP 429)` on this stream reads as a refused request to send again.
+                print(f"[{verb}] poll {polls} of generation {request_id} was refused ({http}); "
+                      f"asking again in {wait:g}s", file=sys.stderr)
+            sleep(wait)
+            if not retry.too_late(deadline):
+                continue
+        # The run ends here, on the last poll as it came, not at the deadline.
+        if failed_in_a_row:
+            last = f"got no answer (last: {lost})" if lost is not None else f"were refused (last answer {http})"
+            stopped = f"was accepted, but its polls {last} until the poll timeout ({timeout:g}s, {polls} polls)"
+        else:
+            stopped = f"still {poll_status!r} after {polls} polls — poll timeout"
+        raise unfinished(f"{stopped}; it may still finish and be billed — {_ask_again(request_id, out)}",
+                         http, poll_status, lost)
 
     if not (isinstance(video_url, str) and video_url.lower().startswith(("https://", "http://"))):
         # Done is xAI's word that the clip is made, so it may be billed: a poll that names nothing to download
@@ -685,26 +686,29 @@ def _poll_publish(
                              {"http": None, "error": "not an mp4 (no ftyp box)", "bytes": len(data)})
         again = said is not None or refused in retry.GET_AGAIN
         wait = retry.backoff(downloads)
-        out_of_time = time.monotonic() + wait >= deadline  # the next download would leave no time to read it
-        if not again or downloads == DOWNLOAD_ATTEMPTS or out_of_time:
-            if said is not None:
-                failure = f"got no answer (last: {said})"
-            elif again:
-                failure = f"was refused (last answer {refused})"
-            else:
-                failure = f"was refused (answer {refused})"
-            if again and downloads == DOWNLOAD_ATTEMPTS:
-                failure += f" after {downloads} attempts"
-            elif again:
-                failure += f" until the poll timeout ({timeout:g}s, {downloads} attempt{'s' if downloads > 1 else ''})"
-            raise unfinished(f"is done, but its download {failure}; the clip is made and may be billed — "
-                             f"{_ask_again(request_id, out)}", http, poll_status, None,
-                             {"http": refused, **({"error": said} if said is not None else {})})
-        # The status in plain digits, as the poll notes say it.
-        failure = f"got no answer ({said})" if said is not None else f"was refused ({refused})"
-        print(f"[{verb}] download {downloads} of generation {request_id} {failure}; downloading again in {wait:g}s",
-              file=sys.stderr)
-        sleep(wait)
+        # The next download goes only before the poll timeout (`retry.too_late`): one whose wait would reach it
+        # would leave no time to read it, and a wait that woke at it or past it tries none.
+        if again and downloads < DOWNLOAD_ATTEMPTS and not retry.too_late(deadline, wait):
+            # The status in plain digits, as the poll notes say it.
+            failure = f"got no answer ({said})" if said is not None else f"was refused ({refused})"
+            print(f"[{verb}] download {downloads} of generation {request_id} {failure}; downloading again in {wait:g}s",
+                  file=sys.stderr)
+            sleep(wait)
+            if not retry.too_late(deadline):
+                continue
+        if said is not None:
+            failure = f"got no answer (last: {said})"
+        elif again:
+            failure = f"was refused (last answer {refused})"
+        else:
+            failure = f"was refused (answer {refused})"
+        if again and downloads == DOWNLOAD_ATTEMPTS:
+            failure += f" after {downloads} attempts"
+        elif again:
+            failure += f" until the poll timeout ({timeout:g}s, {downloads} attempt{'s' if downloads > 1 else ''})"
+        raise unfinished(f"is done, but its download {failure}; the clip is made and may be billed — "
+                         f"{_ask_again(request_id, out)}", http, poll_status, None,
+                         {"http": refused, **({"error": said} if said is not None else {})})
     elapsed = time.monotonic() - started
 
     out.parent.mkdir(parents=True, exist_ok=True)

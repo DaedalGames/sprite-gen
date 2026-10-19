@@ -19,6 +19,9 @@ from sprite_gen.gen.video import AUTH_SOURCE_API_KEY
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("SPRITE_GEN_CONFIG_DIR", str(tmp_path / "settings"))
+    # What a default codex that cannot run turns into is answered by the environment here, so each test sees the
+    # questions it is about; the guide asking it is tests/gen/test_codex_unavailable.py's.
+    monkeypatch.setenv("SPRITE_GEN_CODEX_UNAVAILABLE", "ask")
 
 
 @pytest.fixture
@@ -57,7 +60,9 @@ def test_profiles_merge_and_clear_without_erasing_other_kind():
     assert cleared["profiles"] == {"image": third["profiles"]["image"]}
 
 
-@pytest.mark.parametrize("raw", [b"bad json", b'[]', b'{"version":2,"profiles":{}}',
+@pytest.mark.parametrize("raw", [b"bad json", b'[]', b'{"version":2,"profiles":{}}', b'{"version":3,"profiles":{},"general":{}}',
+                                    b'{"version":1,"profiles":{},"general":{}}',
+                                    b'{"version":2,"profiles":{},"general":{"codex_unavailable":"gemini"}}',
                                     b'{"version":1,"profiles":{"image":{"motion_method":"gpt-rows"}}}',
                                     b'{"version":1,"profiles":{"image":{"image_provider":true}}}'])
 def test_corrupt_settings_fail_without_reset(raw):
@@ -110,8 +115,16 @@ def test_first_sprite_request_and_existing_base(ready_login, tmp_path):
     assert "extract" in view["pipeline"]["steps"]
 
 
-@pytest.mark.parametrize("base_provider", ["codex", "grok"])
-@pytest.mark.parametrize("method", MOTION_METHODS)
+def _crossed_pairs() -> list[tuple[str, str]]:
+    """Each motion method with the base provider it does not use itself, so two swapped fields show.
+
+    `guide.py` copies and reads each field on its own and nothing branches on the pair, so the matched
+    pairs (codex × gpt-rows, grok × grok-video) add nothing the crossed ones do not."""
+    return [(next(p for p in ("codex", "grok") if p != spec["provider"]), method)
+            for method, spec in MOTION_METHODS.items()]
+
+
+@pytest.mark.parametrize("base_provider,method", _crossed_pairs())
 def test_every_sprite_combination_keeps_base_and_motion_distinct(ready_login, base_provider, method):
     view = guide.guide("sprite", choices={"image_provider": base_provider, "motion_method": method}, confirmed_access=("codex", "grok"))
     assert view["status"] == "ready"

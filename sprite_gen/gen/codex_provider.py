@@ -18,6 +18,9 @@ How codex is signed in is one question, `codex_login`, asked by every caller: th
 provider resolution, `generate`, the facing check and the guided workflow. Signed in with
 ChatGPT it runs on the subscription; signed in with an API key it bills that key per call,
 said on stderr before the request leaves like every metered route (`announce_api_billing`).
+Whether `codex exec` ended on codex's usage limit is the other, `usage_limit`: a codex that is
+not signed in or whose usage is used up is what a call that names no provider turns into the
+user's choice (`gen.run_on_default`).
 """
 
 from __future__ import annotations
@@ -47,6 +50,43 @@ AUTH_SOURCE_LOGIN = "codex-login"  # signed in with ChatGPT: the subscription
 AUTH_SOURCE_API_KEY = "codex-api-key"  # signed in with an API key: billed per call
 LOGIN_PROBE_TIMEOUT_SECONDS = 15
 LOGIN_HINT = "`codex login` signs your ChatGPT subscription in"
+
+
+# What `codex exec` says when the codex usage of the account behind it is used up (2026-10-16, codex-rs source at
+# rust-v0.160.1 and rust-v0.153.4). codex classes three of its errors as its usage limit
+# (`CodexErr::to_codex_protocol_error` -> `CodexErrorInfo::UsageLimitExceeded`, codex-rs/protocol/src/error.rs):
+# `UsageLimitReached` (a 429 `usage_limit_reached`; its message names the plan, a workspace out of credits or a
+# spend cap), `QuotaExceeded` (a 429 `insufficient_quota` and its billing codes) and `UsageNotIncluded` (a 429
+# `usage_not_included`). That class reaches `codex exec --json` only as the message text: the `error` and
+# `turn.failed` events carry `message` alone (codex-rs/exec/src/event_processor_with_jsonl_output.rs, exec_events.rs),
+# the error event is not kept in the rollout (codex-rs/rollout/src/policy.rs), and codex exits 1. So the signal is
+# the start of each message, as codex's own tests pin it (codex-rs/protocol/src/error_tests.rs); 0.160.1 writes the
+# apostrophe of "You've" as U+2019, 0.153.4 as an ASCII one. A message is matched anywhere in what codex said,
+# since a remote compaction puts its own words before it. No other failure is read as the usage limit.
+USAGE_LIMIT_MESSAGES = (
+    "You've hit your usage limit",  # UsageLimitReached, codex 0.153.4 and before
+    "You’ve hit your usage limit",  # UsageLimitReached, codex 0.160.1
+    "Your workspace is out of credits.",  # UsageLimitReached, a workspace's credits
+    "You hit your spend cap set",  # UsageLimitReached, a workspace's spend cap
+    "Quota exceeded. Check your plan and billing details.",  # QuotaExceeded
+    "To use Codex with your ChatGPT plan, upgrade to Plus",  # UsageNotIncluded
+)
+
+
+def usage_limit(said: list[str]) -> str | None:
+    """The first of what codex said (`_extract_stream_errors`) that is its usage limit (USAGE_LIMIT_MESSAGES), or
+    None."""
+    return next((message for message in said if any(words in message for words in USAGE_LIMIT_MESSAGES)), None)
+
+
+class CodexUsageLimit(SystemExit):
+    """`codex exec` ended on its usage limit. The failure of a named `--provider codex` as before (same message,
+    exit 1); a call that named no provider turns it into the user's choice (`gen.run_on_default`). `said` is codex's
+    message."""
+
+    def __init__(self, message: str, said: str) -> None:
+        super().__init__(message)
+        self.said = said
 
 
 @dataclass(frozen=True)
@@ -343,6 +383,10 @@ class CodexProvider:
         from .facing_vision import codex_inspect
         return codex_inspect(path, workdir)
 
+    def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = "vision check") -> tuple[str, dict]:
+        from .facing_vision import codex_inspect
+        return codex_inspect(path, workdir, prompt=prompt, label=label)
+
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun:
         # `image_gen` exposes no effort or size dial, so neither knob is carried
         # into the prompt. Refusing beats returning a default-effort image under a
@@ -411,9 +455,9 @@ class CodexProvider:
             stream_errors = _extract_stream_errors(stdout)
             tail = (completed.stderr or "").strip().splitlines()[-20:]
             detail = "\n".join(stream_errors + tail).strip() or "(no error detail on stdout/stderr)"
-            raise SystemExit(
-                f"codex-gen: codex exec exited {completed.returncode}\n{detail}"
-            )
+            message = f"codex-gen: codex exec exited {completed.returncode}\n{detail}"
+            said = usage_limit(stream_errors)
+            raise CodexUsageLimit(message, said) if said else SystemExit(message)
 
         session_id = _parse_session_id(stdout)
         if not session_id:

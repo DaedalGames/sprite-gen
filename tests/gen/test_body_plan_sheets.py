@@ -85,21 +85,6 @@ def test_no_clip_prompt_of_any_state_names_a_part_the_body_lacks(body) -> None:
     assert not {name: words for name, words in named.items() if words}
 
 
-def test_without_a_body_plan_the_v2_32_rows_and_attack_did_name_a_persons_parts() -> None:
-    """What the report was about, as 2.32.0 said it to every body."""
-    frozen = table.read(FIXTURE)
-    assert "body, arm, leg, hair" in frozen["every-state/base/walk.txt"]
-    assert "alternating leg, arm, shoulder" in frozen["every-state/base/frontwalk.txt"]
-    assert "alternating leg, arm, shoulder" in frozen["every-state/base/45_frontwalk.txt"]
-    assert "hand tilted" in frozen["every-state/base/wave.txt"]
-    assert "friendly hand wave gesture" in frozen["default-states/base/wave.txt"]
-    assert "arm counter-swing" in frozen["every-state/base/jump.txt"]
-    assert "shoulder overlap, hand/foot placement" in frozen["every-state/base/running-front-right.txt"]
-    attack = batch.build_prompt("side", "attack", "A brown horse")
-    assert "bare hands only if it holds nothing" in attack and "one hand stays one hand" in attack
-    assert "one hand stays one hand" in batch.build_prompt("side", "attack", "A brown horse", motion="It bites.")
-
-
 def test_a_horse_attacks_with_what_it_holds_or_its_own_body() -> None:
     horse = bp.parse_all(["quadruped"])
     assert batch.build_prompt("side", "attack", "A brown horse", body_plan=horse) == (
@@ -166,9 +151,9 @@ def test_the_sheet_cli_takes_records_and_carries_the_body_plan(tmp_path) -> None
     assert "body_plan" not in json.loads((plain / "sprite-request.json").read_text())
 
 
+# each `body_plan.parse_all` error is tested in-process (tests/video/test_body_plan.py): one of them is enough here
 @pytest.mark.parametrize("args, match", [
     (["--body-plan", "horse"], "expected"),
-    (["--body-plan", "quadruped", "--body-plan", "the man=biped"], "names each figure"),
     (["--request-json", json.dumps({"body_plan": "quadruped"})], "must be a list"),
 ])
 def test_a_sheet_body_plan_is_refused_before_the_run_dir_is_written(tmp_path, args, match) -> None:

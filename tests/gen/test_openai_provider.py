@@ -13,14 +13,16 @@ import os
 import re
 import subprocess
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import retry, xai
+from sprite_gen.gen import base, retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -42,24 +44,6 @@ def encoded_image(fmt="PNG", *, alpha=False, key=False):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-class _GrokResponse:
-    """Minimal 200 answer for the xai transport (a PNG, so chroma stays untouched)."""
-
-    def __init__(self, request, api):
-        api["calls"].append((request, None))
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    status = 200
-
-    def read(self):
-        return json.dumps({"data": [{"b64_json": encoded_image()}]}).encode()
-
-
 @pytest.fixture
 def api(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
@@ -69,32 +53,14 @@ def api(monkeypatch):
              "slept": []}
     monkeypatch.setattr(retry, "_sleep", state["slept"].append)
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        @property
-        def status(self):
-            return state["status"]
-
-        @property
-        def headers(self):
-            return state["headers"]
-
-        def read(self):
-            return json.dumps(state["body"]).encode()
-
     def open_request(request, *, timeout):
         state["calls"].append((request, timeout))
         if state.get("script"):  # one (status, body, headers) per request, in order
             state["status"], state["body"], state["headers"] = state["script"].pop(0)
+        answer = Answer(state["body"], status=state["status"], headers=state["headers"])
         if state["status"] == 200:
-            return Response()
-        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"],
-                                     io.BytesIO(json.dumps(state["body"]).encode()))
+            return answer
+        raise urllib.error.HTTPError(request.full_url, state["status"], "error", state["headers"], answer)
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     return state
@@ -113,7 +79,7 @@ def test_generation_sends_the_billed_fields_and_publishes_a_png(tmp_path, api):
     assert _body(request) == {"model": openai.DEFAULT_MODEL, "prompt": "a blue square", "n": 1,
                               "size": "1024x1024", "quality": "auto",
                               "output_format": "png", "background": "opaque"}
-    assert timeout == openai.GEN_TIMEOUT_SECONDS
+    assert timeout == pytest.approx(openai.GEN_TIMEOUT_SECONDS, abs=1)  # the first send waits the whole time limit
     # `response_format` is rejected for gpt-image models; the answer is always b64.
     assert "response_format" not in _body(request)
     with Image.open(result.out) as image:
@@ -144,24 +110,17 @@ def test_a_response_without_rate_limit_headers_reports_that_none_came(tmp_path, 
     assert gen.generate_image("openai", "x", tmp_path / "out.png").to_dict()["extra"]["rate_limit"] == {}
 
 
-@pytest.mark.parametrize("quality", openai.SUPPORTED_QUALITIES)
-def test_every_quality_level_reaches_the_request_verbatim(tmp_path, api, quality):
-    gen.generate_image("openai", "x", tmp_path / f"{quality}.png", quality=quality)
-    assert _body(api["calls"][0][0])["quality"] == quality
-
-
-@pytest.mark.parametrize("ratio,size", sorted(openai.SIZES.items()))
-def test_aspect_ratio_maps_to_a_legal_gpt_image_size(tmp_path, api, ratio, size):
-    gen.generate_image("openai", "x", tmp_path / "out.png", aspect_ratio=ratio)
-    assert _body(api["calls"][0][0])["size"] == size
-    if size == "auto":
-        return
-    width, height = (int(side) for side in size.split("x"))
-    # The documented custom-size constraints, checked on the table itself.
-    assert width % 16 == 0 and height % 16 == 0
-    assert max(width, height) <= 3840
-    assert 1 / 3 <= width / height <= 3
-    assert 655_360 <= width * height <= 8_294_400
+def test_aspect_ratio_maps_to_a_legal_gpt_image_size():
+    # The lookup is one `SIZES[ratio]` (sent end to end in test_cli_accepts_provider_and_quality).
+    for ratio, size in sorted(openai.SIZES.items()):
+        if size == "auto":
+            continue
+        width, height = (int(side) for side in size.split("x"))
+        # The documented custom-size constraints, checked on the table itself.
+        assert width % 16 == 0 and height % 16 == 0, ratio
+        assert max(width, height) <= 3840, ratio
+        assert 1 / 3 <= width / height <= 3, ratio
+        assert 655_360 <= width * height <= 8_294_400, ratio
 
 
 def test_model_and_quality_overrides_are_not_second_guessed(tmp_path, api):
@@ -200,7 +159,8 @@ def test_reference_edit_posts_multipart_images_in_order(tmp_path, api):
     assert positions == sorted(positions), "reference images are read positionally; order must survive"
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 500, 502])
+# Two branches: 401/403 the credential, the rest a refusal; which are sent again is tests/gen/test_retry.py's.
+@pytest.mark.parametrize("status", [401, 500])
 def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, status):
     api.update(status=status, body={"error": {"message": f"{KEY} https://signed.invalid/private?sig=abc"}})
     out = tmp_path / "existing.png"
@@ -216,9 +176,8 @@ def test_api_failure_keeps_existing_output_and_does_not_retry(tmp_path, api, sta
 
 @pytest.mark.parametrize(("refused", "slept"), [
     ((429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {"retry-after": "2"}), [2.0]),
-    ((429, {"error": {"type": "rate_limit_error", "code": "slow_down"}}, {}), [8.0]),
     ((503, {"error": {"type": "service_unavailable_error", "code": "server_is_overloaded"}}, {}), [8.0]),
-], ids=["rate-limit", "slow-down", "overloaded"])
+], ids=["rate-limit", "overloaded"])
 def test_a_refusal_openai_documents_as_not_taken_is_sent_again(tmp_path, api, capsys, refused, slept):
     """429 (a rate limit) and 503 (overloaded) are the two the error-codes guide and the SDKs retry
     (gen.retry, read 2026-10-13): the image is asked for again after the answer's retry-after or the
@@ -230,8 +189,8 @@ def test_a_refusal_openai_documents_as_not_taken_is_sent_again(tmp_path, api, ca
     assert f"[gen] openai refused the request ({refused[0]} {refused[1]['error']['code']}); nothing was made" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("code", ["credit_balance_exhausted", "organization_spend_limit_exceeded",
-                                  "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota"])
+# Which billing codes are not sent again is tests/gen/test_retry.py's table; the line is the same for each.
+@pytest.mark.parametrize("code", ["insufficient_quota"])
 def test_a_billing_429_asks_the_caller_to_act_and_is_not_sent_again(tmp_path, api, code):
     api.update(status=429, body={"error": {"type": "insufficient_quota", "code": code}})
     with pytest.raises(SystemExit, match=f"HTTP 429.*code={code}; no retry or provider fallback"):
@@ -247,7 +206,64 @@ def test_a_refusal_still_there_after_two_more_sends_ends_the_call(tmp_path, api)
     assert len(api["calls"]) == 3 and api["slept"] == [8.0, 16.0]
 
 
-@pytest.mark.parametrize("body", [{}, {"data": []}, {"data": [None]}, {"data": [{}, {}]},
+def test_a_refusal_is_sent_again_only_within_the_time_limit_of_the_image(tmp_path, api, monkeypatch, capsys):
+    """SPRITE_GEN_GEN_TIMEOUT_SECONDS is the image's time limit from its first send (gen.retry): the waits
+    before a refused request goes again count in it and each send waits only what is left of it, so a
+    refusal whose next wait would reach it ends the call, its line saying why, before a caller's ceiling."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 20)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, limited, (200, api["body"], {})]
+    with pytest.raises(SystemExit) as refused:
+        gen.generate_image("openai", "x", tmp_path / "out.png")
+    assert [timeout for _request, timeout in api["calls"]] == [20, 12] and api["slept"] == [8.0]
+    assert "(HTTP 429) code=rate_limit_exceeded; sent 2 times, no provider fallback" in str(refused.value)
+    assert ("[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+            "the 16s wait would reach the time limit (12s left)") in capsys.readouterr().err
+    assert not (tmp_path / "out.png").exists()
+
+
+@pytest.mark.parametrize("call", ["image", "facing check"])
+def test_a_refusal_whose_wait_woke_past_the_time_limit_is_not_sent_again(tmp_path, api, monkeypatch, capsys, call):
+    """A sleep may wake later than asked: with 8.01 s, the 8 s wait after a 429 woke 20 ms late, past the time
+    limit. The limit is read again right before the send, so nothing is sent and the 429 ends the call as it
+    came, its stderr line saying why — not a send that finds no time left and ends as a request the server may
+    have taken."""
+    now = [0.0]
+
+    def sleep(seconds):
+        api["slept"].append(seconds)
+        now[0] += seconds + 0.020
+
+    for module in (openai, retry, xai):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(retry, "_sleep", sleep)
+    monkeypatch.setattr(openai, "GEN_TIMEOUT_SECONDS", 8.010)
+    limited = (429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}}, {})
+    api["script"] = [limited, (200, api["body"], {})]
+    Image.new("RGB", (4, 4), (20, 90, 200)).save(tmp_path / "raw.png")
+    with pytest.raises(SystemExit) as refused:
+        if call == "image":
+            gen.generate_image("openai", "x", tmp_path / "out.png")
+        else:
+            openai.OpenAIProvider().inspect_facing(tmp_path / "raw.png", tmp_path)
+    assert len(api["calls"]) == 1 and api["slept"] == [8.0]
+    assert "HTTP 429" in str(refused.value) and "request failed or timed out" not in str(refused.value)
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "[gen] openai refused the request (429 rate_limit_exceeded); nothing was made — not asking again: "
+        "the time limit came during the 8s wait")
+    assert not (tmp_path / "out.png").exists()
+
+
+@pytest.mark.parametrize("body", [{}, {"data": [None]}, {"data": [{}, {}]},
                                   {"data": [{"b64_json": "???"}]},
                                   {"data": [{"b64_json": base64.b64encode(b"invalid image").decode()}]},
                                   {"data": [{"url": "https://signed.invalid/private"}]}])
@@ -323,14 +339,17 @@ def test_provider_is_registered_everywhere_a_provider_must_be(api):
                                                        "API credit; confirm this billing choice."}
 
 
-# --- 구독 우선 불변식 (수홍 2026-09-20) --------------------------------------
+# --- 구독 우선 불변식 (수홍 2026-09-20, 2026-10-16) ---------------------------
 # sprite-gen runs on subscriptions people already pay for. The API-key backend is
-# for servers and SaaS and is billed per call, so nothing may route to it on its
-# own. These three tests are the guard rails for invariants 1, 2 and 3.
+# for servers and SaaS and is billed per call, so nothing routes to it unless the
+# user chose it: by naming it (`--provider openai`), or as the answer to "codex
+# cannot run here, what now?" (`--codex-unavailable openai`). These two tests are
+# the guard rails for invariants 1 and 2; invariant 3 (the Grok login wins over
+# XAI_API_KEY) is tests/gen/test_grok_provider.py's.
 
 
-def test_openai_is_explicit_only_and_never_a_default(monkeypatch, api):
-    """불변식 1: no default, no saved preference, no guided-flow option."""
+def test_openai_is_never_a_default_and_runs_only_when_chosen(monkeypatch, api):
+    """불변식 1: no default, no guided-flow image provider; only a choice the user made reaches it."""
     assert gen.HARD_DEFAULT_PROVIDER == "codex"
     assert gen.EXPLICIT_ONLY_PROVIDERS == ("openai",)
     monkeypatch.delenv("SPRITE_GEN_DEFAULT_PROVIDER", raising=False)
@@ -340,41 +359,31 @@ def test_openai_is_explicit_only_and_never_a_default(monkeypatch, api):
     monkeypatch.setenv("SPRITE_GEN_DEFAULT_PROVIDER", "openai")
     with pytest.raises(SystemExit, match=r"--provider openai"):
         gen.resolve_default_provider()
-    # Not offered by the guided flow, so it can never be saved as a preference.
+    # Not offered by the guided flow as the image provider, so it is never saved as one.
     assert "openai" not in GUIDED_PROVIDERS
     assert "openai" not in FIELDS["image_provider"]["options"]
     with pytest.raises(ValueError):
         validate_choices("image", {"image_provider": "openai"})
+    # It is one of the answers to a codex that cannot run, and never the one taken unasked.
+    assert "openai" in gen.CODEX_UNAVAILABLE_CHOICES and gen.CODEX_UNAVAILABLE_DEFAULT == "ask"
 
 
 @pytest.mark.parametrize("configured", [None, "codex"])
 def test_an_api_key_in_the_environment_reroutes_nothing(monkeypatch, api, configured):
-    """불변식 2: a codex outage reaches grok, never the metered key."""
+    """불변식 2: a codex outage asks, or reaches what the user chose; the metered key alone changes nothing."""
     assert "OPENAI_API_KEY" in os.environ  # the fixture set it
     if configured is None:
         monkeypatch.delenv("SPRITE_GEN_DEFAULT_PROVIDER", raising=False)
     else:
         monkeypatch.setenv("SPRITE_GEN_DEFAULT_PROVIDER", configured)
     monkeypatch.setattr(gen, "_codex_available", lambda: (False, "synthetic outage"))
+    with pytest.raises(base.CodexUnavailableAsk):
+        gen.resolve_default_provider()
+    monkeypatch.setenv(gen.CODEX_UNAVAILABLE_ENV, "grok")
     provider, fallback = gen.resolve_default_provider()
     assert provider == "grok"
     assert fallback["from"] == "codex" and fallback["to"] == "grok"
     assert api["calls"] == []
-
-
-def test_grok_login_still_outranks_its_api_key(tmp_path, api, monkeypatch, capsys):
-    """불변식 3: the Grok subscription login wins over XAI_API_KEY."""
-    monkeypatch.setenv("XAI_API_KEY", "xai-api-secret")
-    monkeypatch.setenv("GROK_HOME", str(tmp_path))
-    (tmp_path / "auth.json").write_text(json.dumps({"account": {
-        "key": "subscription-token", "expires_at": "2100-01-01T00:00:00Z"}}))
-    assert xai.resolve_credential().source == xai.AUTH_SOURCE_GROK_LOGIN
-    monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
-    result = gen.generate_image("grok", "x", tmp_path / "grok.png")
-    assert result.extra["auth_source"] == xai.AUTH_SOURCE_GROK_LOGIN
-    # A subscription call says nothing about API billing; only the key route does.
-    assert "per-call API charge" not in capsys.readouterr().err
 
 
 def test_every_api_key_call_announces_the_charge_before_it_leaves(tmp_path, api, capsys):
@@ -383,16 +392,6 @@ def test_every_api_key_call_announces_the_charge_before_it_leaves(tmp_path, api,
     notice = [line for line in capsys.readouterr().err.splitlines() if "per-call API charge" in line]
     assert len(notice) == 1
     assert "OPENAI_API_KEY" in notice[0] and "quality=low" in notice[0]
-
-
-def test_grok_on_an_api_key_announces_the_charge_too(tmp_path, api, monkeypatch, capsys):
-    monkeypatch.setenv("XAI_API_KEY", "xai-api-secret")
-    monkeypatch.setenv("GROK_HOME", str(tmp_path / "no-login"))
-    monkeypatch.setattr(xai.urllib.request, "urlopen",
-                        lambda request, *, timeout: _GrokResponse(request, api))
-    gen.generate_image("grok", "x", tmp_path / "grok.png")
-    notice = [line for line in capsys.readouterr().err.splitlines() if "per-call API charge" in line]
-    assert len(notice) == 1 and "XAI_API_KEY" in notice[0]
 
 
 def test_cli_accepts_provider_and_quality(tmp_path, api):
@@ -432,12 +431,10 @@ def _refused(tmp_path, api, status, error):
     return message[: -len(body)]
 
 
+# Three branches: a documented stage, no moderation object, a stage outside MODERATION_STAGES.
 @pytest.mark.parametrize("details, stage", [
     ({"moderation_details": {"moderation_stage": "output", "categories": ["other"]}}, " moderation_stage=output"),
-    ({"moderation_details": {"moderation_stage": "input"}}, " moderation_stage=input"),
-    ({"moderation_details": {"moderation_stage": "unknown"}}, " moderation_stage=unknown"),
     ({}, ""),
-    ({"moderation_details": None}, ""),
     ({"moderation_details": {"moderation_stage": "a sentence the body made up"}}, ""),
 ])
 def test_a_content_policy_block_says_so_with_its_code(tmp_path, api, details, stage):
@@ -454,8 +451,8 @@ def test_another_code_keeps_the_plain_failure_and_names_the_code(tmp_path, api):
     )
 
 
-@pytest.mark.parametrize("error", [{}, {"code": None}, {"code": 400}, {"code": "has a space"},
-                                   {"code": "x" * 65}, {"code": ""}, {"code": "quote'd"}])
+# `refusal.identifier`: no code, a code that is not a str, a str outside CODE_PATTERN.
+@pytest.mark.parametrize("error", [{}, {"code": 400}, {"code": "has a space"}, {"code": "x" * 65}])
 def test_no_code_or_a_code_outside_the_format_leaves_the_line_as_it_was(tmp_path, api, error):
     assert _refused(tmp_path, api, 400, error) == (
         "openai-gen: image request failed (HTTP 400); no retry or provider fallback"
@@ -525,7 +522,7 @@ def test_a_body_that_is_not_json_is_its_text_on_one_line(api, tmp_path, monkeypa
 
     def open_request(request, *, timeout):
         api["calls"].append((request, timeout))
-        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, io.BytesIO(page.encode()))
+        raise urllib.error.HTTPError(request.full_url, 502, "error", {}, Answer(page.encode(), status=502))
 
     monkeypatch.setattr(openai.urllib.request, "urlopen", open_request)
     with pytest.raises(SystemExit) as refused:

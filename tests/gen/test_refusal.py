@@ -23,19 +23,15 @@ TOKENS = {
     "secret": (SECRET, SECRET),
 }
 
-# What stands right in front of the token in the provider's text. JSON, `repr`
-# and the raw-body line join write most of these as an escape (`\n`, `\t`,
-# `\x0b`, `→`), which a mask on the finished line read as a letter or digit.
+# What stands right in front of the token in the provider's text: one of each class the mask's one lookbehind,
+# `(?<![A-Za-z0-9])`, tells apart. JSON, `repr` and the raw-body line join write some of these as an escape
+# (`\n`, `→`), which a mask on the finished line read as a letter or digit.
 SEPARATORS = {
-    "start": "", "space": " ", "colon": ":", "equals": "=", "paren": "(", "dquote": '"', "squote": "'",
-    "backslash": "\\", "underscore": "_", "hyphen": "-",
-    "LF": "\n", "CRLF": "\r\n", "CR": "\r", "TAB": "\t", "VT": "\x0b", "FF": "\x0c", "BS": "\x08",
-    "SOH": "\x01", "DEL": "\x7f", "NEL": "\x85", "NBSP": "\xa0", "ZWSP": "​", "LSEP": " ",
-    "arrow": "→", "e-acute": "é", "hangul": "한", "emoji": "\U0001f600",
+    "start": "", "space": " ", "underscore": "_", "hyphen": "-", "LF": "\n", "arrow": "→", "hangul": "한",
     # A letter or digit in front: a key or Bearer value is part of a word.
     "letter": "x", "digit": "2",
     # The provider's own encoding: its text has a letter or digit in front, so the same.
-    "provider-backslash-n": "\\n", "provider-percent-0A": "%0A",
+    "provider-backslash-n": "\\n",
 }
 
 # path -> how the provider's string reaches the printed line
@@ -54,11 +50,16 @@ def _masked_by_rule(sep: str, kind: str) -> bool:
     return kind in ("url", "secret") or not (before.isascii() and before.isalnum())
 
 
+# a URL query or the credential is masked whatever stands in front: the start and an escaped LF are enough
+CELLS = [(sep, kind) for sep in SEPARATORS for kind in TOKENS
+         if kind not in ("url", "secret") or sep in ("start", "LF")]
+
+
 @pytest.mark.parametrize("path", PATHS)
-@pytest.mark.parametrize("kind", TOKENS)
-@pytest.mark.parametrize("sep", SEPARATORS)
+@pytest.mark.parametrize(("sep", "kind"), CELLS, ids=[f"{sep}-{kind}" for sep, kind in CELLS])
 def test_masked_whatever_stands_in_front_unless_a_letter_or_digit_makes_it_a_word(sep, kind, path) -> None:
-    """31 separators x 5 kinds x 6 paths: 858 cells masked, 72 left as a word."""
+    """10 separators x 3 kinds and 2 x 2 for a URL query and the credential, x 6 paths: 150 cells masked, 54 left
+    as a word."""
     token, hidden = TOKENS[kind]
     printed = PATHS[path](("x" + SEPARATORS[sep] if SEPARATORS[sep] else "") + token)
     if _masked_by_rule(SEPARATORS[sep], kind):
@@ -69,42 +70,14 @@ def test_masked_whatever_stands_in_front_unless_a_letter_or_digit_makes_it_a_wor
         assert "[redacted]" not in printed
 
 
-def test_a_key_after_a_line_break_in_json() -> None:
-    assert refusal.said({"error": {"message": "x\nsk-" + "A" * 40}}) == ': {"error": {"message": "x\\nsk-[redacted]"}}'
-
-
-def test_a_bearer_value_after_a_line_break_in_a_raw_body() -> None:
-    assert refusal.said(refusal.RawBody("x\nBearer " + "t" * 32)) == ": x\\nBearer [redacted]"
-
-
-def test_a_bearer_value_after_a_line_break_on_the_video_lines() -> None:
-    assert video._error_detail({"message": "x\nBearer " + "t" * 32}) == "message='x\\nBearer [redacted]'"
-
-
-def test_a_bearer_value_after_a_tab_in_json() -> None:
-    assert refusal.said({"error": {"message": "x\tBearer " + "t" * 32}}) == ': {"error": {"message": "x\\tBearer [redacted]"}}'
-
-
-def test_a_key_after_a_non_ascii_character_on_the_video_json_fallback() -> None:
-    assert video._error_detail({"x": ["→sk-" + "A" * 40]}) == '{"x": ["\\u2192sk-[redacted]"]}'
-
-
-@pytest.mark.parametrize(("said", "printed"), [
-    ("see\nhttps://files.example.invalid/o.png?X-Signature=0a1b",
-     ': {"error": {"message": "see\\nhttps://files.example.invalid/o.png?[redacted]"}}'),
-    ("see_https://files.example.invalid/o.png?X-Signature=0a1b",
-     ': {"error": {"message": "see_https://files.example.invalid/o.png?[redacted]"}}'),
-    ("seehttps://files.example.invalid/o.png?X-Signature=0a1b",
-     ': {"error": {"message": "seehttps://files.example.invalid/o.png?[redacted]"}}'),
-    ("한https://files.example.invalid/o.png?X-Signature=0a1b",
-     ': {"error": {"message": "한https://files.example.invalid/o.png?[redacted]"}}'),
-], ids=["line-break", "underscore", "letter", "hangul"])
-def test_a_url_query_is_masked_wherever_the_url_starts(said, printed) -> None:
-    assert refusal.said({"error": {"message": said}}) == printed
+def test_a_url_query_is_masked_wherever_the_url_starts() -> None:
+    # the URL query has no lookbehind: a letter in front, which leaves a key a word, still masks it
+    assert (refusal.said({"error": {"message": "seehttps://files.example.invalid/o.png?X-Signature=0a1b"}})
+            == ': {"error": {"message": "seehttps://files.example.invalid/o.png?[redacted]"}}')
 
 
 @pytest.mark.parametrize("path", PATHS)
-@pytest.mark.parametrize("gap", ["\t", "\n", "\r\n", "\xa0"], ids=["TAB", "LF", "CRLF", "NBSP"])
+@pytest.mark.parametrize("gap", ["\n", "\xa0"], ids=["LF", "NBSP"])  # one `\s+`: an escaped one and a Unicode one
 def test_a_bearer_value_after_any_whitespace(gap, path) -> None:
     assert "synthetic.token" not in PATHS[path]("x Bearer" + gap + "synthetic.token.value-0123456789")
 

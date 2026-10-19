@@ -141,11 +141,13 @@ HttpCall = Callable[[str, str, str, dict | None], tuple[int, Any]]
 
 
 def post(call: HttpCall, url: str, token: str, body: dict, *, who: str, label: str,
-         sleep: Callable[[float], None] | None = None) -> tuple[int, Any, int]:
-    """POST `body` with `call` (as http_json), and again after a refusal `retry` sends again: (status, answer,
-    sends). xAI documents 429 alone as a request not taken, and no retry-after, so http_json keeps no headers."""
+         sleep: Callable[[float], None] | None = None, deadline: float | None = None) -> tuple[int, Any, int]:
+    """POST `body` with `call` (as http_json), and again after a refusal `retry` sends again within `deadline`,
+    the call's time limit (which `call` reads by only when the caller hands it too): (status, answer, sends).
+    xAI documents 429 alone as a request not taken, and no retry-after, so http_json keeps no headers."""
     status, reply, _headers, sends = retry.ask(lambda: (*call("POST", url, token, body), None), provider="xai",
-                                               who=who, label=label, sleep=sleep, kind=refusal.provider_code)
+                                               who=who, label=label, sleep=sleep, kind=refusal.provider_code,
+                                               deadline=deadline)
     return status, reply, sends
 
 
