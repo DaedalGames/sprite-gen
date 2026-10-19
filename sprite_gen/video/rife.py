@@ -585,8 +585,9 @@ class Rife:
         """What a frame this RIFE makes depends on besides its two frames and t, as one string (`Cache` keys
         on it), read as it is now on every call — nothing of it is kept, so a binary, model or machine changed
         under this very RIFE is another identity: the binary's and each of the model's files by sha256, and the
-        model's path as the binary is handed it (the binary reads the model's version from its name); the engine
-        code this process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
+        model's path as the binary is handed it (the binary reads the model's version from its name); the
+        augmentation every call asks for now (`tta()`: SPRITE_GEN_RIFE_TTA is read on every call, and another is
+        another frame); the engine code this process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
         Pillow's versions; and the machine — the OS, and `uname`'s host name, OS release and build and
         architecture (platform.uname() keeps its first answer) — as the Apple GPU and llvmpipe are only measured
         to agree to the third decimal of an error (docs/loop-repair.md section 1), so a frame made on one is not
@@ -597,7 +598,7 @@ class Rife:
         except OSError as exc:
             raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
         return json.dumps({
-            **files, "code": CODE_SHA256, "numpy": np.__version__, "pillow": PIL.__version__,
+            **files, "tta": list(tta()), "code": CODE_SHA256, "numpy": np.__version__, "pillow": PIL.__version__,
             "machine": [sys.platform, *(os.uname() if hasattr(os, "uname") else platform.uname()[:5])]}, sort_keys=True)
 
 

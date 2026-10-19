@@ -1523,14 +1523,16 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   must be RGBA: mode, size, and pixel bytes; other modes are refused), the exact fraction `t`, and the
   interpolator identity. The identity is read again for every frame asked for, and nothing of it is
   remembered: the RIFE binary file and each file in the model directory, by sha256; the model directory's
-  path as given to the binary (the binary reads the model's version from the directory name); the engine
-  code as loaded, which is the sha256 of `sprite_gen/video/rife.py` read once at import (`rife.py` written
+  path as given to the binary (the binary reads the model's version from the directory name); the
+  augmentation every call asks for at that moment (`rife.tta()`: `SPRITE_GEN_RIFE_TTA`, or the default
+  `-x -z` when it is not set — section 1, "Which setting"), as another augmentation makes another frame; the
+  engine code as loaded, which is the sha256 of `sprite_gen/video/rife.py` read once at import (`rife.py` written
   over on disk during a run changes no code that is running, so a frame made by the loaded code is kept
   under that code, and a later process that loads other code gets another key and makes the frames again);
   the NumPy and Pillow versions; and the host as `os.uname()` reports it at that moment (host name,
   OS release, build, and architecture), with the OS platform. A binary or model file that cannot be read
   fails the alignment, as a RIFE that fails does. Any change in cycle length, `--cycles`, source pixels,
-  binary, model, engine code, or host makes the frame again. The key does not read the GPU driver or its
+  binary, model, augmentation, engine code, or host makes the frame again. The key does not read the GPU driver or its
   environment; a caller that changes those between passes gives each pass its own directory. Reading the
   identity hashes 36.5 MB of binary and model files in about 17 ms on an Apple M1: once for a frame taken,
   twice for a frame made (making a frame with RIFE takes on the order of a second). After a frame is made,
