@@ -376,11 +376,11 @@ def test_the_search_refuses_what_the_crossings_refute_and_names_their_count(unce
     assert "refute after the rest" in refused.value.diagnostics["order"]
 
 
-def _choose(found: dict, *, period: int, seam: float, run: int = 9) -> tuple[dict, dict]:
+def _choose(found: dict, *, period: int, seam: float, run: int = 9, search_seam: float = 1.0) -> tuple[dict, dict]:
     """`by_steps` on a clip whose picture goes round every `period` frames, its feet passing every 15 (crossings at 8,
     23 … 68), seen together `run` frames at each pass (9: over half a step, a pass can hide there; 3: brief), with the
     search's cut `found`: every two-step cut's seam reads `seam` at the gate, its top calm and its flow off 1.0 either
-    side."""
+    side, and the search's own cut `search_seam`."""
     D = _distances(period=period, frames=FRAMES)
     middles = (8, 23, 38, 53, 68)
     reading = crossings.Reading(FRAMES, "gap", [(float(c), float(c)) for c in middles],
@@ -388,16 +388,19 @@ def _choose(found: dict, *, period: int, seam: float, run: int = 9) -> tuple[dic
     return local_cycle.by_steps(
         D, np.zeros(FRAMES), reading, found=dict(found), refused=None, min_len=12, max_len=FRAMES,
         seam_flow=lambda s, L: {"off": [1.0, 1.0], "turn": [0.0, 0.0], "window": [[0, 0, 1, 1], [0, 0, 1, 1]]},
-        wrap_pop=lambda s, L: {"pops": False, "pop": 0.1}, seam_gate=lambda s, L: seam, flow_limit=3.0, seam_max=2.0,
+        wrap_pop=lambda s, L: {"pops": False, "pop": 0.1},
+        seam_gate=lambda s, L: search_seam if (s, L) == (found["start"], found["length"]) else seam, flow_limit=3.0, seam_max=2.0,
         gait_floor=12, periodicity_min=loop.PERIODICITY_MIN, signals=None)
 
 
-@pytest.mark.parametrize("seam, kept", [(3.0, True), (1.0, False)])
-def test_a_cut_the_count_does_not_refute_gives_way_only_to_a_two_step_cut_that_closes(seam, kept):
-    """The search's cut 10/33 covers two steps a fifth of a step off (out of phase, not refuted). A two-step cut in
-    phase replaces it only where the seam gate passes it; where none passes, the search's cut stands and the record
-    names the two-step cut it declined, with a warning line (the parent engine took the two-step cut either way)."""
-    picked, record = _choose({"start": 10, "length": 33}, period=30, seam=seam)
+@pytest.mark.parametrize("seam, search_seam, kept", [(3.0, 1.0, True), (1.0, 1.0, False), (3.0, 3.0, False)])
+def test_a_cut_the_count_does_not_refute_gives_way_only_to_a_two_step_cut_that_closes(seam, search_seam, kept):
+    """The search's cut 10/33 covers two steps a fifth of a step off (out of phase, not refuted), and the seam gate
+    passes it. A two-step cut in phase replaces it only where the seam gate passes that too; where none passes, the
+    search's cut stands and the record names the two-step cut it declined, with a warning line (the parent engine took
+    the two-step cut either way). A search's cut the gate refuses as well gives way: the two-step cut's wrap may yet be
+    closed by the overlapped wrap."""
+    picked, record = _choose({"start": 10, "length": 33}, period=30, seam=seam, search_seam=search_seam)
     assert record["search"]["verdict"] == "two" and abs(record["search"]["phase"]) > crossings.PHASE_TOLERANCE
     if kept:
         assert (picked["start"], picked["length"]) == (10, 33) and record["chosen_by"] == "search"

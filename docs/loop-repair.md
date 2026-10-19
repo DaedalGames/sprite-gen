@@ -957,15 +957,16 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   The pixel search's repeat rule is not asked: a part off the legs' beat — a tail on its own beat —
   repeats on its own, and its seam is the flow repair's (section 2). `step_count.repeat` records the
   search's word on the cut, and a cut it would refuse, or one that passed no gate, is a warning line.
-- A search's cut the count does not refute — a two out of phase, or uncertain — gives way only to a
-  two-step cut that closes: one of the cuts that passed the gates above (in phase, its top calm, its wrap
-  within the seam gate of its step, its seam under the flow limit) whose seam the gate passes. Where none
-  does, the search's cut is kept, every image as the search alone cuts it (`steps` written where it is a
-  two), and `step_count.declined` names the best two-step cut, its phase, whether it passed the gates and its
-  seam, with a warning line. A cut that plays a step a clip shows unevenly, or a part on its own beat that closes on
-  no two steps, would otherwise trade a loop that passes for one the seam gate refuses. Only a search's
-  cut the count refutes — one step or three, each seen — is given up for a two-step cut that does not
-  close, and the seam gate says whether the loop passes.
+- A search's cut the count does not refute — a two out of phase, or uncertain — and whose own seam the
+  gate passes (`step_count.search.seam`) gives way only to a two-step cut that closes: one of the cuts that
+  passed the gates above (in phase, its top calm, its wrap within the seam gate of its step, its seam under
+  the flow limit) whose seam the gate passes. Where none does, the search's cut is kept, every image as the
+  search alone cuts it (`steps` written where it is a two), and `step_count.declined` names the best
+  two-step cut, its phase, whether it passed the gates and its seam, with a warning line. A cut that plays
+  a step a clip shows unevenly, or a part on its own beat that closes on no two steps, would otherwise
+  trade a loop that passes for one the seam gate refuses. A search's cut the gate refuses as well gives way
+  as before — the two-step cut's wrap may yet be closed by the overlapped wrap (section 2) — and so does
+  one the count refutes, one step or three, each seen; the seam gate says whether the loop passes.
 - The clip shows its steps but no cut of two: the search's cut, unless the count refutes it — then the
   search runs again refusing what the crossings refute, and a search that finds nothing lists each
   refused window's count (`cycle.candidates[].step_count`), those the crossings refute last.

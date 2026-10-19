@@ -484,9 +484,11 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
       where none the first, and the gate says whether it closes (`method: observed-two-steps-v1`). The pixel
       search's own repeat rule is not asked: a part off the legs' beat (a tail) repeats on its own and its seam is
       the flow repair's; `repeat` records it.
-    - A search's cut the count does not refute (`two` out of phase, `uncertain`) is replaced only by a two-step cut
-      that closes: one of the cuts that passed the gates (`_rank`) whose seam the seam gate passes. Where none does,
-      the search's cut, as it chose it (`declined`: the best two-step cut and why it does not close).
+    - A search's cut the count does not refute (`two` out of phase, `uncertain`) whose own seam the seam gate passes
+      is replaced only by a two-step cut that closes: one of the cuts that passed the gates (`_rank`) whose seam the
+      seam gate passes. Where none does, the search's cut, as it chose it (`declined`: the best two-step cut and why
+      it does not close). A search's cut the gate refuses too gives way as before: the two-step cut's wrap may still
+      be closed by the overlapped wrap (repair.overlap_wrap), and the gate says whether it is.
 
     A cut taken on two steps records `steps` (count 2, by crossings): `video-cycle-align` reads a return half way
     as its step, and the step screen's pixel suspicion of one step (`step_screen`) is settled, kept as
@@ -545,11 +547,14 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
     record['seam_gate'] = {'max': seam_max, 'tried': tried}
     start, length = picked['start'], picked['length']
     if searched is not None and searched['verdict'] != 'refuted' and not (passed and ranked.index(picked) < band):
-        # A cut the count does not refute stands until a two-step cut closes in its place.
-        record.update(chosen_by='search', cut=searched, flow_limit=flow_limit, seam_max=seam_max, declined={
-            'cut': [start, length], 'phase': picked['phase'], 'gated': ranked.index(picked) < band,
-            'seam': next(t['seam'] for t in tried if (t['start'], t['length']) == (start, length))})
-        return (_two_steps(found, record) if searched['verdict'] == 'two' else found), record
+        # A cut the count does not refute, and the seam gate passes, stands until a two-step cut closes in its place.
+        own = round(seam_gate(found['start'], found['length']), 3)
+        record['search']['seam'] = own
+        if own <= seam_max:
+            record.update(chosen_by='search', cut=searched, flow_limit=flow_limit, seam_max=seam_max, declined={
+                'cut': [start, length], 'phase': picked['phase'], 'gated': ranked.index(picked) < band,
+                'seam': next(t['seam'] for t in tried if (t['start'], t['length']) == (start, length))})
+            return (_two_steps(found, record) if searched['verdict'] == 'two' else found), record
     record.update(chosen_by='two steps', cut=picked['counted'], gated=bool(band), flow_limit=flow_limit, seam_max=seam_max)
     # The pixel search's own word on this cut: its repeat, read as `detect` reads a window it refused.
     radius, js = _around(start, length)
