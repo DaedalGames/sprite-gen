@@ -36,6 +36,7 @@ from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
 from sprite_gen.workflow import guide, preferences
+from sprite_gen.util.console import utf8_streams
 
 
 def _parse_frames(value: str) -> list[int]:
@@ -487,6 +488,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "_retired_pp", False):

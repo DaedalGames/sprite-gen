@@ -38,6 +38,7 @@ from sprite_gen.curate import anchor as anchor_mod
 from sprite_gen.gen.base import ask_codex_unavailable, child_asked, codex_unavailable_question, run_logged
 from sprite_gen.spec import layout
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.console import utf8_streams
 
 DEFAULT_CONCURRENCY = 6  # lead-verified 2026-08 (no provider throttling at 6-wide); serial one-by-one is the anti-pattern
 REPORT_DIR = "reports"  # <run>/reports/gen-set/<state>.json — outside raw/ and frames/, the run contract's derived areas
@@ -286,6 +287,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen gen-set", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

@@ -75,6 +75,7 @@ from .base import (
 from .codex_provider import CodexProvider
 from .grok_provider import GrokProvider
 from .openai_provider import OpenAIProvider
+from sprite_gen.util.console import utf8_streams
 
 PROVIDERS = ("codex", "grok", "openai")
 # `--alpha-mode`: `auto` reads the provider's declared strategy (the SSoT);
@@ -863,6 +864,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     return _run(_build_parser().parse_args(argv))
 
 

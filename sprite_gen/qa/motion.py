@@ -31,6 +31,7 @@ from PIL import Image
 from sprite_gen.spec.assets import sequence_identity
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
+from sprite_gen.util.console import utf8_streams
 
 if TYPE_CHECKING:
     from sprite_gen.spec.assets import FrameSequence
@@ -457,6 +458,7 @@ def run(**kwargs) -> int:
 
 
 def main(argv=None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

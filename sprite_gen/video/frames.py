@@ -56,6 +56,7 @@ from sprite_gen.frames.decontam import palette_from_stats
 from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split
 from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.console import utf8_streams
 
 EDGE_ROWS = 4  # rows/cols inspected at each edge
 # Spill (key colour the video model painted INTO the subject — a reflection on
@@ -544,6 +545,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-frames", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

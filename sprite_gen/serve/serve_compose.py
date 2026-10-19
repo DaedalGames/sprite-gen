@@ -47,6 +47,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from sprite_gen.frames.unpack_atlas import import_png_groups
+from sprite_gen.util.console import utf8_streams
 
 # The SPA assets are package data (declared in pyproject's `package-data`), so the one
 # path that finds them is relative to this module — the same place in a repo checkout
@@ -436,6 +437,7 @@ def run(*, dir: Path | None = None, host: str = "127.0.0.1", port: int = 0,
 
 def main(argv: list[str] | None = None) -> int:
     """`python -m sprite_gen.serve.serve_compose` entrypoint."""
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

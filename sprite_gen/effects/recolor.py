@@ -41,6 +41,7 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_save_image, atomic_write_text
 from sprite_gen.util.hexcolor import format_hex, parse_hex
+from sprite_gen.util.console import utf8_streams
 
 # Opaque-enough to count as art. Edge pixels below this are treated as
 # background bleed, not recolour targets (the extraction chain already soft-keys
@@ -462,6 +463,7 @@ def run_palette(
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description="Bake deterministic palette-swap variant sheets.")
     add_recolor_arguments(parser)
     args = parser.parse_args(argv)

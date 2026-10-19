@@ -239,8 +239,10 @@ def print_json(payload: dict) -> None:
 
     A generated prompt may contain Korean or an em dash. On a Windows cp949
     redirected stream, writing that through ``TextIOWrapper`` can fail after
-    the image already exists. The binary buffer is the CLI byte contract and
-    avoids mutating process-global stdout configuration. Captured/in-memory
+    the image already exists. UTF-8 is the CLI byte contract: a command's
+    entry reopens stdout and stderr as UTF-8 (`util.console.utf8_streams`),
+    and this writes UTF-8 bytes to the buffer so a program that calls a verb
+    in-process on its own stdout gets the same bytes. Captured/in-memory
     streams without a buffer already accept Unicode and use the text path.
     One writer for every report `gen`, the video verbs and `pixel-draw` print.
     """

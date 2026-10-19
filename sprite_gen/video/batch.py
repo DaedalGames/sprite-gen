@@ -43,6 +43,7 @@ from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video import play as play_mod
+from sprite_gen.util.console import utf8_streams
 
 START_GAP_SECONDS = 2.0
 # Clip length the batch asks the video model for. 3 s holds two or more cycles of every
@@ -1293,6 +1294,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-set", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

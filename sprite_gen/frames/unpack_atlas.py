@@ -45,6 +45,7 @@ from sprite_gen.spec.runio import (
     relative_posix,
 )
 from sprite_gen.frames.segment import mask_components
+from sprite_gen.util.console import utf8_streams
 
 ALPHA_THRESHOLD = 16  # a pixel counts as content above this alpha
 MIN_GUTTER = 1        # a fully-empty line of >= this many px separates frames
@@ -604,6 +605,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)
