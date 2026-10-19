@@ -118,7 +118,9 @@ A walk whose two steps look alike — its legs drawn alike, from the side or a d
 one step long (or, past a tail on its own beat, three), and the search has nothing to refuse it on:
 the step repeats. Where the clip shows its feet pass, the cut is counted on those crossings and is
 two steps long — any length the count allows, past the window for a slow walk — joined at the walk's
-own point (`cycle.step_count`; [loop repair](loop-repair.md) section 3, "The step count"). Where it
+own point (`cycle.step_count`; [loop repair](loop-repair.md) section 3, "The step count"). The search's
+cut stands where the clip a cut on is the same picture though the count says one step (a pass hidden
+behind the other foot or between drawings), and where no cut of two steps closes in its place. Where it
 does not, the cut is screened the other way, over the whole clip (`cycle.step_screen`): where twice it
 repeats better than it, the report names it a suspect and nothing else changes. Look at the loop and
 count its steps (how often each foot lands); `video-loop --steps 1` cuts it again two of its lengths

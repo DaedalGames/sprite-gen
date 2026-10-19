@@ -763,7 +763,9 @@ was 17). `video-loop` therefore:
    that closes only on two steps is cut two steps long — one cycle (`cycle.steps`, "The held
    side"). Where the clip shows its steps, the cut is two of them — read off the crossings of the
    feet, joined at the walk's own point, the smoothest seam first — and the search's cut is kept
-   where it already is that (`cycle.step_count`, "The step count"). Where it does not, the cut taken
+   where it already is that, where the clip a cut on is the same picture though the count says one
+   step (a pass it did not see), and where no cut of two steps closes in its place
+   (`cycle.step_count`, "The step count"). Where it does not, the cut taken
    is screened for one step of a cycle twice as long, over the whole clip (`cycle.step_screen`, "The
    step screen"); nothing is cut on it, and `--steps` is the count that cuts again.
 

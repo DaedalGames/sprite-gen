@@ -890,8 +890,9 @@ crossings, joined at the wrap where the walk itself goes on, is one cycle (`cros
 | `unconfirmed` | frames no reading confirms: a run of feet together cut by the clip's first or last frame that its twin does not confirm, the frames before the first side is seen, a change the clip ends on |
 | `step_range` | the clip's own step (the median between crossings) and the range a step must lie in, a factor of √2 either way |
 | `readable`, `why`, `alternation` | whether the clip shows its steps: three crossings or more, and in sign mode a lean that turns over a step on (correlation one step on at most **−0.7**, `crossings.ALTERNATION_MAX`) |
-| `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring` |
+| `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring`; the search's cut counted an odd number of steps also with `same_picture` (the clip a cut on, in its playback steps) |
 | `chosen_by` | `search` (kept), `two steps` (chosen on the count), and the search again where the count refutes its cut (`searched_again`) |
+| `declined` | the best two-step cut, where none closed and the search's cut stood: its `cut`, `phase`, whether it passed the gates (`gated`) and its `seam` |
 
 **Counting a cut.** Every crossing counted is one the clip shows whole. A cut s/L plays frames s to
 s+L−1 and then frame s again where the clip itself plays frame s+L; the wrap joins two frames the clip
@@ -912,6 +913,18 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   three crossings): the search's cut, exactly as before. Only `cycle.step_count` is new.
 - The search's cut is a two within **1.5** frames of phase (`crossings.PHASE_TOLERANCE`): kept, every
   image and frame as the search alone cuts it.
+- The count says the search's cut is an odd number of steps — one or three, the legs swapped a cut on —
+  but the clip a cut on is the same picture: frame by frame along the cut, its frame a cut on lies at most
+  **1.0** of the cut's playback steps off (`local_cycle.same_picture`, `SAME_PICTURE_MAX`;
+  `step_count.search.same_picture`). A step on, the legs are swapped, and a swap that draws nearer than
+  the next frame is none: the count missed a crossing, and proves nothing. Seen from behind on a
+  diagonal, the far foot passes hidden behind the near one, so the feet are seen apart once a cycle and
+  together through the other step, its pass among them; in a clip on twos or threes a pass can fall
+  between two drawings. The search's cut is kept, every image as the search alone cuts it, its count
+  `uncertain` (`same-picture`), and no `steps` is written: the set alignment screens it as any loop. On
+  the synthetic walkers of `tests/video/test_walk_steps.py` the frame a cut on lies 0.03 to 0.48
+  playback steps off where the far foot hides (on twos and threes), and 2.12 on the half step the count
+  was made for, legs drawn alike and a tail on its own beat.
 - Otherwise the cut is among the cuts that cover two steps — any start, any length the count allows,
   inside an explicit `--min-len`/`--max-len` but not the state's window, half the clip or the gait
   fallback's ceiling (a walk slower than the window is cut two steps long). Those in phase, if any, are
@@ -936,6 +949,15 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   The pixel search's repeat rule is not asked: a part off the legs' beat — a tail on its own beat —
   repeats on its own, and its seam is the flow repair's (section 2). `step_count.repeat` records the
   search's word on the cut, and a cut it would refuse, or one that passed no gate, is a warning line.
+- A search's cut the count does not refute — a two out of phase, or uncertain — gives way only to a
+  two-step cut that closes: one of the cuts that passed the gates above (in phase, its top calm, its wrap
+  within the seam gate of its step, its seam under the flow limit) whose seam the gate passes. Where none
+  does, the search's cut is kept, every image as the search alone cuts it (`steps` written where it is a
+  two), and `step_count.declined` names the best two-step cut, its phase, whether it passed the gates and its
+  seam, with a warning line. A cut that plays a step a clip shows unevenly, or a part on its own beat that closes on
+  no two steps, would otherwise trade a loop that passes for one the seam gate refuses. Only a search's
+  cut the count refutes — one step or three, each seen — is given up for a two-step cut that does not
+  close, and the seam gate says whether the loop passes.
 - The clip shows its steps but no cut of two: the search's cut, unless the count refutes it — then the
   search runs again refusing what the crossings refute, and a search that finds nothing lists each
   refused window's count (`cycle.candidates[].step_count`), those the crossings refute last.
@@ -949,7 +971,10 @@ crossings are not asked.
 **What crossings cannot see**: a hold the step range absorbs (a 13-frame step held to 17), a still run of
 the feet together inside the clip as long as a pass, and a wobble that reaches the reading's sides at a
 step's beat read as steps; a narrow step that opens the feet only just past the reading's threshold
-reads at that threshold. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+reads at that threshold. A pass hidden behind the other foot, or between two drawings, leaves one
+crossing a cycle, and the count reads a cycle as one step: the clip's own repeat overrules it where the
+pixel search found it (the same picture a cut on, above); where the search found no cycle, the cut is two
+cycles long and says `steps: 2`. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
 
 ### The step screen — a slow walk cut one step long
 
