@@ -41,7 +41,7 @@ def _node(script: str, payload: dict):
         pj = Path(tmp) / "payload.json"
         pj.write_text(json.dumps(payload), encoding="utf-8")
         run = subprocess.run(["node", "-e", script, str(pj)],
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, encoding="utf-8", timeout=120)
     assert run.returncode == 0, f"node 실패:\n{run.stderr}"
     return json.loads(run.stdout)
 

@@ -82,6 +82,7 @@ from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.video import loop as loop_mod
+from sprite_gen.util.console import utf8_streams
 
 VERB = "video-follow"
 # How the motion is read and a region moved, by name. `video-follow-inspect` writes it beside what it read, so
@@ -889,6 +890,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-follow", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

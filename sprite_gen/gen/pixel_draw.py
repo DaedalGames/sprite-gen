@@ -70,6 +70,7 @@ from .pixel_grid import (
     joined, palette_rule, parse_answer, parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text,
     recovered, row_issues, row_text, save_gif, splice, structural, tiled_3x3, to_text, image_of,
 )
+from sprite_gen.util.console import utf8_streams
 
 VERB = "pixel-draw"
 SIZE_MIN, SIZE_MAX, SIZE_DEFAULT = 8, 48, 32
@@ -1387,6 +1388,7 @@ def run(**kwargs: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(parser)
     return _run(parser.parse_args(argv))

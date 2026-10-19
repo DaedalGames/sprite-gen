@@ -15,6 +15,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.qa import inspect as inspect_mod
 from sprite_gen.qa import score as score_mod
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.console import utf8_streams
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -162,6 +163,7 @@ def run(**kwargs: object) -> int:
 
 
 def main() -> int:
+    utf8_streams()
     return _run(_build_parser().parse_args())
 
 

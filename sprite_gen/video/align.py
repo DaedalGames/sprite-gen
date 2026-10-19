@@ -104,6 +104,7 @@ from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import period as period_mod
 from sprite_gen.video import rife as rife_mod
 from sprite_gen.video.interpolation_quality import CROSSFADE_LOOK, SMEAR_WARN, OUTLINE_WARN, clean_beside, faults, ghost_screen, looks
+from sprite_gen.util.console import utf8_streams
 
 SNAP = 0.03  # a sample time within this of a source frame takes that frame
 SOURCE_DIR = loop_mod.CYCLE_SOURCE_DIR  # removed by video-loop whenever it cuts the loop again
@@ -1084,6 +1085,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-cycle-align", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

@@ -57,6 +57,7 @@ from sprite_gen.video import rife as rife_mod
 from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video.frames import drop_specks
+from sprite_gen.util.console import utf8_streams
 
 ANALYSIS_SIZE = 96  # thumbnail edge for the distance matrix
 STRIP_MAX_CELLS = 64  # upper bound on cells even when they are narrow
@@ -1754,6 +1755,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-loop", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

@@ -119,7 +119,7 @@ def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path
     harness.write_text(HARNESS, encoding="utf-8")
 
     proc = subprocess.run([shutil.which("node"), str(harness), str(payload_path)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js_frames = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -162,7 +162,7 @@ def test_the_mirror_refuses_exactly_what_the_bake_refuses(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -216,7 +216,7 @@ def test_the_mirror_matches_on_frames_other_than_the_frozen_one(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -262,7 +262,7 @@ def test_the_mirror_refuses_the_same_strain_cap(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))[0]
     assert not got["ok"] and got["refused"], \
@@ -297,7 +297,7 @@ def test_the_mirror_refuses_a_stale_anatomy_against_a_manual_rigid_row(tmp_path)
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     for phase, got in zip(PHASES, json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))):
         assert not got["ok"] and got["refused"], (
@@ -310,7 +310,7 @@ def test_the_mirror_refuses_a_stale_anatomy_against_a_manual_rigid_row(tmp_path)
                       "rigid_row": override, "anatomy": fresh["anatomy"]}
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0
     for phase, got in zip(PHASES, json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))):
         assert got["ok"], f"갱신 후에도 거부한다: {got['message']}"
@@ -365,7 +365,7 @@ def test_the_mirror_refuses_a_stale_reference_frame(tmp_path):
                 "anatomy": cfg["anatomy"]},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (
@@ -379,7 +379,7 @@ def test_the_mirror_refuses_a_stale_reference_frame(tmp_path):
                 "anatomy": cfg["anatomy"]},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                   capture_output=True, text=True, check=True)
+                   capture_output=True, encoding="utf-8", check=True)
     assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["ok"], \
         "기준 프레임 그대로인데 거부한다 — 프리뷰가 상시 죽는다"
 
@@ -424,7 +424,7 @@ def test_the_mirror_refuses_when_it_cannot_verify(tmp_path):
                 "anatomy": frozen},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (

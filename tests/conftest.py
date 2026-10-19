@@ -26,7 +26,7 @@ def help_options(*argv: str) -> set[str]:
         [sys.executable, *argv, "--help"],
         cwd=REPO_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         env=env,
     )
     assert proc.returncode == 0, proc.stderr
@@ -38,7 +38,7 @@ def run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPTS_DIR / name), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
 
 

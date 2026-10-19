@@ -128,12 +128,12 @@ def test_a_front_walk_carries_its_mid_step_redraw() -> None:
 
 def test_the_cli_prints_the_prompt_alone_or_the_record() -> None:
     args = [sys.executable, "-m", "sprite_gen.cli", "video-prompt", "--direction", "side", "--state", "walk", "--no-last-frame"]
-    plain = subprocess.run(args, capture_output=True, text=True)
+    plain = subprocess.run(args, capture_output=True, encoding="utf-8")
     assert plain.returncode == 0, plain.stderr
     assert plain.stdout.strip() == batch_mod.build_prompt("side", "walk", None, model=clip_prompt.DEFAULT_MODEL)
-    record = json.loads(subprocess.run([*args, "--json"], capture_output=True, text=True, check=True).stdout)
+    record = json.loads(subprocess.run([*args, "--json"], capture_output=True, encoding="utf-8", check=True).stdout)
     assert record["kind"] == "sprite-gen-video-prompt" and record["state"] == "walk"
-    refused = subprocess.run([*args[:-3], "attack", "--no-last-frame"], capture_output=True, text=True)
+    refused = subprocess.run([*args[:-3], "attack", "--no-last-frame"], capture_output=True, encoding="utf-8")
     assert refused.returncode != 0 and "--unpinned" in refused.stderr and not refused.stdout
 
 

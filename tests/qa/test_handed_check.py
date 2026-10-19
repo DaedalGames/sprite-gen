@@ -204,11 +204,11 @@ def test_cli_reads_a_strip_writes_a_board_and_exits_on_a_mirror(tmp_path) -> Non
     base = [sys.executable, "-m", "sprite_gen.cli", "handed-check", "--direction", "front_diagonal", "--facing", "left",
             "--handed", "the black smartwatch=left wrist", "--marker", "#1e5aeb"]
     ok = subprocess.run([*base, "--strip", str(good), "--board", str(tmp_path / "ok.png"),
-                         "--report", str(tmp_path / "ok.json")], capture_output=True, text=True)
+                         "--report", str(tmp_path / "ok.json")], capture_output=True, encoding="utf-8")
     assert ok.returncode == 0, ok.stderr
     assert json.loads(ok.stdout)["ok"] and (tmp_path / "ok.png").is_file()
     assert json.loads((tmp_path / "ok.json").read_text())["frames"] == 6
-    no = subprocess.run([*base, "--strip", str(bad)], capture_output=True, text=True)
+    no = subprocess.run([*base, "--strip", str(bad)], capture_output=True, encoding="utf-8")
     assert no.returncode == 1 and "on the picture's left, expected its right" in no.stderr
 
 

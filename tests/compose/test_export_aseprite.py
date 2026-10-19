@@ -78,7 +78,7 @@ def test_real_composed_run_exports_phaser_and_flame_shapes(fixture_run_dir: Path
     assert compose.returncode == 0, compose.stdout + compose.stderr
 
     command = [sys.executable, "-m", "sprite_gen.cli", "export-aseprite", "--run-dir", str(fixture_run_dir)]
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     exported = json.loads((fixture_run_dir / "exports" / "aseprite.json").read_text(encoding="utf-8"))
     manifest = json.loads((fixture_run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -88,7 +88,7 @@ def test_real_composed_run_exports_phaser_and_flame_shapes(fixture_run_dir: Path
     }
     assert (fixture_run_dir / exported["meta"]["image"]).is_file()
 
-    result = subprocess.run(command + ["--format", "json-hash", "--split-states"], cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(command + ["--format", "json-hash", "--split-states"], cwd=ROOT, capture_output=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     for state, rects in manifest["frame_layout"]["rows"].items():
         document = json.loads((fixture_run_dir / "exports" / "aseprite" / f"{state}.json").read_text(encoding="utf-8"))

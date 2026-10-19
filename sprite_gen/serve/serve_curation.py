@@ -64,6 +64,7 @@ from sprite_gen.spec.layout import frames_dir_rel, raw_rel, row_frame_rel, row_o
 from sprite_gen.spec.runio import load_request, publish_guard, read_guard, write_request
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen._modules import qualified
+from sprite_gen.util.console import utf8_streams
 
 # The SPA assets are package data (declared in pyproject's `package-data`), so the one
 # path that finds them is relative to this module — the same place in a repo checkout and
@@ -1595,6 +1596,7 @@ def run(*, run_dir: Path, host: str = "127.0.0.1", port: int = 0,
 
 def main(argv: list[str] | None = None) -> int:
     """`python -m sprite_gen.serve.serve_curation` / `scripts/serve_curation.py` entrypoint."""
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

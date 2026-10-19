@@ -23,6 +23,7 @@ from sprite_gen.frames.extract import require_frames_manifest
 from sprite_gen.qa.preview import flatten
 from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, save_clean_gif
 from sprite_gen.spec.runio import read_guard, relative_posix, load_request
+from sprite_gen.util.console import utf8_streams
 
 
 def sha256(path: Path) -> str:
@@ -196,6 +197,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

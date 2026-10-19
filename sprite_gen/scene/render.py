@@ -24,6 +24,7 @@ from sprite_gen.scene.model import Scene, load_scene
 from sprite_gen.spec.assets import finite
 from sprite_gen.spec.runio import LOCK_FILENAME, acquire_run_dir_lock, atomic_write_set, relative_posix, release_run_dir_lock
 from sprite_gen.util.resample import resize_cell
+from sprite_gen.util.console import utf8_streams
 
 
 FORMATS = ("png", "mp4", "gif")
@@ -326,6 +327,7 @@ def run(**kwargs):
 
 
 def main():
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args()))

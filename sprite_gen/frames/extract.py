@@ -28,6 +28,7 @@ from sprite_gen.spec.runio import (REQUEST_FILENAME, acquire_run_dir_lock, atomi
 from sprite_gen.frames.segment import separate_fused_poses
 from sprite_gen.spec.subject import SUBJECT_DEFAULT, default_min_used_pixels, sparse_frame_error, subject_kind
 from sprite_gen.util.resample import resize_cell
+from sprite_gen.util.console import utf8_streams
 
 
 def color_distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
@@ -3830,6 +3831,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

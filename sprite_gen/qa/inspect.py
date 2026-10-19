@@ -18,6 +18,7 @@ from sprite_gen.spec.layout import frames_dir_rel, raw_rel, state_frame_total
 from sprite_gen.spec.runio import (acquire_run_dir_lock, atomic_write_text, load_request,
                               read_guard, relative_posix)
 from sprite_gen.frames.segment import segment_strip
+from sprite_gen.util.console import utf8_streams
 
 
 HISTOGRAM_BINS = 64
@@ -412,6 +413,7 @@ def run(**kwargs: object) -> int:
 
 
 def main() -> int:
+    utf8_streams()
     return _run(_build_parser().parse_args())
 
 

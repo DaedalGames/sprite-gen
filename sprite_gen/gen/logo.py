@@ -44,6 +44,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import chroma as chroma_mod
 from . import codex_provider, openai_provider, xai
 from .base import QUALITIES, RESOLUTIONS, print_json
+from sprite_gen.util.console import utf8_streams
 
 REPORT_KIND = "sprite-gen-logo-report"
 COMPOSITIONS: dict[str, dict[str, str]] = {
@@ -498,6 +499,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     return _run(_build_parser().parse_args(argv))
 
 

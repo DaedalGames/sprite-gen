@@ -20,6 +20,7 @@ from sprite_gen.compose.layers import (has_layer_contract, landmark_map, require
                                state_track)
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_save_image, atomic_write_text, load_request
 from sprite_gen.spec.subject import default_min_used_pixels
+from sprite_gen.util.console import utf8_streams
 
 
 def alpha_nonzero_count(image: Image.Image) -> int:
@@ -305,6 +306,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

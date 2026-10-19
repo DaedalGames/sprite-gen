@@ -31,6 +31,7 @@ from sprite_gen.curate.curation import edit_index, apply_pixel_edits, apply_tran
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
 from sprite_gen.frames.extract import require_frames_manifest
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_save_image, load_request
+from sprite_gen.util.console import utf8_streams
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -121,6 +122,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

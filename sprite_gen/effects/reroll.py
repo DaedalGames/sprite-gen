@@ -28,6 +28,7 @@ from sprite_gen.curate.anchor import identity_ref
 from sprite_gen.spec.runio import load_request, write_request
 from sprite_gen.gen import PROVIDERS, generate_image
 from sprite_gen.spec.layout import guide_rel, prompt_rel, take_raw_rel
+from sprite_gen.util.console import utf8_streams
 
 
 def next_reroll_label(request: dict[str, Any], state: str) -> str:
@@ -116,6 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     args = _build_parser().parse_args(argv)
     reroll_state(args.run_dir, args.state, provider=args.provider, label=args.label)
     if args.extract:

@@ -33,7 +33,7 @@ def test_domain_of_refuses_unknown_modules() -> None:
 
 
 def test_help_lists_each_verb_once_under_its_domain() -> None:
-    proc = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "--help"], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "--help"], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
     for domain, verbs in cli.command_domains().items():

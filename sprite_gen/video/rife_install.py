@@ -33,6 +33,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.video import rife
+from sprite_gen.util.console import utf8_streams
 
 # SHA-256 of each release zip, measured on the downloaded files (docs/loop-repair.md section 1).
 ZIP_SHA256 = {
@@ -225,6 +226,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen rife", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

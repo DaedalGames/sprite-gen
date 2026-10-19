@@ -78,7 +78,7 @@ class Harness:
         return subprocess.run(
             [sys.executable, str(PUBLISH), "--tag", "v1.3.0", "--repo", "example/example",
              "--checkout", str(self.checkout), "--gh", str(self.gh), "--skip-build", *args],
-            capture_output=True, text=True, env=env)
+            capture_output=True, encoding="utf-8", env=env)
 
     @property
     def calls(self) -> list[str]:
@@ -150,7 +150,7 @@ def test_a_dist_directory_with_stale_archives_is_refused(harness: Harness, tmp_p
     proc = subprocess.run(
         [sys.executable, str(PUBLISH), "--tag", "v1.3.0", "--repo", "example/example",
          "--checkout", str(harness.checkout), "--gh", str(harness.gh), "--dist-dir", str(stale)],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8",
         env={**os.environ, "GH_STUB_STATE": str(harness.state), "GH_STUB_LOG": str(harness.log)})
     assert proc.returncode == 2
     assert "not empty" in proc.stderr
@@ -160,7 +160,7 @@ def test_a_dist_directory_with_stale_archives_is_refused(harness: Harness, tmp_p
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
-        cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+        cwd=cwd, check=True, capture_output=True, encoding="utf-8").stdout.strip()
 
 
 def _tagged(harness: Harness) -> str:
@@ -192,7 +192,7 @@ def _run_prebuilt(harness: Harness, prebuilt: Path, *args: str) -> subprocess.Co
         [sys.executable, str(PUBLISH), "--tag", "v1.3.0", "--repo", "example/example",
          "--checkout", str(harness.checkout), "--gh", str(harness.gh), "--prebuilt", str(prebuilt),
          *args],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8",
         env={**os.environ, "GH_STUB_STATE": str(harness.state), "GH_STUB_LOG": str(harness.log)})
 
 

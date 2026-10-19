@@ -18,6 +18,7 @@ from sprite_gen.spec.runio import (
     release_run_dir_lock,
 )
 from sprite_gen.util.hexcolor import parse_hex
+from sprite_gen.util.console import utf8_streams
 
 
 _MAX_FRAME_PIXELS = 16_777_216
@@ -242,6 +243,7 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     args = parser.parse_args(argv)

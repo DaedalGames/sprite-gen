@@ -56,6 +56,7 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_set
 from sprite_gen.video import follow
+from sprite_gen.util.console import utf8_streams
 
 VERB = "video-follow-inspect"
 KIND = "video-follow-inspection"
@@ -401,6 +402,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-follow-inspect", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

@@ -48,6 +48,7 @@ from sprite_gen.frames.extract import (extract_component_images, register_row_fr
                       remove_chroma_background_ycbcr, tighten_components)
 from sprite_gen.spec.layout import raw_rel, take_raw_rel
 from sprite_gen.spec.runio import load_request, write_request
+from sprite_gen.util.console import utf8_streams
 
 PROVIDERS = ("codex", "grok")
 
@@ -251,6 +252,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     args = _build_parser().parse_args(argv)
     interpolate_between(args.run_dir, args.state, args.between[0], args.between[1],
                         t=args.t, label=args.label, provider=args.provider)
