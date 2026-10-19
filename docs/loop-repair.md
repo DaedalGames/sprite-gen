@@ -984,7 +984,10 @@ reads a cycle as one step: the clip's own repeat overrules it where the pixel se
 stand together through most of a step (the same picture a cut on, above); where the search found no cycle,
 the cut is two cycles long and says `steps: 2`. A pass that falls between two drawings with the feet seen
 together only briefly is not overruled: from there the same picture a cut on is what a side walk with its
-legs drawn alike does. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+legs drawn alike does. And a walk whose feet do stand together through most of a step, its two steps drawn
+nearer than a frame apart, is cut as the search cuts it — one step long, as before the count: neither the
+pixels nor the crossings tell its step from its cycle there, and only someone who counts the steps (`--steps`)
+settles it. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
 
 ### The step screen — a slow walk cut one step long
 
