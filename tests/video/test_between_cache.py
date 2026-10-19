@@ -297,6 +297,35 @@ def test_a_frame_made_while_its_rife_changed_is_handed_on_and_not_kept(tmp_path)
     assert after.frame(made, a, b, 0.5).tobytes() == a.tobytes() and (after.hits, after.misses, after.not_kept) == (0, 1, 0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a shebang script cannot stand in for rife-ncnn-vulkan.exe")
+def test_a_frame_kept_under_one_augmentation_is_made_again_under_another(monkeypatch, tmp_path):
+    """SPRITE_GEN_RIFE_TTA is read on every call (`rife.tta()`), so one Rife makes another frame once it names another
+    augmentation: a frame kept by a pass without augmentation is made again by a pass with the default `-x -z`, and by
+    one with `-z` alone, and taken again by the next pass without. Every frame taken or made is the frame the same RIFE
+    makes with no directory, byte for byte."""
+    binary, weights = _picking_rife(tmp_path)
+    binary.write_text(binary.read_text().replace("FLIP = 0", 'FLIP = int("-x" in sys.argv)'))
+    made = rife.Rife(binary, weights.parent)
+    a, b = _dot(40, (255, 0, 0)), _dot(72, (0, 0, 255))
+
+    def again() -> tuple[bytes, int, int]:
+        cache = rife.Cache(tmp_path / "kept")
+        frame = cache.frame(made, a, b, 0.5).tobytes()
+        assert frame == made(a, b, 0.5).tobytes()
+        return frame, cache.hits, cache.misses
+
+    monkeypatch.setenv("SPRITE_GEN_RIFE_TTA", "")
+    assert again() == (a.tobytes(), 0, 1)
+    assert again() == (a.tobytes(), 1, 0)
+    monkeypatch.delenv("SPRITE_GEN_RIFE_TTA")
+    assert rife.tta() == rife.TTA == ("-x", "-z")
+    assert again() == (b.tobytes(), 0, 1)
+    monkeypatch.setenv("SPRITE_GEN_RIFE_TTA", "-z")
+    assert again() == (a.tobytes(), 0, 1)
+    monkeypatch.setenv("SPRITE_GEN_RIFE_TTA", "")
+    assert again() == (a.tobytes(), 1, 0)
+
+
 def test_a_kept_file_that_does_not_read_back_is_made_again(monkeypatch, tmp_path):
     """A kept file cut short, overwritten with another image — even an RGBA frame of the same size —
     or not an image at all is not taken: the frame is made again and kept over it."""
