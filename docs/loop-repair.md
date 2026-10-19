@@ -928,8 +928,8 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   the next frame — the very half step the count was made for — but there the feet pass briefly and the
   count stands; where the feet stand together through a step, a lookalike step a cut on still draws
   further off than a frame. On the synthetic walkers of `tests/video/test_walk_steps.py` the frame a cut
-  on lies 0.03 to 0.48 playback steps off where the far foot hides (on twos and threes, the feet
-  together 0.6 of a step and more), and 2.12 on the half step drawn with a tail on its own beat. The side
+  on lies 0.03 and 0.27 playback steps off where the far foot hides (on twos and on threes, the feet
+  together 0.60 and 0.63 of a step), and 2.12 on the half step drawn with a tail on its own beat. The side
   walker whose two steps are one silhouette, near and far a tone apart, reads 0.89 a step on — under the
   bound, so the picture alone kept its half step — and 1.04 at two tones; its feet pass briefly, and it is
   cut two steps.
