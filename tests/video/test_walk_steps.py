@@ -104,6 +104,24 @@ def _behind(k: int, *, cycle: int, hold: int) -> Image.Image:
     return im
 
 
+def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0) -> Image.Image:
+    """A side walker whose two steps are the same silhouette: the far leg and arm `tone` tones lighter than the near
+    ones, the arms swinging `lean` px further back than forward — nothing else tells a step from the next."""
+    ph = 2 * math.pi * (k + phase) / cycle
+    im = Image.new("RGBA", (300, 220))
+    d = ImageDraw.Draw(im)
+    x, y = 90, 40 + round(3 * math.cos(2 * ph))
+    for sign, t in ((1, 0), (-1, tone)):
+        sw = sign * (16 * math.sin(ph) + lean)
+        d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(190 + t, 190 + t, 190 + t, 255))
+    for sign, t in ((1, 0), (-1, tone)):
+        lx = x + 14 + 14 * sign * math.sin(ph)
+        d.rectangle((lx - 5, y + 80, lx + 5, y + 126), fill=(60 + t, 60 + t, 70 + t, 255))
+    d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
+    d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
+    return im
+
+
 def _tailed(k: int) -> Image.Image:
     """A side walker on threes, 30 frames a cycle, its legs hurrying through each pass and slowing apart, with a big
     tail swinging on a beat of its own (34 frames); each repeat of a drawing redrawn a few tones."""
@@ -173,8 +191,8 @@ def test_a_half_step_diagonal_walk_is_cut_two_steps(tmp_path):
     counted = _two_steps(report, 29)
     assert counted["mode"] == "gap" and counted["step_range"][1] == 14.5
     assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1] and counted["search"]["cut"][1] in (14, 15)
-    # The step a cut on is no repeat of the picture: the tail has moved on.
-    assert counted["search"]["same_picture"]["over_step"] > local_cycle.SAME_PICTURE_MAX
+    # Its feet pass briefly: no pass can hide, and the count is not asked whether the clip a cut on is the same picture.
+    assert "same_picture" not in counted["search"]
     strip = json.loads((tmp_path / "out" / "loop.strip.json").read_text())
     assert strip["steps"] == 2 and strip["cycle_frames"] == report["cycle"]["length"]
     # The step screen's pixel suspicion of a cycle twice as long is settled by the count.
@@ -242,6 +260,19 @@ def test_a_held_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold
     assert counted["search"]["same_picture"]["over_step"] <= local_cycle.SAME_PICTURE_MAX
     assert counted["chosen_by"] == "search" and counted["cut"]["verdict"] == "uncertain" and counted["cut"]["code"] == "same-picture"
     assert c["method"] == "local-repeat-drift-v1"
+
+
+@pytest.mark.parametrize("tone, lean", [(1, 0), (4, 1)])
+def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_step_on(tmp_path, tone, lean):
+    """The case the count was made for, guarded: from the side the two steps are one silhouette, the near leg and arm
+    a tone or a few apart from the far ones. The walk is slower than the window, so the search cuts one step, and at
+    one tone the clip a step on draws nearer than the next frame (0.89 playback steps). Its feet pass briefly — no pass
+    can hide — so the count stands: two steps, a cycle long (as the parent engine cut it; asking the picture alone kept
+    the half step)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=tone, lean=lean)))
+    counted = _two_steps(report, 46)
+    assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1]
+    assert "same_picture" not in counted["search"]
 
 
 def test_a_cut_of_two_steps_that_does_not_close_leaves_the_searchs_cut(tmp_path):
@@ -345,12 +376,15 @@ def test_the_search_refuses_what_the_crossings_refute_and_names_their_count(unce
     assert "refute after the rest" in refused.value.diagnostics["order"]
 
 
-def _choose(found: dict, *, period: int, seam: float) -> tuple[dict, dict]:
+def _choose(found: dict, *, period: int, seam: float, run: int = 9) -> tuple[dict, dict]:
     """`by_steps` on a clip whose picture goes round every `period` frames, its feet passing every 15 (crossings at 8,
-    23 … 68), with the search's cut `found`: every two-step cut's seam reads `seam` at the gate, its top calm and its
-    flow off 1.0 either side."""
+    23 … 68), seen together `run` frames at each pass (9: over half a step, a pass can hide there; 3: brief), with the
+    search's cut `found`: every two-step cut's seam reads `seam` at the gate, its top calm and its flow off 1.0 either
+    side."""
     D = _distances(period=period, frames=FRAMES)
-    reading = crossings.Reading(FRAMES, "gap", [(c, c) for c in (8.0, 23.0, 38.0, 53.0, 68.0)])
+    middles = (8, 23, 38, 53, 68)
+    reading = crossings.Reading(FRAMES, "gap", [(float(c), float(c)) for c in middles],
+                                runs=[(c - run // 2, c + run // 2) for c in middles])
     return local_cycle.by_steps(
         D, np.zeros(FRAMES), reading, found=dict(found), refused=None, min_len=12, max_len=FRAMES,
         seam_flow=lambda s, L: {"off": [1.0, 1.0], "turn": [0.0, 0.0], "window": [[0, 0, 1, 1], [0, 0, 1, 1]]},
@@ -391,3 +425,12 @@ def test_a_one_step_cut_that_is_the_same_picture_a_cut_on_is_the_searchs_cycle()
     assert (picked["start"], picked["length"]) == (10, 15) and "steps" not in picked
     assert record["chosen_by"] == "search" and record["cut"]["code"] == "same-picture" and record["cut"]["verdict"] == "uncertain"
     assert record["search"]["same_picture"]["over_step"] <= local_cycle.SAME_PICTURE_MAX
+    assert record["search"]["same_picture"]["overlap"] > crossings.HIDE_SHARE
+
+
+def test_where_the_feet_pass_briefly_the_count_stands_however_alike_a_step_on():
+    """The same clip, its feet seen together only at the moment they pass: no pass can hide, and a step on drawing as
+    near as the next frame is what legs drawn alike do from the side. The count stands: two steps."""
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3)
+    assert record["search"]["verdict"] == "refuted" and "same_picture" not in record["search"]
+    assert record["chosen_by"] == "two steps" and picked["steps"] == {"count": 2, "by": "crossings"}

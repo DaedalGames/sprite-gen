@@ -63,6 +63,9 @@ SEAM_BAND = (1 / ROOT2 - 1, ROOT2 - 1)  # the wrap's delta: its step within the 
 OPEN_SAMPLES = 9  # values an open step's unseen end is tried at, across its bound
 PARTIAL_SAMPLES = 3  # values a partial crossing's middle is tried at, across its bound
 PHASE_TOLERANCE = 1.5  # frames: crossings are read to half a frame, a cut's length to one
+# gap mode: the feet seen together at a pass, the median whole run over the step, past which a pass can hide among
+# them — the far foot standing behind the near one through part of the step (`Reading.overlap`)
+HIDE_SHARE = 0.5
 EPS = 1e-9
 
 
@@ -209,6 +212,16 @@ class Reading:
     @property
     def readable(self) -> bool:
         return self.why is None
+
+    @property
+    def overlap(self) -> float | None:
+        """Gap mode: how long the feet are seen together at a pass, over the step — the median of the runs the clip
+        shows whole. A pass is brief; past HIDE_SHARE the far foot stands behind the near one through part of the
+        step, and a pass can hide in the run. None in sign mode, or without a step or a whole run."""
+        whole = [b - a + 1 for a, b in self.runs if a > 0 and b < self.n - 1]
+        if self.mode != "gap" or self.step is None or not whole:
+            return None
+        return float(np.median(whole)) / self.step
 
     def record(self) -> dict[str, Any]:
         """The reading as the report keeps it."""

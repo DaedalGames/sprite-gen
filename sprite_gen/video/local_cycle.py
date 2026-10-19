@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from sprite_gen._deps import np
 from sprite_gen.video import period as period_mod
+from sprite_gen.video.crossings import HIDE_SHARE
 
 REFUSED_SHOWN = 12  # refused windows a failed search reports, as many as a found cycle's candidates
 # A two-step cut's seam is as smooth as the smoothest in-phase one's within this much more flow off (`_rank`): about
@@ -27,7 +28,8 @@ REPEAT_OVER_STEP_MAX = 2  # `detect` refuses a repeat further off than two playb
 SEAM_TRIES = 4  # two-step cuts, best first, whose seam is read as the seam gate reads it before one is taken (`by_steps`)
 # The clip a cut on, frame by frame along the cut, at most this many of the cut's playback steps off: the same picture
 # again (`same_picture`). An odd count of steps swaps the legs a cut on, and a step drawn nearer than the next frame
-# is no swap: the count missed a crossing.
+# is no swap: the count missed a crossing — asked only where a pass can hide (crossings.HIDE_SHARE), since from the
+# side a step on can draw as near as that, its legs alike.
 SAME_PICTURE_MAX = 1.0
 
 
@@ -468,10 +470,12 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
       under two steps): the search's cut, as it chose it.
     - The search's cut covers two steps (`two`) and its wrap joins the walk at its own point (`reading.in_phase`):
       that cut, as it chose it.
-    - The crossings count the search's cut an odd number of steps — the legs swapped a cut on — but the clip a cut
-      on is the same picture (`same_picture`, at most SAME_PICTURE_MAX playback steps along the cut): no swap, so the
-      count missed a crossing (a foot passing hidden behind the other) and proves nothing. The search's cut, as it
-      chose it, its count `uncertain` (`same-picture`).
+    - The crossings count the search's cut an odd number of steps — the legs swapped a cut on — but the feet are seen
+      together over more than HIDE_SHARE of a step at a pass (`reading.overlap`: the far foot behind the near one, a
+      pass can hide there) and the clip a cut on is the same picture (`same_picture`, at most SAME_PICTURE_MAX
+      playback steps along the cut): no swap, so the count missed a crossing and proves nothing. The search's cut, as
+      it chose it, its count `uncertain` (`same-picture`). Where passes are brief — from the side, where a step on
+      draws as near as the next frame with the legs alike — the count stands.
     - Else the cuts [min_len, max_len] frames long that cover two steps, any start, however long — the window that
       binds the search binds no count; none, and the search's word stands. Those in phase, if any, else all, are
       read at the wrap (`seam_flow(start, length)`: the flow off of the cut's last and first frames; `wrap_pop`, the
@@ -501,14 +505,17 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
         if reading.in_phase(searched):
             record.update(chosen_by='search', cut=searched)
             return _two_steps(found, record), record
-        if searched['verdict'] == 'refuted' and searched['k'][0] % 2:
+        overlap = reading.overlap
+        if searched['verdict'] == 'refuted' and searched['k'][0] % 2 and overlap is not None and overlap > HIDE_SHARE:
             near = same_picture(distances, found['start'], found['length'])
-            record['search']['same_picture'] = {'over_step': None if near is None else round(near, 3), 'max': SAME_PICTURE_MAX}
+            record['search']['same_picture'] = {'over_step': None if near is None else round(near, 3), 'max': SAME_PICTURE_MAX,
+                                                'overlap': round(overlap, 3), 'hides': HIDE_SHARE}
             if near is not None and near <= SAME_PICTURE_MAX:
                 record.update(chosen_by='search', cut={
                     **searched, 'verdict': 'uncertain', 'code': 'same-picture',
-                    'why': f"the crossings count {searched['why']}, but the clip a cut on is the same picture ({near:.2f} playback "
-                           f"steps along the cut, at most {SAME_PICTURE_MAX:g}): no legs swapped, a crossing unseen"})
+                    'why': f"the crossings count {searched['why']}, but the feet are seen together {overlap:.2f} of a step at a "
+                           f"pass (over {HIDE_SHARE:g}: a pass can hide there) and the clip a cut on is the same picture ({near:.2f} "
+                           f"playback steps along the cut, at most {SAME_PICTURE_MAX:g}): no legs swapped, a crossing unseen"})
                 return found, record
     twos = reading.twos(min_len, max_len)
     record['two_cuts'] = len(twos)
