@@ -10,13 +10,19 @@ pushed out from inside its outline (`bleed`): a disagreement there reads as the 
 black a frame premultiplied over black put under it (2.24 and before: a black smear between
 crossing legs). Inside the coverage the colour is the frame's own, outline included.
 `smear` measures what a made frame has that neither neighbour has, and the outline it lost where
-the flow failed and melted a limb into the fill; `ghost` reads a band of part coverage on a frame
-alone, filmed or made; `crossfade` reads two drawings cross-faded inside a whole silhouette, a
-reading to look at, not a fault (docs/loop-repair.md section 4).
+the flow failed and melted a limb into the fill; `outline_shift` reads that edge against the
+neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost — where the
+neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
+part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
+whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4). `passes` runs
+the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
+`torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
 The binary's own CPU path (`-g -1`) returns a wrong frame with rife-v4.6 on both macOS and
 Linux (measured 2026-10-03: mean error 39 against 3.3 through Vulkan), so it is never passed;
 a machine without a GPU runs the Vulkan path on Mesa's llvmpipe, which gives the GPU's frame.
+Every call asks for the binary's test-time augmentation, spatial and temporal (`-x -z`, `TTA`;
+docs/loop-repair.md section 1, "Which setting"); SPRITE_GEN_RIFE_TTA names another (`tta()`).
 
 The binary is found by SPRITE_GEN_RIFE, then on PATH, then where `sprite-gen rife install`
 puts it (`install_root()`, docs/loop-repair.md section 1). A RIFE that cannot be found is
@@ -24,7 +30,8 @@ puts it (`install_root()`, docs/loop-repair.md section 1). A RIFE that cannot be
 RIFE that is found and then fails is `RifeUnavailable` and always an error.
 
 The interpolator is a plain callable `(a, b, t) -> frame`, so a caller can be handed a stand-in
-(`Interpolate`), and a test needs no binary.
+(`Interpolate`), and a test needs no binary. A caller that reads the passes takes a callable
+`(a, b, t) -> (frame, disagreement)` (`Read`, `Rife.read`).
 
 A frame made between two frames can be kept and taken again (`Cache`): an alignment run twice on
 the same source frames — again with the feet told — makes the same frames a second time, two RIFE
@@ -55,6 +62,13 @@ from sprite_gen._deps import np
 BINARY = "rife-ncnn-vulkan"
 MODEL = "rife-v4.6"
 RELEASE = "20221029"
+# The binary's test-time augmentation, passed on every call: `-x` runs the pair as its eight flips and
+# transposes, `-z` runs it both ways in time as well, and what comes back is averaged — so a frame made
+# from a to b is the one made from b to a (docs/loop-repair.md section 1, "Which setting"). On a machine
+# without a GPU it costs 15 to 19 times the CPU of a plain call. SPRITE_GEN_RIFE_TTA names another
+# (`tta()`): either mode, or none.
+TTA = ("-x", "-z")
+TTA_MODES = ("-x", "-z")
 # Coverage RIFE leaves under this is its own blur, not body: dropped so no halo is invented.
 ALPHA_FLOOR = 2 / 255
 # The colour pushed out around the body is read this far inside its solid edge (a fraction of the
@@ -68,6 +82,19 @@ PARTIAL_ALPHA = (0.1, 0.9)
 # when a dark solid pixel lies within this many pixels of it. A drawn outline sits on the edge, under
 # an antialiased pixel or two, whatever the frame's size.
 OUTLINE_REACH = 2
+# `outline_shift`: a pixel of the made frame's edge is lost where its darkest solid pixel within OUTLINE_REACH is
+# lighter than the lighter neighbour's at the same rank by more than this (luma, 0..1). A line the flow keeps
+# and softens comes out lighter by less; a line gone to the fill beside it, by the line's own contrast.
+OUTLINE_SHIFT = 50 / 255
+# `outlined`: a frame's fill is read this far inside its solid edge (a share of the body's height, at least a
+# pixel) and pushed out over the edge, as `bleed` pushes the colour from BLEED_DEPTH: twice as deep, so the fill
+# read beside a line is past it where the line is twice as wide as the one `bleed` reads past.
+LINE_DEPTH = 2 * BLEED_DEPTH
+# `outline_shift` reads a pair only where both neighbours are outlined on at least this share of their coverage
+# edge (`outlined`). Under it — art painted without a line, or lined in a tone near its fill — a line gone to fill
+# is lighter by less than OUTLINE_SHIFT, or there is no line to lose, and the dark line judges alone: a frame
+# refused there is replaced by a filmed one, a melted frame kept would be delivered (docs/loop-repair.md section 4).
+OUTLINED = 0.75
 # `ghost`: part-covered pixels count where they make a region at least this many pixels thick. An
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
@@ -79,7 +106,23 @@ GHOST_THICK = 5
 CROSSFADE_RANGE = 7
 CROSSFADE_WINDOW = 0.08
 CROSSFADE_KEEP = 0.6
-CALL_TIMEOUT_SECONDS = 120
+# `passes`: the binary's augmentation runs the pair turned eight ways (`-x`: every flip and transpose) and both ways in
+# time (`-z`), combines the sixteen inside, and gives back one frame — where the passes disagree, the frame does not say
+# so. Run one at a time with no augmentation, each turned back, they can be read apart. Each pass is two calls, colour
+# and coverage, as `between` makes them.
+PASS_GEOMETRIES = tuple((transpose, flips) for transpose in (False, True) for flips in range(4))  # flips: 1 left-right, 2 up-down
+PASS_CALLS = 2 * 2 * len(PASS_GEOMETRIES)
+# `torn`: the forward passes' mean and the backward passes' mean put a different colour or coverage at a pixel where
+# they are more than this apart (premultiplied RGBA, 0..1); an edge they place a pixel or two apart is thinner than
+# TORN_THICK pixels and opened away; a part torn is read in windows TORN_WINDOW of the body's height on a side, the
+# size of a hand on a walk.
+TORN_LEVEL = 0.05
+TORN_THICK = 3
+TORN_WINDOW = 0.10
+# One call past this is stopped and reported as a RIFE that failed. TTA's slowest call measured, on a
+# 960 x 960 frame on Modal's CPU, took about 30 s, and Modal's hosts differ by up to 2.5 times on one frame
+# (2026-10-15, docs/loop-repair.md section 1).
+CALL_TIMEOUT_SECONDS = 600
 # `Cache`: the first thing a kept frame's key is made from — another way of keying or keeping frames is another
 # name, so no frame kept the old way is taken — and the PNG text a kept frame names its own pixels' sha256 under.
 CACHE_FORMAT = "sprite-gen frame between, 1"
@@ -90,6 +133,7 @@ PIXELS_TEXT = "sprite-gen-pixels-sha256"
 CODE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 Interpolate = Callable[[Image.Image, Image.Image, float], Image.Image]
+Read = Callable[[Image.Image, Image.Image, float], tuple[Image.Image, np.ndarray]]
 
 # The one line that installs it, quoted wherever a missing RIFE is reported.
 INSTALL_COMMAND = "sprite-gen rife install"
@@ -161,16 +205,35 @@ def locate() -> tuple[Path, Path]:
     return binary, model
 
 
-def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path) -> Image.Image:
+def tta() -> tuple[str, ...]:
+    """The test-time augmentation every call asks for: SPRITE_GEN_RIFE_TTA when it is set (`-x`, `-z`
+    or both, space-separated; empty for none), else TTA. Anything else is refused: a flag passed
+    through unread could be the binary's CPU path, which is wrong with this model."""
+    named = os.environ.get("SPRITE_GEN_RIFE_TTA")
+    if named is None:
+        return TTA
+    modes = tuple(named.split())
+    if any(m not in TTA_MODES for m in modes) or len(set(modes)) < len(modes):
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_TTA={named!r}: name -x, -z or both, space-separated, or leave it empty for none")
+    return modes
+
+
+def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path,
+          modes: tuple[str, ...] | None = None) -> Image.Image:
+    """One run of the binary from `a` to `b` at `t`, with the augmentation `tta()` names, or `modes` (`passes`: none)."""
+    modes = tta() if modes is None else modes
     a.save(tmp / "a.png")
     b.save(tmp / "b.png")
     out = tmp / "o.png"
     out.unlink(missing_ok=True)
     try:
         proc = subprocess.run(
-            [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model)],
+            [str(binary), "-0", str(tmp / "a.png"), "-1", str(tmp / "b.png"), "-o", str(out), "-s", f"{t:.4f}", "-m", str(model), *modes],
             capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RifeUnavailable(f"{binary.name} made no frame in {CALL_TIMEOUT_SECONDS} s and was stopped "
+                              f"(augmentation {' '.join(modes) or 'none'}, SPRITE_GEN_RIFE_TTA)") from exc
     except OSError as exc:
         # A binary that is found but cannot be started (a damaged or wrong-platform build:
         # WinError 193 on Windows, ENOEXEC elsewhere) is a RIFE that fails, not a crash.
@@ -195,20 +258,25 @@ def _push_pull(rgb: np.ndarray, known: np.ndarray) -> np.ndarray:
     return np.where(known[..., None] > 0, rgb, up)
 
 
+def _core_fill(frame: np.ndarray, depth: float) -> np.ndarray | None:
+    """The colour of an RGBA frame (0..1) from `depth` (a share of its solid body's height, at least a pixel)
+    inside its solid edge, pushed out over every pixel outside that core; None where nothing is solid."""
+    solid = frame[..., 3] >= 0.5
+    rows = np.nonzero(solid.any(axis=1))[0]
+    if rows.size == 0:
+        return None
+    px = max(1, round((rows[-1] - rows[0] + 1) * depth))
+    core = _square_min(solid, px, mode="edge")  # PIL's MinFilter, which repeats the edge pixels outward
+    if not core.any():  # a body thinner than its outline: read at its edge
+        core = solid
+    return _push_pull(frame[..., :3], core.astype(np.float32))
+
+
 def bleed(frame: np.ndarray) -> np.ndarray:
     """The colour image of an RGBA frame (0..1) RIFE is given: the frame's own colour wherever it
     has coverage, and around it the colour from BLEED_DEPTH inside its solid edge, pushed out."""
-    alpha = frame[..., 3]
-    solid = alpha >= 0.5
-    rows = np.nonzero(solid.any(axis=1))[0]
-    if rows.size == 0:
-        return np.where(alpha[..., None] > 0, frame[..., :3], 0.0)
-    depth = max(1, round((rows[-1] - rows[0] + 1) * BLEED_DEPTH))
-    core = np.asarray(Image.fromarray(np.uint8(solid) * 255).filter(ImageFilter.MinFilter(2 * depth + 1))) > 0
-    if not core.any():  # a body thinner than its outline: read at its edge
-        core = solid
-    fill = _push_pull(frame[..., :3], core.astype(np.float32))
-    return np.where(alpha[..., None] > 0, frame[..., :3], fill)
+    fill = _core_fill(frame, BLEED_DEPTH)
+    return np.where(frame[..., 3:] > 0, frame[..., :3], 0.0 if fill is None else fill)
 
 
 def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> Image.Image:
@@ -220,13 +288,83 @@ def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Pa
     cov = [Image.fromarray(np.uint8(x[..., 3] * 255 + 0.5), "L").convert("RGB") for x in (fa, fb)]
     rgb = np.asarray(_call(binary, model, colour[0], colour[1], t, tmp), dtype=np.float32) / 255.0
     alpha = np.asarray(_call(binary, model, cov[0], cov[1], t, tmp).convert("L"), dtype=np.float32) / 255.0
+    return _joined(rgb, alpha)
+
+
+def _joined(rgb: np.ndarray, alpha: np.ndarray) -> Image.Image:
+    """The RGBA frame of a colour run and a coverage run (0..1): coverage under ALPHA_FLOOR dropped, the colour kept
+    wherever there is coverage."""
     alpha = np.where(alpha < ALPHA_FLOOR, 0.0, alpha)
     out = np.dstack([np.where(alpha[..., None] > 0, rgb, 0.0), alpha])
     return Image.fromarray(np.uint8(np.clip(out, 0, 1) * 255 + 0.5), "RGBA")
 
 
+def _turned(x: np.ndarray, geometry: tuple[bool, int]) -> np.ndarray:
+    """An image (H x W x C) turned one of PASS_GEOMETRIES' ways: transposed, then flipped."""
+    transpose, flips = geometry
+    if transpose:
+        x = x.transpose(1, 0, 2)
+    if flips & 1:
+        x = x[:, ::-1]
+    if flips & 2:
+        x = x[::-1]
+    return np.ascontiguousarray(x)
+
+
+def _turned_back(x: np.ndarray, geometry: tuple[bool, int]) -> np.ndarray:
+    """`_turned` undone."""
+    transpose, flips = geometry
+    if flips & 2:
+        x = x[::-1]
+    if flips & 1:
+        x = x[:, ::-1]
+    if transpose:
+        x = x.transpose(1, 0, 2)
+    return np.ascontiguousarray(x)
+
+
+def passes(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> np.ndarray:
+    """How far the binary's sixteen single passes from `a` to `b` at fraction `t` disagree, per pixel (docs/loop-repair.md
+    section 4).
+
+    Each pass is the pair turned one of PASS_GEOMETRIES' ways and run with no augmentation — from `a` to `b` at `t`, and
+    from `b` to `a` at 1 - t — colour and coverage as `between` runs them, and turned back. The disagreement is how far
+    apart the mean of the eight forward passes and the mean of the eight backward ones put the premultiplied colour and
+    coverage (0..1, `torn` reads it). Their mean is not the frame: where they disagree it blends their guesses part-covered,
+    which the augmentation, combining them inside the binary, does not. PASS_CALLS calls of the binary."""
+    if a.size != b.size:
+        raise ValueError(f"rife: frames differ in size ({a.size} vs {b.size})")
+    fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (a, b))
+    colour = [np.uint8(np.clip(bleed(x), 0, 1) * 255 + 0.5) for x in (fa, fb)]
+    cover = [np.repeat(np.uint8(x[..., 3:] * 255 + 0.5), 3, axis=-1) for x in (fa, fb)]
+    rgbs, alphas = [], []
+    for geometry in PASS_GEOMETRIES:
+        for first, second, at in ((0, 1, t), (1, 0, 1 - t)):
+            runs = [_call(binary, model, Image.fromarray(_turned(pair[first], geometry), "RGB"),
+                          Image.fromarray(_turned(pair[second], geometry), "RGB"), at, tmp, ()) for pair in (colour, cover)]
+            rgbs.append(_turned_back(np.asarray(runs[0], dtype=np.float32) / 255.0, geometry))
+            alphas.append(_turned_back(np.asarray(runs[1].convert("L"), dtype=np.float32)[..., None] / 255.0, geometry)[..., 0])
+    rgb, alpha = np.stack(rgbs), np.stack(alphas)
+    pre = np.concatenate([rgb * alpha[..., None], alpha[..., None]], axis=-1)
+    apart = np.sqrt(((pre[0::2].mean(axis=0) - pre[1::2].mean(axis=0)) ** 2).sum(axis=-1) / 4.0)
+    return apart.astype(np.float32)
+
+
 def _mask(mask: np.ndarray, size: int, op: type) -> np.ndarray:
     return np.asarray(Image.fromarray(np.uint8(mask) * 255).filter(op(size))) > 0
+
+
+def _square_min(a: np.ndarray, r: int, **pad) -> np.ndarray:
+    """Per pixel, the minimum over the square 2r+1 wide around it, one axis at a time, outside the frame as
+    `np.pad` fills it with `pad`."""
+    out = np.pad(a, r, **pad)
+    for axis in (0, 1):
+        out = np.lib.stride_tricks.sliding_window_view(out, 2 * r + 1, axis=axis).min(axis=-1)
+    return out
+
+
+def _luma(x: np.ndarray) -> np.ndarray:
+    return x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
 
 
 def _smear_counts(frame: Image.Image) -> tuple[int, int, int, int, int]:
@@ -235,7 +373,7 @@ def _smear_counts(frame: Image.Image) -> tuple[int, int, int, int, int]:
     x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
     solid = x[..., 3] >= 0.5
     inner = _mask(solid, 3, ImageFilter.MinFilter)
-    luma = x[..., 0] * 0.299 + x[..., 1] * 0.587 + x[..., 2] * 0.114
+    luma = _luma(x)
     lo, hi = PARTIAL_ALPHA
     covered = x[..., 3] >= lo
     edge = covered & ~_mask(covered, 3, ImageFilter.MinFilter)
@@ -258,6 +396,54 @@ def smear(made: Image.Image, a: Image.Image, b: Image.Image) -> dict[str, float]
     solid = max(1, sm)
     return {"dark_excess": round((dm - max(da, db)) / solid, 5), "partial_excess": round((pm - max(pa, pb)) / solid, 5),
             "outline_loss": round((um - max(ua, ub)) / max(1, em), 5)}
+
+
+def _edge_line(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The coverage edge of an RGBA frame (0..1; alpha from PARTIAL_ALPHA's floor, as `smear` reads it) and, per
+    pixel, its line: the luma of the darkest solid pixel within OUTLINE_REACH, 1 where there is none."""
+    covered = x[..., 3] >= PARTIAL_ALPHA[0]
+    edge = covered & ~_mask(covered, 3, ImageFilter.MinFilter)
+    return edge, _square_min(np.where(x[..., 3] >= 0.5, _luma(x), 1.0), OUTLINE_REACH, constant_values=1.0)
+
+
+def _edge_darkness(frame: Image.Image) -> np.ndarray:
+    """Per pixel of the coverage edge, its line (`_edge_line`)."""
+    edge, line = _edge_line(np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0)
+    return line[edge]
+
+
+def outlined(frame: Image.Image) -> float:
+    """The share of a frame's coverage edge outlined against its fill: where its line, the darkest solid pixel
+    within OUTLINE_REACH, is darker than the colour from LINE_DEPTH inside, pushed out over the edge, by more than
+    OUTLINE_SHIFT — so a line there gone to that fill reads lost rank by rank (`outline_shift`). Art outlined all
+    round reads most of its edge; art painted without a line, whose edge is its fill, or lined in a tone near
+    it, little. 0 where it has no edge (docs/loop-repair.md section 4)."""
+    x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+    edge, line = _edge_line(x)
+    fill = _core_fill(x, LINE_DEPTH)
+    if fill is None or not edge.any():
+        return 0.0
+    return round(float(np.mean((_luma(fill) - line)[edge] > OUTLINE_SHIFT)), 5)
+
+
+def outline_shift(made: Image.Image, a: Image.Image, b: Image.Image) -> float | None:
+    """The edge of a made frame that lost its line, read against its two neighbours rank by rank: each pixel
+    of its coverage edge by how dark the darkest solid pixel within OUTLINE_REACH is, in order, against the
+    lighter of the two neighbours' edges at the same rank (their quantiles), and counted where it is lighter
+    by more than OUTLINE_SHIFT — as a fraction of its edge. A line drawn in a mid tone and softened by the
+    flow reads lighter by less at every rank and is not counted, whatever tone the art outlines in; a line
+    gone to the fill beside it (legs melted into one shape, a pale ghost limb) is. 0 where nothing is lighter.
+    None where either neighbour is outlined on less than OUTLINED of its edge (`outlined`): there a part can
+    melt with no line to lose, lighter by less at every rank, and the dark line (`smear`'s `outline_loss`)
+    judges alone (docs/loop-repair.md section 4)."""
+    if min(outlined(a), outlined(b)) < OUTLINED:
+        return None
+    dm, da, db = (_edge_darkness(f) for f in (made, a, b))
+    if not (dm.size and da.size and db.size):
+        return 0.0
+    rank = (np.arange(dm.size) + 0.5) / dm.size
+    lighter = np.maximum(np.quantile(da, rank), np.quantile(db, rank))
+    return round(float(np.mean(np.sort(dm) > lighter + OUTLINE_SHIFT)), 5)
 
 
 def ghost(frame: Image.Image) -> float:
@@ -332,6 +518,29 @@ def crossfade(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> fl
     return round(lost / max(1, int(solid.sum())), 5)
 
 
+def torn(apart: np.ndarray, made: Image.Image) -> float:
+    """A part torn in a made frame, read on how far its single passes disagree (`passes`): of the pixels where they are
+    more than TORN_LEVEL apart, those in regions at least TORN_THICK pixels thick, and of them the largest share of a
+    window TORN_WINDOW of the made frame's body height on a side (8 px at least; the windows step by a quarter of it). A
+    hand the flow drags apart beside a tail swung far fills its window; an edge the passes place a pixel apart, or hair
+    they redraw strand by strand, leaves it nearly empty. Read in a window, not over the body, so a small part torn on a
+    large body is not lost in it. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
+    alpha = np.asarray(made.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0
+    rows = np.nonzero((alpha >= 0.5).any(axis=1))[0]
+    if rows.size == 0:
+        return 0.0
+    side = max(8, int(round((rows[-1] - rows[0] + 1) * TORN_WINDOW)))
+    thick = _mask(_mask(apart > TORN_LEVEL, TORN_THICK, ImageFilter.MinFilter), TORN_THICK, ImageFilter.MaxFilter)
+    h, w = thick.shape
+    if side >= min(h, w):
+        return round(float(thick.sum()) / (side * side), 5)
+    sums = np.pad(thick.astype(np.float64).cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0)))
+    step = max(1, side // 4)
+    ys, xs = np.arange(0, h - side + 1, step)[:, None], np.arange(0, w - side + 1, step)[None, :]
+    covered = sums[ys + side, xs + side] - sums[ys, xs + side] - sums[ys + side, xs] + sums[ys, xs]
+    return round(float(covered.max()) / (side * side), 5)
+
+
 def _file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -341,29 +550,44 @@ def _file_sha256(path: Path) -> str:
 
 
 class Rife:
-    """A located RIFE as an `Interpolate` callable. Counts the frames it made (`made`)."""
+    """A located RIFE as an `Interpolate` callable, and as a `Read` (`read`). Counts the frames it made (`made`) and the
+    times it ran the binary (`calls`)."""
 
     def __init__(self, binary: Path | None = None, model: Path | None = None):
         if binary is None or model is None:
             binary, model = locate()
         self.binary, self.model = binary, model
+        self.tta = tta()  # refused here, before a frame is asked for
         self.made = 0
+        self.calls = 0
 
     def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
             frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
         self.made += 1
+        self.calls += 2
         return frame
 
+    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        """The frame at `t`, made as every call makes it (`between`), and how far the sixteen single passes disagree
+        there (`passes`): 2 + PASS_CALLS calls of the binary."""
+        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
+            frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+            apart = passes(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+        self.made += 1
+        self.calls += 2 + PASS_CALLS
+        return frame, apart
+
     def describe(self) -> dict[str, str]:
-        return {"binary": str(self.binary), "model": self.model.name}
+        return {"binary": str(self.binary), "model": self.model.name, "tta": " ".join(self.tta)}
 
     def identity(self) -> str:
         """What a frame this RIFE makes depends on besides its two frames and t, as one string (`Cache` keys
         on it), read as it is now on every call — nothing of it is kept, so a binary, model or machine changed
         under this very RIFE is another identity: the binary's and each of the model's files by sha256, and the
-        model's path as the binary is handed it (the binary reads the model's version from its name); the engine
-        code this process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
+        model's path as the binary is handed it (the binary reads the model's version from its name); the
+        augmentation every call asks for now (`tta()`: SPRITE_GEN_RIFE_TTA is read on every call, and another is
+        another frame); the engine code this process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
         Pillow's versions; and the machine — the OS, and `uname`'s host name, OS release and build and
         architecture (platform.uname() keeps its first answer) — as the Apple GPU and llvmpipe are only measured
         to agree to the third decimal of an error (docs/loop-repair.md section 1), so a frame made on one is not
@@ -374,7 +598,7 @@ class Rife:
         except OSError as exc:
             raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
         return json.dumps({
-            **files, "code": CODE_SHA256, "numpy": np.__version__, "pillow": PIL.__version__,
+            **files, "tta": list(tta()), "code": CODE_SHA256, "numpy": np.__version__, "pillow": PIL.__version__,
             "machine": [sys.platform, *(os.uname() if hasattr(os, "uname") else platform.uname()[:5])]}, sort_keys=True)
 
 

@@ -20,7 +20,16 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
+from conftest import feet_unseen
 from sprite_gen.video import local_cycle, loop, repair
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _feet_unseen():
+    """Every cut in this module is the pixel search's: the walker's legs open and close once a drawing and never pass
+    each other, which the step count would read as one step a drawing (tests/conftest.py, `feet_unseen`)."""
+    with feet_unseen():
+        yield
 
 STEP, SWAY, AMP = 24, 61, 14
 

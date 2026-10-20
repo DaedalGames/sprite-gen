@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw
 from sprite_gen.video import align, repair, rife
 from sprite_gen.video.interpolation_quality import CROSSFADE_LOOK, faults, looks
 from tests.video.test_ghost_screen import _band, _block_walker, _cut
+from tests.video.test_loop_repair import forced_flow_group
 
 GREY, BLACK = (125, 118, 112), (20, 20, 20)
 LIGHT_BOOTS = (225, 210, 180)
@@ -171,15 +172,15 @@ def test_jump_repair_takes_a_crossfaded_proposal_and_names_it(monkeypatch):
     sa, sb = (10, -10), (5, -5)
     a, b, drawn, made = _inside(sa, sb, 0.5)
     frames = [a, _walker(20, -20), b, _walker(8, -8)]
-    scores = np.array([3., 2., 1., 1.])
-    monkeypatch.setattr(repair, "jump_scores", lambda *x, **kw: {k: scores for k in ("whole", "hair", "score")})
+    forced_flow_group(monkeypatch, [1], (0, 2), [0.5])
     out, record = repair.repair_jumps(frames, lambda x, y, t: made)
     first = record["rounds"][0]
     assert first["outcome"] == "accepted" and first["faults"] == [] and first["look"] == ["crossfade"]
-    assert first["proposal"]["crossfade"] > CROSSFADE_LOOK and out[1] is made
+    assert first["made"][0]["proposal"]["crossfade"] > CROSSFADE_LOOK and out[1] is made
 
 
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 12 calls of the binary at 384 x 576, each run 16 ways (-x -z): seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_through_a_short_step_reads_no_crossfade():
     """A short step the flow follows: RIFE's frames are softer than their sources, never a cross-fade."""
     interpolate = rife.Rife()

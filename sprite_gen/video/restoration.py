@@ -13,9 +13,10 @@ Source correspondence, proposal generation and final acceptance are separate.
 A failed independent proposal never hides the next one; a missing shared source
 bridge stops the operation. All quality measurements consume final pixels.
 
-A target is a cell the jump repair replaced because a step into or out of the
-source frame there jumped. Restoring that frame's pixels can restore the jump:
-acceptance also reads the jump repair's own step score around the changed cell.
+A target is a cell the jump repair replaced because the source frame there left
+the loop's flow. Restoring that frame's pixels can restore the jump: acceptance
+also reads the size reading's step score (`repair.jump_scores`) around the
+changed cell.
 The jump repair also replaces a filmed ghost, a frame the ghost screen names, and
 restoring it would deliver the ghost again: a cell whose source frame the cut's
 screen names is never a target, and acceptance reads the ghost on final pixels.
@@ -262,7 +263,7 @@ def _status(pairs: list[tuple[float, float]]) -> str:
 
 def jump(before: list[Image.Image], after: list[Image.Image], ref: list[Image.Image], changed: list[int],
          facing: str | None) -> dict[str, Any]:
-    """The jump repair's step score (`repair.jump_scores`) on the two steps into and out of each changed cell.
+    """The size reading's step score (`repair.jump_scores`) on the two steps into and out of each changed cell.
 
     Both loops are scored on one box, the source cells' union box (the jump repair reads the box of
     the loop as filmed), with the facing the repair recorded. A cell's reading is the larger of its

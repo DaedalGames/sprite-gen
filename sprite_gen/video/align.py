@@ -291,7 +291,8 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
                 raise ValueError(f"frame {k} of {length} falls between source frames and no interpolator is available")
             a, b = frames[i % count], frames[(i + 1) % count]
             made = interpolate(a, b, frac)
-            measure = {**rife_mod.smear(made, a, b), "ghost": rife_mod.ghost(made) if screen["reads"] else None,
+            measure = {**rife_mod.smear(made, a, b), "outline_shift": rife_mod.outline_shift(made, a, b),
+                       "ghost": rife_mod.ghost(made) if screen["reads"] else None,
                        "crossfade": rife_mod.crossfade(made, a, b, frac)}
             wrong = faults(measure)
             keep = between == "rife" or not wrong
@@ -744,8 +745,9 @@ def _fault_line(name: str, m: dict[str, Any], ghost: dict[str, Any] | None = Non
     other a filmed ghost too (`_ghost_line` names both)."""
     what = [*([f"has {100 * m['dark_excess']:.2f} % more dark pixels inside the body than either source frame beside it — a smear"]
               if "smear" in m["faults"] else []),
-            *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it — "
-               "a melted or ghost limb"] if "outline" in m["faults"] else []),
+            *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it"
+               + ("" if m["outline_shift"] is None else f", {100 * m['outline_shift']:.2f} % lighter than theirs at the same rank")
+               + " — a melted or ghost limb"] if "outline" in m["faults"] else []),
             *([f"carries {_ghost_words(m['ghost'])} — a ghost"] if "ghost" in m["faults"] else [])]
     if m["method"] == "nearest":
         return (f"{name}: frame {m['at']}: RIFE's frame " + "; ".join(what)

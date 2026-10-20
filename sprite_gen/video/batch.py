@@ -869,7 +869,7 @@ def run_item(
             result["loop"]["motion_anchor"] = lp["motion_anchor"]
         if "rife" in (lp.get("jump_repair") or {}):
             # cut as filmed for want of RIFE: the set report lists it under `warnings`
-            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "score_max_before", "install")}
+            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "off_max_before", "install")}
         result["ok"] = True
     except CodexUnavailableAsk as exc:
         result["ok"] = False
