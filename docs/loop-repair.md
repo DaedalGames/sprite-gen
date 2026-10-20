@@ -981,7 +981,10 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   whose seam the gate will pass is taken, read as the gate reads it before anything is cut
   (`loop.seam_on_cells`: the cut corrected as it will be, its wrap over its step on the analysis
   thumbnail; `step_count.seam_gate.tried`): the correction of one cut can leave a jump at its wrap that
-  no reading of the clip shows. A part on a beat of its own — a tail, a staff — that closes on no cut of
+  no reading of the clip shows. Each reading is a whole correction, six fine searches of the motion
+  anchor, and the cut taken is corrected once more, so a gate that tries all four corrects five cuts;
+  the search reads a row of its shifts at once, to the values one patch at a time gives ([loop
+  review](loop-review.md#explicit-xy-motion-correction)). A part on a beat of its own — a tail, a staff — that closes on no cut of
   two steps leaves every one with a wrap that jumps: the first is cut, still two steps; where the gate
   would refuse its wrap, the frames beside it are made again from the clip's frames a cycle apart ([the
   overlapped wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes),
