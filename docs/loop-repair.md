@@ -617,7 +617,7 @@ frames.
 
 | Rule | Value | Why |
 |---|---|---|
-| When | `--repair auto` or `on`; a cut whose two steps the clip's crossings show (`cycle.steps.by: crossings`) and whose wrap the gate reads over `--seam-max` on its frames as corrected (`loop.wrap_on_cells`) | the legs close; what does not is a part on its own beat. A cut whose steps are not counted keeps the gate's word |
+| When | `--repair auto` or `on`, and `--overlap-wrap on` (the default); a cut whose two steps the clip's crossings show (`cycle.steps.by: crossings`) and whose wrap the gate reads over `--seam-max` on its frames as corrected (`loop.wrap_on_cells`) | the legs close; what does not is a part on its own beat. A cut whose steps are not counted keeps the gate's word |
 | The frames a cycle apart | the clip's frame a cycle after each of the cut's first frames (`after`), or before each of its last (`before`), one past the widest run, as far as the clip after its lead-in holds them; each moved by the analysis translation between the two — the drift the clip walks over a cycle — and corrected as its cut frame was (`loop.cycle_apart`) | placed where the cut frame is, the in-between moves the part, not the body |
 | How many | four frames, then six, eight, ten and twelve (`OVERLAP_WIDTHS`), never past half the loop (`MADE_SHARE`), on the side whose frames a cycle apart differ least from the cut's over the run | the fewer made, the more of the loop is the clip's own; a longer run where a shorter one rushes the part or leaves the body no room, its weights going over in smaller steps |
 | Each frame | made by RIFE between its two frames of one time — the late (the clip's frame a cycle after, or the loop's own before the wrap) and the early (the loop's own, or the clip's frame a cycle before) — at the weight of the early the search chooses (`repair.overlap_weights`, below), and read with RIFE's sixteen single passes for a part torn (`rife.Rife.read`, `repair.overlap_frame`, below); a weight of 0 or 1 shows that frame whole, no call, and a frame at one weight is made once, whatever the run | each frame at its own time, the legs where they were on both; next to the wrap near the frame that continues the clip across it |
@@ -692,7 +692,7 @@ body in bound` where the search found none and nothing was made); where a run wa
 `width`, `frames` (those shown otherwise than as cut) and `seam_after`; `interpolator`, with the binary's
 calls (`binary_calls`) where RIFE was located for it; and `skipped` where none was tried (drawn on twos, a loop too short
 for a run that leaves half of it filmed, the clip holds no frames a cycle from the cut's beside the wrap,
-no interpolator). The summary names it; a `warning:` line names the frame that ended each run refused for
+no interpolator, turned off by `--overlap-wrap off`). The summary names it; a `warning:` line names the frame that ended each run refused for
 a fault ("fault (torn at frame 3, the rest not made)"). A made frame
 that cross-fades two drawings inside its outline is kept and named in a `warning:` line, as for the
 jump repair. Without RIFE the wrap is cut as filmed with a warning line (`why`: "RIFE not installed —
@@ -702,6 +702,16 @@ whatever the run; a run ends at its first fault, the frames past it not made, so
 is refused for a part torn costs the frames each run makes up to its first torn one, and one whose every
 run is made whole and refused for something else at most forty frames, outside the jump repair's — the
 first walker above takes ten frames, the second four where it is taken and fifteen where its torso slides.
+
+**Turned off.** Where RIFE runs on a CPU, those calls take minutes a frame: on two CPU cores with the
+augmentation off (`SPRITE_GEN_RIFE_TTA=`), a frame of a 960 × 960 synthetic walker took 160 to 174 s, its
+sixteen passes nearly all of it — so a wrap refused for a part torn at its first frame costs minutes a run,
+and one made whole up to forty frames. A caller that stops the loop at a deadline would stop it there, and
+the loop would not fail on its own seam. `video-loop --overlap-wrap off` turns the overlapped wrap off
+alone: nothing is read or made for it, `wrap_overlap` says so (`skipped`: "turned off (--overlap-wrap
+off)", no `tries`, `calls` 0) with the `warning:` line every skipped wrap has, and the gate refuses the cut
+as filmed, the loop failing on its seam as where every run is refused. The jump repair, the eased retime and
+the gate are as with it on; `--repair off` turns it off with the rest.
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 

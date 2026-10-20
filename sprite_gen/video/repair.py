@@ -915,7 +915,8 @@ def overlap_frame(read: Read, a: Image.Image, b: Image.Image, u: float, *, reads
 
 def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Image]], read: Read | None, *,
                  seam: Callable[[list[Image.Image]], float], steps: Callable[[list[Image.Image]], dict[str, Any]],
-                 seam_max: float, reads: bool, torso: Torso | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+                 seam_max: float, reads: bool, torso: Torso | None = None, off: str | None = None
+                 ) -> tuple[list[Image.Image], dict[str, Any]]:
     """The overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap") of a loop cut two steps long whose wrap
     the seam gate refuses (`seam`: the gate's reading of a loop, over `seam_max`).
 
@@ -940,10 +941,16 @@ def overlap_wrap(frames: list[Image.Image], others: dict[str, dict[int, Image.Im
     than it did over the stretch (`no gain`); no window of the rest of the body steps further than its own largest step
     over the stretch as the loop plays it (`the rest faster`); no rush the loop did not have is read across the stretch
     (`a new rush`); and no frame of it is read further off the flow than before and at or over the limit. The first run
-    taken ends the search. Returns the loop and the record (`frames`: the frames shown otherwise than as cut)."""
+    taken ends the search. Returns the loop and the record (`frames`: the frames shown otherwise than as cut).
+
+    `off` (why, `video-loop --overlap-wrap off`) turns it off: nothing is read or made, the record says so (`skipped`), and
+    the cut is kept as filmed for the gate to refuse."""
     n = len(frames)
     record: dict[str, Any] = {"seam": round(float(seam(frames)), 4), "seam_max": seam_max, "widths": list(OVERLAP_WIDTHS),
                               "tries": [], "frames": [], "calls": 0}
+    if off is not None:
+        record["skipped"] = off
+        return frames, record
     box = union_box(frames)
     flow = _flow(frames, box)
     if flow["hold"] > 1:

@@ -111,6 +111,13 @@ FOOT_BAND = legs_mod.FOOT_BAND  # fraction of the frame's own height, measured u
 # no RIFE fails the loop — a caller that asked for the repair is never handed less; off: the loop
 # is cut as filmed, and says so.
 REPAIR_MODES = ("auto", "on", "off")
+# The overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap"), under --repair auto or on. on: a two-step
+# cut whose wrap the gate refuses has the frames beside its wrap made again from the clip's frames a cycle apart, each
+# read with RIFE's sixteen single passes, 34 calls of the binary a frame and up to forty frames; off: it is not tried, the
+# report says so, and the gate refuses the cut as filmed — for a host whose RIFE runs on a CPU, where one frame of a
+# 960 px clip takes minutes and the loop's caller would stop it before it fails on its own.
+OVERLAP_WRAP_MODES = ("on", "off")
+OVERLAP_WRAP_OFF = "turned off (--overlap-wrap off)"
 SIZE_HOLD_MODES = ("auto", "off")
 FACINGS = ("right", "left")
 # Where `video-cycle-align` keeps the cut as filmed (sprite_gen/video/align.py). A new cut makes
@@ -920,8 +927,9 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
     `wrap` (the clip's frames a cycle from the cut's beside its wrap, `cycle_apart`, and the gate's `seam_max`) asks
     first for the overlapped wrap (`repair_mod.overlap_wrap`) of a cut two steps long whose wrap the gate refuses;
     the frames it makes are then neither made from, nor beside, nor again (`overlapped`). Its record is returned
-    third, None where it was not asked. The overlapped wrap and the eased retime after it read the body's drift on
-    one torso, the cut's as filmed (`repair_mod.Torso`).
+    third, None where it was not asked; a `wrap` with `off` (`--overlap-wrap off`) and no frames records it turned off,
+    nothing read or made. The overlapped wrap and the eased retime after it read the body's drift on one torso, the
+    cut's as filmed (`repair_mod.Torso`).
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
     each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow), a rush and a wrap that does
@@ -958,9 +966,9 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
     overlapped: list[int] = []
     torso = None
     if wrap is not None:
-        torso = repair_mod.Torso(frames)
-        asked = partial(repair_mod.overlap_wrap, others=wrap["others"], seam=wrap_on_cells, steps=ring_steps,
-                        seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso)
+        torso = None if "off" in wrap else repair_mod.Torso(frames)
+        asked = partial(repair_mod.overlap_wrap, others=wrap.get("others", {}), seam=wrap_on_cells, steps=ring_steps,
+                        seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso, off=wrap.get("off"))
         try:
             frames, overlap = asked(frames, read=lazy_read)
         except rife_mod.RifeNotInstalled as exc:
@@ -1376,6 +1384,7 @@ def run_loop(
     head_step_max: float | None = None,
     size_hold: str = "auto",
     steps: int | None = None,
+    overlap_wrap: str = "on",
 ) -> dict[str, Any]:
     state = state.strip().lower() if state else state
     if state == effect.STATE:
@@ -1403,6 +1412,8 @@ def run_loop(
         raise SystemExit(f"video-loop: unknown --size-hold {size_hold!r}; expected one of {', '.join(SIZE_HOLD_MODES)}")
     if repair not in REPAIR_MODES:
         raise SystemExit(f"video-loop: unknown --repair {repair!r}; expected one of {', '.join(REPAIR_MODES)}")
+    if overlap_wrap not in OVERLAP_WRAP_MODES:
+        raise SystemExit(f"video-loop: unknown --overlap-wrap {overlap_wrap!r}; expected one of {', '.join(OVERLAP_WRAP_MODES)}")
     if facing not in FACINGS:
         raise SystemExit(f"video-loop: unknown --facing {facing!r}; expected one of {', '.join(FACINGS)}")
     if anchor is None:
@@ -1672,9 +1683,11 @@ def run_loop(
         wrap = None
         if anchor == "motion-auto" and (cycle.get("steps") or {}).get("by") == "crossings" and wrap_on_cells(frames) > seam_max:
             # Two steps by the clip's own crossings, and a wrap the gate refuses: a part on a beat of its own closes on no
-            # cut of two steps. The clip's frames a cycle from the cut's beside the wrap make it again (the overlapped wrap).
-            wrap = {"others": cycle_apart(files, start=i, length=L, skip=skip, analysis=analysis, motion=motion,
-                                          size=frames[0].size), "seam_max": seam_max}
+            # cut of two steps. The clip's frames a cycle from the cut's beside the wrap make it again (the overlapped wrap),
+            # unless it is turned off.
+            wrap = ({"others": cycle_apart(files, start=i, length=L, skip=skip, analysis=analysis, motion=motion,
+                                           size=frames[0].size), "seam_max": seam_max} if overlap_wrap == "on"
+                    else {"off": OVERLAP_WRAP_OFF, "seam_max": seam_max})
         try:
             frames, report_base["jump_repair"], overlap = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
                                                                         screen=report_base["ghost_screen"], wrap=wrap)
@@ -1952,6 +1965,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--anchor", choices=ANCHOR_MODES, default=None, help="motion-auto: automatic stable regions, local repeat selection and XY ramp (walk/run); motion: fixed cut with explicit regions; body (default for walk/run): measure the last-to-first head-and-torso offset once and spread it as a ramp over the cycle; feet: remove in-canvas drift (a straight-line trend) so every cell stands on the mean foot line; none: leave placement as filmed (default for other states)")
     parser.add_argument("--anchor-region", type=motion_anchor.parse_region, action="append", help="motion anchor only: repeat twice with head then torso x0,y0,x1,y1 in the first selected frame; requires --cycle fixed and at least 6 frames")
     parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
+    parser.add_argument("--overlap-wrap", choices=OVERLAP_WRAP_MODES, default="on", help="--anchor motion-auto, under --repair auto or on: on (default): a cut two steps long whose wrap a part on its own beat leaves open (the seam gate refuses it) has four to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, each read with RIFE's single passes for a part torn — 34 calls of the binary a frame, up to forty frames (docs/loop-repair.md section 2, \"The overlapped wrap\"); off: not tried, recorded `wrap_overlap.skipped` with a warning line, and the gate refuses the cut as filmed — for a host whose RIFE runs on a CPU, where one frame of a 960 px clip takes minutes")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
     parser.add_argument("--head-step-max", type=float, default=None, help=f"walk/run: fail the repaired loop when the head's largest sideways move in one frame exceeds this %% of the body height. Default: no gate — reported, and over {repair_mod.HEAD_STEP_REFERENCE} is a warning line")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the jolt index's hair, and the size reading video-loop-compare's jump guard reads, are behind it; the jump repair reads the flow either way")
@@ -1981,6 +1995,7 @@ def run(**kwargs: object) -> int:
         repair=str(kwargs.get("repair") or "auto"), facing=str(kwargs.get("facing") or "right"),
         jolt_max=kwargs.get("jolt_max"), head_step_max=kwargs.get("head_step_max"),  # type: ignore[arg-type]
         size_hold=str(kwargs.get("size_hold") or "auto"), steps=kwargs.get("steps"),  # type: ignore[arg-type]
+        overlap_wrap=str(kwargs.get("overlap_wrap") or "on"),
     )
     summary = {k: payload[k] for k in ("state", "frames_total", "window", "cycle_seconds", "n_out", "delay_ms", "resampled_seam_ratio", "specks_dropped", "report")}
     summary["cycle"] = {k: payload["cycle"].get(k) for k in ("kind", "start", "length", "period_global", "ratio", "review_recommended", "half_period_guard", "fundamental")}
