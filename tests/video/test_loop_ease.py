@@ -142,6 +142,43 @@ def test_a_tail_that_rushes_on_at_the_wrap_is_eased_over_the_frames_either_side(
     assert set(record["replaced"]) == flow_frames | changed
 
 
+LEGS = {"near leg": (80, 70, 130), "far leg": (90, 80, 150), "feet": (40, 30, 30)}  # the walker's colours, dark parts whole
+BEAT = 0.25  # of a leg's ordinary step: a step of the legs this far off the same step as filmed is off the walk's beat
+
+
+def _legs(frames: list[Image.Image]) -> dict[str, np.ndarray]:
+    """Per step of the loop as it plays (cyclic), how far each leg and the feet move: the centre of their colour, px."""
+    centres = []
+    for f in frames:
+        p = np.asarray(f)
+        at = {}
+        for part, colour in LEGS.items():
+            ys, xs = np.nonzero((p[..., 3] > 0) & np.all(p[..., :3] == colour, axis=-1))
+            at[part] = np.array([xs.mean(), ys.mean()])
+        centres.append(at)
+    n = len(frames)
+    return {part: np.array([np.linalg.norm(centres[(k + 1) % n][part] - centres[k][part]) for k in range(n)]) for part in LEGS}
+
+
+@pytest.mark.parametrize("n, lag, hold", [(WRAP, LAG, 1), (SHORT, SHORT_LAG, 1), (14, 0.15, 1), (48, LAG, 2)])
+def test_whatever_spreads_a_rush_the_legs_keep_their_own_beat(n, lag, hold):
+    # Every frame of the stretch is made whole, the legs with the tail: a time that gives the tail's rush more steps gives
+    # the legs the same, and they slow to a stop where the tail is given its time and hurry on after. The body walks on its
+    # own beat whatever the repair does to the tail: each step of the loop as delivered moves the legs and the feet as far
+    # as that step did as filmed, to within a quarter of their ordinary step. The flow repair, whose frames are each made at
+    # their own time, reads so.
+    frames = _walk(n, lag=lag, hold=hold)
+    flow_only, _ = repair.repair_jumps(frames, Lerp(frames, lag=lag, hold=hold, n=n), ease=False)
+    out, _ = repair.repair_jumps(frames, Lerp(frames, lag=lag, hold=hold, n=n))
+    filmed = _legs(frames)
+    for name, loop in (("the flow repair", flow_only), ("the repair", out)):
+        played = _legs(loop)
+        for part in LEGS:
+            ordinary = float(np.median(filmed[part][filmed[part] > 0]))
+            off = np.abs(played[part] - filmed[part]) / ordinary
+            assert off.max() <= BEAT, f"{name}, {part}: step {int(off.argmax())} is {off.max():.2f} of an ordinary step off"
+
+
 def test_a_rush_the_flow_reading_lets_pass_is_eased_too():
     # A tail 15 % of a cycle short over 16 frames reads under the flow's limit: no frame is taken out, and it still rushes.
     frames = _walk(SHORT, lag=SHORT_LAG)
