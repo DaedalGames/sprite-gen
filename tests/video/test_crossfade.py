@@ -180,6 +180,7 @@ def test_jump_repair_takes_a_crossfaded_proposal_and_names_it(monkeypatch):
 
 
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 12 calls of the binary at 384 x 576, each run 16 ways (-x -z): seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_through_a_short_step_reads_no_crossfade():
     """A short step the flow follows: RIFE's frames are softer than their sources, never a cross-fade."""
     interpolate = rife.Rife()
