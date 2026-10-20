@@ -948,7 +948,8 @@ tail is given, and the loop then keeps the flow repair. Before all of it, a cut 
 leaves open — a tail swinging round on a beat of its own, closing on no cut of two steps — has four
 to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, so
 the wrap plays a step the clip filmed, as far as the torso held to the stretch as the loop plays it
-allows (the overlapped wrap, `wrap_overlap`).
+allows (the overlapped wrap, `wrap_overlap`; `--overlap-wrap off` turns it off alone, for a host whose
+RIFE runs on a CPU, and the gate then refuses the cut as filmed).
 The report's `jump_repair` names the frames. RIFE
 is installed once with `sprite-gen rife install`; without it a loop that needs a frame is cut as
 filmed with a warning, each filmed ghost given way to the clean frame beside it (`--repair on`

@@ -16,6 +16,7 @@ from sprite_gen._deps import np
 REGION_WEIGHTS = (0.7, 0.3)
 SEARCH_RADIUS = (14, 28)
 COARSE_SEARCH = 64
+ROW_BLOCK = 1024  # mask pixels a block of one row of shifts takes at a time (`_row_costs`)
 Box = tuple[int, int, int, int]
 
 
@@ -85,26 +86,94 @@ def _references(image: np.ndarray, regions: list[Box]) -> list[tuple]:
     return references
 
 
+def _shift_blocks(moving: np.ndarray, count: int) -> np.ndarray:
+    """Every pixel of `moving` with the `count - 1` after it on the flat image, a view (nothing copied): the block of a
+    region's pixel holds it under `count` side-by-side shifts, the last shift first, and stays in the pixel's row while
+    no shift lays the region past the frame."""
+    height, width, channels = moving.shape
+    _, pixel, channel = moving.strides
+    return np.lib.stride_tricks.as_strided(moving, (height * width - count + 1, count, channels), (pixel, pixel, channel),
+                                           writeable=False)
+
+
+def _row_costs(reference: tuple, blocks: np.ndarray, at: np.ndarray, scratch: tuple) -> list[float | None]:
+    """The masked NCC cost of the reference at each of a row of side-by-side shifts, the last shift first, None where it
+    reads none (a patch of one value, or of no energy).
+
+    `blocks[at]` (`_shift_blocks`) is every shift's patch at once, a mask pixel at a time. Each cost is the one a patch
+    read alone has, value for value: the patch's mean sums its pixels one after the other in the mask's row order (a
+    reduce over the leading axis, as `patch.mean(axis=0)` does on one patch, carried from block to block), and its two
+    other sums each run over that patch alone, laid out as one patch is. A block of ROW_BLOCK pixels at a time keeps the
+    work in cache, and the scratch arrays are `_register`'s, made once.
+    """
+    _, _, feature, norm = reference
+    block, laid, squares, products = scratch
+    n, count = len(at), blocks.shape[1]
+    total = high = low = None
+    for s in range(0, n, ROW_BLOCK):
+        c = min(ROW_BLOCK, n - s)
+        part = block[1:c + 1]
+        part[...] = blocks[at[s:s + c]]
+        high = part.max(axis=0) if high is None else np.maximum(high, part.max(axis=0))
+        low = part.min(axis=0) if low is None else np.minimum(low, part.min(axis=0))
+        if total is None:
+            total = np.add.reduce(part, axis=0)
+        else:
+            block[0] = total
+            total = np.add.reduce(block[:c + 1], axis=0)
+    mean = np.true_divide(total, np.intp(n), out=total, casting="unsafe")
+    # The centered patches one after the other, a pixel copied as its bytes.
+    pixels = laid[:count * n].reshape(count, n)
+    for s in range(0, n, ROW_BLOCK):
+        c = min(ROW_BLOCK, n - s)
+        part = block[:c]
+        part[...] = blocks[at[s:s + c]]
+        np.subtract(part, mean, out=part)
+        pixels[:, s:s + c] = part.view(laid.dtype)[:, :, 0].T
+    patches = pixels.view(block.dtype).reshape(count, n, block.shape[2])
+    squares, products = squares[:n], products[:n]
+    textured = (high - low).any(axis=1)
+    costs = []
+    for k in range(count):
+        if not textured[k]:
+            costs.append(None)
+            continue
+        patch = patches[k]
+        denominator = norm * float(np.sqrt(np.sum(np.multiply(patch, patch, out=squares))))
+        costs.append(1 - float(np.sum(np.multiply(feature, patch, out=products)) / denominator)
+                     if denominator > 1e-12 else None)
+    return costs
+
+
 def _register(references: list[tuple], moving: np.ndarray, center: tuple[int, int]) -> dict:
     cx, cy = center
     rx, ry = SEARCH_RADIUS
+    moving = np.ascontiguousarray(moving)
+    height, width, channels = moving.shape
+    # The shifts that lay every region inside the frame; any other reads nothing.
+    lo = max(cx - rx, *(x1 - width for (_, _, x1, _), *_ in references))
+    hi = min(cx + rx, *(x0 for (x0, _, _, _), *_ in references))
     candidates = []
-    for dy in range(cy - ry, cy + ry + 1):
-        for dx in range(cx - rx, cx + rx + 1):
-            costs = []
-            for (x0, y0, x1, y1), mask, reference, norm in references:
-                if x0 - dx < 0 or y0 - dy < 0 or x1 - dx > moving.shape[1] or y1 - dy > moving.shape[0]:
-                    break
-                patch = moving[y0 - dy:y1 - dy, x0 - dx:x1 - dx][mask]
-                if not np.ptp(patch, axis=0).any():
-                    break
-                patch = patch - patch.mean(axis=0)
-                denominator = norm * float(np.sqrt(np.sum(patch * patch)))
-                if denominator <= 1e-12:
-                    break
-                costs.append(1 - float(np.sum(reference * patch) / denominator))
-            if len(costs) == 2:
-                candidates.append((sum(w * c for w, c in zip(REGION_WEIGHTS, costs)), dx, dy, costs))
+    if lo <= hi:
+        count = hi - lo + 1
+        blocks = _shift_blocks(moving, count)
+        # Each region's mask pixels in row order, as offsets on the flat image from its box's corner.
+        offsets = [rows * width + cols for rows, cols in (np.nonzero(mask) for _, mask, _, _ in references)]
+        most = max(len(at) for at in offsets)
+        scratch = (np.empty((ROW_BLOCK + 1, count, channels), moving.dtype),
+                   np.empty(count * most, np.dtype((np.void, moving.strides[1]))),
+                   np.empty((most, channels), moving.dtype), np.empty((most, channels), moving.dtype))
+        for dy in range(cy - ry, cy + ry + 1):
+            if any(y0 - dy < 0 or y1 - dy > height for (_, y0, _, y1), *_ in references):
+                continue
+            rows = []
+            for reference, at in zip(references, offsets):
+                x0, y0, _, _ = reference[0]
+                rows.append(_row_costs(reference, blocks, (y0 - dy) * width + x0 - hi + at, scratch)[::-1])
+            for dx, costs in zip(range(lo, hi + 1), zip(*rows)):
+                if None not in costs:
+                    costs = list(costs)
+                    candidates.append((sum(w * c for w, c in zip(REGION_WEIGHTS, costs)), dx, dy, costs))
     if not candidates:
         raise ValueError("motion anchor found no measurable match inside the search window")
     candidates.sort()
