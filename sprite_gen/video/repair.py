@@ -20,7 +20,9 @@ or four drawings each way, are made again by RIFE at times chosen so the part's 
 faster, than they did in that stretch — read again on the frames made, which go the body's own way between the
 frames as filmed (docs/loop-repair.md section 2, "The eased retime"). The torso is the head and torso the motion
 anchor tracks (`Torso`): a part that sways on its own beat pulls the body's mass along, and moving it is what the
-repair is for, not drift.
+repair is for, not drift. A frame RIFE makes is the whole picture at one time, so the legs take the part's time with
+it: the stretch is delivered only where the rest of the body keeps its own beat on the frames made, step by step
+(`EASE_BEAT`), and otherwise the loop stays as the flow repair left it.
 
 A part on a beat of its own — a tail swinging round every 41 frames on a walk of 26 — closes on no cut of two steps,
 and turns back at the wrap, where no retime reaches it. Before the rounds above, the frames beside such a cut's wrap
@@ -410,6 +412,17 @@ DRIFT_MEASURES = ("foot_centre", "torso_centre", "ground")
 # With the frames the ghost and flow rounds replaced, a stretch leaves at most this share of the loop made:
 # `video-loop-compare` reads no more back as the repair's (`source.py`, "repair-locations-unverified").
 MADE_SHARE = 0.5
+# The body keeps its own beat. A frame RIFE makes is the whole picture at one time, the body with the part: a time that
+# gives the part's rush more steps gives the legs, the arms and the head the same, so they slow to a stop where the part
+# is given its time and hurry on after. In a frame made so, the part's step and the body's are in the ratio they have at
+# that time, and bounding the body's step below as well as above leaves the rush to spread by no more than the share of
+# its own step the body may lose. So the stretch is read on the frames made, step by step: every window the part does
+# not rush in steps as far as it did in that step as the loop played before, to within EASE_BEAT of its usual step —
+# the walk's beat as tests/video/test_loop_ease.py reads it on a walker's legs, a quarter of their ordinary step.
+# Drawings made at their own times, as the flow repair makes them, keep the walkers' legs on their steps as filmed
+# (0 off). The stand-in's stretches the earlier reading took on the walkers of 14 to 48 frames read 1.35 to 2.42 here,
+# their legs 1.5 to 2.7 ordinary steps off.
+EASE_BEAT = 0.25
 # Drift is the body sliding or lifting off its line. A part that sways on its own beat — a tail, the hair's ends — pulls
 # the body's mass along, and moving such a part is what the repairs here are for: that is not drift. The body's point is
 # the torso, the head and torso the motion anchor tracks (`auto_motion.discover` on the loop as cut), which a part swaying
@@ -779,9 +792,15 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
     rest_before = flow["step"][stretch[:-1]][:, rest].max(axis=0) if rest else np.zeros(0)
     rest_after = after_flow["step"][stretch[:-1]][:, rest].max(axis=0) if rest else np.zeros(0)
     faster = [w for w, b, a in zip(rest, rest_before, rest_after) if a > b + 1e-9]
+    # the rest of the body on its own beat (EASE_BEAT): each step of the stretch against the same step as it played,
+    # in every window; a stretch whose body cannot be read apart from the part keeps no beat it can show
+    beat = (np.abs(after_flow["step"][stretch[:-1]][:, rest] - flow["step"][stretch[:-1]][:, rest])
+            / flow["scale"][rest]).max(axis=1) if rest else np.zeros(0)
+    unbeat = not rest or float(beat.max()) > EASE_BEAT
     rejected = ((["fault"] if wrong else []) + (["drift"] if over else []) + (["no gain"] if part_after >= part_before else [])
                 + (["off the flow"] if off_after >= FLOW_LIMIT and off_after > off_before else [])
-                + (["a new rush"] if rushes else []) + (["the rest faster"] if faster else []))
+                + (["a new rush"] if rushes else []) + (["the rest faster"] if faster else [])
+                + (["the body off its beat"] if unbeat else []))
     changed = [t for d in stretch[1:-1] for t in runs[d] if new[t] is not out[t]]
     round_: dict[str, Any] = {
         "why": "ease", "surge": _said_surge(s, flow), "width": plan["k"], "anchors": [first[stretch[0]], first[stretch[-1]]],
@@ -795,6 +814,8 @@ def _ease(frames: list[Image.Image], out: list[Image.Image], interpolate: Interp
                  "step_max_before": [round(float(v), 4) for v in rest_before / flow["scale"][rest]],
                  "step_max_after": [round(float(v), 4) for v in rest_after / flow["scale"][rest]],
                  "faster": [[round(v, 4) for v in flow["fractions"][w]] for w in faster]},
+        "beat": {"bound": EASE_BEAT, "off": [round(float(v), 4) for v in beat],
+                 "off_max": round(float(beat.max()), 4) if rest else None},
         "drift": {"measures": list(DRIFT_MEASURES), "bound": [round(float(v), 3) for v in plan["bound"]],
                   "moved": [round(float(v), 3) for v in moved], "over": over,
                   "body_mass": {"bound": mass_step([out[first[d]] for d in stretch]),
@@ -1151,10 +1172,11 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     chooses and shown on every frame it was; the stretch is taken only where no made frame has a fault, no body
     measure moves further than the stretch did and a pixel (`drift`, the body's point the torso, `torso` — the loop's
     `Torso` when not given, recorded as `torso`), the part's largest step falls (`part`), no
-    frame is left further off the flow than the limit and before, no new rush appears in the rest of the body, and
-    no window of the rest of the body steps further than its own largest step over the stretch as it played (`rest`)
-    (`rejected_for` names what failed). Its calls are its own, outside `max_frames` (`ease_calls`). `surge_after`
-    is the reading of the loop as it now plays. `facing` reads nothing here: it is recorded for the jump guard of
+    frame is left further off the flow than the limit and before, no new rush appears in the rest of the body, no
+    window of the rest of the body steps further than its own largest step over the stretch as it played (`rest`),
+    and every one steps in each step of the stretch as far as it did there, to within EASE_BEAT of its usual step
+    (`beat`) (`rejected_for` names what failed; a refused stretch leaves the loop as the flow groups left it). Its
+    calls are its own, outside `max_frames` (`ease_calls`). `surge_after` is the reading of the loop as it now plays. `facing` reads nothing here: it is recorded for the jump guard of
     `video-loop-compare` (`restoration.jump`)."""
     out = list(frames)
     n = len(out)

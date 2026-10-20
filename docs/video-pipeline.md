@@ -942,7 +942,9 @@ the cycle, rushing on at the wrap — has the three or four drawings either side
 again at times that spread it, made from the frames as filmed, the body's feet, torso (the head
 and torso the motion anchor tracks; a part swaying on its own beat is not drift) and ground line
 moving no further in a step, nor the rest of it faster, than they did there (the eased retime, up
-to nine calls of its own). Before all of it, a cut two steps long whose wrap a part on its own beat
+to nine calls of its own) — played only where the rest of the body keeps its own beat on the frames
+made, step by step; a frame made is the whole picture at one time, so the legs take the time the
+tail is given, and the loop then keeps the flow repair. Before all of it, a cut two steps long whose wrap a part on its own beat
 leaves open — a tail swinging round on a beat of its own, closing on no cut of two steps — has four
 to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, so
 the wrap plays a step the clip filmed, as far as the torso held to the stretch as the loop plays it
