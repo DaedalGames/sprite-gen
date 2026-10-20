@@ -324,6 +324,7 @@ def test_outline_loss_reads_a_melted_limb_and_not_a_moved_one():
 
 
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 20 calls of the binary at 128 x 192, each run 16 ways (-x -z): seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_melts_legs_crossing_too_far_and_alignment_takes_the_nearer_frame_there():
     """Outlined legs that cross a long way between two drawings (a clip drawn on twos) come out of
     RIFE as one shape with no outline where they meet the air (measured 26 % of the edge at t=0.5);
