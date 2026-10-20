@@ -114,12 +114,18 @@ sets a length (the count of steps and the one-shot failover below included), and
 fails ([loop repair](loop-repair.md) section 3, "The step screen"). Without one, only
 the gait fallback below looks past the state's window, and only after this search found nothing.
 
-A walk slower than the window can hold — its legs drawn alike — is found one step long, and the
-search has nothing to refuse it on: the step repeats. So the cut is screened the other way, over
-the whole clip (`cycle.step_screen`): where twice it repeats better than it, the report names it a
-suspect and nothing else changes. Look at the loop and count its steps (how often each foot lands);
-`video-loop --steps 1` cuts it again two of its lengths long, `--steps 2` keeps it and says so
-([loop repair](loop-repair.md) section 3, "The step screen").
+A walk whose two steps look alike — its legs drawn alike, from the side or a diagonal — can be found
+one step long (or, past a tail on its own beat, three), and the search has nothing to refuse it on:
+the step repeats. Where the clip shows its feet pass, the cut is counted on those crossings and is
+two steps long — any length the count allows, past the window for a slow walk — joined at the walk's
+own point (`cycle.step_count`; [loop repair](loop-repair.md) section 3, "The step count"). The search's
+cut stands where the clip a cut on is the same picture though the count says one step and the feet stand
+together through most of a step (a pass hidden behind the other foot), and where no cut of two steps closes in
+its place. Where it
+does not, the cut is screened the other way, over the whole clip (`cycle.step_screen`): where twice it
+repeats better than it, the report names it a suspect and nothing else changes. Look at the loop and
+count its steps (how often each foot lands); `video-loop --steps 1` cuts it again two of its lengths
+long, `--steps 2` keeps it and says so ([loop repair](loop-repair.md) section 3, "The step screen").
 
 ### The gait fallback: a slow walk, or a walk toward the camera
 

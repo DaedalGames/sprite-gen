@@ -49,6 +49,7 @@ from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
+from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
@@ -909,47 +910,95 @@ def shown_runs(cells: list[Image.Image]) -> int:
 
 
 def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, *, facing: str,
-                  required: bool, screen: dict[str, Any]) -> tuple[list[Image.Image], dict[str, Any]]:
+                  required: bool, screen: dict[str, Any], wrap: dict[str, Any] | None = None
+                  ) -> tuple[list[Image.Image], dict[str, Any], dict[str, Any] | None]:
     """`repair_mod.repair_jumps` on the cut as filmed and its ghost `screen`, with RIFE located only
-    once a frame is to be made: a loop without a jump or a ghost between two clean frames needs no
-    binary. The report names the interpolator that made the frames.
+    once a frame is to be made: a loop with no frame off its flow and no ghost between two clean frames
+    needs no binary, nor one with no part that rushes (the eased retime, `repair.surges`). The report names the
+    interpolator that made the frames.
+
+    `wrap` (the clip's frames a cycle from the cut's beside its wrap, `cycle_apart`, and the gate's `seam_max`) asks
+    first for the overlapped wrap (`repair_mod.overlap_wrap`) of a cut two steps long whose wrap the gate refuses;
+    the frames it makes are then neither made from, nor beside, nor again (`overlapped`). Its record is returned
+    third, None where it was not asked. The overlapped wrap and the eased retime after it read the body's drift on
+    one torso, the cut's as filmed (`repair_mod.Torso`).
 
     A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise
-    each filmed ghost gives way to the clean frame beside it, a jump stays as filmed, and the record
-    says why where a jump was left (`rife`, `install`; `applied` false where nothing was replaced)."""
+    each filmed ghost gives way to the clean frame beside it, a jump (a frame off the flow), a rush and a wrap that does
+    not close stay as filmed, and the record says why where a jump or a rush was left (`rife`, `install`; `applied`
+    false where nothing was replaced)."""
     made_by: list[dict[str, str]] = []
     calls = 0
 
-    def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        nonlocal interpolate, calls
+    def located() -> rife_mod.Interpolate:
+        nonlocal interpolate
         if interpolate is None:
-            located = rife_mod.Rife()
-            made_by.append(located.describe())
-            interpolate = located
-        calls += 1
-        return interpolate(a, b, t)
+            found = rife_mod.Rife()
+            made_by.append(found.describe())
+            interpolate = found
+        return interpolate
 
+    def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        nonlocal calls
+        calls += 1
+        return located()(a, b, t)
+
+    def lazy_read(a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
+        # the overlapped wrap reads each frame it makes with RIFE's single passes, for a part torn: an interpolator given
+        # that cannot say how far its passes disagree is refused, never read as agreeing
+        nonlocal calls
+        read = getattr(located(), "read", None)
+        if read is None:
+            raise ValueError("the overlapped wrap reads how far RIFE's single passes disagree on each frame it makes, and "
+                             "the interpolator given has no `read` (rife.Rife.read)")
+        calls += 1
+        return read(a, b, t)
+
+    overlap: dict[str, Any] | None = None
+    overlapped: list[int] = []
+    torso = None
+    if wrap is not None:
+        torso = repair_mod.Torso(frames)
+        asked = partial(repair_mod.overlap_wrap, others=wrap["others"], seam=wrap_on_cells, steps=ring_steps,
+                        seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso)
+        try:
+            frames, overlap = asked(frames, read=lazy_read)
+        except rife_mod.RifeNotInstalled as exc:
+            if required:
+                raise
+            frames, overlap = asked(frames, read=None)
+            overlap.update(why="RIFE not installed — the wrap cut as filmed", rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+        overlapped = overlap["frames"]
+        if overlap["calls"]:
+            overlap["interpolator"] = ({"kind": "rife-ncnn-vulkan", **made_by[0], "binary_calls": interpolate.calls}
+                                       if made_by else {"kind": "injected"})
+    wrap_calls = calls
     try:
-        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen)
+        repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen, overlapped=overlapped,
+                                                   torso=torso)
     except rife_mod.RifeNotInstalled as exc:
         if required:
             raise
         # RIFE is located before the first frame is made, so nothing was made yet: the stage runs again
         # with no interpolator, each ghost giving way to the clean frame beside it and a jump left as filmed.
-        repaired, record = repair_mod.repair_jumps(frames, None, facing=facing, screen=screen)
+        repaired, record = repair_mod.repair_jumps(frames, None, facing=facing, screen=screen, overlapped=overlapped,
+                                                   torso=torso)
         record["applied"] = bool(record["replaced"])
         if "unmade" in record:
             record.update(why="RIFE not installed — cut as filmed" if not record["replaced"] else
                           "RIFE not installed — the jump cut as filmed, each filmed ghost given way to the clean frame beside it",
                           rife=str(exc), install=rife_mod.INSTALL_COMMAND)
-        return repaired, record
+        elif record.get("ease_skipped") == "no interpolator":
+            # no jump, but a part that rushes: the frames either side of it were to be made again at eased times
+            record.update(why="RIFE not installed — the rush cut as filmed" if not record["replaced"] else
+                          "RIFE not installed — the rush cut as filmed, each filmed ghost given way to the clean frame beside it",
+                          rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+        return repaired, record, overlap
     frames = repaired
     record["applied"] = bool(record["replaced"])
-    if made_by:
-        record["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]}
-    elif calls:
-        record["interpolator"] = {"kind": "injected"}
-    return frames, record
+    if calls > wrap_calls:
+        record["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]} if made_by else {"kind": "injected"}
+    return frames, record, overlap
 
 
 def _ghost_lines(jump_repair: dict[str, Any]) -> list[str]:
@@ -980,12 +1029,56 @@ def _ghost_lines(jump_repair: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _overlap_lines(overlap: dict[str, Any]) -> list[str]:
+    """What became of the overlapped wrap (`repair.overlap_wrap`), in words (`video-loop: warning:` lines): the frames a
+    person should look at where it was made, and why it was not where it was not."""
+    said = (f"the cut's wrap does not close (seam {overlap['seam']:.2f} over {overlap['seam_max']:g}): a part on a beat of its "
+            "own closes on no cut of two steps")
+    if overlap["frames"]:
+        taken = overlap["tries"][-1]
+        return [f"frame {r['frame']} was made at the wrap between the clip's frame a cycle apart and its own, and may cross-fade "
+                f"two drawings inside its outline (crossfade {r['proposal']['crossfade']:.4f}); kept, a reading to look at "
+                "(docs/loop-repair.md section 2)" for r in taken["made"] if r["look"]]
+    if "rife" in overlap:
+        return [f"{said}, and RIFE is not installed, so the overlapped wrap was not made — run `{rife_mod.INSTALL_COMMAND}` "
+                "and cut it again (docs/loop-repair.md section 2)"]
+    if "skipped" in overlap:
+        return [f"{said}; the overlapped wrap was not made: {overlap['skipped']} (docs/loop-repair.md section 2)"]
+
+    def why(t: dict[str, Any]) -> str:
+        if "unmade" not in t:
+            return ", ".join(t["rejected_for"])
+        stopped = next(r for r in t["made"] if r["faults"])  # the first frame with a fault ended the run
+        rest = ", the rest not made" if t["unmade"] else ""
+        return f"{', '.join(t['rejected_for'])} ({', '.join(stopped['faults'])} at frame {stopped['frame']}{rest})"
+
+    refused = "; ".join(f"{t['width']} frames {t['side']} the wrap: {why(t)}" for t in overlap["tries"])
+    return [f"{said}, and the overlapped wrap was refused ({refused}): cut as filmed (docs/loop-repair.md section 2)"]
+
+
+def _shifts(analysis: dict[str, Any]) -> tuple[np.ndarray, int]:
+    """The analysis translation `auto_motion.analyse` measured, whole pixels a frame, and the room it needs."""
+    shifts = np.rint(np.asarray(analysis["analysis_only_translation_xy"], dtype=np.float64)).astype(int)
+    return shifts, int(np.abs(shifts).max()) + 1
+
+
+def moved_frames(frames: list[Image.Image], analysis: dict[str, Any]) -> list[Image.Image]:
+    """Every frame whole, moved as `moved_alpha` moves its alpha, on one canvas: what `SeamFlow` reads a cut's wrap
+    on, so a body that walks across the frame or toward it is read at the wrap as the cut will be corrected."""
+    shifts, pad = _shifts(analysis)
+    out = []
+    for f, (dx, dy) in zip(frames, shifts):
+        canvas = Image.new("RGBA", (f.width + 2 * pad, f.height + 2 * pad))
+        canvas.paste(f, (pad + int(dx), pad + int(dy)))
+        out.append(canvas)
+    return out
+
+
 def moved_alpha(frames: list[Image.Image], analysis: dict[str, Any]) -> list[np.ndarray]:
     """The alpha of every frame, each moved by the analysis translation `auto_motion.analyse` measured
     (its drift taken out, the way the cut will be corrected), cropped once to the clip's subject:
     what `wrap_pop_on` and `HeldEdge` read a cut on."""
-    shifts = np.rint(np.asarray(analysis["analysis_only_translation_xy"], dtype=np.float64)).astype(int)
-    pad = int(np.abs(shifts).max()) + 1
+    shifts, pad = _shifts(analysis)
     boxes = [f.getchannel("A").point(lambda v: 255 if v >= repair_mod.ALPHA_SOLID else 0).getbbox() for f in frames]
     boxes = [b for b in boxes if b]
     box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
@@ -1045,6 +1138,137 @@ class HeldEdge:
             return repair_mod.held_edge(self._edges[side], start, length)
         except ValueError as exc:
             return {"skipped": str(exc), "reference": repair_mod.HELD_EDGE_REFERENCE}
+
+
+class SeamFlow:
+    """The flow at a cut's wrap, for `local_cycle.by_steps` to rank two-step cuts by: the flow off of the cut's last and
+    first frames (`off`), their worst windows (`window`, fractions of the clip's union box) and turns there (`turn`) —
+    `repair.ring_scores` on the clip's path, its frames moved as the cut will be corrected (`moved_frames`), read once
+    on first use (`repair.clip_flow_states`)."""
+
+    def __init__(self, frames: list[Image.Image], analysis: dict[str, Any]):
+        self.frames, self.analysis = frames, analysis
+        self._states: np.ndarray | None = None
+
+    def __call__(self, start: int, length: int) -> dict[str, Any]:
+        if self._states is None:
+            self._states = repair_mod.clip_flow_states(moved_frames(self.frames, self.analysis))
+        scores = repair_mod.ring_scores(self._states[start:start + length])
+        at = (length - 1, 0)
+        return {"off": [round(float(scores["off"][k]), 3) for k in at], "turn": [round(float(scores["turn"][k]), 3) for k in at],
+                "window": [[round(v, 3) for v in scores["windows"][int(scores["window"][k])]] for k in at]}
+
+
+def seam_on_cells(frames: list[Image.Image]) -> float:
+    """The seam gate's reading of a motion-auto cut before it is cut: its frames corrected as the cut will be
+    (`auto_motion.discover`, `auto_motion.correct_cycle`), then read as `wrap_on_cells` reads them.
+    Infinite where the frames cannot be corrected."""
+    try:
+        regions, _ = auto_motion.discover(frames, reference_index=0)
+        frames, _ = auto_motion.correct_cycle(frames, regions, coarse_dx=body_wrap_offset(frames, search=motion_anchor.COARSE_SEARCH))
+    except ValueError:
+        return math.inf
+    return wrap_on_cells(frames)
+
+
+def wrap_on_cells(frames: list[Image.Image]) -> float:
+    """The seam gate's reading of a loop's frames as corrected: cropped to their union box, the wrap over the mean step
+    on the analysis thumbnail — the rendered cells the gate reads, short of the strip's scale."""
+    boxes = [f.getbbox() for f in frames]
+    boxes = [b for b in boxes if b]
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    flat = np.stack([_small_features(f.crop(box)) for f in frames])
+    step = float(np.abs(flat[1:] - flat[:-1]).mean())
+    return float(np.abs(flat[-1] - flat[0]).mean()) / step if step > 0 else math.inf
+
+
+def ring_steps(frames: list[Image.Image]) -> dict[str, Any]:
+    """The steps a loop shows as it plays round: the crossings read on its frames played three times over
+    (`crossings.read`), the turn in the middle judged (`Reading.judge`) — a two where the loop still walks two steps,
+    joined where the walk goes on."""
+    ring = [*frames, *frames, *frames]
+    signals = leg_signals(ring)
+    try:
+        reading = crossings_mod.read(crossings_mod.foot_signals(ring, gap=signals["gap"] if signals else None))
+    except ValueError as exc:
+        return {"verdict": "uncertain", "code": "unread", "why": str(exc)}
+    return reading.judge(len(frames), len(frames))
+
+
+def cycle_apart(files: list[Path], *, start: int, length: int, skip: int, analysis: dict[str, Any],
+                motion: dict[str, Any], size: tuple[int, int]) -> dict[str, dict[int, Image.Image]]:
+    """The clip's frames a cycle from a motion-auto cut's frames beside its wrap, for `repair.overlap_wrap`: a cycle after
+    its first frames ("after") and before its last ("before"), one past the widest run, as far as the clip after its
+    lead-in holds them. Each is placed where its cut frame is: moved by the analysis translation between the two
+    (`_shifts`, the drift the clip walks over a cycle), then corrected as the cut frame was (`motion`'s shift and padding)."""
+    shifts, _ = _shifts(analysis)
+    left, top = motion["padding_ltrb"][:2]
+    widest = max(repair_mod.OVERLAP_WIDTHS)
+    out: dict[str, dict[int, Image.Image]] = {}
+    for side, sign in zip(repair_mod.OVERLAP_SIDES, (1, -1)):
+        out[side] = {}
+        for q in repair_mod.overlap_run(side, widest + 1, length):
+            cut, other = start + q, start + q + sign * length
+            if not skip <= other < len(files):
+                continue
+            dx, dy = (int(v) for v in shifts[other - skip] - shifts[cut - skip] + np.asarray(motion["shifts_xy"][q]))
+            canvas = Image.new("RGBA", size)
+            canvas.paste(Image.open(files[other]).convert("RGBA"), (left + dx, top + dy))
+            out[side][q] = canvas
+    return out
+
+
+def _by_steps(cycle: dict[str, Any] | None, refused: ValueError | None, *, frames: list[Image.Image], analysis: dict[str, Any],
+              D: np.ndarray, trajectory: np.ndarray, window: CutWindow, searched: dict[str, Any], detect: dict[str, Any],
+              seam_max: float) -> dict[str, Any]:
+    """The cut the clip's own steps choose (`local_cycle.by_steps`, the crossings of the frames the search read,
+    sprite_gen/video/crossings.py), recorded `step_count`, from the search's cut or its refusal (`refused`).
+
+    Where the clip shows its steps but no cut of two, and the search's cut is one they refute (one step, three), the
+    search runs again on the window it searched (`searched`) refusing such cuts (`detect`'s `judge`). A search that
+    finds nothing names each refused window's count, those the crossings refute last, and raises."""
+    signals = leg_signals(frames)
+    try:
+        reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
+    except ValueError:
+        reading = crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
+    moved = moved_alpha(frames, analysis)
+    picked, record = local_cycle.by_steps(
+        D, trajectory, reading, found=cycle, refused=refused, min_len=window.lo, max_len=window.max_len or len(frames),
+        seam_flow=SeamFlow(frames, analysis), wrap_pop=wrap_pop_on(moved), seam_gate=lambda s, L: seam_on_cells(frames[s:s + L]),
+        flow_limit=repair_mod.FLOW_LIMIT, seam_max=seam_max,
+        gait_floor=detect["gait_floor"], periodicity_min=detect["periodicity_min"], signals=signals)
+    if picked is not None and record.get("cut", {}).get("verdict") == "refuted":
+        first = record["cut"]
+        try:
+            picked = local_cycle.detect(D, trajectory, signals=signals, wrap_pop=wrap_pop_on(moved), held_edge=HeldEdge(moved),
+                                        length_cap=window.max_len, judge=reading.judge, **searched, **detect)
+        except ValueError as exc:
+            picked, refused = None, exc
+        record["searched_again"] = {"refuted": first, "why": f"no cut of two steps, and the search's cut is {first['why']}: "
+                                                              "searched again, refusing the cuts the crossings refute"}
+        if picked is not None:
+            record["cut"] = reading.judge(picked["start"], picked["length"])
+        elif window.said() and record.get("two_cuts") == 0 and reading.twos(1, len(frames)):
+            # The caller's window holds none of the walk's two steps: the window and the walk disagree.
+            lengths = sorted({row["cut"][1] for row in reading.twos(1, len(frames))})
+            failed = ValueError(f"no cut of two steps in {window.said()}: the clip's crossings show two steps take "
+                                f"{lengths[0]}-{lengths[-1]} frames, and every cut the window holds that the search found is "
+                                f"{first['why']} — widen the window, or count the steps (--steps)")
+            failed.diagnostics = getattr(refused, "diagnostics", {})  # type: ignore[attr-defined]
+            refused = failed
+    if picked is None:
+        diagnostics = getattr(refused, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            if reading.readable and diagnostics.get("candidates") and "step_count" not in diagnostics["candidates"][0]:
+                local_cycle.judged(diagnostics["candidates"], reading.judge)
+                diagnostics["candidates"].sort(key=lambda row: row["step_count"]["verdict"] == "refuted")
+                diagnostics["order"] = f"{diagnostics.get('order', 'score')}, windows whose steps the crossings refute after the rest"
+            diagnostics["step_count"] = record
+        assert refused is not None
+        raise refused
+    picked["step_count"] = record
+    return picked
 
 
 def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndarray, trajectory: np.ndarray,
@@ -1270,6 +1494,8 @@ def run_loop(
             report_base["automatic_motion_analysis"] = analysis
             detect = dict(gait_floor=round(prof.min_seconds*fps), periodicity_min=PERIODICITY_MIN,
                           double_tolerance=GAIT_DOUBLE_TOL, double_search=GAIT_DOUBLE_SEARCH)
+            searched: dict[str, Any] = {"min_len": lo, "max_len": hi}
+            refused: ValueError | None = None
             try:
                 moved = moved_alpha(source_frames, analysis)
                 cycle = local_cycle.detect(D, trajectory, min_len=lo, max_len=hi, signals=leg_signals(source_frames),
@@ -1291,6 +1517,7 @@ def run_loop(
                 hi_long = window.past(gait_fallback.long_window(lo, len(files), fps))
                 fallback["window"] = [lo, hi_long]
                 report_base["gait_fallback"] = fallback
+                searched = {"min_len": lo, "max_len": hi_long, "max_fraction": gait_fallback.LONG_CYCLE_FRACTION}
                 try:
                     moved = moved_alpha(source_frames, analysis)
                     cycle = local_cycle.detect(D, trajectory, min_len=lo, max_len=hi_long,
@@ -1303,9 +1530,16 @@ def run_loop(
                     # The windows the wider search measured and refused go into the report's `cycle`.
                     if hasattr(second, "diagnostics"):
                         failed.diagnostics = second.diagnostics  # type: ignore[attr-defined]
-                    raise failed from first
+                    failed.__cause__ = first
+                    refused, cycle = failed, None
             if steps is not None:
+                # A count given is the word on the search's cut; the crossings are not asked.
+                if refused is not None:
+                    raise refused
                 cycle = _counted(cycle, steps, window=window, D=D, trajectory=trajectory, frames=source_frames, moved=moved, detect=detect)
+            else:
+                cycle = _by_steps(cycle, refused, frames=source_frames, analysis=analysis, D=D, trajectory=trajectory,
+                                  window=window, searched=searched, detect=detect, seam_max=seam_max)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(
@@ -1348,6 +1582,9 @@ def run_loop(
                     )
         if skip:
             cycle, shifted = _from_lead_in(cycle, skip), True
+            if "step_count" in cycle:
+                # Its frame numbers are the search's: the clip's after its lead-in.
+                cycle["step_count"]["read_from"] = skip
         # Whatever chose the cut — a search, a count, --cycle fixed or pinned — it is inside the caller's bounds.
         window.hold(cycle)
     except (SystemExit, ValueError) as exc:
@@ -1432,17 +1669,27 @@ def run_loop(
     if repair != "off" and prof.gait:
         report_base["jump_repair"] = None
         filmed = frames
+        wrap = None
+        if anchor == "motion-auto" and (cycle.get("steps") or {}).get("by") == "crossings" and wrap_on_cells(frames) > seam_max:
+            # Two steps by the clip's own crossings, and a wrap the gate refuses: a part on a beat of its own closes on no
+            # cut of two steps. The clip's frames a cycle from the cut's beside the wrap make it again (the overlapped wrap).
+            wrap = {"others": cycle_apart(files, start=i, length=L, skip=skip, analysis=analysis, motion=motion,
+                                          size=frames[0].size), "seam_max": seam_max}
         try:
-            frames, report_base["jump_repair"] = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
-                                                               screen=report_base["ghost_screen"])
+            frames, report_base["jump_repair"], overlap = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
+                                                                        screen=report_base["ghost_screen"], wrap=wrap)
         except (ValueError, rife_mod.RifeUnavailable) as exc:
             fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
-            error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, or for a filmed ghost between two clean "
-                     f"frames) — {fix} (docs/loop-repair.md)")
+            error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, for a part that rushes, at a wrap a part "
+                     f"on its own beat does not close, or for a filmed ghost between two clean frames) — {fix} (docs/loop-repair.md)")
             shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
+        if overlap is not None:
+            report_base["wrap_overlap"] = overlap
+            for line in _overlap_lines(overlap):
+                print(f"video-loop: warning: {line}", file=sys.stderr)
         # What became of each filmed ghost: given way (the cell and what it shows now) or kept, no clean frame beside it.
         ghost_rounds = [r for r in report_base["jump_repair"]["rounds"] if r.get("why") == "ghost"]
         # A cell given way to the frame beside it is that frame shown twice in a row — a step of nothing and a step of two,
@@ -1460,15 +1707,26 @@ def run_loop(
         for line in _ghost_lines(report_base["jump_repair"]):
             print(f"video-loop: warning: {line}", file=sys.stderr)
         for r in report_base["jump_repair"].get("rounds", []):
-            if r["outcome"] == "accepted" and r["look"]:
-                print(f"video-loop: warning: frame {r['target']} was {'given way for a filmed ghost' if r['why'] == 'ghost' else 'repaired'} "
-                      "with RIFE's frame between its neighbours, which may "
-                      f"cross-fade two drawings inside its outline (crossfade {r['proposal']['crossfade']:.4f}); kept, a reading to "
+            if r["outcome"] != "accepted" or not r["look"]:
+                continue
+            # A ghost round made one frame; a flow round a frame a drawing it took, each read on its own.
+            looked = ([(f"frame {r['target']} was given way for a filmed ghost", r["proposal"])] if r["why"] == "ghost" else
+                      [(f"frame{'s' if len(m['frames']) > 1 else ''} {', '.join(map(str, m['frames']))} "
+                        f"{'were' if len(m['frames']) > 1 else 'was'} repaired", m["proposal"]) for m in r["made"] if m["look"]])
+            for what, proposal in looked:
+                print(f"video-loop: warning: {what} with RIFE's frame between its neighbours, which may "
+                      f"cross-fade two drawings inside its outline (crossfade {proposal['crossfade']:.4f}); kept, a reading to "
                       "look at — see it in the loop, or cut it with --repair off (docs/loop-repair.md section 4)", file=sys.stderr)
-        if "rife" in report_base["jump_repair"]:
-            print(f"video-loop: warning: a jump frame was not repaired ({report_base['jump_repair']['score_max_before']:.2f}x "
-                  f"the median step) — RIFE is not installed, so the loop is cut as filmed; run `{rife_mod.INSTALL_COMMAND}` "
-                  "and cut it again (docs/loop-repair.md)", file=sys.stderr)
+        if "unmade" in report_base["jump_repair"]:
+            unmade = report_base["jump_repair"]["unmade"]
+            print(f"video-loop: warning: a jump frame was not repaired (frames {unmade['frames']}, {unmade['off']:.2f}x its "
+                  "region's usual step off the line between its neighbours) — RIFE is not installed, so the loop is cut as filmed; "
+                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md)", file=sys.stderr)
+        elif "rife" in report_base["jump_repair"]:
+            rush = report_base["jump_repair"]["surge"]
+            print(f"video-loop: warning: a part of the loop rushes (frames {rush['frames']}, {rush['ratio']:.1f}x its steps "
+                  "either side) and was not eased — RIFE is not installed, so the loop is cut as filmed; "
+                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md section 2)", file=sys.stderr)
     else:
         report_base["jump_repair"] = {"applied": False, "why": "--repair off" if repair == "off" else f"not a gait state ({state})"}
     if prof.gait:
@@ -1484,6 +1742,7 @@ def run_loop(
         # The held side below the top, read on the source frames when the cut was chosen again (local_cycle).
         warnings += repair_mod.held_edge_verdict(cycle.get("seam_pop"))
         warnings += coverage_verdict(cycle)
+        warnings += local_cycle.step_verdict(cycle)
         gated = repair != "off" and (jolt_max is not None or head_step_max is not None)
         over = repair_mod.jolt_verdict(jolt, jolt_max=jolt_max, head_step_max=head_step_max) if gated else []
         report_base["jolt"] = {**jolt, "reference": reference, "warnings": warnings,
@@ -1692,10 +1951,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--body-height", type=int, help="scale so the STANDING height (the subject in the clip's first frame, i.e. the base still's pose) is this many px — the same value across states gives the same character size; --strip-height stays the cap")
     parser.add_argument("--anchor", choices=ANCHOR_MODES, default=None, help="motion-auto: automatic stable regions, local repeat selection and XY ramp (walk/run); motion: fixed cut with explicit regions; body (default for walk/run): measure the last-to-first head-and-torso offset once and spread it as a ramp over the cycle; feet: remove in-canvas drift (a straight-line trend) so every cell stands on the mean foot line; none: leave placement as filmed (default for other states)")
     parser.add_argument("--anchor-region", type=motion_anchor.parse_region, action="append", help="motion anchor only: repeat twice with head then torso x0,y0,x1,y1 in the first selected frame; requires --cycle fixed and at least 6 frames")
-    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): propose RIFE's frame between the neighbours of a jump (a step 1.4x the median, whole body or the hair behind it); adopt only without smear/outline faults, at most 3 calls and never two adopted frames side by side (docs/loop-repair.md). Rejected proposals keep the original. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
+    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
     parser.add_argument("--head-step-max", type=float, default=None, help=f"walk/run: fail the repaired loop when the head's largest sideways move in one frame exceeds this %% of the body height. Default: no gate — reported, and over {repair_mod.HEAD_STEP_REFERENCE} is a warning line")
-    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the hair the jump search watches is behind it")
+    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the jolt index's hair, and the size reading video-loop-compare's jump guard reads, are behind it; the jump repair reads the flow either way")
     parser.add_argument("--size-hold", choices=SIZE_HOLD_MODES, default="auto", help="--anchor motion-auto: auto (default) scales a clip whose height, read one cycle on (the same pose a cycle later), changes by 1 %% or more over the clip back to its first frame's size before the cycle search, so the loop's last frame is the size of its first (recorded as size_hold, with the evidence); off: search the frames as filmed")
     parser.add_argument("--steps", type=int, choices=STEPS, default=None,
                         help="--anchor motion-auto: how many steps the cut it takes without this holds, as counted by whoever looked "
@@ -1741,13 +2000,22 @@ def run(**kwargs: object) -> int:
         summary["cycle"]["coverage"] = payload["cycle"]["coverage"]
     if "step_screen" in payload["cycle"]:
         summary["cycle"]["step_screen"] = payload["cycle"]["step_screen"]
+    if "step_count" in payload["cycle"]:
+        counted = payload["cycle"]["step_count"]
+        summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
     if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:
         summary["ghost_screen"] = payload["ghost_screen"]
     for key in ("ghost_given_way", "ghost_kept"):
         if payload.get(key):
             summary[key] = payload[key]
+    if payload.get("wrap_overlap"):
+        overlap = payload["wrap_overlap"]
+        summary["wrap_overlap"] = {k: overlap[k] for k in ("seam", "frames", "side", "width", "seam_after", "skipped") if k in overlap}
     if payload.get("jump_repair", {}).get("replaced"):
-        summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "score_max_before", "score_max_after")}
+        summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
+        eased = [r for r in payload["jump_repair"]["rounds"] if r.get("why") == "ease" and r["outcome"] == "accepted"]
+        if eased:
+            summary["jump_repair"]["eased"] = eased[0]["replaced"]
     summary["strip"] = {k: payload["strip"][k] for k in ("path", "frames", "w", "h", "body_h", "delay_ms")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The shared acceptance policy for the frames repair and cycle alignment deliver.
 
-Measurements live in ``rife`` (``smear``, ``ghost``, ``crossfade``); these are the existing alignment
-bounds, also applied before replacing a filmed middle frame during jump repair, the ghost screen
+Measurements live in ``rife`` (``smear``, ``outline_shift``, ``ghost``, ``crossfade``, ``torn``); these are the existing
+alignment bounds, also applied before replacing a filmed middle frame during jump repair, the ghost screen
 every frame a loop path delivers passes, filmed or made, the clean frame a filmed ghost gives way
-to, and the cross-fade a made frame is named for, kept (docs/loop-repair.md section 4).
+to, and the cross-fade a made frame is named for, kept; and the torn part a frame of the overlapped wrap
+is refused for (docs/loop-repair.md section 4).
 """
 
 from collections.abc import Container
@@ -26,15 +27,31 @@ GHOST_WARN = 0.003
 # far-apart drawings outlined in grey reads over it too, and a cross-fade drawn without outlines mostly
 # under it — the reading does not part the two, so it is no fault (docs/loop-repair.md section 4).
 CROSSFADE_LOOK = 0.015
+# A made frame whose single passes disagree (`rife.torn`) over more than this share of a window a tenth of the body
+# high is torn: set by eye on drawn walks, between the frames seen torn (a hand dragged apart beside a tail swung far,
+# legs melted into one shape, a part doubled) and the frames seen as clean. Read only where a frame is read with its
+# passes — the overlapped wrap's frames (docs/loop-repair.md sections 2 and 4).
+TORN_WARN = 0.21
 
 
 def faults(measure: dict[str, float | None]) -> list[str]:
     """Smear inside the body or outline loss beyond both neighbours, and a ghost on the frame's
     own coverage where the measure carries its reading (`ghost`; None where the screen does not
-    read the loop, `ghost_screen`)."""
+    read the loop, `ghost_screen`). Where the measure also carries an `outline_shift` (the frames the
+    jump repair and the cycle alignment make between outlined neighbours, `rife.outlined`), an outline
+    is lost only where both readings say so: a line outlined in a mid tone, which the dark line
+    (`rife.DARK_LUMA`) reads as lost wherever the flow softened it, is kept unless its edge went
+    lighter than the neighbours' by more than `rife.OUTLINE_SHIFT` (docs/loop-repair.md section 4).
+    Where it is None (art painted without a line) and in the versioned measures of
+    `video-loop-compare` and `video-loop-repair`, which carry `rife.smear` alone, the dark line
+    judges alone. A part torn where the measure carries how far the frame's passes disagree
+    (`torn`, the overlapped wrap's frames: `rife.passes`, `rife.torn`)."""
+    shift = measure.get("outline_shift")
+    outline = measure["outline_loss"] if shift is None else min(measure["outline_loss"], shift)
     return ([*(["smear"] if measure["dark_excess"] > SMEAR_WARN else []),
-             *(["outline"] if measure["outline_loss"] > OUTLINE_WARN else []),
-             *(["ghost"] if (measure.get("ghost") or 0.0) > GHOST_WARN else [])])
+             *(["outline"] if outline > OUTLINE_WARN else []),
+             *(["ghost"] if (measure.get("ghost") or 0.0) > GHOST_WARN else []),
+             *(["torn"] if (measure.get("torn") or 0.0) > TORN_WARN else [])])
 
 
 def looks(measure: dict[str, float | None]) -> list[str]:

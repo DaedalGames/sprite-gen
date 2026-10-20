@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,13 @@ def _fail_unmeasured_skip(report: pytest.TestReport | pytest.CollectReport, node
     )
 
 
+@pytest.fixture(autouse=True)
+def _engine_tta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs the augmentation the engine ships (`rife.TTA`): a SPRITE_GEN_RIFE_TTA left in the
+    calling shell would change what the real-RIFE tests measure."""
+    monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report = yield
@@ -122,6 +130,19 @@ def pytest_make_collect_report(collector: pytest.Collector) -> Generator[None, p
     report = yield
     _fail_unmeasured_skip(report, collector)
     return report
+
+
+@contextmanager
+def feet_unseen() -> Generator[None, None, None]:
+    """`video-loop`'s step count reads no feet (sprite_gen/video/crossings.py): the cut is the pixel search's alone.
+    For the tests of that search, whose walker is drawn for it — legs that open and close once a drawing and never
+    pass each other, a scissor no walk makes, which the count reads as one step a drawing — and of the step screen,
+    the word where a clip does not show its steps."""
+    from sprite_gen.video import crossings
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(crossings, "read", lambda sig: crossings.Reading(len(sig["gap"]), "gap", [], why="the feet read as unseen (test)"))
+        yield
 
 
 @pytest.fixture(autouse=True)
