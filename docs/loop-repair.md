@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch, the latter in this process or on a GPU elsewhere), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -57,6 +57,7 @@ and a GPU offered for compute alone (CUDA with no Vulkan driver) has none. It is
 | `SPRITE_GEN_RIFE_DEVICE` | `cuda`, `cpu` (the torch backend's device) | `cuda` |
 | `SPRITE_GEN_RIFE_MODEL` | a `rife-v4.6` directory | beside the binary (`ncnn`); the install root's (`torch`) |
 | `SPRITE_GEN_RIFE_TTA` | `-x`, `-z`, both, or empty | `-x -z`, for both backends |
+| `SPRITE_GEN_RIFE_EXECUTOR` | `module:attr`, the host's send to a GPU elsewhere (torch backend; below) | unset: in this process |
 
 Nothing falls back. With torch chosen the engine neither looks for the binary nor runs it. A device is
 not chosen for you and not traded for another: `cuda` where PyTorch finds no CUDA is refused, naming
@@ -77,6 +78,60 @@ identity, and a frame kept for one is never taken for another (section 4, `--bet
 engine's reports name what made their frames: `interpolator.kind` is `rife-ncnn-vulkan` or
 `rife-torch`, and the overlapped wrap counts the binary's calls (`binary_calls`) or the torch backend's
 runs (`runs`).
+
+#### A GPU elsewhere: `SPRITE_GEN_RIFE_EXECUTOR`
+
+A host with no GPU (a job container, say) can have the torch backend's frames made on a machine that
+has one. The engine knows nothing of what carries them. The host names a function of its own,
+`SPRITE_GEN_RIFE_EXECUTOR=module:attr`, from a request's bytes to its answer's, and that function
+reaches `sprite_gen.video.rife_torch.serve` on the GPU's machine: the same sprite-gen, with PyTorch
+and the model installed there (`sprite-gen rife install --backend torch`). The host needs neither.
+It sets `SPRITE_GEN_RIFE_BACKEND=torch` and no `SPRITE_GEN_RIFE_DEVICE`: the device is the
+executor's, and naming one here as well is refused. So is an executor named with the binary's
+backend.
+
+| Asked for | Runs on the executor | Calls of the send |
+|---|---|---|
+| a RIFE made (the probe) | none: the executor says what it is, loading the backend (the cold start) | 1 |
+| a frame | 2 (colour and coverage), with the augmentation this host names | 1 |
+| a read (the overlapped wrap) | 2, and the 32 runs of the sixteen passes, reduced there to how far they disagree | 1 |
+
+Frames are not batched: the repairs make and judge one frame at a time. A `video-loop` makes at
+most 53 calls: the probe, three flow repairs, nine eased frames and forty frames of the overlapped
+wrap. A `video-cycle-align` makes one call for each frame it makes, and the probe.
+
+A RIFE asks the executor what it is once, as it is made, and holds the answer for its life. The
+answer is the torch backend's identity there (above: the model bytes, its network code, PyTorch,
+on CUDA the GPU, its driver, CUDA, cuDNN and the determinism settings), with the protocol. The
+RIFE's identity, which `--between-cache` keys frames on (section 4), is that answer, the
+executor's name and this host's own part. Every frame and read carries the identity held. An
+executor that is not it any more (another GPU, driver or image) makes nothing, and the RIFE fails,
+naming what differs (`gpu: Tesla T4 -> NVIDIA L4`). An answer from another identity is not handed
+on. So one RIFE never hands on frames of two GPUs, and a frame it takes from the cache is the frame
+it would make. The next loop or alignment makes a new RIFE, which asks again and keys its frames
+anew. Containers of one image, GPU and driver are one executor: their hosts' CPU and name are no
+part of the identity, so a cache directory serves every one of them.
+
+The host keeps to three things:
+
+- Name one GPU type for the executor, with no list to fall back on. A request a GPU of another type
+  takes fails the RIFE.
+- Run the same sprite-gen on both sides. A request names this host's `rife.py` by SHA-256, and an
+  executor of other code is refused as the RIFE is made.
+- Do not deploy the executor anew while a loop or an alignment runs: that run fails, by why.
+
+A send that raises, an answer that does not read, or the executor's own failure (its model not
+installed, its GPU out of memory) is a RIFE that fails, in its words. Nothing is asked again, and
+nothing runs here or on another device in its place.
+
+A request and an answer are each one compressed NumPy archive (`np.savez_compressed`, read with
+`allow_pickle=False`). Its `header` is JSON: `protocol` (1) and `code` (the `rife.py` SHA-256),
+then `probe`, or `expect`, `t`, `modes` and `read`. Its images are RIFE's input as `rife.inputs`
+makes it: the colour (H × W × 3) and the coverage (H × W) of the two frames, uint8. The answer
+holds the identity, and the made colour and coverage (uint8) and, for a read, the disagreement
+(float32); or an error (`protocol`, `code`, `identity` or `failed`, with what it names). Reports
+name the executor: `interpolator` reads `kind` `rife-torch`, `executor`, and the executor's
+`device` and `gpu`; the overlapped wrap counts `runs` and `executor_calls`.
 
 ### Install — `sprite-gen rife install`
 
@@ -1674,7 +1729,9 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   (`rife_torch.py`, read at import), PyTorch's version, the device, and on CUDA the GPU's name and
   capability, the driver, CUDA's and cuDNN's versions and the determinism settings as they read back, on
   the CPU its instruction set; the key names the backend either way, so a frame one backend made is never
-  taken for the other's. A binary or model file that cannot be read fails the alignment, as a RIFE that
+  taken for the other's. On an executor (section 1, "A GPU elsewhere") that part is what the executor
+  answered as the RIFE was made, held for its life, and the executor's name: an executor that changes
+  under the RIFE fails it rather than make a frame of another identity. A binary or model file that cannot be read fails the alignment, as a RIFE that
   fails does. Any change in cycle length, `--cycles`, source pixels, binary, model, augmentation, engine
   code, or host makes the frame again. The key does not read the GPU driver or its environment; a caller
   that changes those between passes gives each pass its own directory. Reading the identity hashes 36.5

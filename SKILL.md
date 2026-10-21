@@ -12,7 +12,7 @@ depends_on:
     - name: img2webp
       why: "video-loop WebP with exact alpha (libwebp); Pillow's animated writer drops -exact"
     - name: rife-ncnn-vulkan
-      why: "video-loop jump repair and video-cycle-align (RIFE v4.6 in-betweens with the -x -z test-time augmentation, release 20221029). Install once with `sprite-gen rife install` (sha256-checked, into the user data directory); SPRITE_GEN_RIFE or PATH override it; Linux without a GPU also needs libvulkan1 mesa-vulkan-drivers. Without it, walk and run loops are cut as filmed with a warning. SPRITE_GEN_RIFE_BACKEND=torch runs the same model in PyTorch instead, for a GPU with no Vulkan (`pip install \"sprite-gen[torch]\"`, then `sprite-gen rife install --backend torch`; SPRITE_GEN_RIFE_DEVICE=cuda or cpu)"
+      why: "video-loop jump repair and video-cycle-align (RIFE v4.6 in-betweens with the -x -z test-time augmentation, release 20221029). Install once with `sprite-gen rife install` (sha256-checked, into the user data directory); SPRITE_GEN_RIFE or PATH override it; Linux without a GPU also needs libvulkan1 mesa-vulkan-drivers. Without it, walk and run loops are cut as filmed with a warning. SPRITE_GEN_RIFE_BACKEND=torch runs the same model in PyTorch instead, for a GPU with no Vulkan (`pip install \"sprite-gen[torch]\"`, then `sprite-gen rife install --backend torch`; SPRITE_GEN_RIFE_DEVICE=cuda or cpu; SPRITE_GEN_RIFE_EXECUTOR=module:attr sends its frames to a GPU elsewhere, rife_torch.serve there)"
   required_scripts:
     - scripts/prepare_sprite_run.py
     - scripts/generate_sprite_image.py

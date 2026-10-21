@@ -36,6 +36,11 @@ SPRITE_GEN_RIFE_DEVICE names (`device()`: cuda, the default, or cpu), from the s
 nor run, and a device that cannot be had is not traded for another. PyTorch or the model not installed is
 `RifeNotInstalled`, as the binary not installed is; the line that installs it is `install_command()`.
 
+SPRITE_GEN_RIFE_EXECUTOR runs the torch backend on a GPU elsewhere (`executor()`, `RemoteRunner`): it names the host's send,
+a function from a request's bytes to its answer's, which reaches the same sprite-gen there (`rife_torch.serve`, `answer`).
+A frame is one call, a read one call, and a RIFE asks the executor what it is once, as it is made, holds that for its life
+and refuses an executor that is not it — so a frame it hands on or keeps is that executor's. The host needs no PyTorch.
+
 Wherever it runs, a frame is the same two runs of RIFE and the read the same sixteen passes (`frame_runs`, `pass_runs`):
 what turns a frame into RIFE's input (`inputs`) and its two runs back into a frame (`_joined`) is done here, and the runs
 are a runner's (`Binary`, `rife_torch.TorchRunner`), which `Rife` hands each frame whole.
@@ -56,6 +61,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import platform
@@ -63,6 +69,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Callable
 
@@ -86,6 +93,8 @@ MODEL_SHA256 = {
     "flownet.bin": "f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958",
 }
 TORCH_EXTRA = 'pip install "sprite-gen[torch]"'
+# `RemoteRunner`: the version of the requests and answers a host and its executor exchange (`pack`); another is refused.
+PROTOCOL = 1
 # The binary's test-time augmentation, passed on every call: `-x` runs the pair as its eight flips and
 # transposes, `-z` runs it both ways in time as well, and what comes back is averaged — so a frame made
 # from a to b is the one made from b to a (docs/loop-repair.md section 1, "Which setting"). On a machine
@@ -263,6 +272,41 @@ def device() -> str:
     if named not in DEVICES:
         raise RifeUnavailable(f"SPRITE_GEN_RIFE_DEVICE={named!r}: name cuda (the default) or cpu")
     return named
+
+
+def executor() -> str | None:
+    """The send that carries the torch backend's frames to a GPU elsewhere (`RemoteRunner`): SPRITE_GEN_RIFE_EXECUTOR,
+    `module:attr` of the host's function from a request's bytes to its answer's; None where it is unset or empty. It runs
+    the torch backend only, on the executor's own device, which its identity names: named with another backend, or with
+    SPRITE_GEN_RIFE_DEVICE here as well, it is refused."""
+    named = os.environ.get("SPRITE_GEN_RIFE_EXECUTOR")
+    if not named:
+        return None
+    if backend() != "torch":
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_EXECUTOR={named!r}: an executor runs the torch backend; name "
+                              "SPRITE_GEN_RIFE_BACKEND=torch with it, or unset it")
+    on = os.environ.get("SPRITE_GEN_RIFE_DEVICE")
+    if on:
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_DEVICE={on!r} with SPRITE_GEN_RIFE_EXECUTOR={named!r}: the device is the "
+                              "executor's own, named where it runs and by its identity; unset SPRITE_GEN_RIFE_DEVICE here")
+    return named
+
+
+def executor_send(named: str) -> Callable[[bytes], bytes]:
+    """The send `executor()` names, imported: refused by name where it is not `module:attr`, its module cannot be imported
+    or it has no such function."""
+    module, colon, attr = named.partition(":")
+    if not (module and colon and attr):
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_EXECUTOR={named!r}: name the host's send as module:attr, a function from a "
+                              "request's bytes to its answer's")
+    try:
+        found = importlib.import_module(module)
+    except ImportError as exc:
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_EXECUTOR={named!r}: {module} could not be imported: {exc}") from exc
+    send = getattr(found, attr, None)
+    if not callable(send):
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_EXECUTOR={named!r}: {module} has no function {attr}")
+    return send
 
 
 def install_command() -> str:
@@ -706,6 +750,190 @@ class Binary:
             raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
 
 
+def pack(header: dict, arrays: dict[str, np.ndarray] | None = None) -> bytes:
+    """A request or an answer between a `RemoteRunner` and its executor as bytes: `header` as UTF-8 JSON and `arrays`, in one
+    compressed NumPy archive."""
+    out = io.BytesIO()
+    np.savez_compressed(out, header=np.frombuffer(json.dumps(header).encode(), np.uint8), **(arrays or {}))
+    return out.getvalue()
+
+
+def unpack(data: bytes) -> tuple[dict, dict[str, np.ndarray]]:
+    """`pack` read back: (header, arrays). Anything else is a ValueError naming why — pickled objects among them, which are
+    never loaded."""
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise ValueError(f"{type(data).__name__}, not bytes")
+    try:
+        archive = np.load(io.BytesIO(bytes(data)), allow_pickle=False)
+        if not isinstance(archive, np.lib.npyio.NpzFile):
+            raise ValueError("an array, not an archive of them")
+        with archive:
+            arrays = {name: archive[name] for name in archive.files}
+        header = json.loads(arrays.pop("header").tobytes().decode("utf-8"))
+    except (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    if not isinstance(header, dict):
+        raise ValueError("its header is not an object")
+    return header, arrays
+
+
+def _differs(held: dict, other: object) -> str:
+    """Where another identity is not the one held, field by field (`gpu: Tesla T4 -> NVIDIA L4`)."""
+    other = other if isinstance(other, dict) else {}
+    return ", ".join(f"{k}: {held.get(k)} -> {other.get(k)}" for k in sorted(set(held) | set(other)) if held.get(k) != other.get(k))
+
+
+def _asked(header: dict, arrays: dict[str, np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray], float, tuple[str, ...], bool]:
+    """A frame's or a read's request, as `RemoteRunner` sends it: (colour, coverage, t, the augmentation, whether the passes
+    are read), or a ValueError naming what is not so."""
+    t, modes, read = header.get("t"), header.get("modes"), header.get("read")
+    if isinstance(t, bool) or not isinstance(t, (int, float)):
+        raise ValueError(f"t is {t!r}, not a number")
+    if (not isinstance(modes, list) or any(not isinstance(m, str) or m not in TTA_MODES for m in modes)
+            or len(set(modes)) < len(modes)):
+        raise ValueError(f"the augmentation is {modes!r}, not a list of {' or '.join(TTA_MODES)}, each once")
+    if not isinstance(read, bool):
+        raise ValueError(f"read is {read!r}, not true or false")
+    cover = arrays.get("cover_a")
+    if cover is None or cover.ndim != 2:
+        raise ValueError("cover_a is not an image of one channel")
+    h, w = cover.shape
+    for name, shape in (("colour_a", (h, w, 3)), ("colour_b", (h, w, 3)), ("cover_a", (h, w)), ("cover_b", (h, w))):
+        got = arrays.get(name)
+        if got is None or got.shape != shape or got.dtype != np.uint8:
+            raise ValueError(f"{name} is {'missing' if got is None else f'{got.shape} {got.dtype}'}, not {shape} uint8")
+    return [arrays["colour_a"], arrays["colour_b"]], [arrays["cover_a"], arrays["cover_b"]], float(t), tuple(modes), read
+
+
+def answer(request: bytes, runner: Callable[[], object]) -> bytes:
+    """The executor's answer to a request of a `RemoteRunner`, as bytes (`rife_torch.serve`): the frame or the read made by
+    the runner that `runner()` loads, the torch backend. In order, before anything runs: a request that does not read,
+    another protocol or another engine code (this rife.py, by sha256) is answered so, nothing loaded; the probe is answered
+    by the runner's identity and the protocol, as it is loaded; a frame or a read that does not `expect` that identity is
+    answered by it, nothing made. Then the frame's two runs, and a read's sixteen passes and their disagreement as well
+    (`frame_runs`, `pass_runs`), with the augmentation the request names. A RIFE that fails here, loading or running, is
+    answered in its words; anything else is raised, a fault of the code."""
+    try:
+        header, arrays = unpack(request)
+    except ValueError as exc:
+        return pack({"error": "failed", "message": f"the request does not read: {exc}"})
+    if header.get("protocol") != PROTOCOL:
+        return pack({"error": "protocol", "protocol": PROTOCOL})
+    if header.get("code") != CODE_SHA256:
+        return pack({"error": "code", "code": CODE_SHA256})
+    try:
+        loaded = runner()
+        own = json.loads(json.dumps({"protocol": PROTOCOL, **loaded.identity()}))  # type: ignore[attr-defined]
+    except RifeUnavailable as exc:
+        return pack({"error": "failed", "message": str(exc)})
+    if header.get("probe") is True:
+        return pack({"identity": own})
+    if header.get("expect") != own:
+        return pack({"error": "identity", "identity": own})
+    try:
+        colour, cover, t, modes, read = _asked(header, arrays)
+    except ValueError as exc:
+        return pack({"error": "failed", "message": f"the request does not read: {exc}"})
+
+    def run(x: np.ndarray, y: np.ndarray, at: float, named: tuple[str, ...] | None) -> np.ndarray:
+        return loaded.run(x, y, at, modes if named is None else named)  # type: ignore[attr-defined]
+
+    try:
+        rgb, alpha = frame_runs(run, colour, cover, t)
+        made = {"rgb": rgb, "alpha": alpha}
+        if read:
+            made["apart"] = pass_runs(run, colour, cover, t)
+    except RifeUnavailable as exc:
+        return pack({"error": "failed", "message": str(exc)})
+    return pack({"identity": own}, made)
+
+
+class RemoteRunner:
+    """The torch backend on a GPU elsewhere, as the runner of a `Rife` (SPRITE_GEN_RIFE_EXECUTOR): `send`, the host's, from a
+    request's bytes to its answer's (`pack`), reaches the same sprite-gen there (`rife_torch.serve`, `answer`). A frame is
+    one call, its two runs made there; a read is one call, its two runs and sixteen passes made, and the passes reduced to
+    their disagreement, there. It needs no PyTorch here.
+
+    Made, it asks the executor what it is (the probe) and holds the answer for its life: the identity of the torch backend
+    it runs (`rife_torch.TorchRunner.identity`) and the protocol, the executor named besides (`identity`). Every request
+    carries it (`expect`): an executor that is not it any more makes nothing and says what differs, and an answer from
+    another is not handed on — so every frame handed on, and every frame a `Cache` keeps under its identity, is that
+    executor's. An executor whose protocol or rife.py is another is refused as it is made. Nothing is asked again or run
+    elsewhere: a send that fails, an answer that does not read and the executor's own failure are each a RIFE that fails
+    (`RifeUnavailable`). Counts its calls of the send (`calls`)."""
+
+    def __init__(self, send: Callable[[bytes], bytes], name: str):
+        self.send, self.name = send, name
+        self.calls = 0
+        self.remote: dict = {}
+        header, _ = self._sent({"probe": True}, {})
+        if not isinstance(header.get("identity"), dict):
+            raise RifeUnavailable(f"{name}: the executor's answer does not read: it names no identity")
+        self.remote = header["identity"]
+
+    def frame(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
+        made = self._made(colour, cover, t, read=False)
+        return made["rgb"], made["alpha"]
+
+    def read(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        made = self._made(colour, cover, t, read=True)
+        return made["rgb"], made["alpha"], made["apart"]
+
+    def describe(self) -> dict[str, str]:
+        return {"kind": "rife-torch", "executor": self.name, "device": str(self.remote.get("device")),
+                **({"gpu": str(self.remote["gpu"])} if "gpu" in self.remote else {})}
+
+    def identity(self) -> dict[str, object]:
+        return {**self.remote, "executor": self.name}
+
+    def _made(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float, *, read: bool) -> dict[str, np.ndarray]:
+        """A frame, or a read, made by the executor in one call: the request names the identity held, the fraction, the
+        augmentation this host asks for now (`tta()`) and whether the passes are read; the answer is that identity's, at
+        the frame's size, or it is not handed on."""
+        h, w = cover[0].shape
+        header, arrays = self._sent({"expect": self.remote, "t": t, "modes": list(tta()), "read": read},
+                                    {"colour_a": colour[0], "colour_b": colour[1], "cover_a": cover[0], "cover_b": cover[1]})
+        if header.get("identity") != self.remote:
+            raise RifeUnavailable(f"{self.name}: the executor answered as another than this RIFE runs as "
+                                  f"({_differs(self.remote, header.get('identity'))}); its frame is not handed on")
+        want = {"rgb": ((h, w, 3), np.uint8), "alpha": ((h, w), np.uint8), **({"apart": ((h, w), np.float32)} if read else {})}
+        for name, (shape, dtype) in want.items():
+            got = arrays.get(name)
+            if got is None or got.shape != shape or got.dtype != dtype:
+                found = "missing" if got is None else f"{got.shape} {got.dtype}"
+                raise RifeUnavailable(f"{self.name}: the executor's answer does not read: {name} is {found}, not {shape} "
+                                      f"{np.dtype(dtype)}")
+        return arrays
+
+    def _sent(self, header: dict, arrays: dict[str, np.ndarray]) -> tuple[dict, dict[str, np.ndarray]]:
+        """One call of the send, this engine's protocol and code (CODE_SHA256) heading the request: the answer, read, or
+        the refusal or failure it names (`RifeUnavailable`)."""
+        request = pack({"protocol": PROTOCOL, "code": CODE_SHA256, **header}, arrays)
+        self.calls += 1
+        try:
+            data = self.send(request)
+        except Exception as exc:  # what carries the bytes is the host's, failing in its own words
+            raise RifeUnavailable(f"{self.name}: sending to the executor failed: {exc}") from exc
+        try:
+            answered, got = unpack(data)
+        except ValueError as exc:
+            raise RifeUnavailable(f"{self.name}: the executor's answer does not read: {exc}") from exc
+        error = answered.get("error")
+        if error == "protocol":
+            raise RifeUnavailable(f"{self.name}: the executor speaks protocol {answered.get('protocol')}, this one {PROTOCOL}: "
+                                  "run the same sprite-gen on both sides")
+        if error == "code":
+            raise RifeUnavailable(f"{self.name}: the executor's sprite-gen rife.py is {answered.get('code')}, this one's "
+                                  f"{CODE_SHA256}: run the same sprite-gen on both sides")
+        if error == "identity":
+            raise RifeUnavailable(f"{self.name}: the executor is not the one this RIFE was made with "
+                                  f"({_differs(self.remote, answered.get('identity'))}) and made nothing; a RIFE made now "
+                                  "runs as it is")
+        if error is not None:
+            raise RifeUnavailable(f"{self.name}: the executor failed: {answered.get('message', error)}")
+        return answered, got
+
+
 def torch_runner(model: Path | None = None) -> object:
     """The torch backend's runner (`rife_torch.TorchRunner`) on `device()`, from `model` (else `locate_model()`): the device
     named is refused before anything is imported, PyTorch not installed is `RifeNotInstalled` with the extra that installs
@@ -726,14 +954,16 @@ class Rife:
     times it ran RIFE (`calls`): the binary's calls, or the torch backend's runs.
 
     What runs it is its runner, which makes a frame whole from what `inputs` gives it (`frame`: two runs; `read`: two
-    runs and the sixteen passes) and names what its frames depend on (`identity`): `Binary` for the binary, or
-    `rife_torch.TorchRunner`. `Rife()` takes the one `backend()` names; `Rife(binary, model)` is the binary at those
-    paths; `Rife(runner=...)` any other."""
+    runs and the sixteen passes) and names what its frames depend on (`identity`): `Binary` for the binary,
+    `rife_torch.TorchRunner`, or `RemoteRunner` for the torch backend on a GPU elsewhere. `Rife()` takes the one
+    `backend()` and `executor()` name; `Rife(binary, model)` is the binary at those paths; `Rife(runner=...)` any other."""
 
     def __init__(self, binary: Path | None = None, model: Path | None = None, *, runner: object | None = None):
         if runner is None:
             if binary is not None and model is not None:
                 runner = Binary(binary, model)
+            elif (named := executor()) is not None:
+                runner = RemoteRunner(executor_send(named), named)
             elif backend() == "ncnn":
                 runner = Binary(*locate())
             else:
@@ -765,14 +995,18 @@ class Rife:
 
     def counts(self) -> dict[str, int]:
         """The runs it made, as a report names them: the binary's calls (`binary_calls`), or the torch backend's runs
-        (`runs`)."""
-        return {"binary_calls" if isinstance(self.runner, Binary) else "runs": self.calls}
+        (`runs`) and, on an executor, the calls of its send (`executor_calls`, the probe one of them)."""
+        counted = {"binary_calls" if isinstance(self.runner, Binary) else "runs": self.calls}
+        if isinstance(self.runner, RemoteRunner):
+            counted["executor_calls"] = self.runner.calls
+        return counted
 
     def identity(self) -> str:
         """What a frame this RIFE makes depends on besides its two frames and t, as one string (`Cache` keys
         on it): its runner's (`identity()` of the runner — for the binary its files, read again on every call, so a
         binary or model changed under this very RIFE is another identity; for the torch backend what it loaded and runs
-        on, the same for its life) and this host's, read as it is now on every call: the augmentation every call asks
+        on, the same for its life; on an executor what the executor answered as this RIFE was made, held for its life and
+        enforced on every frame it makes, and the executor's name) and this host's, read as it is now on every call: the augmentation every call asks
         for now (`tta()`: SPRITE_GEN_RIFE_TTA is read on every call, and another is another frame); the engine code this
         process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
         Pillow's versions; and the machine — the OS, and `uname`'s host name, OS release and build and

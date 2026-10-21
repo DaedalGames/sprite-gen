@@ -27,6 +27,9 @@ binary rounds it, floor(v * 255 + 0.5). From the upload to the uint8 frame every
 On CUDA every frame runs with cuDNN deterministic, its benchmark off and its convolutions in IEEE float32 (no TF32,
 which PyTorch turns on by default): the same frame twice is the same bytes on one GPU, driver and PyTorch, and what
 they are is in the runner's identity. On the CPU it is the same bytes whatever the thread count.
+
+On a machine with the GPU for a host without one, `serve` is the executor's side of `rife.RemoteRunner`: a request's
+bytes to its answer's, made by the torch backend of this process, loaded once (`rife.answer`).
 """
 
 from __future__ import annotations
@@ -273,24 +276,21 @@ class TorchRunner:
         return {"kind": "rife-torch", "device": self.device, "model": self.model.name}
 
     def frame(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
-        self._settle()
         return rife.frame_runs(self.run, colour, cover, t)
 
     def read(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        self._settle()
         return (*rife.frame_runs(self.run, colour, cover, t), rife.pass_runs(self.run, colour, cover, t))
-
-    def _settle(self) -> None:
-        """The settings a frame on CUDA is made under, set again for each (other code in the process may set them)."""
-        if self.device == "cuda":
-            _deterministic()
 
     def run(self, x: np.ndarray, y: np.ndarray, t: float, modes: tuple[str, ...] | None) -> np.ndarray:
         """One run, as one call of the binary makes it (`rife.Run`): `t` as the binary is handed it (`-s`, four
-        decimals), the augmentation `modes` (None: `rife.tta()`). A run that fails on the device (out of its memory) is
-        a RIFE that fails (`DEVICE_FAILURES`, `rife.RifeUnavailable`)."""
+        decimals), the augmentation `modes` (None: `rife.tta()`); on CUDA under the settings that make it the same bytes,
+        set again for each run (other code in the process may set them), whoever asks for it — a frame, a read, or an
+        executor's request (`serve`). A run that fails on the device (out of its memory) is a RIFE that fails
+        (`DEVICE_FAILURES`, `rife.RifeUnavailable`)."""
         modes = rife.tta() if modes is None else modes
         try:
+            if self.device == "cuda":
+                _deterministic()
             return self._run(x, y, float(f"{t:.4f}"), tuple(modes))
         except DEVICE_FAILURES as exc:
             raise rife.RifeUnavailable(f"rife-torch on {self.device} failed: {exc}") from exc
@@ -368,3 +368,24 @@ class TorchRunner:
             return frames, None
         return frames, [(_swap if d else (lambda c: c))(_to_canon(torch.cat([gr["flow"][k:k + 1], gr["mask"][k:k + 1]], 1), g))
                         for gr in groups for k, (g, d) in enumerate(gr["items"])]
+
+
+# The torch backend an executor serves (`serve`): loaded by the first request, from the model and on the device this
+# process names (`rife.locate_model()`, `rife.device()`), and kept for every request after.
+_served: TorchRunner | None = None
+
+
+def serve(request: bytes) -> bytes:
+    """The executor's side of `rife.RemoteRunner`, on the machine with the GPU: a request's bytes to its answer's
+    (`rife.answer`), the frame or the read made by the torch backend of this process. It is loaded once, by the first
+    request — the probe a RIFE sends as it is made, which so takes the cold start — and a backend that cannot load is
+    answered in its words, to be loaded again by the next. A host reaches it with the send it names
+    (SPRITE_GEN_RIFE_EXECUTOR), the same sprite-gen on both sides."""
+    return rife.answer(request, _loaded)
+
+
+def _loaded() -> TorchRunner:
+    global _served
+    if _served is None:
+        _served = TorchRunner(rife.locate_model(), rife.device())
+    return _served
