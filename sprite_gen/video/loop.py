@@ -1893,7 +1893,7 @@ def run_loop(
             fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
             error = f"video-loop: {exc}; the loop's wrap jumps and the frames round it are to be made — {fix} (docs/loop-repair.md section 2)"
-            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         if report_base["jump_repair"]["replaced"]:
             report_base["seam_measurement"] = "rendered-cells"
