@@ -58,6 +58,7 @@ from sprite_gen.video import rife as rife_mod
 from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video.frames import drop_specks
+from sprite_gen.video import wrap_blend as wrap_blend_mod
 
 ANALYSIS_SIZE = 96  # thumbnail edge for the distance matrix
 STRIP_MAX_CELLS = 64  # upper bound on cells even when they are narrow
@@ -1364,6 +1365,23 @@ def coverage_verdict(cycle: dict[str, Any]) -> list[str]:
             f"past it (under {COVERAGE_MIN:g}): its repeat is barely seen — the seam says whether it closes; a longer take shows it repeat"]
 
 
+def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor: str, cycle: dict[str, Any], fps: float,
+                seam_max: float) -> tuple[list[Image.Image], dict[str, Any]]:
+    """`wrap_blend.apply` on a pinned cut, the pinned last frame cleaned as the cut's frames are (`_scrub`,
+    `drop_specks`). Not tried, and said why: `--wrap-blend off`; an anchor that moves the cells off the place the pin
+    holds; a pin the gate refuses, which fails the clip whatever its wrap shows."""
+    if mode == "off":
+        return frames, {"applied": False, "why": "--wrap-blend off"}
+    if anchor != "none":
+        return frames, {"applied": False, "why": f"--anchor {anchor} moves the cells off the place the pinned frame holds"}
+    if cycle["pin_error"] > cycle["pin_tolerance"]:
+        return frames, {"applied": False, "why": "the pin does not close: the clip is refused on it"}
+    pin = Image.open(pin_file).convert("RGBA")
+    _scrub(pin)
+    pin, _ = drop_specks(pin, alpha_over=16, diagonal=False, apart=0)
+    return wrap_blend_mod.apply(frames, pin, fps=fps, seam_max=seam_max)
+
+
 def run_loop(
     frames_dir: Path,
     out_dir: Path,
@@ -1392,6 +1410,7 @@ def run_loop(
     size_hold: str = "auto",
     steps: int | None = None,
     overlap_wrap: str = "on",
+    wrap_blend: str = "auto",
 ) -> dict[str, Any]:
     state = state.strip().lower() if state else state
     if state == effect.STATE:
@@ -1421,6 +1440,8 @@ def run_loop(
         raise SystemExit(f"video-loop: unknown --repair {repair!r}; expected one of {', '.join(REPAIR_MODES)}")
     if overlap_wrap not in OVERLAP_WRAP_MODES:
         raise SystemExit(f"video-loop: unknown --overlap-wrap {overlap_wrap!r}; expected one of {', '.join(OVERLAP_WRAP_MODES)}")
+    if wrap_blend not in wrap_blend_mod.MODES:
+        raise SystemExit(f"video-loop: unknown --wrap-blend {wrap_blend!r}; expected one of {', '.join(wrap_blend_mod.MODES)}")
     if facing not in FACINGS:
         raise SystemExit(f"video-loop: unknown --facing {facing!r}; expected one of {', '.join(FACINGS)}")
     if anchor is None:
@@ -1682,6 +1703,14 @@ def run_loop(
         # filmed ghost it names is a target of that repair, which gives it way to a clean frame where there is one.
         # A loop delivered as cut, never aligned, would show it otherwise.
         report_base["ghost_screen"] = ghost_screen(frames)
+    if cycle["kind"] == "pinned":
+        # The pinned last frame is the model's drawing of the first: where it redraws it, the cut's last half second takes
+        # the first frame's drawing back (docs/loop-repair.md section 6). After the anchor, on the frames as filmed, before
+        # any repair reads the wrap; `source_projection` above is the cut before it.
+        frames, report_base["wrap_blend"] = _blend_wrap(frames, files[i + L], mode=wrap_blend, anchor=anchor, cycle=cycle,
+                                                        fps=fps, seam_max=seam_max)
+        for line in wrap_blend_mod.warnings(report_base["wrap_blend"], seam_max=seam_max):
+            print(f"video-loop: warning: {line}", file=sys.stderr)
     # Each cut frame given way to the frame beside it, as filmed: the seam is read on it there (`seam_as_filmed`).
     as_filmed: dict[int, Image.Image] = {}
     if repair != "off" and prof.gait:
@@ -1838,6 +1867,9 @@ def run_loop(
     for key in ("ghost_given_way", "ghost_kept"):
         if report_base.get(key):
             strip_meta[key] = report_base[key]
+    if report_base.get("wrap_blend", {}).get("applied"):
+        # The cells the wrap blend changed: they are no longer the cut's frames as filmed.
+        strip_meta["wrap_blend"] = {k: report_base["wrap_blend"][k] for k in ("cells", "K")}
     if motion is not None:
         strip_meta["foot_anchor"] = anchor
         strip_meta["motion_anchor"] = motion
@@ -1993,6 +2025,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--anchor-region", type=motion_anchor.parse_region, action="append", help="motion anchor only: repeat twice with head then torso x0,y0,x1,y1 in the first selected frame; requires --cycle fixed and at least 6 frames")
     parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
     parser.add_argument("--overlap-wrap", choices=OVERLAP_WRAP_MODES, default="on", help="--anchor motion-auto, under --repair auto or on: on (default): a cut two steps long whose wrap a part on its own beat leaves open (the seam gate refuses it) has four to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, each read with RIFE's single passes for a part torn — 34 calls of the binary a frame, up to forty frames (docs/loop-repair.md section 2, \"The overlapped wrap\"); off: not tried, recorded `wrap_overlap.skipped` with a warning line, and the gate refuses the cut as filmed — for a host whose RIFE runs on a CPU, where one frame of a 960 px clip takes minutes")
+    parser.add_argument("--wrap-blend", choices=wrap_blend_mod.MODES, default="auto", help="--cycle pinned with --anchor none: auto (default): where the pinned last frame draws the first again (the first frame and it differ by more than --seam-max times the cut's median step, at full size), the last half second of the cut takes the first frame's drawing back in a ramp, only where the two ends differ by a redraw and the cell stands where the pin stands; a ramp that steps more than the cut already does, or does not shrink the wrap, is not used and a warning line says so (report `wrap_blend`, docs/loop-repair.md section 6); off: the cut as filmed")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
     parser.add_argument("--head-step-max", type=float, default=None, help=f"walk/run: fail the repaired loop when the head's largest sideways move in one frame exceeds this %% of the body height. Default: no gate — reported, and over {repair_mod.HEAD_STEP_REFERENCE} is a warning line")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the jolt index's hair, and the size reading video-loop-compare's jump guard reads, are behind it; the jump repair reads the flow either way")
@@ -2022,11 +2055,14 @@ def run(**kwargs: object) -> int:
         repair=str(kwargs.get("repair") or "auto"), facing=str(kwargs.get("facing") or "right"),
         jolt_max=kwargs.get("jolt_max"), head_step_max=kwargs.get("head_step_max"),  # type: ignore[arg-type]
         size_hold=str(kwargs.get("size_hold") or "auto"), steps=kwargs.get("steps"),  # type: ignore[arg-type]
-        overlap_wrap=str(kwargs.get("overlap_wrap") or "on"),
+        overlap_wrap=str(kwargs.get("overlap_wrap") or "on"), wrap_blend=str(kwargs.get("wrap_blend") or "auto"),
     )
     summary = {k: payload[k] for k in ("state", "frames_total", "window", "cycle_seconds", "n_out", "delay_ms", "resampled_seam_ratio", "specks_dropped", "report")}
     summary["cycle"] = {k: payload["cycle"].get(k) for k in ("kind", "start", "length", "period_global", "ratio", "review_recommended", "half_period_guard", "fundamental")}
     summary["drawings"] = {k: payload["drawings"][k] for k in ("hold", "drawings_per_second")}
+    if payload.get("wrap_blend"):
+        summary["wrap_blend"] = {k: payload["wrap_blend"][k] for k in ("applied", "why", "residual_ratio", "wrap_ratio_before",
+                                                                      "wrap_ratio_after") if k in payload["wrap_blend"]}
     if payload["periodic_attempt"]:
         summary["periodic_attempt"] = payload["periodic_attempt"]["why_rejected"]
     if payload.get("motion_anchor", {}).get("applied") is False:
