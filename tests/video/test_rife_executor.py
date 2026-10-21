@@ -16,10 +16,13 @@ marked `torch_rife`, serves the torch backend itself (`rife_torch.serve`) and fi
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import io
 import json
 import sys
+import zipfile
+import zlib
 
 import numpy as np
 import pytest
@@ -339,16 +342,49 @@ def _pickled() -> bytes:
     return out.getvalue()
 
 
+def _probe() -> bytes:
+    """The probe a RIFE sends as it is made."""
+    return rife.pack({"protocol": rife.PROTOCOL, "code": rife.CODE_SHA256, "probe": True})
+
+
+def _member(data: bytes, name: str) -> tuple[int, int, int]:
+    """A member of an archive: where its local header starts, where its bytes (stored or compressed) start, and how many."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        info = archive.getinfo(name)
+    start = info.header_offset
+    names, extra = (int.from_bytes(data[start + k:start + k + 2], "little") for k in (26, 28))
+    return start, start + 30 + names + extra, info.compress_size
+
+
+def _flipped(data: bytes, at: int) -> bytes:
+    """`data` with every bit of its byte at `at` turned over."""
+    out = bytearray(data)
+    out[at] ^= 0xFF
+    return bytes(out)
+
+
+def _block_type_3(data: bytes) -> bytes:
+    """`data` with its header's first DEFLATE block given the reserved type 3, which no decompressor reads."""
+    _, at, _ = _member(data, "header.npy")
+    out = bytearray(data)
+    out[at] |= 0b110
+    return bytes(out)
+
+
 def test_a_request_that_does_not_read_is_answered_so_and_nothing_pickled_is_loaded():
-    """A request that is not the format, or holds pickled objects, is answered as one that does not read, nothing
-    loaded; pickled objects are never loaded (NumPy's `allow_pickle=False`)."""
+    """A request that is not the format, holds pickled objects, or was damaged on the way (a block that does not
+    decompress) is answered as one that does not read, in the reading's words, nothing loaded; pickled objects are never
+    loaded (NumPy's `allow_pickle=False`)."""
 
     def unloaded():
         raise AssertionError("loaded")
 
-    for request in (b"not a request", _pickled()):
+    for request, words in ((_block_type_3(_probe()), "zlib.error: Error -3 while decompressing data: invalid block type"),
+                           (b"not a request", "zipfile.BadZipFile: File is not a zip file"),
+                           (_pickled(), "Object arrays cannot be loaded when allow_pickle=False")):
         header, arrays = rife.unpack(rife.answer(request, unloaded))
-        assert header["error"] == "failed" and "does not read" in header["message"] and not arrays
+        assert header["error"] == "failed" and header["message"].startswith("the request does not read: ") and not arrays
+        assert words in header["message"]
 
 
 class Answers:
@@ -383,6 +419,7 @@ def _failed_there(request: bytes) -> bytes:
 FAILING = {
     "the send failing": (_raises(ConnectionError("Connection reset by peer")), r"sending to the executor failed: Connection reset by peer"),
     "an answer that is not one": (lambda request: b"<html>502 Bad Gateway</html>", r"the executor's answer does not read"),
+    "an answer that is not bytes": (lambda request: "<html>502 Bad Gateway</html>", r"the executor's answer does not read: str, not bytes"),
     "an answer of another size": (_wrong_size, r"the executor's answer does not read: rgb is \(2, 2, 3\) uint8, not \(96, 128, 3\)"),
     "the executor's device failing": (_failed_there, r"the executor failed: rife-torch on cuda failed: CUDA out of memory"),
 }
@@ -401,6 +438,132 @@ def test_a_send_or_an_executor_that_fails_is_a_rife_that_fails_in_its_own_words(
     assert not isinstance(failed.value, rife.RifeNotInstalled) and answers.calls == 2
     if case == "the send failing":
         assert isinstance(failed.value.__cause__, ConnectionError)
+
+
+class Damaged:
+    """A send to a T4 executor (`rife.answer`) that answers the probe, makes the answer to the first request after it once
+    (`made`), and hands that answer back to every request after the probe as `damage` leaves it."""
+
+    def __init__(self, damage=None):
+        self.damage, self.made, self.calls = damage, None, 0
+
+    def __call__(self, request: bytes) -> bytes:
+        self.calls += 1
+        if self.calls == 1:
+            return rife.answer(request, lambda: Device())
+        if self.made is None:
+            self.made = rife.answer(request, lambda: Device())
+        return self.made if self.damage is None else self.damage(self.made)
+
+
+def _stored(data: bytes) -> bytes:
+    """An answer as an archive stored, not compressed (`np.savez`), which reads as the answer does."""
+    header, arrays = rife.unpack(data)
+    out = io.BytesIO()
+    np.savez(out, header=np.frombuffer(json.dumps(header).encode(), np.uint8), **arrays)
+    return out.getvalue()
+
+
+def _colour_byte(data: bytes) -> bytes:
+    """An answer stored, the last byte of its colour turned over: an array's own bytes, under the CRC-32 of its member."""
+    stored = _stored(data)
+    _, at, size = _member(stored, "rgb.npy")
+    return _flipped(stored, at + size - 1)
+
+
+def _shorter_header(data: bytes) -> bytes:
+    """An answer stored, the header of its colour's array made 16 bytes shorter (the low byte of its length): the header's
+    dict is still whole, so NumPy's archive reader would read the array from 16 bytes early and stop short of the
+    member's end, where its CRC-32 is checked — and hand on other pixels."""
+    stored = bytearray(_stored(data))
+    _, at, _ = _member(bytes(stored), "rgb.npy")
+    stored[at + 8] -= 16
+    return bytes(stored)
+
+
+DAMAGED = {
+    # one byte of the answer damaged on the way, or the answer cut short: (the damage, what reading it raises, in its words)
+    "a member's local header": (lambda data: _flipped(data, _member(data, "rgb.npy")[0]), zipfile.BadZipFile,
+                                "Bad magic number for file header"),
+    "a compressed block": (_block_type_3, zlib.error, "Error -3 while decompressing data: invalid block type"),
+    "an array's header": (_shorter_header, zipfile.BadZipFile, "Bad CRC-32 for file 'rgb.npy'"),
+    "an array's own bytes": (_colour_byte, zipfile.BadZipFile, "Bad CRC-32 for file 'rgb.npy'"),
+    "the archive's end": (lambda data: _flipped(data, len(data) - 22), zipfile.BadZipFile, "File is not a zip file"),
+    "the answer cut short": (lambda data: data[:len(data) // 2], zipfile.BadZipFile, "File is not a zip file"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(DAMAGED))
+def test_an_answer_damaged_in_a_header_a_block_an_array_or_its_end_is_a_rife_that_fails_in_the_readings_words(case):
+    """netti-20261022-045132: the executor's answer with one byte damaged on the way — a member's local header, a
+    compressed block (given the reserved block type, which raises the decompressor's own error), an array's header made
+    shorter (read as NumPy's archive reader reads it, the array from the wrong place, handed on), an array's own bytes
+    under its CRC-32, the archive's end record — or cut short. Each is a RIFE that fails (`RifeUnavailable`, not RIFE not
+    installed), naming that the answer does not read in the words of what reading it raised, which is its cause; nothing
+    is asked again. The same answer undamaged is the frame the device makes in this process, byte for byte."""
+    damage, error, words = DAMAGED[case]
+    a, b = _disc(40), _disc(72)
+    whole = rife.Rife(runner=rife.RemoteRunner(Damaged(), "stood in"))
+    assert whole(a, b, 0.5).tobytes() == rife.Rife(runner=Device())(a, b, 0.5).tobytes()
+    send = Damaged(damage)
+    made = rife.Rife(runner=rife.RemoteRunner(send, "stood in"))
+    with pytest.raises(rife.RifeUnavailable, match=r"^stood in: the executor's answer does not read: ") as failed:
+        made(a, b, 0.5)
+    cause = failed.value.__cause__
+    assert not isinstance(failed.value, rife.RifeNotInstalled) and type(cause) is error and words in str(cause)
+    assert str(cause) in str(failed.value) and send.calls == 2
+
+
+def test_an_answer_with_any_one_byte_damaged_is_a_rife_that_fails_or_reads_as_it_was_made():
+    """Each byte of the probe's answer, a frame's and a read's damaged in turn (its bits turned over), on one RIFE's runner:
+    every answer is a RIFE that fails, naming that it does not read, or — the byte one reading it does not depend on (a
+    time, the CRC-32 a local header repeats) — reads as it was made, byte for byte. None raises anything else, and none
+    hands on other pixels or another reading of the passes."""
+    a, b = (_disc(x).crop((16, 24, 96, 72)) for x in (40, 72))
+    colour, cover = rife.inputs(a, b)
+    outcomes = collections.Counter()
+    probe = rife.answer(_probe(), lambda: Device())
+    for at in range(len(probe)):
+        try:
+            runner = rife.RemoteRunner(lambda request, damaged=_flipped(probe, at): damaged, "stood in")
+        except rife.RifeUnavailable as exc:
+            assert str(exc).startswith("stood in: the executor's answer does not read: "), (at, str(exc))
+            outcomes["probe", "fails"] += 1
+        else:
+            assert runner.remote == _remote(T4), at
+            outcomes["probe", "reads"] += 1
+    for ask in ("frame", "read"):
+        send = Damaged()
+        runner = rife.RemoteRunner(send, "stood in")
+        made = getattr(runner, ask)(colour, cover, 0.5)
+        for at in range(len(send.made)):
+            send.damage = lambda data, at=at: _flipped(data, at)
+            try:
+                got = getattr(runner, ask)(colour, cover, 0.5)
+            except rife.RifeUnavailable as exc:
+                assert str(exc).startswith("stood in: the executor's answer does not read: "), (ask, at, str(exc))
+                outcomes[ask, "fails"] += 1
+            else:
+                assert all(g.dtype == m.dtype and np.array_equal(g, m) for g, m in zip(got, made, strict=True)), (ask, at)
+                outcomes[ask, "reads"] += 1
+    assert all(outcomes[ask, how] for ask in ("probe", "frame", "read") for how in ("fails", "reads")), outcomes
+
+
+def test_a_reading_that_cannot_read_what_pack_writes_raises_as_it_is_a_fault_of_the_code(monkeypatch):
+    """The reading itself failing — NumPy refusing how its array reader is called, as a NumPy whose reader took no
+    `allow_pickle` would — reads no bytes, `pack`'s own neither: a fault of the code, not of an answer or a request. It
+    is raised as it is, on the host as on the executor, never a RIFE that fails nor a request answered as one that does
+    not read."""
+    probe, request = rife.answer(_probe(), lambda: Device()), _probe()
+
+    def refused(*args, **kwargs):
+        raise TypeError("read_array() got an unexpected keyword argument 'allow_pickle'")
+
+    monkeypatch.setattr(np.lib.format, "read_array", refused)
+    with pytest.raises(TypeError, match="allow_pickle"):
+        rife.RemoteRunner(lambda sent: probe, "stood in")
+    with pytest.raises(TypeError, match="allow_pickle"):
+        rife.answer(request, lambda: Device())
 
 
 def test_an_executor_whose_model_is_not_installed_is_a_rife_that_fails_here():
@@ -440,6 +603,32 @@ def test_an_executor_named_with_the_binary_with_a_device_or_not_there_is_refused
         rife.Rife()
     assert not isinstance(refusal.value, rife.RifeNotInstalled)
     assert executor.headers == [] and not log.exists()
+
+
+def test_a_loop_whose_executor_answer_is_damaged_on_the_way_fails_with_its_record(executor, monkeypatch, tmp_path):
+    """`video-loop` with a jump to repair and an executor named, its answer to the first frame damaged on the way (a
+    compressed block given the reserved type): the loop fails as one whose RIFE fails does — its record written `failed`
+    in the decompressor's words, the gait fallback's frames removed, the line saying to fix RIFE or pass --repair off —
+    not with the decompressor's error raised past them."""
+    from sprite_gen.video import loop
+    from tests.video.test_loop_repair import _keyed, _loop, _run
+
+    def damaged(request: bytes) -> bytes:
+        answered = executor(request)
+        return answered if rife.unpack(request)[0].get("probe") else _block_type_3(answered)
+
+    monkeypatch.setattr(sys.modules[__name__], "reached", damaged)
+    filmed, _ = _loop({10: 12})
+    keyed = _keyed(tmp_path, filmed)
+    fallback = tmp_path / "out" / loop.FALLBACK_FRAMES_DIR
+    fallback.mkdir(parents=True)
+    with pytest.raises(SystemExit, match=r"fix RIFE, or pass --repair off") as failed:
+        _run(tmp_path, keyed)
+    words = "the executor's answer does not read: zlib.error: Error -3 while decompressing data: invalid block type"
+    assert words in str(failed.value) and isinstance(failed.value.__cause__.__cause__, zlib.error)
+    report = json.loads((tmp_path / "w.json").read_text())
+    assert report["status"] == "failed" and words in report["error"]
+    assert not fallback.exists() and executor.kinds() == ["probe", "frame"]
 
 
 # --- what names it ----------------------------------------------------------------------------------------------------
