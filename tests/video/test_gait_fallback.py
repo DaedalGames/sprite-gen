@@ -239,10 +239,14 @@ def test_a_settle_does_not_hide_a_walk_that_grows(tmp_path):
     assert np.ptp(heights[:, 3]-heights[:, 1]) <= 6
 
 
-def walking_away(k, frames=73):
+def walking_away(k, frames=73, sub_pixel=False):
     """A walker going away from the camera: 15 % smaller by the end and its feet 20 px higher in the
-    frame (the ground recedes toward the horizon), its crown 10 px under the top at the start."""
+    frame (the ground recedes toward the horizon), its crown 10 px under the top at the start. By
+    whole crop rows the feet rise a pixel every three or four frames; `sub_pixel` raises them evenly."""
     image = walker(k, grow=-0.15, frames=frames)
+    if sub_pixel:
+        return image.convert('RGBa').transform(image.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, 40 + 20*k/(frames-1)),
+                                               resample=Image.Resampling.BICUBIC).convert('RGBA')
     rows = 40 + round(20*k/(frames-1))
     out = Image.new('RGBA', image.size)
     out.alpha_composite(image.crop((0, rows, image.width, image.height)), (0, 0))
@@ -280,7 +284,9 @@ def test_no_room_is_added_when_nothing_reaches_out():
 
 
 def test_the_held_loop_of_a_shrinking_walk_keeps_its_crown(tmp_path):
-    frames = [walking_away(k) for k in range(73)]
+    # The feet rise evenly: by whole rows they jump a pixel every few frames, which on a walk this
+    # slow is a step the step gate reads 2.7 times the loop's mean and refuses.
+    frames = [walking_away(k, sub_pixel=True) for k in range(73)]
     code, report, output = run(tmp_path, frames)
     assert code == 0
     assert report['size_hold']['applied'] is True and report['size_hold']['padding_ltrb'][1] > 0
