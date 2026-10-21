@@ -108,10 +108,10 @@ BODY_ANCHOR_BAND = 0.6  # --anchor body reads the wrap offset from the top 60 % 
 BODY_ANCHOR_SEARCH = 24  # px either side searched for the last frame's horizontal offset against the first
 FOOT_BAND = legs_mod.FOOT_BAND  # fraction of the frame's own height, measured up from its lowest opaque row
 # Jump-frame repair (docs/loop-repair.md section 2). auto: walk and run loops get a RIFE frame in
-# place of each frame that follows a jump, and a loop that needs one where no RIFE is installed is
-# cut as filmed with a warning (a walk that cut before RIFE existed still cuts); on: the same, but
-# no RIFE fails the loop — a caller that asked for the repair is never handed less; off: the loop
-# is cut as filmed, and says so.
+# place of each frame that follows a jump, any other loop RIFE frames round a wrap that jumps (the
+# seam bridge), and a loop that needs one where no RIFE is installed is cut as filmed with a warning
+# (a walk that cut before RIFE existed still cuts); on: the same, but no RIFE fails the loop — a
+# caller that asked for the repair is never handed less; off: the loop is cut as filmed, and says so.
 REPAIR_MODES = ("auto", "on", "off")
 # The overlapped wrap (docs/loop-repair.md section 2, "The overlapped wrap"), under --repair auto or on. on: a two-step
 # cut whose wrap the gate refuses has the frames beside its wrap made again from the clip's frames a cycle apart, each
@@ -1073,6 +1073,64 @@ def _overlap_lines(overlap: dict[str, Any]) -> list[str]:
     return [f"{said}, and the overlapped wrap was refused ({refused}): cut as filmed (docs/loop-repair.md section 2)"]
 
 
+def _bridge_seam(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, *, facing: str, required: bool,
+                 seam_max: float, hold: int | None, skip: str | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+    """`repair_mod.seam_bridge` on a loop that is not a walk, with RIFE located only once a frame is to be made: a wrap
+    that reads as a step of the loop needs no binary. The record names the interpolator that made the frames.
+
+    A frame to make and no RIFE installed: `required` lets `RifeNotInstalled` through; otherwise the wrap is read again
+    with no interpolator, cut as filmed, and the record says why (`rife`, `install`, the run it stopped at `unmade`)."""
+    made_by: list[dict[str, str]] = []
+
+    def lazy(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        nonlocal interpolate
+        if interpolate is None:
+            found = rife_mod.Rife()
+            made_by.append(found.describe())
+            interpolate = found
+        return interpolate(a, b, t)
+
+    asked = partial(repair_mod.seam_bridge, limit=seam_max, hold=hold, facing=facing, skip=skip)
+    try:
+        frames, record = asked(frames, lazy)
+    except rife_mod.RifeNotInstalled as exc:
+        if required:
+            raise
+        frames, record = asked(frames, None)
+        record.update(why="RIFE not installed — the wrap cut as filmed", rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+    record["applied"] = bool(record["replaced"])
+    if record["calls"]:
+        record["interpolator"] = ({"kind": "rife-ncnn-vulkan", **made_by[0], "binary_calls": interpolate.calls}
+                                  if made_by else {"kind": "injected"})
+    return frames, record
+
+
+def _bridge_lines(bridge: dict[str, Any]) -> list[str]:
+    """What became of a wrap the seam bridge read as a jump (`repair.seam_bridge`), in words (`video-loop: warning:`
+    lines): the frames made and the ones to look at, or why none was made. A wrap that reads as a step says nothing."""
+    if "skipped" in bridge:
+        return []
+    said = (f"the loop's wrap jumps (its step {bridge['seam']:.2f}x the mean of the {bridge['around']} steps either side, "
+            f"over {bridge['limit']:g})")
+    if bridge["replaced"]:
+        taken = bridge["tries"][-1]
+        a, b = taken["anchors"]
+        return [f"{said}: frames {', '.join(map(str, taken['frames']))} were made again by RIFE between frames {a} and {b} "
+                "(cycle/), so the loop plays across it — look at them in the loop, or cut it with --repair off "
+                "(docs/loop-repair.md section 2)",
+                *(f"frame {m['frame']} was made at the wrap with RIFE's frame between frames {a} and {b}, which may "
+                  f"cross-fade two drawings inside its outline (crossfade {m['proposal']['crossfade']:.4f}); kept, a reading "
+                  "to look at (docs/loop-repair.md section 4)" for m in taken["made"] if m["look"])]
+    if "unmade" in bridge:
+        return [f"{said}, and RIFE is not installed, so no frame was made round it — run `{rife_mod.INSTALL_COMMAND}` "
+                "and cut it again (docs/loop-repair.md section 2)"]
+    reasons = {"line": "the straight line between its anchors does not close it", "fault": "a frame made has a fault",
+               "seam": "the frames made do not close it"}
+    refused = "; ".join(f"{t['width']}: {reasons[t['rejected_for']]}" + (f" ({', '.join(t['faults'])})" if t.get("faults") else "")
+                        for t in bridge["tries"])
+    return [f"{said}, and no frames made round it close it ({refused}): cut as filmed (docs/loop-repair.md section 2)"]
+
+
 def _shifts(analysis: dict[str, Any]) -> tuple[np.ndarray, int]:
     """The analysis translation `auto_motion.analyse` measured, whole pixels a frame, and the room it needs."""
     shifts = np.rint(np.asarray(analysis["analysis_only_translation_xy"], dtype=np.float64)).astype(int)
@@ -1188,13 +1246,25 @@ def seam_on_cells(frames: list[Image.Image]) -> float:
     return wrap_on_cells(frames)
 
 
+def cells_box(frames: list[Image.Image]) -> tuple[int, int, int, int]:
+    """The union box of a loop's frames, every pixel not fully transparent: the crop its rendered cells are read on."""
+    boxes = [f.getbbox() for f in frames]
+    boxes = [b for b in boxes if b]
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def cell_features(frames: list[Image.Image], box: tuple[int, int, int, int] | None = None) -> np.ndarray:
+    """A loop's frames on the analysis thumbnail, each cropped to `box` (their union box, `cells_box`, where none is
+    given): the rendered cells, short of the strip's scale, as the seam gate (`wrap_on_cells`) and the seam bridge
+    (`repair.seam_bridge`) read them."""
+    box = box if box is not None else cells_box(frames)
+    return np.stack([_small_features(f.crop(box)) for f in frames])
+
+
 def wrap_on_cells(frames: list[Image.Image]) -> float:
     """The seam gate's reading of a loop's frames as corrected: cropped to their union box, the wrap over the mean step
     on the analysis thumbnail — the rendered cells the gate reads, short of the strip's scale."""
-    boxes = [f.getbbox() for f in frames]
-    boxes = [b for b in boxes if b]
-    box = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    flat = np.stack([_small_features(f.crop(box)) for f in frames])
+    flat = cell_features(frames)
     step = float(np.abs(flat[1:] - flat[:-1]).mean())
     return float(np.abs(flat[-1] - flat[0]).mean()) / step if step > 0 else math.inf
 
@@ -1777,6 +1847,26 @@ def run_loop(
             print(f"video-loop: warning: a part of the loop rushes (frames {rush['frames']}, {rush['ratio']:.1f}x its steps "
                   "either side) and was not eased — RIFE is not installed, so the loop is cut as filmed; "
                   f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md section 2)", file=sys.stderr)
+    elif repair != "off" and cycle["kind"] not in nonloop.KINDS:
+        # A loop that is not a walk: its flow is not read (an idle's blink would leave it), its wrap alone is, and the
+        # frames round a wrap that jumps are made again (the seam bridge, docs/loop-repair.md section 2). A pinned clip
+        # the pin refuses is refused whatever its wrap shows.
+        pin_refused = cycle["kind"] == "pinned" and cycle["pin_error"] > cycle["pin_tolerance"]
+        try:
+            frames, report_base["jump_repair"] = _bridge_seam(
+                frames, interpolate, facing=facing, required=repair == "on", seam_max=seam_max,
+                hold=report_base["cycle_drawings"]["hold"],
+                skip="the pin does not close: the clip is refused on it" if pin_refused else None)
+        except (ValueError, rife_mod.RifeUnavailable) as exc:
+            fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
+                   if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
+            error = f"video-loop: {exc}; the loop's wrap jumps and the frames round it are to be made — {fix} (docs/loop-repair.md section 2)"
+            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            raise SystemExit(error) from exc
+        if report_base["jump_repair"]["replaced"]:
+            report_base["seam_measurement"] = "rendered-cells"
+        for line in _bridge_lines(report_base["jump_repair"]):
+            print(f"video-loop: warning: {line}", file=sys.stderr)
     else:
         report_base["jump_repair"] = {"applied": False, "why": "--repair off" if repair == "off" else f"not a gait state ({state})"}
     if prof.gait:
@@ -2024,7 +2114,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--body-height", type=int, help="scale so the STANDING height (the subject in the clip's first frame, i.e. the base still's pose) is this many px — the same value across states gives the same character size; --strip-height stays the cap")
     parser.add_argument("--anchor", choices=ANCHOR_MODES, default=None, help="motion-auto: automatic stable regions, local repeat selection and XY ramp (walk/run); motion: fixed cut with explicit regions; body (default for walk/run): measure the last-to-first head-and-torso offset once and spread it as a ramp over the cycle; feet: remove in-canvas drift (a straight-line trend) so every cell stands on the mean foot line; none: leave placement as filmed (default for other states)")
     parser.add_argument("--anchor-region", type=motion_anchor.parse_region, action="append", help="motion anchor only: repeat twice with head then torso x0,y0,x1,y1 in the first selected frame; requires --cycle fixed and at least 6 frames")
-    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
+    parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. A loop that is not a walk or run is not read for its flow: where its wrap steps over --seam-max times the mean of the three steps either side, one, two or four frames round it are made again by RIFE between the frames either side, the fewest first, taken only without faults and where every step from one to the other then reads within that limit (docs/loop-repair.md section 2, \"The seam bridge\"). Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
     parser.add_argument("--overlap-wrap", choices=OVERLAP_WRAP_MODES, default="on", help="--anchor motion-auto, under --repair auto or on: on (default): a cut two steps long whose wrap a part on its own beat leaves open (the seam gate refuses it) has four to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, each read with RIFE's single passes for a part torn — 34 calls of the binary a frame, up to forty frames (docs/loop-repair.md section 2, \"The overlapped wrap\"); off: not tried, recorded `wrap_overlap.skipped` with a warning line, and the gate refuses the cut as filmed — for a host whose RIFE runs on a CPU, where one frame of a 960 px clip takes minutes")
     parser.add_argument("--wrap-blend", choices=wrap_blend_mod.MODES, default="auto", help="--cycle pinned with --anchor none: auto (default): where the pinned last frame draws the first again (the first frame and it differ by more than --seam-max times the cut's median step, at full size), the last half second of the cut takes the first frame's drawing back in a ramp, only where the two ends differ by a redraw and the cell stands where the pin stands; a ramp that steps more than the cut already does, or does not shrink the wrap, is not used and a warning line says so (report `wrap_blend`, docs/loop-repair.md section 6); off: the cut as filmed")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
@@ -2090,7 +2180,11 @@ def run(**kwargs: object) -> int:
     if payload.get("wrap_overlap"):
         overlap = payload["wrap_overlap"]
         summary["wrap_overlap"] = {k: overlap[k] for k in ("seam", "frames", "side", "width", "seam_after", "skipped") if k in overlap}
-    if payload.get("jump_repair", {}).get("replaced"):
+    if payload.get("jump_repair", {}).get("reading") == "seam":
+        bridge = payload["jump_repair"]
+        if "skipped" not in bridge:
+            summary["jump_repair"] = {k: bridge[k] for k in ("reading", "seam", "replaced", "seam_after", "why") if k in bridge}
+    elif payload.get("jump_repair", {}).get("replaced"):
         summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
         eased = [r for r in payload["jump_repair"]["rounds"] if r.get("why") == "ease" and r["outcome"] == "accepted"]
         if eased:
