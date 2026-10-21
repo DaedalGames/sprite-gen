@@ -7,8 +7,8 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 **Upgrading from 2.45.3: Release 2.46.0 changes defaults for video frames.**
 
 Outputs that change bytes are frames from `video-frames` and `video-set` on a green or magenta key.
-These changes occur within 6 px inside and 3 px outside the keyed silhouette.
-Video frames keyed with explicit `--decontam palette` also change bytes where a new guard applies.
+These changes occur within 6 px inside the keyed silhouette only.
+Video frames keyed with explicit `--decontam palette` also change bytes, because they use the same video fit.
 
 Outputs that do not change bytes include runs on a white key, subjects with no interior, and runs with `--alpha-mode brightness`.
 Stills (`cutout`, `gen`) and row extraction (`extract`, `inspect`) do not change bytes.
@@ -19,46 +19,108 @@ To get the 2.45.3 frames back, pass:
 
 - **Default change: `video-frames` and `video-set` now default to `--decontam auto` (before: `off`).**
   Release 2.46.0 updates these defaults to clean chroma-bleed edges automatically.
+
   On a chroma key, H.264 4:2:0 chroma mixes key colour into strands one to three pixels wide.
   With decontamination off, a red hair strand on green keeps an olive rim.
   The `auto` pass restores the subject's own colour to those edges.
 
   The video default stayed `off` until now out of caution rather than any known defect.
   The pass was benchmarked on a green key only.
-  The video fit is less decisive than the still fit, leaving 10.8 % residual contamination against 0.03 % on the original benchmark.
+  The video fit is less decisive than the still fit.
+  In the documentation's benchmark table, the video-fit row (10.8 % residual contamination, 9.38/8.73 halo, 91.4 % recall) was measured in September 2026 with flank recovery.
+  It has not been remeasured since flank recovery was dropped, because those benchmark inputs and tools are not at hand.
+  The diagnosis table in `docs/chroma-alpha.md` (its `decontam` section) has the current video fit's numbers.
+  Still-fit rows in that table are unchanged.
+
   Earlier fixes resolved the Grok-magenta regression through the key-hue cap and corrected the frame-edge interaction.
   No blocking defect remains known.
 
-  On synthetic diagnosis clips (CRF 18, `--spill small`, 6 frames), `auto` reduced key contamination on red strands on painted green from 23.8 % to 8.5 %, and on pure green from 27.5 % to 9.3 %.
-  Halo composite error on dark and white backgrounds improved from 11.3/11.9 to 9.1/9.8, while strand recall rose from 90.9 % to 97.2 %.
-  Key contamination dropped from 3.4 % to 0.5 % on magenta, and from 5.4 % to 2.2 % on Grok darker magenta.
-  Contamination dropped from 20.4 % to 7.1 % on a translucent glow scene, and from 23.4 % to 10.3 % on a small green charm scene.
-  Outline ink CIELAB error on the two magenta keys shifted from 19.7 to 21.8 and 21.9 to 25.5.
-  Changed pixels make up about 3 to 4 % of each frame (7 % in translucent scenes), all within 6 px inside or 3 px outside the silhouette.
-  Interior pixels remain byte-identical.
+  On synthetic diagnosis clips (CRF 18, `--spill small`, 6 frames, one machine), `auto` reduced key contamination on red strands on painted green from 24.2 % to 9.2 %, and on pure green from 27.4 % to 9.3 %.
+  Halo composite error on dark and white backgrounds shifted from 11.6/12.1 to 9.5/10.1 on painted green, and from 12.0/11.9 to 9.8/9.7 on pure green.
+  Strand recall stayed at 91.4 % on painted green and 92.4 % on pure green.
+  Strand recall no longer rises with the pass, because that gain came from the flank that the video fit no longer recovers.
+  Halo gains are smaller than before for the same reason.
 
-  Keying costs more processing time and memory.
-  On an Intel i5-7500 with a 1080x1920 clip, keying took 1.10 s a frame with `off` and 3.32 s with `auto` (3.14 s for the pass without guards).
-  Peak memory rose from 389 MB to 938 MB, adding about 265 MB per megapixel.
-  Because `video-set` keys three items at once by default, peak memory can rise by about 1.6 GB.
+  Key contamination dropped from 3.4 % to 0.5 % on magenta, and from 5.4 % to 2.0 % on Grok darker magenta.
+  Halo shifted from 15.0/19.6 to 12.5/16.3 on magenta, and from 20.7/31.5 to 19.4/30.0 on Grok darker magenta (compared to 17.1/24.7 when flank recovery was present).
+  Strand recall stayed at 87.0 % on magenta and 73.3 % on Grok darker magenta.
+  Outline ink CIELAB error shifted from 19.3 to 20.8 on magenta, and from 21.7 to 24.1 on Grok darker magenta.
+  Red hair counts as key-coloured material there, so the palette is not key-free and the warning line appears.
+
+  Contamination dropped from 20.6 % to 7.8 % on a translucent glow scene (halo 12.6/9.4 to 11.5/8.4, strand recall 85.7 %).
+  It dropped from 23.8 % to 10.4 % on a small green charm scene (halo 11.8/12.9 to 9.9/11.1, strand recall 90.7 %).
+
+  Changed pixels make up about 2 % of each frame (4.5 % in translucent scenes).
+  All changed pixels lie within 6 px inside the silhouette.
+  Nothing outside the silhouette changes any more.
+  Interior pixels remain byte-identical.
 
   Stills (`cutout`, `gen`) and row extraction (`extract`, `inspect`) still default to `off`.
   The row extractor frames are a derived cache that `heal` re-derives, so changing their default would silently rewrite existing runs.
   Stills remain as they were.
 
+- **Temporal fit: The video fit holds edge decisions across frames, settles still pixels, and drops flank recovery.**
+  With default `auto`, the edge of a subject standing still sparkled from frame to frame where `--decontam off` remained calm.
+  Codec noise pushed edge pixels across the pass's threshold tests from frame to frame.
+  These tests decide blends, tints, material behind, explained pixels, palette colours, and flank coverage.
+  Each crossing changed the written colour by far more than the noise itself did.
+  The raw matte with `off` follows codec noise smoothly, staying calm despite keeping an olive rim.
+
+  `video-frames` and `video-set` now maintain a clip history in clip order.
+  This history passes to each frame through `decontaminate` as `history` (`decontam_history` in `cutout` and `remove_chroma_background`).
+
+  Each test now holds its previous outcome at that pixel until current evidence passes the bar the other way by 16 (an RGB distance, `VIDEO_HOLD`).
+  A palette colour picked in the previous frame stays unless another colour's line passes closer by 16.
+  Moving pixels change their evidence far beyond 16 and are decided afresh.
+  Only near-threshold calls stick.
+
+  Still pixels settle toward the current fit.
+  When a pixel was written in both frames in the same palette colour, and its source moved by at most 8 in any channel across its 3x3 box (`VIDEO_STILL`), it settles.
+  It moves a tenth of the way (`VIDEO_SETTLE` 0.1) from its previous value toward this frame's fit, capped at 12 per channel (`VIDEO_SETTLE_REACH`).
+  This dampens codec noise while following real slow changes within 12 levels.
+
+  The video fit also drops flank recovery.
+  It no longer gives coverage back to keyed pixels (hard cut background within 3 px of the subject).
+  Decoded chroma blur created faint blends on keyed pixels, and codec noise carried them back and forth over the noise floor.
+  This filled dark gaps between strands with a faint smear that came and went across frames.
+  The video fit now examines the band only (subject pixels within 6 px of the keyed background).
+  The still fit keeps its flank recovery unchanged.
+
+  With history enabled, frame bytes depend strictly on previous frames in clip order and remain deterministic.
+  A single video-fit call without history gives the same band bytes as before, leaving keyed flank pixels as the matte keyed them.
+
+  On a synthetic still scene under decoder noise (red strands 1 to 3 px wide on painted green, 8 frames, sigma 2):
+  Mean edge change between frames on a dark background was 2.34 with `off` (99th percentile 8.3).
+  Before this fix, the pass gave a mean change of 2.75 (99th percentile 16.0).
+  With this fix, the mean change dropped to 2.27 (99th percentile 8.3).
+  Key contamination on that scene dropped from 6.5 % with `off` to 2.3 % now.
+
+  Per-frame stats and clip totals add `held_px` and `settled_px`.
+  `held_px` counts pixels where a held outcome or colour differed from an independent fit.
+  `settled_px` counts pixels settled toward the current fit.
+  In video, `recovered_px` is now 0.
+
+  Keying cost was remeasured on an Intel i5-7500 with a 1080x1920 synthetic clip, one process per run, in the same session.
+  Keying took 1.21 s a frame with `off` and 3.42 s with `auto` (the pass before this fix took 3.65 s).
+  Peak memory rose from 396 MB to 908 MB, adding about 247 MB per megapixel.
+  Because `video-set` keys three items at once by default, peak memory can rise by about 1.5 GB at that size.
+  These numbers replace the earlier 2.46.0 numbers.
+
 - **Guards: Two new guards protect key-coloured details and material behind edges in the video fit.**
-  The still fit output is unchanged, but explicit `--decontam palette` runs in video also use these guards.
+  The still fit output is unchanged byte for byte, but explicit `--decontam palette` runs in video also use these guards.
 
   The key-coloured parts guard protects small details that share the key colour.
   A subject can own a key-coloured part too small for the palette to keep, such as a green charm on red hair under a green key.
   When such a part covers under 0.5 % of the interior, the palette learns key-free colours.
   Without the guard, the pass repainted the rim in the nearest key-free colour, turning the green charm's rim brown.
-  Now, when the palette is key-free, band and flank pixels within 6 px of such a part keep the matte's bytes.
+
+  Now, when the palette is key-free, band pixels within 6 px of such a part keep the matte's bytes.
+  There is no flank in video any more, so this guard covers band pixels only.
   This applies to pixels near parts that are opaque, deeper than 6 px, and have key hue above 8.
   The key-hue cap leaves those pixels alone.
-  On synthetic tests, of the charm's key-coloured edge pixels, the share that each lost at least half of its key hue or of its coverage was 0.77 with `off`, 1.00 without the guard, and 0.82 with it.
-  Colour error was 49.7 with the guard, 41.5 with `off`, and 64.9 without the guard.
-  The guards cost the red-strand scene 8.2 % to 8.5 % key contamination, with no measurable change in halo.
+
+  On synthetic tests, the share of the charm's key-coloured edge pixels that lost half their key hue or coverage was 0.77 with `off`, 0.82 now (the diagnosis measured 1.00 without the guard).
+  Its colour error was 41.7 with `off`, 46.2 now (64.9 without the guard in the diagnosis).
 
   The material-behind guard preserves edges where subject material continues to the silhouette boundary.
   A band pixel keeps the matte's bytes when its colour, observed directly or at its own luma, falls within the opaque margin of the mean colour of subject pixels right behind it.
@@ -72,14 +134,14 @@ To get the 2.45.3 frames back, pass:
   The line starts with `video-frames: warning: decontam auto ...` and ends by naming `--decontam off` as the way to keep the matte as it is.
 
   The warning prints when `auto` ran on no frames, when `auto` skipped some frames, or when the subject owns key-coloured material so the palette is not key-free.
-  On magenta keys, the red hair's blue channel sits more than 8 above its green, making the hair key-coloured material (12 to 16 % of the interior) and triggering this warning.
+  On magenta keys, the red hair's blue channel sits more than 8 above its green, making the hair key-coloured material (9.6 % of the interior on magenta and 6.6 % on Grok's darker magenta) and triggering this warning.
   The warning also prints when the key-coloured part guard kept edge pixels, reporting how many and noting that thin details farther out may be repainted.
   A few key-hued pixels deep inside from codec noise guard no edge and raise no warning.
   Brightness alpha raises no warning.
   `video-set` prefixes this warning line with the item name and records it under `warnings` in the set report.
 
   The JSON report adds `decontam.reason` for the first skip reason and `decontam.skipped_frames` when frames are skipped.
-  Per-frame stats and clip totals in the video fit add `key_part_kept_px` and `behind_kept_px`.
+  Per-frame stats and clip totals in the video fit add `key_part_kept_px`, `behind_kept_px`, `held_px`, and `settled_px`.
   Where `auto` cannot run, frames remain exactly as the matte keyed them.
   The report records "the white matte has no key colour to remove" for a white key.
   It records "no interior to learn the subject's colours from" when no pixel lies deeper than 6 px inside the silhouette.
@@ -87,24 +149,50 @@ To get the 2.45.3 frames back, pass:
   Explicit `--decontam palette` with brightness alpha remains refused.
 
   Known limits apply to this release.
+
+  The hold works on pixels that stay put.
+  A strand that moves is decided afresh in every frame.
+  A moving edge still changes from frame to frame as its colour does, so a red rim moving over a dark background changes more than the olive rim `off` leaves.
+
+  The settle follows a slow change within 12 levels per channel.
+
+  The video fit gives back no coverage the hard cut keyed.
+  Outer pixels of a soft edge that the cut erased stay erased.
+  Only on stills, outside a dark outline the flank can give a few faint pixels in the subject's colour.
+
   A thin feature whose colour is absent from the interior can be read as a palette colour plus key.
-  For example, a thin yellow line beside red hair with a pink highlight turned pink (colour error 25.8 off to 48.3 auto).
+  For example, a thin yellow line beside red hair with a pink highlight turned pink (colour error 26.2 with `off`, 48.0 now).
   `--decontam off` keeps that line.
+
   A thin key-coloured detail farther than 6 px from any key-coloured interior is repainted in a palette colour.
+
   The thinnest strands retain some olive because decoders share chroma across aligned 2x2 blocks, leaving a one-pixel strand with half the key's chroma.
   A block-aware fit is planned separately.
-  Outside a dark outline, the flank can still leave a few faint pixels in the subject's colour.
+
+  Pixel-art rows binarizing alpha, the green-only benchmark, and increased processing time and memory remain known limits.
 
 - **Tests**: `tests/frames/test_chroma_decontam.py` checks that both video verbs default to `auto` and that still verbs and the row extractor do not.
   It checks that `off` gives the engine's original bytes.
   It checks that `video-set` hands its value to `video-frames` and lists the warning.
   It checks that a white key, a subject with no interior, and brightness alpha give the same bytes as `off` with the reason.
 
-  On red strands 1 to 3 px wide on green, with chroma shared across aligned 2x2 blocks as a decoder does, the default halves key contamination and does not raise halo or lower strand recall by more than 0.05.
+  A new section tests the video fit over time on the red-strand scene standing still while decoder noise changes every frame (luma per pixel, chroma per aligned 2x2 block, eight frames).
+  The default's edge changes from one frame to the next no more than `off`'s, in mean and at the 99th percentile.
+  The edge is still cleaned, with key contamination at most half of `off`'s.
+  Clip totals count held and settled pixels, and the first frame has none.
+  A frame given twice comes out with the same bytes both times.
+
+  The video fit leaves every pixel the hard cut keyed transparent and recovers nothing.
+  The still fit still recovers its flank.
+
+  Changed tests reflect dropped flank recovery in video.
+  A head 6 px under the top frame edge passes the edge gate under the default and keeps the blur rows below the edge band as the matte keyed them.
+  For magenta skin tone in a 4:2:0 frame, the video fit's halo is read on the band where it acts (at most 0.9 of `off`'s), and the keyed flank keeps the matte's bytes.
+  The still fit keeps its halved halo.
+
   The rim of a small green charm keeps the matte's pixels and loses at most 0.1 more than `off` while strands away from it are cleaned.
   On magenta and Grok magenta, halo and alpha error do not rise.
 
-  A head 6 px under the top frame edge passes the edge gate under the default.
   A few key-hued pixels deep inside raise no warning.
   `video-frames` prints the warning line on stderr.
 
