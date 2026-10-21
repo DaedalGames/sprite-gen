@@ -221,8 +221,8 @@ BREATHE_DEPTH_MAX = 0.20
 BREATHE_BREATHS_MAX = 8
 BREATHE_LAG_MAX = 0.45
 # 굽기 방식. pixel(기본, `mode` 생략)은 정수 행·열 사상이라 도트 격자를 지키고, smooth 는
-# 큰 일러·영상 프레임용 — 머리를 자리·바이트 그대로 두고 몸통만 쌍선형으로 들어 올린다
-# (`sprite_gen.effects.breathe`). smooth 의 기본 진폭은 일러에 맞게 작다 — 어깨선이 목 아래
+# 큰 일러·영상 프레임용 — 머리를 자리·바이트 그대로 두고 가슴에서 둥글게 숨쉬게 한다
+# (`sprite_gen.effects.breathe`). smooth 의 기본 진폭은 일러에 맞게 작다 — 가슴 가운데가 목 아래
 # 몸통 높이의 0.85 % 오른다 (흉상 일러에서 화면 높이 약 0.5 %, 화면 크기로 봐도 숨이 세지 않다).
 BREATHE_MODES = ("pixel", "smooth")
 BREATHE_SMOOTH_DEPTH = 0.0085
