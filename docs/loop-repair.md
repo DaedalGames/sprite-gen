@@ -120,18 +120,21 @@ The host keeps to three things:
   executor of other code is refused as the RIFE is made.
 - Do not deploy the executor anew while a loop or an alignment runs: that run fails, by why.
 
-A send that raises, an answer that does not read, or the executor's own failure (its model not
-installed, its GPU out of memory) is a RIFE that fails, in its words. Nothing is asked again, and
-nothing runs here or on another device in its place.
+A send that raises, an answer that does not read (not the format, damaged or cut short on the
+way, or not the frame's size), or the executor's own failure (its model not installed, its GPU out
+of memory) is a RIFE that fails, in its words. Nothing is asked again, and nothing runs here or on
+another device in its place.
 
 A request and an answer are each one compressed NumPy archive (`np.savez_compressed`, read with
 `allow_pickle=False`). Its `header` is JSON: `protocol` (1) and `code` (the `rife.py` SHA-256),
 then `probe`, or `expect`, `t`, `modes` and `read`. Its images are RIFE's input as `rife.inputs`
 makes it: the colour (H × W × 3) and the coverage (H × W) of the two frames, uint8. The answer
 holds the identity, and the made colour and coverage (uint8) and, for a read, the disagreement
-(float32); or an error (`protocol`, `code`, `identity` or `failed`, with what it names). Reports
-name the executor: `interpolator` reads `kind` `rife-torch`, `executor`, and the executor's
-`device` and `gpu`; the overlapped wrap counts `runs` and `executor_calls`.
+(float32); or an error (`protocol`, `code`, `identity` or `failed`, with what it names). Each
+member of the archive is read whole, so its CRC-32 is checked before its array is read: an answer
+damaged on the way does not read, and hands on no other pixels. Reports name the executor:
+`interpolator` reads `kind` `rife-torch`, `executor`, and the executor's `device` and `gpu`; the
+overlapped wrap counts `runs` and `executor_calls`.
 
 ### Install — `sprite-gen rife install`
 

@@ -750,6 +750,12 @@ class Binary:
             raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
 
 
+class Unreadable(ValueError):
+    """Bytes that are not a request or an answer between a `RemoteRunner` and its executor (`unpack`), or a request or an
+    answer that is not what it is to be (`_asked`, `RemoteRunner`): the message names why, and where reading the bytes
+    raised, what it raised is the cause."""
+
+
 def pack(header: dict, arrays: dict[str, np.ndarray] | None = None) -> bytes:
     """A request or an answer between a `RemoteRunner` and its executor as bytes: `header` as UTF-8 JSON and `arrays`, in one
     compressed NumPy archive."""
@@ -759,22 +765,52 @@ def pack(header: dict, arrays: dict[str, np.ndarray] | None = None) -> bytes:
 
 
 def unpack(data: bytes) -> tuple[dict, dict[str, np.ndarray]]:
-    """`pack` read back: (header, arrays). Anything else is a ValueError naming why — pickled objects among them, which are
-    never loaded."""
+    """`pack` read back: (header, arrays). Anything else is `Unreadable`, naming why — and whatever reading the bytes raises
+    on the way is that: a member cut short, a block that does not decompress, a CRC-32 that does not match, a header that
+    does not parse, pickled objects (which are never loaded); what it raised is named and kept as the cause. Only where
+    `pack`'s own bytes do not read either is it the reading that fails, not the bytes: a fault of the code, raised as it
+    is."""
     if not isinstance(data, (bytes, bytearray, memoryview)):
-        raise ValueError(f"{type(data).__name__}, not bytes")
+        raise Unreadable(f"{type(data).__name__}, not bytes")
     try:
-        archive = np.load(io.BytesIO(bytes(data)), allow_pickle=False)
-        if not isinstance(archive, np.lib.npyio.NpzFile):
-            raise ValueError("an array, not an archive of them")
-        with archive:
-            arrays = {name: archive[name] for name in archive.files}
-        header = json.loads(arrays.pop("header").tobytes().decode("utf-8"))
-    except (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile) as exc:
-        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        return _unpacked(bytes(data))
+    except Unreadable:
+        raise
+    except Exception as exc:
+        if not _reads_pack():
+            raise
+        kind = type(exc)
+        named = kind.__qualname__ if kind.__module__ == "builtins" else f"{kind.__module__}.{kind.__qualname__}"
+        raise Unreadable(f"{named}: {exc}" if str(exc) else named) from exc
+
+
+def _unpacked(data: bytes) -> tuple[dict, dict[str, np.ndarray]]:
+    """`unpack`'s reading: the bytes opened as a zip archive, each member read whole — so its CRC-32 is checked — and only
+    then read as a NumPy array, pickled objects refused; the header as JSON. NumPy's own archive reader stops where a
+    member's header says its array ends: a header damaged to a shorter length gives the array read from the wrong place,
+    its CRC-32 never reached."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = [(info.filename, archive.read(info)) for info in archive.infolist()]
+    arrays = {}
+    for name, member in members:
+        if not name.endswith(".npy"):
+            raise Unreadable(f"{name} is not an array")
+        arrays[name.removesuffix(".npy")] = np.lib.format.read_array(io.BytesIO(member), allow_pickle=False)
+    if "header" not in arrays:
+        raise Unreadable("it has no header")
+    header = json.loads(arrays.pop("header").tobytes().decode("utf-8"))
     if not isinstance(header, dict):
-        raise ValueError("its header is not an object")
+        raise Unreadable("its header is not an object")
     return header, arrays
+
+
+def _reads_pack() -> bool:
+    """Whether `unpack`'s reading reads what `pack` writes."""
+    try:
+        _unpacked(pack({}))
+    except Exception:
+        return False
+    return True
 
 
 def _differs(held: dict, other: object) -> str:
@@ -785,23 +821,23 @@ def _differs(held: dict, other: object) -> str:
 
 def _asked(header: dict, arrays: dict[str, np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray], float, tuple[str, ...], bool]:
     """A frame's or a read's request, as `RemoteRunner` sends it: (colour, coverage, t, the augmentation, whether the passes
-    are read), or a ValueError naming what is not so."""
+    are read), or `Unreadable` naming what is not so."""
     t, modes, read = header.get("t"), header.get("modes"), header.get("read")
     if isinstance(t, bool) or not isinstance(t, (int, float)):
-        raise ValueError(f"t is {t!r}, not a number")
+        raise Unreadable(f"t is {t!r}, not a number")
     if (not isinstance(modes, list) or any(not isinstance(m, str) or m not in TTA_MODES for m in modes)
             or len(set(modes)) < len(modes)):
-        raise ValueError(f"the augmentation is {modes!r}, not a list of {' or '.join(TTA_MODES)}, each once")
+        raise Unreadable(f"the augmentation is {modes!r}, not a list of {' or '.join(TTA_MODES)}, each once")
     if not isinstance(read, bool):
-        raise ValueError(f"read is {read!r}, not true or false")
+        raise Unreadable(f"read is {read!r}, not true or false")
     cover = arrays.get("cover_a")
     if cover is None or cover.ndim != 2:
-        raise ValueError("cover_a is not an image of one channel")
+        raise Unreadable("cover_a is not an image of one channel")
     h, w = cover.shape
     for name, shape in (("colour_a", (h, w, 3)), ("colour_b", (h, w, 3)), ("cover_a", (h, w)), ("cover_b", (h, w))):
         got = arrays.get(name)
         if got is None or got.shape != shape or got.dtype != np.uint8:
-            raise ValueError(f"{name} is {'missing' if got is None else f'{got.shape} {got.dtype}'}, not {shape} uint8")
+            raise Unreadable(f"{name} is {'missing' if got is None else f'{got.shape} {got.dtype}'}, not {shape} uint8")
     return [arrays["colour_a"], arrays["colour_b"]], [arrays["cover_a"], arrays["cover_b"]], float(t), tuple(modes), read
 
 
@@ -815,7 +851,7 @@ def answer(request: bytes, runner: Callable[[], object]) -> bytes:
     answered in its words; anything else is raised, a fault of the code."""
     try:
         header, arrays = unpack(request)
-    except ValueError as exc:
+    except Unreadable as exc:
         return pack({"error": "failed", "message": f"the request does not read: {exc}"})
     if header.get("protocol") != PROTOCOL:
         return pack({"error": "protocol", "protocol": PROTOCOL})
@@ -832,7 +868,7 @@ def answer(request: bytes, runner: Callable[[], object]) -> bytes:
         return pack({"error": "identity", "identity": own})
     try:
         colour, cover, t, modes, read = _asked(header, arrays)
-    except ValueError as exc:
+    except Unreadable as exc:
         return pack({"error": "failed", "message": f"the request does not read: {exc}"})
 
     def run(x: np.ndarray, y: np.ndarray, at: float, named: tuple[str, ...] | None) -> np.ndarray:
@@ -859,17 +895,14 @@ class RemoteRunner:
     carries it (`expect`): an executor that is not it any more makes nothing and says what differs, and an answer from
     another is not handed on — so every frame handed on, and every frame a `Cache` keeps under its identity, is that
     executor's. An executor whose protocol or rife.py is another is refused as it is made. Nothing is asked again or run
-    elsewhere: a send that fails, an answer that does not read and the executor's own failure are each a RIFE that fails
-    (`RifeUnavailable`). Counts its calls of the send (`calls`)."""
+    elsewhere: a send that fails, an answer that does not read — however it does not (`_read`) — and the executor's own
+    failure are each a RIFE that fails (`RifeUnavailable`). Counts its calls of the send (`calls`)."""
 
     def __init__(self, send: Callable[[bytes], bytes], name: str):
         self.send, self.name = send, name
         self.calls = 0
         self.remote: dict = {}
-        header, _ = self._sent({"probe": True}, {})
-        if not isinstance(header.get("identity"), dict):
-            raise RifeUnavailable(f"{name}: the executor's answer does not read: it names no identity")
-        self.remote = header["identity"]
+        self.remote = self._sent({"probe": True}, {}, {})[0]
 
     def frame(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
         made = self._made(colour, cover, t, read=False)
@@ -891,23 +924,16 @@ class RemoteRunner:
         augmentation this host asks for now (`tta()`) and whether the passes are read; the answer is that identity's, at
         the frame's size, or it is not handed on."""
         h, w = cover[0].shape
-        header, arrays = self._sent({"expect": self.remote, "t": t, "modes": list(tta()), "read": read},
-                                    {"colour_a": colour[0], "colour_b": colour[1], "cover_a": cover[0], "cover_b": cover[1]})
-        if header.get("identity") != self.remote:
-            raise RifeUnavailable(f"{self.name}: the executor answered as another than this RIFE runs as "
-                                  f"({_differs(self.remote, header.get('identity'))}); its frame is not handed on")
         want = {"rgb": ((h, w, 3), np.uint8), "alpha": ((h, w), np.uint8), **({"apart": ((h, w), np.float32)} if read else {})}
-        for name, (shape, dtype) in want.items():
-            got = arrays.get(name)
-            if got is None or got.shape != shape or got.dtype != dtype:
-                found = "missing" if got is None else f"{got.shape} {got.dtype}"
-                raise RifeUnavailable(f"{self.name}: the executor's answer does not read: {name} is {found}, not {shape} "
-                                      f"{np.dtype(dtype)}")
-        return arrays
+        return self._sent({"expect": self.remote, "t": t, "modes": list(tta()), "read": read},
+                          {"colour_a": colour[0], "colour_b": colour[1], "cover_a": cover[0], "cover_b": cover[1]}, want)[1]
 
-    def _sent(self, header: dict, arrays: dict[str, np.ndarray]) -> tuple[dict, dict[str, np.ndarray]]:
-        """One call of the send, this engine's protocol and code (CODE_SHA256) heading the request: the answer, read, or
-        the refusal or failure it names (`RifeUnavailable`)."""
+    def _sent(self, header: dict, arrays: dict[str, np.ndarray],
+              want: dict[str, tuple[tuple[int, ...], type]]) -> tuple[dict, dict[str, np.ndarray]]:
+        """One call of the send, this engine's protocol and code (CODE_SHA256) heading the request, and its answer read
+        (`_read`: the identity it names and its arrays, `want`'s at their shapes and dtypes). An answer that does not read,
+        however it does not, is a RIFE that fails here, naming why in the reading's words, what reading it raised the
+        cause."""
         request = pack({"protocol": PROTOCOL, "code": CODE_SHA256, **header}, arrays)
         self.calls += 1
         try:
@@ -915,9 +941,16 @@ class RemoteRunner:
         except Exception as exc:  # what carries the bytes is the host's, failing in its own words
             raise RifeUnavailable(f"{self.name}: sending to the executor failed: {exc}") from exc
         try:
-            answered, got = unpack(data)
-        except ValueError as exc:
-            raise RifeUnavailable(f"{self.name}: the executor's answer does not read: {exc}") from exc
+            return self._read(data, header.get("expect"), want)
+        except Unreadable as exc:
+            raise RifeUnavailable(f"{self.name}: the executor's answer does not read: {exc}") from (exc.__cause__ or exc)
+
+    def _read(self, data: bytes, expect: dict | None,
+              want: dict[str, tuple[tuple[int, ...], type]]) -> tuple[dict, dict[str, np.ndarray]]:
+        """The executor's answer read whole (`unpack`): the identity it names — the one the request `expect`s, where it
+        names one — and its arrays, each `want` names there at its shape and dtype. One that is not so is `Unreadable`;
+        the refusal or the failure it names, and an answer from another identity, are each a RIFE that fails."""
+        answered, got = unpack(data)
         error = answered.get("error")
         if error == "protocol":
             raise RifeUnavailable(f"{self.name}: the executor speaks protocol {answered.get('protocol')}, this one {PROTOCOL}: "
@@ -931,7 +964,18 @@ class RemoteRunner:
                                   "runs as it is")
         if error is not None:
             raise RifeUnavailable(f"{self.name}: the executor failed: {answered.get('message', error)}")
-        return answered, got
+        identity = answered.get("identity")
+        if not isinstance(identity, dict):
+            raise Unreadable("it names no identity")
+        if expect is not None and identity != expect:
+            raise RifeUnavailable(f"{self.name}: the executor answered as another than this RIFE runs as "
+                                  f"({_differs(expect, identity)}); its frame is not handed on")
+        for name, (shape, dtype) in want.items():
+            found = got.get(name)
+            if found is None or found.shape != shape or found.dtype != dtype:
+                raise Unreadable(f"{name} is {'missing' if found is None else f'{found.shape} {found.dtype}'}, not {shape} "
+                                 f"{np.dtype(dtype)}")
+        return identity, got
 
 
 def torch_runner(model: Path | None = None) -> object:
