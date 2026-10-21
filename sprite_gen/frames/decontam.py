@@ -93,11 +93,25 @@ Guards, in order of the decision they make:
   its bar the other way by `VIDEO_HOLD`, and the palette colour picked last frame
   stays unless another one's line passes closer by as much. A pixel that moves
   changes its evidence by far more than that and is decided afresh.
+- *Blend (video fit, with a clip's `history`).* A call the hold does let go still
+  changed what the pixel showed by the whole gap between the matte's colour and the
+  fit's in one frame (kept to written, a tint to a blend and so the matte's coverage
+  to the fit's, one palette colour to another): on a still edge, the rare large jump
+  the matte does not have. So an examined pixel shows both renderings, the matte's
+  and the fit's, made from this frame's evidence and mixed, and the mix moves toward
+  this frame's call by at most `VIDEO_BLEND` a frame, and less where that would move
+  the output by more than `VIDEO_STEP` plus `VIDEO_STEP_MOTION` per unit its source
+  moved (premultiplied, any channel or coverage). A moving pixel follows its subject
+  at once, since both renderings do; only the change of call is spread over frames.
+  A still pixel that came into or left the band, or that is still on its way to its
+  call, moves at most `VIDEO_STEP` a frame from what it showed; a pixel the hard cut
+  keyed stays transparent.
 - *Settle (video fit, with a clip's `history`).* A pixel written in this frame and the
-  last in the same palette colour, whose source did not move by more than
-  `VIDEO_STILL` anywhere in its 3x3 box, moves `VIDEO_SETTLE` of the way from what it
-  was toward this frame's fit, and never farther than `VIDEO_SETTLE_REACH` from that
-  fit: what is left changing there is the codec's noise.
+  last in the same palette colour, both at their call, whose source did not move by
+  more than `VIDEO_STILL` anywhere in its 3x3 box, moves `VIDEO_SETTLE` of the way from
+  what it was toward this frame's fit, never farther than `VIDEO_SETTLE_REACH` from
+  that fit, and catches up past that by at most `VIDEO_STEP` a frame: what is left
+  changing there is the codec's noise.
 
 A subject that owns key-coloured material (more than `KEY_MATERIAL_MAX_SHARE` of
 its interior carries the key hue, the same test `video-frames --spill auto` runs
@@ -157,6 +171,9 @@ VIDEO_HOLD = 16.0  # video fit: how far (RGB) a test must pass the other way, or
 VIDEO_SETTLE = 0.1  # video fit: the share of the way a written pixel that stood still moves from last frame's value
 VIDEO_SETTLE_REACH = 12.0  # video fit: ... and never farther than this (per channel) from what this frame's fit gives
 VIDEO_STILL = 8  # video fit: stood still = no source channel within the pixel's 3x3 box moved more than this
+VIDEO_BLEND = 0.2  # video fit: the most a pixel's mix of two calls moves toward this frame's call in a frame (*Blend*)
+VIDEO_STEP = 4.0  # video fit: ... and the most that moves its output, premultiplied (any channel or coverage, 0-255)
+VIDEO_STEP_MOTION = 0.25  # ... plus this much per unit its source moved (the largest channel change in its 3x3 box)
 LUMA = np.array([0.299, 0.587, 0.114])
 _CHUNK = 1 << 16
 # what the video fit keeps of each pixel it examined (`history["tests"]`): that it saw it, and each held test's outcome
@@ -307,6 +324,29 @@ def _line_miss(towards: np.ndarray, line: np.ndarray) -> np.ndarray:
     return np.linalg.norm(towards - along[:, None] * line, axis=-1)
 
 
+def _fit_alpha(offset: np.ndarray, line: np.ndarray, fit: str) -> np.ndarray:
+    """The coverage that explains `offset` (observation minus background) along `line` (palette colour minus
+    background), per pixel: the projection, which the video fit averages with a luma-only alpha where the two
+    differ in luma (a decoded frame's chroma is blurred, its luma is not)."""
+    alpha = np.clip((offset * line).sum(-1) / np.maximum((line * line).sum(-1), 1e-9), 0.0, 1.0)
+    if fit == "video":
+        luma_gap = line @ LUMA
+        separated = np.abs(luma_gap) >= LUMA_SEPARATION
+        luma_alpha = np.clip((offset @ LUMA) / np.where(separated, luma_gap, 1.0), 0.0, 1.0)
+        alpha = np.where(separated, 0.5 * (alpha + luma_alpha), alpha)
+    return alpha
+
+
+def _fit_colour(obs: np.ndarray, bg: np.ndarray, chosen: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """The colour written for palette colour `chosen` at coverage `alpha`: its chroma at the observation's light with
+    the fitted key share taken out, leaning on the palette colour where coverage is too thin for the observed luma to
+    mean much."""
+    observed_luma = (obs @ LUMA - (1 - alpha) * (bg @ LUMA)) / np.maximum(alpha, 1e-3)
+    trust = np.clip(alpha / LUMA_TRUST_ALPHA, 0.0, 1.0)
+    target = trust * observed_luma + (1 - trust) * (chosen @ LUMA)
+    return recolor_to_luma(chosen, target)
+
+
 def _hold(value: np.ndarray, bar: Any, before: np.ndarray, bit: int, *, strict: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """`value <= bar` (`<` when `strict`), with the outcome the last frame recorded under `bit` in `before` (*Hold*):
     a pixel it passed passes up to bar + VIDEO_HOLD, one it failed needs bar - VIDEO_HOLD, and a pixel it did not
@@ -325,12 +365,103 @@ def _box_max3(values: np.ndarray) -> np.ndarray:
     return np.max([pad[1 + dy:1 + dy + height, 1 + dx:1 + dx + width] for dy in (-1, 0, 1) for dx in (-1, 0, 1)], axis=0)
 
 
+def _premultiplied(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Rows of colour (0-255) and coverage (0-1) as what they add over any background: colour times coverage, and
+    the coverage, all on 0-255."""
+    return np.concatenate([rgb * alpha[:, None], 255.0 * alpha[:, None]], axis=1)
+
+
+def _toward(was: np.ndarray, fresh: np.ndarray, step: Any) -> np.ndarray:
+    """RGBA rows (0-255): `was` moved toward `fresh` along their premultiplied crossfade, by at most `step` (per row,
+    or one value) in any premultiplied channel or in coverage; `fresh` itself where it lies within that."""
+    was_a, fresh_a = was[:, 3] / 255.0, fresh[:, 3] / 255.0
+    gap = np.abs(_premultiplied(fresh[:, :3], fresh_a) - _premultiplied(was[:, :3], was_a)).max(axis=1)
+    lam = np.minimum(1.0, np.asarray(step, dtype=np.float64) / np.maximum(gap, 1e-9))
+    alpha = was_a + lam * (fresh_a - was_a)
+    paint = was[:, :3] * was_a[:, None] + lam[:, None] * (fresh[:, :3] * fresh_a[:, None] - was[:, :3] * was_a[:, None])
+    rgb = np.where(alpha[:, None] > 0, paint / np.maximum(alpha, 1e-9)[:, None], fresh[:, :3])
+    moved = np.concatenate([rgb, 255.0 * alpha[:, None]], axis=1)
+    return np.where((lam >= 1.0)[:, None], fresh, moved)
+
+
 def _last_frame(history: dict[str, Any] | None, shape: tuple[int, ...], palette: np.ndarray) -> dict[str, Any] | None:
     """The previous frame's record in a clip's `history`, or None where it cannot speak for this frame: no record
     yet, a frame of another size, or another palette (picks are indices into it)."""
     if not history or history["shape"] != shape or not np.array_equal(history["palette"], palette):
         return None
     return history
+
+
+def _blend_calls(last: dict[str, Any] | None, rows: np.ndarray, cols: np.ndarray, motion: np.ndarray, *,
+                 written: np.ndarray, refits: np.ndarray, picks: np.ndarray, matte: np.ndarray, fit_alpha: np.ndarray,
+                 colour: np.ndarray, palette_rgb: np.ndarray, obs: np.ndarray, bg: np.ndarray
+                 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """*Blend*: what each examined pixel (`rows`, `cols`) shows, between the matte's rendering and the fit's.
+
+    Both come from this frame's evidence: K is the matte (`matte`, RGBA rows, the key hue capped as a kept pixel's
+    is), W the fit (`colour`, the palette colour at the pixel's light, with the fit's coverage `fit_alpha` where the
+    call refits coverage and the matte's elsewhere). While the palette pick changes, W is the two picks' renderings
+    mixed by mu; a new pick waits until the change in hand is done, and going back to the pick it came from turns the
+    change around. The weights (colour: written; coverage: written with coverage refitted; mu: 1) move toward this
+    frame's call by at most VIDEO_BLEND a frame, and less where that would move the output by more than
+    VIDEO_STEP + VIDEO_STEP_MOTION * `motion` (premultiplied, any channel or coverage). A pixel new to the band starts
+    at its call when it was transparent last frame, otherwise from the matte. Returns the RGBA rows shown (float)
+    and the state: w_col, w_cov, pick_from, pick_to, mu, settled (at this frame's call), moving (weights moved)."""
+    t_col = written.astype(np.float64)
+    t_cov = (written & refits).astype(np.float64)
+    now = picks.astype(np.int64)
+    if last is None:
+        w_col0, w_cov0, to0, from0, mu0 = t_col, t_cov, now, now, np.ones(len(rows))
+    else:
+        seen = last["examined"][rows, cols]
+        at_call = ~seen & (last["out"][rows, cols, 3] == 0)  # nothing was shown there to move from
+        w_col0 = np.where(seen, last["w_col"][rows, cols], np.where(at_call, t_col, 0.0))
+        w_cov0 = np.where(seen, last["w_cov"][rows, cols], np.where(at_call, t_cov, 0.0))
+        to0 = np.where(seen, last["pick_to"][rows, cols], now).astype(np.int64)
+        from0 = np.where(seen, last["pick_from"][rows, cols], now).astype(np.int64)
+        mu0 = np.where(seen, last["mu"][rows, cols], 1.0)
+    back = (now == from0) & (from0 != to0) & (mu0 < 1)
+    new = (now != to0) & ~back & (mu0 >= 1)
+    pick_to = np.where(back, from0, np.where(new, now, to0))
+    mu_start = np.where(back, 1.0 - mu0, np.where(new, 0.0, mu0))
+    pick_from = np.where(mu_start >= 1, pick_to, np.where(back | new, to0, from0))
+
+    def render(picked, which, rgb_rows, alpha_rows):
+        if which.any():
+            chosen = palette_rgb[picked[which]]
+            alpha_rows[which] = _fit_alpha(obs[which] - bg[which], chosen - bg[which], "video")
+            rgb_rows[which] = _fit_colour(obs[which], bg[which], chosen, alpha_rows[which])
+
+    to_rgb, to_a = colour.copy(), fit_alpha.copy()
+    render(pick_to, pick_to != now, to_rgb, to_a)  # a new pick waiting its turn: the one in hand
+    from_rgb, from_a = to_rgb.copy(), to_a.copy()
+    render(pick_from, pick_from != pick_to, from_rgb, from_a)
+    matte_rgb, matte_a = matte[:, :3], matte[:, 3] / 255.0
+
+    def shown(w_col, w_cov, mu):
+        fit_rgb = (1 - mu)[:, None] * from_rgb + mu[:, None] * to_rgb
+        fit_a = (1 - mu) * from_a + mu * to_a
+        a = np.where(w_cov >= 1, fit_a, matte_a + w_cov * (fit_a - matte_a))
+        rgb = np.where(w_col[:, None] >= 1, fit_rgb, matte_rgb + w_col[:, None] * (fit_rgb - matte_rgb))
+        return rgb, a
+
+    full_col = w_col0 + np.clip(t_col - w_col0, -VIDEO_BLEND, VIDEO_BLEND)
+    full_cov = w_cov0 + np.clip(t_cov - w_cov0, -VIDEO_BLEND, VIDEO_BLEND)
+    full_mu = np.minimum(1.0, mu_start + VIDEO_BLEND)
+    change = np.abs(_premultiplied(*shown(full_col, full_cov, full_mu))
+                    - _premultiplied(*shown(w_col0, w_cov0, mu_start))).max(axis=1)
+    lam = np.minimum(1.0, (VIDEO_STEP + VIDEO_STEP_MOTION * motion) / np.maximum(change, 1e-9))
+    w_col = w_col0 + lam * (full_col - w_col0)
+    w_col = np.where(np.abs(w_col - t_col) < 1e-9, t_col, w_col)
+    w_cov = w_cov0 + lam * (full_cov - w_cov0)
+    w_cov = np.where(np.abs(w_cov - t_cov) < 1e-9, t_cov, w_cov)
+    mu = mu_start + lam * (full_mu - mu_start)
+    mu = np.where(mu > 1 - 1e-9, 1.0, mu)
+    rgb, a = shown(w_col, w_cov, mu)
+    state = {"w_col": w_col, "w_cov": w_cov, "pick_from": pick_from, "pick_to": pick_to, "mu": mu,
+             "settled": (w_col == t_col) & (w_cov == t_cov) & (mu >= 1) & (pick_to == now),
+             "moving": (w_col != w_col0) | (w_cov != w_cov0) | (mu != mu0) | (pick_to != to0)}
+    return np.concatenate([rgb, 255.0 * a[:, None]], axis=1), state
 
 
 def not_applicable(keyed: np.ndarray, keyed_mask: np.ndarray, chroma_key: tuple[int, int, int]) -> str | None:
@@ -399,7 +530,7 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     `edge_band` (px) keeps what the matte left transparent along the top, left and right
     edges transparent (*Frame edge*); 0 leaves the frame edge to the pass like anywhere else.
     `history` (video fit) is a dict a clip hands to every frame in order: the pass reads the
-    previous frame's record from it (*Hold*, *Settle*) and leaves this frame's; empty, it
+    previous frame's record from it (*Hold*, *Blend*, *Settle*) and leaves this frame's; empty, it
     starts from this frame alone. The still fit ignores it.
     `mode="auto"` returns the input unchanged, with the reason in the stats, where the
     pass does not apply; `mode="palette"` raises SystemExit there instead.
@@ -470,6 +601,8 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         if part.any():
             guarded = (_ring_depth(part, KEY_PART_GUARD_PX) <= KEY_PART_GUARD_PX)[rows, cols]
     alpha_new = np.zeros(len(rows))
+    fit_alpha = np.zeros(len(rows))  # the fit's own coverage, refitted or not (*Blend* mixes it with the matte's)
+    refits = np.zeros(len(rows), dtype=bool)
     colour_new = np.zeros((len(rows), 3))
     blend = np.zeros(len(rows), dtype=bool)
     tinted = np.zeros(len(rows), dtype=bool)
@@ -519,12 +652,7 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         chosen = palette_rgb[pick]
         line = chosen - bg
         offset = obs - bg
-        alpha = np.clip((offset * line).sum(-1) / np.maximum((line * line).sum(-1), 1e-9), 0.0, 1.0)
-        if fit == "video":
-            luma_gap = (chosen - bg) @ LUMA
-            separated = np.abs(luma_gap) >= LUMA_SEPARATION
-            luma_alpha = np.clip((offset @ LUMA) / np.where(separated, luma_gap, 1.0), 0.0, 1.0)
-            alpha = np.where(separated, 0.5 * (alpha + luma_alpha), alpha)
+        alpha = _fit_alpha(offset, line, fit)
         residual = offset - alpha[:, None] * line
         miss = np.linalg.norm(residual, axis=-1)
         fits, held = _hold(miss, UNEXPLAINED_RATIO * np.linalg.norm(offset, axis=-1) + UNEXPLAINED_SLACK, before,
@@ -569,13 +697,10 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         floor = np.maximum(MIN_RECOVERED_ALPHA, NOISE_SIGMAS * sigma_luma / np.maximum(np.abs((chosen - bg) @ LUMA), 1e-6))
         alpha = np.where(in_flank & (alpha < floor), 0.0, alpha)
         coverage = np.where(refit, alpha, out[r, c, 3] / 255.0)
-        # the colour's light: the observation with the fitted key share taken out, leaning on the
-        # palette colour where coverage is too thin for the observed luma to mean much
-        observed_luma = (obs @ LUMA - (1 - alpha) * (bg @ LUMA)) / np.maximum(alpha, 1e-3)
-        trust = np.clip(alpha / LUMA_TRUST_ALPHA, 0.0, 1.0)
-        target = trust * observed_luma + (1 - trust) * (chosen @ LUMA)
         alpha_new[start:start + len(r)] = coverage
-        colour_new[start:start + len(r)] = recolor_to_luma(chosen, target)
+        fit_alpha[start:start + len(r)] = alpha
+        refits[start:start + len(r)] = refit
+        colour_new[start:start + len(r)] = _fit_colour(obs, bg, chosen, alpha)
         blend[start:start + len(r)] = is_blend | is_tint
         tinted[start:start + len(r)] = is_tint
         unexplained[start:start + len(r)] = ~explained
@@ -612,6 +737,23 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         capped = _cap_key_hue(kept_rgb[hued], keyed_channels, unkeyed_channels, KEY_HUE_TINT)
         out[kr[hued], kc[hued], :3] = np.clip(np.round(capped), 0, 255).astype(np.uint8)
         clamped = int(np.count_nonzero(hued))
+    blended: dict[str, np.ndarray] = {}
+    if fit == "video" and history is not None:
+        # *Blend*: each examined pixel shows the matte's rendering and the fit's mixed, the mix moving toward this
+        # frame's call a step a frame; the matte as a kept pixel shows it, its key hue capped
+        source_now = np.asarray(source_rgb)[..., :3].astype(np.uint8)
+        motion = (np.zeros(keyed_mask.shape, dtype=np.int16) if last is None else
+                  _box_max3(np.abs(source_now.astype(np.int16) - last["source"].astype(np.int16)).max(-1)))
+        matte = np.asarray(keyed)[rows, cols].astype(np.float64)
+        if keyfree:
+            hued = ~guarded & (matte[:, 3] > 0) & (_key_excess_field(matte[:, :3].astype(np.int32), keyed_channels,
+                                                                     unkeyed_channels) > KEY_HUE_TINT)
+            matte[hued, :3] = np.clip(np.round(_cap_key_hue(matte[hued, :3].astype(np.int32), keyed_channels,
+                                                            unkeyed_channels, KEY_HUE_TINT)), 0, 255)
+        shown, blended = _blend_calls(last, rows, cols, motion[rows, cols].astype(np.float64), written=blend,
+                                      refits=refits, picks=picks, matte=matte, fit_alpha=fit_alpha, colour=colour_new,
+                                      palette_rgb=palette_rgb, obs=rgb[rows, cols], bg=background[rows, cols])
+        out[rows, cols] = np.clip(np.round(shown), 0, 255).astype(np.uint8)
     # recovered background coverage must chain to the subject
     visible = out[..., 3] > 0
     attached = _grow_into(subject & visible, visible)
@@ -620,28 +762,42 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     out[out[..., 3] == 0] = 0
     settled_px = 0
     if fit == "video" and history is not None:
-        written = np.zeros(keyed_mask.shape, dtype=bool)
-        written[rows[blend], cols[blend]] = True
-        pick_map = np.full(keyed_mask.shape, 255, dtype=np.uint8)
-        pick_map[rows, cols] = picks
-        source8 = np.asarray(source_rgb)[..., :3].astype(np.uint8)
+        def as_map(values: np.ndarray, fill: Any, dtype: Any) -> np.ndarray:
+            plane = np.full(keyed_mask.shape, fill, dtype=dtype)
+            plane[rows, cols] = values
+            return plane
+        examined = as_map(True, False, bool)
+        written = as_map(blend, False, bool)
+        pick_map = as_map(picks, 255, np.uint8)
+        mix = {"w_col": as_map(blended["w_col"], 0.0, np.float32), "w_cov": as_map(blended["w_cov"], 0.0, np.float32),
+               "pick_from": as_map(blended["pick_from"], 255, np.uint8),
+               "pick_to": as_map(blended["pick_to"], 255, np.uint8),
+               "mu": as_map(blended["mu"], 1.0, np.float32), "settled": as_map(blended["settled"], False, bool)}
+        unsmoothed = out.copy()  # what this frame shows before the steps below
         if last is not None:
-            # *Settle*: a pixel written in this frame and the last in the same colour, whose source stood still,
-            # moves VIDEO_SETTLE of the way from what it was, never farther than VIDEO_SETTLE_REACH from this fit
-            moved = np.abs(source8.astype(np.int16) - last["source"].astype(np.int16)).max(-1)
-            calm = (written & last["written"] & (pick_map == last["pick"]) & (_box_max3(moved) <= VIDEO_STILL)
-                    & (out[..., 3] > 0))
+            still = motion <= VIDEO_STILL
+            # *Settle*: a pixel written in this frame and the last in the same colour, both at their call, whose
+            # source stood still, moves VIDEO_SETTLE of the way from what it was, never farther than
+            # VIDEO_SETTLE_REACH from this fit, and catches up past that by at most VIDEO_STEP a frame
+            calm = (written & last["written"] & (pick_map == last["pick"]) & still & (out[..., 3] > 0)
+                    & mix["settled"] & last["settled"])
             fresh = out[calm].astype(np.float64)
             was = last["out"][calm].astype(np.float64)
             eased = np.clip(was + VIDEO_SETTLE * (fresh - was), fresh - VIDEO_SETTLE_REACH, fresh + VIDEO_SETTLE_REACH)
-            out[calm] = np.clip(np.round(eased), 0, 255).astype(np.uint8)
+            out[calm] = np.clip(np.round(_toward(was, eased, VIDEO_STEP)), 0, 255).astype(np.uint8)
+            # a still pixel whose mix moved, that is still on its way to its call, or that came into or left the band
+            # moves at most VIDEO_STEP a frame from what it showed; what the hard cut keyed stays transparent
+            stepped = (still & (examined | last["examined"]) & ~calm & ~keyed_mask
+                       & (as_map(blended["moving"], False, bool) | last["on_way"] | (examined != last["examined"])))
+            stepped_out = _toward(last["out"][stepped].astype(np.float64), out[stepped].astype(np.float64), VIDEO_STEP)
+            out[stepped] = np.clip(np.round(stepped_out), 0, 255).astype(np.uint8)
             out[out[..., 3] == 0] = 0
-            settled_px = int(np.count_nonzero(calm))
-        tests_map = np.zeros(keyed_mask.shape, dtype=np.uint8)
-        tests_map[rows, cols] = tests
+            settled_px = int(np.count_nonzero(calm | stepped))
+        tests_map = as_map(tests, 0, np.uint8)
         history.clear()
         history.update(shape=keyed_mask.shape, palette=palette_rgb.copy(), tests=tests_map, pick=pick_map,
-                       written=written, out=out.copy(), source=source8)
+                       written=written, out=out.copy(), source=source_now, on_way=(out != unsmoothed).any(-1),
+                       examined=examined, **mix)
     recovered = int(np.count_nonzero(flank & (out[..., 3] > 0)))
     changed = int(np.count_nonzero((out != np.asarray(keyed, dtype=np.uint8)).any(axis=-1)))
     stats = {
@@ -673,4 +829,5 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         stats["behind_kept_px"] = int(np.count_nonzero(behind_kept))
         stats["held_px"] = int(np.count_nonzero(held_calls))
         stats["settled_px"] = settled_px
+        stats["blending_px"] = int(np.count_nonzero(~blended["settled"])) if blended else 0
     return out, stats

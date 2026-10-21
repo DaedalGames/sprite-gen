@@ -88,8 +88,9 @@ SPECK_APART = 0.1
 # Edge decontamination (`sprite_gen.frames.decontam`). A decoded frame's chroma is blurred by
 # 4:2:0 while its luma is not, so frames use the video fit. One palette serves the whole clip,
 # learned on the first frame, so the colours an edge may take cannot change between frames, and
-# one history carries each frame's calls to the next (the pass's *Hold* and *Settle*), so the
-# codec's noise does not flip an edge pixel between colours from one frame to the next.
+# one history carries each frame's calls to the next (the pass's *Hold*, *Blend* and *Settle*), so
+# the codec's noise does not flip an edge pixel between colours from one frame to the next, and a
+# call that does change is shown a step a frame.
 # `auto` is the default: a thin strand on a chroma key comes out of the codec mixed with the key
 # (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
 # key, a subject with no interior) the frames keep the matte's bytes and the report says why;
@@ -98,7 +99,7 @@ DECONTAM_MODES = ("off", "auto", "palette")
 DECONTAM_DEFAULT = "auto"
 DECONTAM_FIT = "video"
 DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
-                      "key_part_kept_px", "behind_kept_px", "held_px", "settled_px")
+                      "key_part_kept_px", "behind_kept_px", "held_px", "settled_px", "blending_px")
 BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
 
 
