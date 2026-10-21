@@ -272,6 +272,22 @@ def test_repair_on_without_rife_refuses_a_wrap_to_bridge(tmp_path, monkeypatch):
     assert report["status"] == "failed" and "rife-ncnn-vulkan not found" in report["error"]
 
 
+def test_repair_on_refusing_a_wrap_to_bridge_hands_nothing_over(tmp_path, monkeypatch):
+    """A refused run hands nothing over (docs/video-pipeline.md section 4, `loop.refuse`): the seam bridge's refusal
+    takes back what an earlier cut in the same folder handed over, as every other `video-loop` refusal does."""
+    _no_rife(monkeypatch, tmp_path)
+    _run(tmp_path, _keyed(tmp_path, _phases(1.0)))
+    out, handed = tmp_path / "out", ("cycle", "idle.strip.png", "idle.strip.json", "idle.gif", "idle.webp")
+    assert all((out / n).exists() for n in handed)
+    jumping = tmp_path / "jumping"
+    jumping.mkdir()
+    for k, p in enumerate(_phases(2.6)):
+        _figure(p).save(jumping / f"{k:04d}.png")
+    report = _refused(tmp_path, jumping, r"sprite-gen rife install.*--repair auto", repair="on")
+    assert report["status"] == "failed"
+    assert [n for n in handed if (out / n).exists()] == [] and not (out / loop_mod.CYCLE_REFUSED_DIR).exists()
+
+
 def test_a_pinned_clip_the_pin_refuses_is_not_bridged(tmp_path):
     phases = _phases(2.6, count=N) + [0.5]  # its last frame is not its first again
     rep = _refused(tmp_path, _keyed(tmp_path, phases), r"the pinned clip does not end on its first frame",
