@@ -8,7 +8,7 @@
 # (prepare -> extract -> compose) and the whole test suite. Then RIFE's torch backend on the CPU:
 # PyTorch (TORCH_VERSION, from PyTorch's CPU index) into the same environment, its install check
 # frame (`sprite-gen rife install --backend torch`) and every test marked torch_rife, none skipped
-# (SPRITE_GEN_RIFE_DEVICE=cpu). Its CUDA run is the T4 lane's (docs/release.md).
+# (SPRITE_GEN_RIFE_DEVICE=cpu). Its CUDA run is the T4 lane's (`scripts/t4_lane.py`, docs/release.md).
 #
 # Run it from a clean clone of the commit being measured, on x86-64 Linux with:
 #   - Python 3.14 (`python3.14` on PATH, or named by SPRITE_GEN_LANE_PYTHON),

@@ -1,6 +1,6 @@
 # 릴리즈 — 태그를 push 하고, 레인이 빌드한 것으로 릴리즈 페이지를 낸다
 
-> Owns: How a vX.Y.Z tag becomes a release page, what the lane builds and the publisher attaches, and what stays manual · Index: [docs/README.md](README.md)
+> Owns: How a vX.Y.Z tag becomes a release page, the lanes a commit passes (Linux, and a T4 for the torch backend on CUDA), what the lane builds and the publisher attaches, and what stays manual · Index: [docs/README.md](README.md)
 
 릴리즈 페이지는 손으로 만들지 않는다. `vX.Y.Z` 태그를 push 한 뒤 `scripts/release_publish.py` 가
 그 태그의 `CHANGELOG.md` 절을 본문으로 페이지를 만든다. 사람이 `gh release create` 의 인자를
@@ -8,10 +8,11 @@
 페이지만 빠져서, 릴리즈 목록에는 v2.5.2 가 Latest 로 남아 있었던 적이 있다.
 
 GitHub-hosted CI(GitHub Actions)는 쓰지 않는다. 테스트 게이트와 wheel·sdist 빌드는 메인테이너의
-리눅스 러너에서 `scripts/linux_lane.sh` 가 돌리고, 페이지를 내는 기계는 아무것도 빌드하지 않고
-레인이 만든 것을 붙인다.
+리눅스 러너에서 `scripts/linux_lane.sh` 가 돌리고, RIFE torch 판의 CUDA 게이트는 Modal 에서 빌린 T4 에서
+`scripts/t4_lane.py` 가 돌린다(아래 "T4 레인"). 페이지를 내는 기계는 아무것도 빌드하지 않고 레인이 만든
+것을 붙인다.
 
-레인이 통과했다는 것은 한 번의 실행이 exit 0 으로 끝났거나, 같은 커밋에서 `--rife-unmeasured "<이유>"`
+리눅스 레인이 통과했다는 것은 한 번의 실행이 exit 0 으로 끝났거나, 같은 커밋에서 `--rife-unmeasured "<이유>"`
 실행(exit 3, RIFE 를 재지 못했다고 끝에 적는다)과 `--rife-only` 실행(exit 0)이 둘 다 끝났다는
 뜻이다. RIFE 는 rife-ncnn-vulkan 을 돌릴 수 있는 Vulkan 드라이버가 있어야 잴 수 있다 — WSL1 의 Mesa
 lavapipe 에서는 첫 업로드에서 죽는다 — 그래서 그런 호스트에서는 RIFE 를 떼어 내되 조용히 건너뛰지는
@@ -35,7 +36,7 @@ RIFE 의 torch 백엔드(`SPRITE_GEN_RIFE_BACKEND=torch`, docs/loop-repair.md 1�
 판정 비교)은 `real_rife` 단계에서 빼고 이 단계에서 돈다. `--rife-unmeasured` 는 이 단계를 돌지 않고, 그
 실행에서는 `torch_rife` 가 붙은 시험도 RIFE 때문에 건너뛸 수 있는 것으로 친다.
 `tests/release/test_lane_rife_collection.py` 의 표시 검사도 두 표시를 같이 받는다. CUDA 위의 torch 판은
-이 레인이 재지 않는다.
+이 레인이 재지 않고 T4 레인이 잰다.
 
 표시 없이 RIFE 가 없을 때 건너뛰거나 모이지 않는 시험은 두 실행 어느 쪽도 재지 않는다. 그래서
 `--rife-unmeasured` 는 시험을 `pytest --rife-unmeasured` 로 돌리고, 그 실행에서 건너뛴 것마다 — skip
@@ -46,6 +47,37 @@ RIFE 의 torch 백엔드(`SPRITE_GEN_RIFE_BACKEND=torch`, docs/loop-repair.md 1�
 있는 척하는 대역을 둔 채 한 번, 없는 채 한 번 모아, 모이는지나 skip 표시의 판정이 갈리는 시험마다
 표시를 요구하고 없으면 그 이름을 대고 실패한다.
 
+## T4 레인 — torch 판을 CUDA 에서
+
+`scripts/t4_lane.py` 는 Modal 에서 빌린 NVIDIA T4 하나에서 torch 판을 CUDA 로 잰다. 메인테이너의 Modal
+작업 공간에서, 잴 커밋을 체크아웃한 트리(커밋되지 않은 변경이 없는)로 돌린다:
+
+```bash
+modal run --env <환경> scripts/t4_lane.py                 # 게이트
+modal run --env <환경> scripts/t4_lane.py --whole-suite   # 그 앞에 스위트 전체도
+```
+
+HEAD 의 트리(`git archive`)를 이미지로 짓는다. 리눅스 레인이 깨끗한 클론에 까는 것처럼, Python 3.14 의 새
+가상 환경에 PyPI 의 PyTorch 2.13.0 과 트리(`pip install -e ".[dev]"`)를 깐다. PyPI 의 리눅스 휠은 CUDA 13
+판이다(`pip install "sprite-gen[torch]"` 이 받는 것). 의존성도 PyPI 에서 받으므로 PyTorch 인덱스의 오래된
+사본이 끼지 않는다. 모델은 `sprite-gen rife install --backend torch` 로 엔진이 바이너리를 찾지 않는 디렉터리에
+둔다. 스위트가 부르는 도구(ffmpeg, libwebp 1.5 의 img2webp, node, git)도 이미지에 있다. 그리고 T4 에서:
+
+- 설치의 확인 프레임을 CUDA 로 만든다(`sprite-gen rife install --backend torch`, `SPRITE_GEN_RIFE_DEVICE=cuda`).
+- `--whole-suite` 면 그 환경(PyTorch 가 든)에서 스위트 전체를 CUDA 로 돈다. `pytest --rife-unmeasured` 로
+  돌리므로 바이너리가 닿지 않아 건너뛰는 `real_rife` 말고 다른 건너뜀은 실패다(리눅스 레인의 RIFE 없는
+  실행과 같다).
+- `torch_rife` 가 붙고 `real_rife` 는 붙지 않은 시험 전부를 CUDA 로 돈다. 하나라도 건너뛰거나 표시된 시험이
+  없으면 실패다. 둘이 함께 붙은 시험(같은 기계의 바이너리와 torch 판의 판정 비교)은 리눅스 레인 몫이다. T4 의
+  GPU 는 계산만 내주므로 바이너리가 쓰지 못한다.
+
+실행은 함수 호출 id, GPU 와 드라이버, 단계마다의 출력을 찍는다. 모든 단계가 통과해야 exit 0 이다. T4 레인이
+통과했다는 것은 그 커밋에서 돈 실행 하나가 exit 0 으로 끝났다는 뜻이다. 두 레인이 같은 PyTorch 와 Python 을
+까는지는 `tests/release/test_t4_lane.py` 가 본다.
+
+## 통과는 커밋 하나의 것이다
+
+커밋이 레인을 통과했다는 것은 그 커밋에서 리눅스 레인이 통과하고(위 정의) T4 레인이 통과했다는 뜻이다.
 통과는 커밋 하나의 것이다. 어떤 커밋에서 잰 레인 — 한 번의 exit 0 이든, `--rife-only` 의 exit 0 이든 —
 은 다른 커밋의 통과가 아니다. 이전 릴리즈나 부모 커밋의 통과를 다음 커밋으로 옮겨 적지 않고, 머지할
 커밋과 태그 커밋을 각각 그 SHA 의 깨끗한 클론에서 잰다. `--rife-unmeasured` 로 잰 커밋은 같은 SHA 의
@@ -57,8 +89,9 @@ RIFE 의 torch 백엔드(`SPRITE_GEN_RIFE_BACKEND=torch`, docs/loop-repair.md 1�
 1. **릴리즈 커밋** — `CHANGELOG.md` 의 `## Unreleased (vX.Y.Z)` 절을 `## vX.Y.Z - <제목>` 으로
    바꾸고, `pyproject.toml` 의 `version` 과 `SKILL.md` 의 `version:` 을 그 버전으로 맞춘다
    (둘의 일치는 `tests/packaging/test_version_ssot.py` 가 강제한다).
-2. **PR 로 `main` 머지** — `main` 은 보호 브랜치라 직접 push 가 거부된다. 머지할 커밋에서 리눅스
-   레인이 통과해야 한다(위 정의) — 러너에서 그 커밋의 깨끗한 클론으로 `scripts/linux_lane.sh`.
+2. **PR 로 `main` 머지** — `main` 은 보호 브랜치라 직접 push 가 거부된다. 머지할 커밋에서 두 레인이
+   통과해야 한다(위 정의) — 러너에서 그 커밋의 깨끗한 클론으로 `scripts/linux_lane.sh`, 그 커밋을
+   체크아웃한 트리에서 `modal run scripts/t4_lane.py`.
 3. **태그 push** — 코드네임 접두사 없는 `vX.Y.Z` 로.
 
    ```bash
@@ -149,3 +182,4 @@ gh release upload vX.Y.Z <clip>.gif --repo aldegad/sprite-gen
 
 - [docs/README.md](README.md) — documentation index
 - `scripts/linux_lane.sh` — the test gates and the release build, on the maintainer's Linux runner
+- `scripts/t4_lane.py` — the torch backend's CUDA gates, on a T4 rented from Modal
