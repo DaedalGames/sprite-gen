@@ -2,6 +2,70 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## Unreleased
+
+**Upgrading from 2.45.3: Nothing that ran before gives other bytes.**
+Breathe without `mode` (or `mode: "pixel"`) is the same warp, the same bytes, and the same normalized sidecar.
+Its default did not change.
+`video-follow` and `video-follow-inspect` still run under those names and give the same files.
+Their records and file names on disk did not change.
+The record is still written under `follow`.
+The strip as cut is still `follow.source.png`.
+The inspection still writes `follow-inspect.*`.
+A tool that reads those names keeps working.
+Moving the written names to `sway` is a later change made together with the tools that read them.
+
+- **New: The Breathe layer adds `mode: "smooth"` for large illustrations and video frames.**
+  Set per row: `states.<state>.breathe = {"mode": "smooth", "depth": ..., "breaths": ...}`.
+  `pixel` stays the default.
+  The head and everything above the measured neck line stays in place, byte for byte, in every cell.
+  The figure's bottom stays put.
+  It reuses the automatic anatomy: rigid row, body axis, torso half width, and basis rows.
+  It also uses the neck's width, measured once on the row's first cell.
+  The whole row uses that placement.
+  The chest breathes from its centre.
+  It uses a round (cos^2) weight on the body axis at `chest_y` of the body below the neck.
+  The weight is `chest_rx` x torso half width wide, and `chest_ry` x the body below the neck tall.
+  The chest centre rises by `depth` x basis rows at the in-breath and puffs out by `depth_x`.
+  Two shoulder weights, on either side just below the neck, rise by `shoulder` x the chest's rise.
+  They rise `shoulder_lag` of a breath later.
+  The neck and the collar beside it hold still.
+  Whole rows do not move.
+  For a turned body: `chest_tilt` (degrees, clockwise on screen), `chest_bias` (-0.9 to 0.9, negative = the screen's left breathes more), and `chest_dir` (degrees from straight up, negative = up-left).
+  These default to 0; at 0, nothing changes.
+  One breath is a bump from rest (in-breath 40 %, out 60 %).
+  A cell at phase 0 is the source byte for byte.
+  Seams and joins between loops are untouched.
+  `breaths` is a whole number.
+  Refused, never silently clamped: `lag` on smooth (it would move the first cell), a stretch past the per-row strain cap (0.25) or a fold, opaque pixels pushed off the canvas, out-of-range values, and shape keys on a pixel row.
+  With the default shape nothing leaves the canvas.
+  A figure cut by the frame at its sides or bottom is not refused.
+  Defaults: `depth` 0.0085 (about 0.5 % of the frame height on a bust illustration), `depth_x` 0.028, `chest_y` 0.31, `chest_rx` 0.83, `chest_ry` 0.28, `shoulder` 0.5, `shoulder_lag` 0.08, and `chest_tilt`, `chest_bias`, and `chest_dir` 0.
+  Performance is about 0.2 s per 960 px frame.
+- **New: `sprite-gen breathe <frames> <out>` lays the Breathe layer over a folder of loop frames outside curation.**
+  This lays the Breathe layer (either mode) over a folder of loop frames that is not a curation run, such as a video loop's cells.
+  It takes the sidecar's values through the same checks and the same bake: `--mode`, `--depth`, `--depth-x`, `--breaths`, `--lag`, and `--rigid-row`.
+  It also takes the smooth shape flags: `--chest-y`, `--chest-rx`, `--chest-ry`, `--shoulder`, `--shoulder-lag`, `--chest-tilt`, `--chest-bias`, and `--chest-dir`.
+  The same values give the same bytes as a curation bake.
+  It writes the frames under their names and `breathe.json` (config, phases, the anatomy used) into a new folder all at once.
+  It refuses the source folder or a folder that is not empty.
+- **Output change: The curation webview does not preview a smooth row.**
+  The live preview mirrors the pixel warp only.
+  It shows the original frame with a notice.
+  Its row video export refuses.
+  Saving keeps a smooth sidecar exactly as written instead of filling pixel defaults.
+- **New: The follow-through is now the Sway layer, replacing `video-follow` with `video-sway`.**
+  `video-sway` and `video-sway-inspect` replace `video-follow` and `video-follow-inspect`.
+  Their Python modules are `sprite_gen.video.sway`, `sway_loop`, `sway_offsets`, and `sprite_gen.video.sway_inspect`.
+  `video-follow` and `video-follow-inspect` remain as aliases with the same results and their own name in messages.
+  A loop's record is read under `sway` or `follow`.
+  Behaviour is unchanged.
+- **New: `Anatomy` gains `origin` and `neck_span` values.**
+  It does not put these two values in the sidecar or the manifest.
+  `origin` records where the measured frame's figure sits.
+  `neck_span` records the neck's span on the rigid row.
+  Pixel Breathe does not use them.
+
 ## v2.45.3 - The seam check reads the frames that play when the body anchor spreads a sideways slide; such a cut passes again, as it did in 2.44.0
 
 **Upgrading from 2.45.2: Every cut 2.45.2 passed, and every `--anchor motion-auto` run, gives the same bytes as 2.45.2.** Only `--anchor body` cuts that 2.45.2 refused because of the walk sliding sideways before the anchor can now pass, read on the frames that play. Refused cuts print the same error line as before, the report's `producer` field names the new version, and there are no restoration schema changes.
