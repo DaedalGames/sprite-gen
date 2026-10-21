@@ -70,9 +70,9 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 
+from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
