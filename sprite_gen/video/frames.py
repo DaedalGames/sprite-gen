@@ -45,6 +45,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +88,16 @@ SPECK_APART = 0.1
 # Edge decontamination (`sprite_gen.frames.decontam`). A decoded frame's chroma is blurred by
 # 4:2:0 while its luma is not, so frames use the video fit. One palette serves the whole clip,
 # learned on the first frame, so the colours an edge may take cannot change between frames.
+# `auto` is the default: a thin strand on a chroma key comes out of the codec mixed with the key
+# (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
+# key, a subject with no interior) the frames keep the matte's bytes and the report says why;
+# brightness alpha has no key, so `auto` is off there.
 DECONTAM_MODES = ("off", "auto", "palette")
+DECONTAM_DEFAULT = "auto"
 DECONTAM_FIT = "video"
-DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px")
+DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
+                      "key_part_kept_px", "behind_kept_px")
+BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
 
 
 def _require(binary: str) -> str:
@@ -336,16 +344,19 @@ def key_frames(
     check_edges: bool = True,
     spill: str = "small",
     allow_subject: bool = False,
-    decontam: str = "off",
+    decontam: str = DECONTAM_DEFAULT,
     alpha_mode: str = "chroma",
 ) -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
     if alpha_mode == "brightness":
-        if decontam != "off":
+        if decontam == "palette":
             raise SystemExit("video-frames: brightness alpha does not use --decontam")
-        return effect.key_frames(raw_files, keyed_dir)
+        report = effect.key_frames(raw_files, keyed_dir)
+        if decontam == "auto":
+            report["decontam"] = {"mode": "auto", "applied_frames": 0, "reason": BRIGHTNESS_NO_KEY}
+        return report
     if spill not in ("small", "full"):
         raise SystemExit(f"video-frames: key_frames takes a resolved spill mode (small|full), got {spill!r}")
     if decontam not in DECONTAM_MODES:
@@ -354,6 +365,7 @@ def key_frames(
     decontam_first: dict[str, Any] | None = None
     decontam_totals = {name: 0 for name in DECONTAM_STAT_KEYS}
     decontam_applied = 0
+    decontam_skipped: list[str] = []  # why `auto` left a frame as the matte keyed it, frame by frame
     # Full correction lowers the tint threshold as well as lifting the size cap.
     spill_max = SPILL_FULL_FRACTION if spill == "full" else None
     spill_tint = SPILL_FULL_MIN_TINT if spill == "full" else None
@@ -386,6 +398,7 @@ def key_frames(
                 decontam_applied += 1
             else:
                 row["decontam"] = {"applied": False, "reason": done.get("reason")}
+                decontam_skipped.append(str(done.get("reason")))
         if check_edges:
             contact = edge_contact(image)
             if any(v > EDGE_MAX_PIXELS for v in contact.values()):
@@ -420,8 +433,12 @@ def key_frames(
             "applied_frames": decontam_applied,
             "totals": decontam_totals,
         }
+        if decontam_skipped:
+            report["decontam"] |= {"skipped_frames": len(decontam_skipped), "reason": decontam_skipped[0]}
     else:
         report["decontam"] = {"mode": decontam, "applied_frames": 0}
+        if decontam_skipped:
+            report["decontam"]["reason"] = decontam_skipped[0]
     if contacts and check_edges:
         if not allow_subject:
             raise SystemExit(_edge_contact_message(contacts))
@@ -433,6 +450,34 @@ def key_frames(
         if residual:
             raise SystemExit(_residual_message(residual))
     return report
+
+
+def decontam_warning(decontam: dict[str, Any]) -> str | None:
+    """The line to read when the edge pass did less than the default promises, or met the key's
+    own colour: `auto` left frames as the matte keyed them, the subject owns key-coloured material,
+    or the guard kept the edge beside a small key-coloured part. None when there is nothing to look
+    at (the pass off, or brightness alpha)."""
+    mode = decontam.get("mode")
+    if mode in (None, "off") or decontam.get("reason") == BRIGHTNESS_NO_KEY:
+        return None
+    if not decontam.get("applied_frames"):
+        return (f"decontam {mode} did not run ({decontam.get('reason')}): the frames are the matte's, "
+                "the same as --decontam off")
+    notes = []
+    if decontam.get("skipped_frames"):
+        notes.append(f"it left {decontam['skipped_frames']} frame(s) as the matte keyed them ({decontam['reason']})")
+    share = float(decontam.get("key_material_share") or 0.0)
+    kept = int((decontam.get("totals") or {}).get("key_part_kept_px") or 0)
+    if not decontam.get("palette_keyfree", True):
+        notes.append(f"the subject owns key-coloured material ({share:.1%} of its interior), "
+                     "so an edge may be repainted in the key's colour too")
+    elif kept:
+        # a few key-hued interior pixels deep inside (codec noise) guard no edge and are not worth a line
+        notes.append(f"the subject has small key-coloured parts: {kept} edge pixel(s) beside them kept as the matte "
+                     "keyed them, and a thin detail of that colour farther out may be repainted")
+    if not notes:
+        return None
+    return f"decontam {mode}: {'; '.join(notes)} — look at those edges; --decontam off keeps the matte as it is"
 
 
 def _worst(contacts: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -468,11 +513,11 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
-def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = "off", source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
+def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness" and decontam != "off":
+    if alpha_mode == "brightness" and decontam == "palette":
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if source_manifest is not None and reference is None:
         raise SystemExit("video-frames: --source-manifest needs --reference (the source canvas)")
@@ -528,7 +573,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-manifest", type=Path, help="write exact clip/canvas/keyed-file digests and source timestamps (requires --reference)")
     parser.add_argument("--spill", choices=SPILL_MODES, default="small", help="small: correct only small key-tinted clusters (default); full: every key tint in the subject is spill; auto: decide from --reference")
     parser.add_argument("--reference", type=Path, help="the still the clip was made from (required by --spill auto)")
-    parser.add_argument("--decontam", choices=DECONTAM_MODES, default="off", help="off: the matte as is (default); palette: re-explain key-tinted edges with the subject's own colours (one palette per clip, video fit); auto: the same where it applies, reasons recorded where not")
+    parser.add_argument("--decontam", choices=DECONTAM_MODES, default=DECONTAM_DEFAULT, help="auto (default): re-explain key-tinted edges with the subject's own colours (one palette per clip, video fit) where it applies, the reason recorded where not (a white key, a subject with no interior; brightness alpha is off); palette: the same, failing where it cannot run; off: the matte as is")
 
 
 def run(**kwargs: object) -> int:
@@ -536,10 +581,13 @@ def run(**kwargs: object) -> int:
                          allow_edge_contact=bool(kwargs.get("allow_edge_contact")), report_path=kwargs.get("report"),  # type: ignore[arg-type]
                          spill=str(kwargs.get("spill") or "small"), reference=kwargs.get("reference"),  # type: ignore[arg-type]
                          allow_subject_edge_contact=bool(kwargs.get("allow_subject_edge_contact")),
-                         decontam=str(kwargs.get("decontam") or "off"), source_manifest=kwargs.get("source_manifest"),
+                         decontam=str(kwargs.get("decontam") or DECONTAM_DEFAULT), source_manifest=kwargs.get("source_manifest"),
                          alpha_mode=str(kwargs.get("alpha_mode") or "chroma"))  # type: ignore[arg-type]
     summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    line = decontam_warning(payload["decontam"])
+    if line:
+        print(f"video-frames: warning: {line}", file=sys.stderr)
     return 0
 
 

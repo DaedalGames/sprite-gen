@@ -61,6 +61,20 @@ Guards, in order of the decision they make:
   red or blue magenta), so it unmixes gold as if it were a blend. The video fit
   does none of this, since a decoded frame's chroma is blurred and an edge pixel's
   colour is no evidence of what the subject is made of there.
+- *Key-coloured parts (video fit).* A subject can own a key-coloured part too small
+  for the palette to keep (a green charm under a green key, under
+  `KEY_MATERIAL_MAX_SHARE` of the interior). A key-free palette then has no colour that
+  explains the part's edge, and the fit repainted it in the nearest key-free colour: a
+  green charm's rim came out brown. Band and flank pixels within `KEY_PART_GUARD_PX` of
+  such a part (opaque, deeper than `BAND_PX`, key-hued past `KEY_HUE_TINT`) keep the
+  engine's bytes, and the key-hue cap leaves them alone.
+- *Material behind (video fit).* A band pixel that has the colour, as it is or at its
+  own luma, of the subject right behind it (the mean of subject pixels deeper than
+  `_IN_BAND_UNMIX_KEY_DEPTH` within `VIDEO_BEHIND_PX`), to within the opaque margin, is
+  that material carried on to the edge, not a blend or a tint: it keeps the engine's
+  bytes, the key-hue cap still applying. Unlike the still fit's test it does not ask
+  the pixel to be free of the key's hue, which a decoded frame's blurred chroma gives
+  every edge a little of.
 - *Tint.* Between the two: a pixel pushed from its colour toward the key by at
   least `TINT_SHIFT`, and `TINT_RATIO` times more than the fit misses by, is
   recoloured with its coverage left alone (a faint cast, not proven coverage).
@@ -118,6 +132,8 @@ LUMA_SEPARATION = 24.0  # video fit: luma alpha only where P and B differ this m
 LUMA_MISS_SLACK = 12.0  # still fit: a blend must reproduce the observed luma this closely (plus 3 sigma)
 TINT_SHIFT = 8.0  # a tint moves the colour at least this far toward the key ...
 TINT_RATIO = 2.0  # ... and at least this many times farther than the fit misses by
+KEY_PART_GUARD_PX = BAND_PX  # video fit: edge pixels this close to a key-coloured part keep the engine's bytes
+VIDEO_BEHIND_PX = 3  # video fit: the material behind an edge pixel is the subject's mean within this box radius
 LUMA = np.array([0.299, 0.587, 0.114])
 _CHUNK = 1 << 16
 
@@ -371,15 +387,28 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         # the subject's plain material right behind the edge: deeper than it and without the key's hue
         source_int = np.asarray(source_rgb)[..., :3].astype(np.int32)
         behind = subject & (depth > edge) & (_key_excess_field(source_int, keyed_channels, unkeyed_channels) <= 0)
-        behind_weight = _box_sum_at(behind.astype(np.float64), edge, rows, cols)
-        behind_mean = np.stack([_box_sum_at(rgb[..., channel] * behind, edge, rows, cols) for channel in range(3)],
-                               axis=-1) / np.maximum(behind_weight, 1.0)[:, None]
+        reach = edge
+    else:
+        # *Material behind*: a decoded frame's edge carries the key's blurred hue, so no hue test
+        behind = subject & (depth > edge)
+        reach = VIDEO_BEHIND_PX
+    behind_weight = _box_sum_at(behind.astype(np.float64), reach, rows, cols)
+    behind_mean = np.stack([_box_sum_at(rgb[..., channel] * behind, reach, rows, cols) for channel in range(3)],
+                           axis=-1) / np.maximum(behind_weight, 1.0)[:, None]
+    guarded = np.zeros(len(rows), dtype=bool)
+    if fit == "video" and keyfree:
+        # *Key-coloured parts*: the palette left them out, so no colour of it explains their edge
+        excess = _key_excess_field(out[..., :3].astype(np.int32), keyed_channels, unkeyed_channels)
+        part = subject & (depth > BAND_PX) & (out[..., 3] == 255) & (excess > KEY_HUE_TINT)
+        if part.any():
+            guarded = (_ring_depth(part, KEY_PART_GUARD_PX) <= KEY_PART_GUARD_PX)[rows, cols]
     alpha_new = np.zeros(len(rows))
     colour_new = np.zeros((len(rows), 3))
     blend = np.zeros(len(rows), dtype=bool)
     tinted = np.zeros(len(rows), dtype=bool)
     unexplained = np.zeros(len(rows), dtype=bool)
     own = np.zeros(len(rows), dtype=bool)
+    behind_kept = np.zeros(len(rows), dtype=bool)
     for start in range(0, len(rows), _CHUNK):
         r = rows[start:start + _CHUNK]
         c = cols[start:start + _CHUNK]
@@ -427,25 +456,27 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
             # pixel darker than the line allows (outline ink the interior never shows) is not a blend
             explained &= np.abs(residual @ LUMA) <= LUMA_MISS_SLACK + NOISE_SIGMAS * sigma_luma
         in_flank = flank[r, c]
+        mean = behind_mean[start:start + len(r)]
+        behind_distance = np.minimum(np.linalg.norm(obs - mean, axis=-1),
+                                     np.linalg.norm(obs - recolor_to_luma(mean, obs @ LUMA), axis=-1))
+        behind_near = (behind_weight[start:start + len(r)] > 0) & (behind_distance <= margin)
         if material_test:
             # Deeper than a still's antialiased edge, a key share shows only as the key's hue: a pixel
             # without it is the subject's own colour. On the edge, so is a pixel without it that has
             # the colour (at its own luma) of the plain material right behind it.
             hueless = ~in_flank & (_key_excess_field(obs, keyed_channels, unkeyed_channels) <= 0)
             deep = depth[r, c] > edge
-            mean = behind_mean[start:start + len(r)]
-            behind_distance = np.minimum(np.linalg.norm(obs - mean, axis=-1),
-                                         np.linalg.norm(obs - recolor_to_luma(mean, obs @ LUMA), axis=-1))
-            settled = hueless & (deep | ((behind_weight[start:start + len(r)] > 0) & (behind_distance <= margin)))
+            settled = hueless & (deep | behind_near)
         else:
-            settled = np.zeros(len(r), dtype=bool)
-        is_blend = explained & (alpha < 1.0) & (in_flank | (miss + margin < material)) & ~settled & ~held[r, c]
+            settled = ~in_flank & behind_near
+        kept_as_is = settled | guarded[start:start + len(r)] | held[r, c]
+        is_blend = explained & (alpha < 1.0) & (in_flank | (miss + margin < material)) & ~kept_as_is
         # a tint: displaced from its colour toward the key clearly more than the fit misses by, but
         # not by enough to prove partial coverage, and by more than shading any palette colour
         # accounts for. Recoloured, coverage untouched.
         shift = (1.0 - alpha) * np.sqrt((line * line).sum(-1))
         is_tint = (explained & ~is_blend & ~in_flank & (shift >= TINT_SHIFT) & (shift >= TINT_RATIO * miss)
-                   & ~own_colour & ~settled & ~held[r, c])
+                   & ~own_colour & ~kept_as_is)
         # coverage: refit within the unmix reach and on the flank; colour only deeper in the band
         refit = (in_flank | (depth[r, c] <= alpha_depth)) & ~is_tint
         floor = np.maximum(MIN_RECOVERED_ALPHA, NOISE_SIGMAS * sigma_luma / np.maximum(np.abs((chosen - bg) @ LUMA), 1e-6))
@@ -461,6 +492,8 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         blend[start:start + len(r)] = is_blend | is_tint
         tinted[start:start + len(r)] = is_tint
         unexplained[start:start + len(r)] = ~explained
+        if not material_test:
+            behind_kept[start:start + len(r)] = settled
         own[start:start + len(r)] = (material_test & ~is_blend & ~is_tint & ~in_flank & ~held[r, c]
                                      & ((material <= margin) | settled))
 
@@ -480,7 +513,7 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     restored = int(np.count_nonzero(back))
     clamped = 0
     if keyfree:
-        kept = ~blend & band[rows, cols] & (out[rows, cols, 3] > 0)
+        kept = ~blend & ~guarded & band[rows, cols] & (out[rows, cols, 3] > 0)
         kr, kc = rows[kept], cols[kept]
         kept_rgb = out[kr, kc, :3].astype(np.int32)
         hued = _key_excess_field(kept_rgb, keyed_channels, unkeyed_channels) > KEY_HUE_TINT
@@ -519,4 +552,7 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         "restored_px": restored,
         "key_hue_capped_px": clamped,
     }
+    if fit == "video":
+        stats["key_part_kept_px"] = int(np.count_nonzero(guarded))
+        stats["behind_kept_px"] = int(np.count_nonzero(behind_kept))
     return out, stats
