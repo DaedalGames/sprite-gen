@@ -867,8 +867,10 @@ def run_item(
         if lp.get("motion_anchor", {}).get("applied") is False:
             result["loop"]["motion_anchor"] = lp["motion_anchor"]
         if "rife" in (lp.get("jump_repair") or {}):
-            # cut as filmed for want of RIFE: the set report lists it under `warnings`
-            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "off_max_before", "install")}
+            # cut as filmed for want of RIFE: the set report lists it under `warnings` (a wrap the seam bridge read carries
+            # its `seam`, not the flow's `off_max_before`)
+            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "off_max_before", "seam", "install")
+                                             if k in lp["jump_repair"]}
         result["ok"] = True
     except CodexUnavailableAsk as exc:
         result["ok"] = False
