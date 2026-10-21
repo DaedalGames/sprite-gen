@@ -232,6 +232,15 @@ is `round((m-v)*(L-1)/L)`. One integer XY ramp runs from zero to that endpoint;
 it does not pin each frame or remove the original bob. Empty/flat regions and
 search-boundary matches are errors, never a fallback to another anchor.
 
+The fine search (`motion_anchor._register`, 29 × 57 shifts, both regions) reads a row
+of side-by-side shifts at once: their masked patches gathered together, a block of
+mask pixels at a time (`ROW_BLOCK`), then the operations one patch read alone takes,
+in the same order — its mean sums its pixels one after the other, its other two sums
+run over that patch alone — so each cost is the same value, and the match, the report
+and the frames the same bytes, as reading one patch at a time. `--anchor motion-auto`
+corrects every two-step cut its seam gate tries this way, so the search is most of a
+walk's cut on a CPU ([loop repair](loop-repair.md#the-step-count--two-steps-read-off-the-clips-crossings)).
+
 Cycle PNGs preserve the supplied keyed pixels (no additional speck removal), with
 common transparent padding to avoid clipping. Strip scaling, GIF palette conversion
 and output frame-density settings still apply. The sidecar/report records regions,

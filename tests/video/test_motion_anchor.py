@@ -1,6 +1,7 @@
 """Behavior of explicit XY drift correction on synthetic, fully known motion."""
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -144,3 +145,132 @@ def test_failed_registration_writes_a_report_before_output(tmp_path):
     report = json.loads((out / "loop.loop.report.json").read_text())
     assert report["status"] == "failed" and report["anchor"] == "motion"
     assert not (out / "cycle").exists()
+
+
+def _one_shift(references, moving, dx, dy):
+    """The costs of the regions laid at (dx, dy), one masked patch read alone a region — `motion._register`'s reading of
+    a shift before the window's patches were read together (812047a) — or fewer than two where a region reads none."""
+    costs = []
+    for (x0, y0, x1, y1), mask, reference, norm in references:
+        if x0 - dx < 0 or y0 - dy < 0 or x1 - dx > moving.shape[1] or y1 - dy > moving.shape[0]:
+            break
+        patch = moving[y0 - dy:y1 - dy, x0 - dx:x1 - dx][mask]
+        if not np.ptp(patch, axis=0).any():
+            break
+        patch = patch - patch.mean(axis=0)
+        denominator = norm * float(np.sqrt(np.sum(patch * patch)))
+        if denominator <= 1e-12:
+            break
+        costs.append(1 - float(np.sum(reference * patch) / denominator))
+    return costs
+
+
+def _register_one_patch_at_a_time(references, moving, center):
+    cx, cy = center
+    rx, ry = motion.SEARCH_RADIUS
+    candidates = []
+    for dy in range(cy - ry, cy + ry + 1):
+        for dx in range(cx - rx, cx + rx + 1):
+            costs = _one_shift(references, moving, dx, dy)
+            if len(costs) == 2:
+                candidates.append((sum(w * c for w, c in zip(motion.REGION_WEIGHTS, costs)), dx, dy, costs))
+    if not candidates:
+        raise ValueError("motion anchor found no measurable match inside the search window")
+    candidates.sort()
+    score, dx, dy, costs = candidates[0]
+    if abs(dx - cx) == rx or abs(dy - cy) == ry:
+        raise motion.FineSearchBoundaryError({
+            "dx": dx, "dy": dy, "cost": score, "region_costs": costs,
+            "center_xy": [cx, cy], "search_radius_xy": [rx, ry],
+        })
+    return {"dx": dx, "dy": dy, "cost": score, "region_costs": costs}
+
+
+def _reading(register, references, moving, center):
+    try:
+        return "match", register(references, moving, center)
+    except motion.FineSearchBoundaryError as exc:
+        return "boundary", exc.measurement
+    except ValueError as exc:
+        return "none", str(exc)
+
+
+def _moved(im, xy):
+    out = Image.new("RGBA", im.size)
+    out.paste(im, xy)
+    return out
+
+
+def _texture(size, seed, *, flat_left=False, hole=False):
+    rgba = np.random.default_rng(seed).integers(0, 256, (size[1], size[0], 4), dtype=np.uint8)
+    rgba[:, :, 3] = np.maximum(rgba[:, :, 3], 140)
+    if flat_left:
+        rgba[:, : size[0] // 2] = (40, 200, 90, 255)
+    if hole:
+        rgba[size[1] // 3: size[1] // 2, :, 3] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+@pytest.mark.parametrize("case", ["walker", "walker-drift", "walker-edge", "search-boundary", "noise", "noise-flat-half",
+                                  "noise-hole", "flat"])
+def test_the_search_window_reads_each_shift_as_one_patch_read_alone_did(case):
+    """`_register` reads the patches of a row of shifts together, a block of mask pixels at a time; its result — the
+    match, its costs, a search-boundary measurement, or no match — is the reading of one patch at a time, value for
+    value (the same Python floats, compared by repr), wherever a shift lays a region off the frame or on one value."""
+    first, center, moving = walker(0), (0, 0), walker(0)
+    regions = REGIONS
+    if case == "walker":
+        moving = walker(3)
+    elif case == "walker-drift":
+        moving, center = walker(23), (-22, -5)
+    elif case == "walker-edge":  # the shifts past the frame's right edge read nothing, nor dy 28 for the head
+        moving, center = _moved(walker(0), (80, 0)), (-80, 0)
+    elif case == "search-boundary":
+        moving = _moved(walker(0), (14, 0))
+    elif case.startswith("noise"):
+        first = _texture((200, 200), 7, flat_left=case == "noise-flat-half", hole=case == "noise-hole")
+        moving, center, regions = _moved(first, (-5, 3)), (5, -3), [(70, 40, 150, 110), (60, 120, 140, 190)]
+    elif case == "flat":  # every patch one value: no shift reads a match
+        first = _texture((200, 200), 7)
+        moving, center, regions = Image.new("RGBA", (200, 200), (40, 200, 90, 255)), (0, 0), [(70, 40, 150, 110), (60, 120, 140, 190)]
+    references = motion._references(motion._features(first), regions)
+    # a region of more mask pixels than a block takes, so the patch's sums carry from block to block
+    assert max(int(mask.sum()) for _, mask, _, _ in references) > motion.ROW_BLOCK
+    features = motion._features(moving)
+    batched = _reading(motion._register, references, features, center)
+    alone = _reading(_register_one_patch_at_a_time, references, features, center)
+    assert repr(batched) == repr(alone) and batched == alone
+    assert batched[0] == {"search-boundary": "boundary", "flat": "none"}.get(case, "match")
+
+
+def test_a_960_cut_is_corrected_in_a_fraction_of_the_time_reading_one_patch_at_a_time_takes():
+    """Performance watch: the search of a 960 px cut, regions of some 30 000 mask pixels as a 960 px walk's are. Read one
+    patch at a time, each corrected cut took most of a walk's loop stage, and the seam gate corrects up to five
+    (`local_cycle.SEAM_TRIES` and the cut taken). Hosts differ several times over, so the bound is this host's own one
+    patch at a time, timed on a few shifts and scaled to the window: the batched search takes less than half of it."""
+    rng = np.random.default_rng(960)
+    body = Image.fromarray(np.dstack([rng.integers(0, 256, (620, 300, 3), dtype=np.uint8),
+                                      np.full((620, 300), 255, np.uint8)]), "RGBA")
+    frames = []
+    for k in range(6):
+        im = Image.new("RGBA", (960, 960))
+        im.paste(body, (330 + k, 170 + round(3 * math.sin(k))))
+        frames.append(im)
+    regions = [(384, 200, 576, 380), (384, 420, 576, 600)]
+    references = motion._references(motion._features(frames[0]), regions)
+    assert min(int(mask.sum()) for _, mask, _, _ in references) > 30000
+    moving = motion._features(frames[5])
+    shifts = [(dx, dy) for dy in range(-28, 29) for dx in range(-19, 10)]
+    timed = []
+    for _ in range(3):
+        started = time.perf_counter()
+        for dx, dy in shifts[:: len(shifts) // 12][:12]:
+            assert len(_one_shift(references, moving, dx, dy)) == 2
+        timed.append((time.perf_counter() - started) / 12)
+    one_at_a_time = min(timed) * len(shifts) * len(frames)
+    started = time.perf_counter()
+    _, report = motion.correct_motion(frames, regions, coarse_dx=-5)
+    took = time.perf_counter() - started
+    assert report["method"] == "masked-ncc-boundary-velocity-v1"
+    assert [m["dx"] for m in report["boundary_measurements"]] == [0, -1, -2, -3, -4, -5]
+    assert took < one_at_a_time / 2, (took, one_at_a_time)
