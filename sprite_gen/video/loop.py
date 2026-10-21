@@ -127,6 +127,8 @@ CYCLE_SOURCE_DIR = "cycle.source"
 # The strip as it was before `video-follow` moved a region of it; a later follow-through reads
 # from it, and a new cut or alignment removes it (docs/video-pipeline.md section 6).
 FOLLOW_SOURCE = "follow.source.png"
+# A refused cut hands nothing over (`refuse`); the frames it wrote, if it got that far, are kept here to look at.
+CYCLE_REFUSED_DIR = "cycle.refused"
 
 
 # A gait's period is a fact about the body, not about how long the clip runs: the
@@ -886,6 +888,30 @@ def verify_animation(path: Path, *, expect_frames: int, check_stale: bool, expec
     return report
 
 
+def handed_over(out_dir: Path, name: str) -> list[Path]:
+    """What a cut that passed hands over in `out_dir`: its frames (`cycle/`), the strip and its metadata, the GIF and
+    the WebP, and what a later alignment and follow-through keep beside them (`cycle.source/`, `follow.source.png`)."""
+    return [out_dir / "cycle", out_dir / CYCLE_SOURCE_DIR, out_dir / FOLLOW_SOURCE, out_dir / f"{name}.strip.png",
+            out_dir / f"{name}.strip.json", out_dir / f"{name}.gif", out_dir / f"{name}.webp"]
+
+
+def refuse(target: Path, out_dir: Path, name: str, report: dict[str, Any], *, cut_written: bool = False) -> None:
+    """Refuse the cut: take back all an earlier cut handed over in `out_dir` (`handed_over`), so a caller that does not
+    read the exit code finds nothing to pass on, and write the report (`status: failed`). A cut this run wrote stays as
+    `cycle.refused/`, in place of an earlier one."""
+    out_dir = out_dir.expanduser().resolve()
+    shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
+    shutil.rmtree(out_dir / CYCLE_REFUSED_DIR, ignore_errors=True)
+    if cut_written:
+        (out_dir / "cycle").rename(out_dir / CYCLE_REFUSED_DIR)
+    for path in handed_over(out_dir, name):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    write_loop_report(target, report)
+
+
 def write_loop_report(target: Path, payload: dict[str, Any]) -> None:
     """Strict JSON, including refusals with undefined (zero-motion) ratios."""
     def finite(value: Any) -> Any:
@@ -1599,11 +1625,10 @@ def run_loop(
         # Whatever chose the cut — a search, a count, --cycle fixed or pinned — it is inside the caller's bounds.
         window.hold(cycle)
     except (SystemExit, ValueError) as exc:
-        shutil.rmtree(out_dir.expanduser().resolve() / FALLBACK_FRAMES_DIR, ignore_errors=True)
         refused = getattr(exc, "diagnostics", cycle)
-        write_loop_report(target, {**report_base, "status": "failed", "error": str(exc),
-                                  "cycle": _from_lead_in(refused, skip) if skip and not shifted else refused,
-                                  "periodic_attempt": periodic_attempt})
+        refuse(target, out_dir, name, {**report_base, "status": "failed", "error": str(exc),
+                                       "cycle": _from_lead_in(refused, skip) if skip and not shifted else refused,
+                                       "periodic_attempt": periodic_attempt})
         if isinstance(exc, ValueError):
             raise SystemExit(f"video-loop: {exc}") from exc
         raise
@@ -1660,8 +1685,7 @@ def run_loop(
             )
         except ValueError as exc:
             error = f"video-loop: {exc}"
-            shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
-            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
     if anchor in ("none", "body") and cycle["kind"] != "lifetime":
@@ -1696,8 +1720,7 @@ def run_loop(
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
             error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, for a part that rushes, at a wrap a part "
                      f"on its own beat does not close, or for a filmed ghost between two clean frames) — {fix} (docs/loop-repair.md)")
-            shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
-            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         if overlap is not None:
             report_base["wrap_overlap"] = overlap
@@ -1767,8 +1790,7 @@ def run_loop(
                      f"{', after repairing frames ' + str(report_base['jump_repair']['replaced']) if report_base['jump_repair'].get('replaced') else ''}); "
                      "the motion does not play smoothly — regenerate the clip"
                      f"{' (the jump repair did not run: RIFE is not installed — ' + rife_mod.INSTALL_COMMAND + ')' if 'rife' in report_base['jump_repair'] else ''}")
-            shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
-            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error)
         for line in warnings:
             print(f"video-loop: warning: {line} (reference bound; the loop is kept — docs/loop-repair.md)", file=sys.stderr)
@@ -1788,6 +1810,7 @@ def run_loop(
     shutil.rmtree(out_dir / CYCLE_SOURCE_DIR, ignore_errors=True)
     # A new cut makes a follow-through over the old strip stale (`video-follow` reads this source).
     (out_dir / FOLLOW_SOURCE).unlink(missing_ok=True)
+    shutil.rmtree(out_dir / CYCLE_REFUSED_DIR, ignore_errors=True)
     for k, im in enumerate(frames):
         im.save(cycle_dir / f"frame-{k:03d}.png")
     # The standing height is the base still's pose as filmed, the clip's first frame — but a video model that
@@ -1800,10 +1823,15 @@ def run_loop(
         report_base["cut_size"] = gait_fallback.size_change(gait_fallback.body_size(Image.open(files[0]).convert("RGBA")), cut_sizes)
         if abs(report_base["cut_size"]["change"]) >= gait_fallback.SIZE_HOLD_MIN:
             standing_frame = i
-    strip_of = partial(build_strip, max_height=strip_height, cycle_seconds=cycle_seconds, body_height=body_height, anchor="feet" if anchor == "feet" else "none", kind=str(cycle.get("kind") or "periodic"),
-                       standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None and cycle["kind"] != "lifetime" else None,
-                       standing_frame=standing_frame)
-    strip, strip_meta = strip_of(frames)
+    try:
+        strip_of = partial(build_strip, max_height=strip_height, cycle_seconds=cycle_seconds, body_height=body_height, anchor="feet" if anchor == "feet" else "none", kind=str(cycle.get("kind") or "periodic"),
+                           standing_src=standing_height(files[standing_frame], standing_frame) if body_height is not None and cycle["kind"] != "lifetime" else None,
+                           standing_frame=standing_frame)
+        strip, strip_meta = strip_of(frames)
+    except SystemExit as exc:
+        # No body to measure or to crop the strip to: the cut is refused like any other.
+        refuse(target, out_dir, name, {**report_base, "status": "failed", "error": str(exc), "cycle": cycle}, cut_written=True)
+        raise
     # The cut as its seam is read: each cell given way to the frame beside it as filmed (`seam_as_filmed`).
     seam_frames = [as_filmed.get(k, f) for k, f in enumerate(frames)]
     strip_meta["source_cut"] = {"source": report_base["source"], "start": i, "length": L,
@@ -1881,10 +1909,10 @@ def run_loop(
                 f"exceeds {cycle['pin_tolerance']:.4f}); {what} — regenerate the clip with "
                 "--last-frame set to its first frame"
             )
-            write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle,
-                                      "resampled_seam": resampled_seam,
-                                      "resampled_inner_mean_adjacent": resampled_adjacent,
-                                      "resampled_seam_ratio": seam_ratio})
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle,
+                                           "resampled_seam": resampled_seam,
+                                           "resampled_inner_mean_adjacent": resampled_adjacent,
+                                           "resampled_seam_ratio": seam_ratio}, cut_written=True)
             raise SystemExit(error)
     elif not single_play and seam_ratio > seam_max:
         error = (
@@ -1892,26 +1920,32 @@ def run_loop(
             f"({cycle['kind']} length {L} frames from {i}); the cycle does not close — "
             "regenerate with a complete return to the starting pose"
         )
-        write_loop_report(target, {**report_base, "status": "failed", "error": error,
-                                  "cycle": cycle, "periodic_attempt": periodic_attempt,
-                                  "resampled_seam": resampled_seam,
-                                  "resampled_inner_mean_adjacent": resampled_adjacent,
-                                  "resampled_seam_ratio": seam_ratio})
+        refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error,
+                                       "cycle": cycle, "periodic_attempt": periodic_attempt,
+                                       "resampled_seam": resampled_seam,
+                                       "resampled_inner_mean_adjacent": resampled_adjacent,
+                                       "resampled_seam_ratio": seam_ratio}, cut_written=True)
         raise SystemExit(error)
     # GIF has binary transparency. Bake the effect onto its declared black preview
     # background instead of turning its faint partial-alpha glow into opaque dark pixels.
     gif_background = "#000000" if cycle["kind"] == "lifetime" else None
     gif_pick = [effect.on_black(im) for im in pick] if gif_background is not None else pick
-    save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
-                   alpha_threshold=128, opaque=gif_background is not None)
-    write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
-    shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
-    # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
-    shown = shown_runs(pick)
-    gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
-                                  **({"expected_loop": None} if single_play else {}),
-                                  **({"background": gif_background} if gif_background is not None else {}))
-    webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
+    try:
+        save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
+                       alpha_threshold=128, opaque=gif_background is not None)
+        write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
+        shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
+        # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
+        shown = shown_runs(pick)
+        gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
+                                      **({"expected_loop": None} if single_play else {}),
+                                      **({"background": gif_background} if gif_background is not None else {}))
+        webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
+    except SystemExit as exc:
+        # The GIF or WebP could not be written (no img2webp) or failed its verification: nothing of the cut is handed over.
+        shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
+        refuse(target, out_dir, name, {**report_base, "status": "failed", "error": str(exc), "cycle": cycle}, cut_written=True)
+        raise
 
     payload = {
         **report_base,
