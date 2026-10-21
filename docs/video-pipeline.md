@@ -24,8 +24,8 @@ still ──video-canvas──▶ canvas.png ──video──▶ clip.mp4 ─�
 | `sprite-gen video-loop` | `sprite_gen/video/loop.py` | keyed frames → `cycle/`, `<name>.strip.png` + `.strip.json`, `<name>.gif`, `<name>.webp` + report |
 | `sprite-gen video-set` | `sprite_gen/video/batch.py` | bases × states → one folder per item, `set.report.json`, `table.md` |
 | `sprite-gen video-cycle-align` | `sprite_gen/video/align.py` | the loop directories of one walk or run, one per direction → one cycle length, each loop turned to start on a foot strike, + report ([loop repair](loop-repair.md) section 4) |
-| `sprite-gen video-follow` | `sprite_gen/video/follow.py` | a loop directory + an ellipse → the strip, GIF and WebP with that region following the body ([section 6](#6-follow-through--video-follow)) |
-| `sprite-gen video-follow-inspect` | `sprite_gen/video/follow_inspect.py` | a loop directory + the ellipses `video-follow` takes → a record of where each is carried in every cell and what the move changes there, and two boards of every cell; the loop directory is only read ([section 6](#inspecting-a-follow-through--video-follow-inspect)) |
+| `sprite-gen video-sway` | `sprite_gen/video/sway.py` | a loop directory + an ellipse -> the strip, GIF and WebP with that region swaying with the body (old name `video-follow`) ([section 6](#6-the-sway-layer--video-sway)) |
+| `sprite-gen video-sway-inspect` | `sprite_gen/video/sway_inspect.py` | a loop directory + the ellipses `video-sway` takes -> a record of where each is carried in every cell and what the move changes there, and two boards of every cell; the loop directory is only read ([section 6](#inspecting-a-sway--video-sway-inspect)) |
 | `sprite-gen video-set-sheet` | `sprite_gen/video/set_sheet.py` | the loop directories of one set, each with its `--view` → one sheet: a row per direction in compass order, one cell size, one ground line, every row as cut, + a record and an optional centre picture; the loop directories are only read ([section 7](#7-one-sheet-for-a-set--video-set-sheet)) |
 | `sprite-gen video-stop` | `sprite_gen/video/stop.py` | keyed frames + a walk or run loop → one-shot stop strip (`loop: false`, `hold_last: true`), GIF, WebP, report ([section 8](#8-a-walk-or-run-that-stops--video-stop)) |
 
@@ -1282,14 +1282,14 @@ refuses a lifetime.
 Not measured on a clip model: the sentences for a motion of your own (`PLAY_TEXT`, `RETURN_TEXT`).
 The once-return template is the one an attack is filmed with (`ACTION_COMMON_TEXT`).
 
-## 6. Follow-through — `video-follow`
+## 6. The Sway layer — `video-sway`
 
-A clip model draws a walk's body moving, but a soft part hanging off it (a chest, a belly, a
-pouch on a strap) mostly moves with the body as one piece, even when the prompt asks it to
-bounce. `video-follow` puts that follow-through back on a cut loop:
+A clip model draws a walk's body moving, but a soft part hanging off it (a chest, a belly, a pouch on a strap) mostly moves with the body as one piece, even when the prompt asks it to bounce. The Sway layer puts that sway back on a cut loop: a soft part of a looping body sways with the body's own motion, moving an ellipse of the strip as a damped mass on the body's bob, after `video-cycle-align`.
+
+`video-sway` replaces `video-follow` (in Python: `sprite_gen.video.sway`, `sway_loop`, `sway_offsets`). The old names (`video-follow`, `video-follow-inspect`, `sprite_gen.video.follow`, `follow_loop`, `follow_offsets`, `sprite_gen.video.follow_inspect`) still run, produce the same files, and print their old name in messages. The loop's record of a sway is read under the key `sway` or `follow`. This release still writes it under `follow`, the strip as cut is still `follow.source.png`, and inspection still writes `follow-inspect.json`, `follow-inspect.source.png`, and `follow-inspect.moved.png` with the same keys, so tools that read those names keep working. Moving written names to `sway` is a later change made together with the tools that read them.
 
 ```bash
-sprite-gen video-follow --loop-dir set/front-walk/loop --region 136,164,60,50 [--region …] \
+sprite-gen video-sway --loop-dir set/front-walk/loop --region 136,164,60,50 [--region ...] \
   [--gain 2.5] [--on-fold refuse|lower] [--freq 2.4] [--zeta 0.6] [--board follow.png] \
   [--read-on <sha256>] [--stretch-floor D]
 ```
@@ -1366,11 +1366,11 @@ sprite-gen video-follow --loop-dir set/front-walk/loop --region 136,164,60,50 [-
   record is written too, so a run that fails on the way — an animation that fails its check, a
   record that does not serialise — leaves the strip, GIF, WebP and record as they were.
   `cycle/` is left as cut. The strip as it was is kept as `follow.source.png`; running
-  `video-follow` again reads from it, so a second run never moves a moved strip. `--board` writes the cells before and after where the part
+  `video-sway` again reads from it, so a second run never moves a moved strip. `--board` writes the cells before and after where the part
   sits lowest and highest, on white.
 - **Order**: after `video-cycle-align`. An alignment rebuilds the strip from the cut, removes
   `follow.source.png` and the `follow` record, and says so (`follow_cleared` in its loop row); a
-  new cut with `video-loop` removes them too. Run `video-follow` again after either — with
+  new cut with `video-loop` removes them too. Run `video-sway` again after either — with
   `--read-on` where the regions were read on the cut (below).
 - A one-shot (`kind: one-shot`) is refused: the follow-through is a loop's steady state.
 
@@ -1378,7 +1378,7 @@ sprite-gen video-follow --loop-dir set/front-walk/loop --region 136,164,60,50 [-
 
 The regions are where somebody looked: in the first cell of the strip they were read on. An
 alignment turns a loop to start on a foot strike, so its first cell is another; given the same
-regions, `video-follow` reads the motion again from that cell 0 and the regions land on another
+regions, `video-sway` reads the motion again from that cell 0 and the regions land on another
 place of the body, and a stretched loop moves them by a motion read anew. `--read-on <sha256>`
 names the strip they were read on — its file's sha256, as cut, before any follow-through (64
 lowercase hexadecimal digits; anything else is refused before anything is read):
@@ -1387,7 +1387,7 @@ lowercase hexadecimal digits; anything else is refused before anything is read):
   The follow-through is the one without `--read-on`, byte for byte, and the record says so.
 - **`transported`**: it is the cut this loop was aligned from. `video-cycle-align` records that cut
   the first time it aligns the loop (`cycle_align.origin`: its sha256, cell size, scale and crop
-  origin, each cell's pixels by sha256, and the body's motion as `video-follow` reads it there),
+  origin, each cell's pixels by sha256, and the body's motion as `video-sway` reads it there),
   keeps it on every later alignment, and records where each cell of the new strip is from
   (`cycle_align.cells_from`: `{"source": i}`, a frame of `cycle.source/`, or `{"between": [i, j],
   "t": t}`, a frame made between two). Each cell is carried by the cut's reading of the cut's cell it
@@ -1430,53 +1430,49 @@ held or refused as the cut is.
 
 The floor holds the stretch, and only the stretch: what a move also does to a line — it tilts it,
 and where two regions overlap it bends it at their seam — lowers only as the gain lowers.
-`video-follow-inspect` writes all three (below).
+`video-sway-inspect` writes all three (below).
 
 What carries a region into a cell is the lay of the body's outline (`carry_basis: {"reading":
 "outline-lay", "region": "unverified"}`). Two strips whose alpha is the same in every cell are
 carried alike, whatever moved inside the outline; whose pixels are inside a carried ellipse is not
 read, and nothing here moves a region on a guess of it.
 
-### Inspecting a follow-through — `video-follow-inspect`
+### Inspecting a sway — `video-sway-inspect`
 
-The ellipse is given in the first cell, where somebody looked. Into every other cell it is carried
-by the body's motion, and there nobody looked: an arm that swings across a chest is inside the
-chest's ellipse in those cells and moves with it, and so does a sleeve of the chest's own colour,
-which no count of colours finds. The engine does not read what a pixel belongs to.
-`video-follow-inspect` writes what somebody needs in order to look, and moves nothing:
+The ellipse is given in the first cell, where somebody looked. Into every other cell it is carried by the body's motion, and there nobody looked: an arm that swings across a chest is inside the chest's ellipse in those cells and moves with it, and so does a sleeve of the chest's own colour, which no count of colours finds. The Sway layer does not read what a pixel belongs to. `video-sway-inspect` (old name `video-follow-inspect`) writes what somebody needs in order to look, and moves nothing:
 
 ```bash
-sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,60,50 [--region …] \
+sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,50 [--region …] \
   [--gain 2.5] [--on-fold refuse|lower] [--freq 2.4] [--zeta 0.6] [--read-on <sha256>] [--stretch-floor D] \
   --out-dir inspect/front-run [--scale 2] [--columns 8]
 ```
 
-- **Asked as `video-follow` is, answered by the same code.** It takes `video-follow`'s arguments
+- **Asked as `video-sway` is, answered by the same code.** It takes `video-sway`'s arguments
   (all but `--board`), reads the strip as cut — `follow.source.png` where a follow-through was
-  already written, the strip itself where none was — and solves it where `video-follow` does
+  already written, the strip itself where none was — and solves it where `video-sway` does
   (`follow.read_request`, `follow.solve`): the carry, each region's gain, the offsets and the
-  moved cells are computed in one place, and both commands read them there. What `video-follow`
+  moved cells are computed in one place, and both commands read them there. What `video-sway`
   refuses it refuses in the same words under its own name, and then writes nothing.
 - **The loop directory is read and never written**: not the strip, not its meta, and not the
-  `follow.source.png` that `video-follow` keeps on its first run. An `--out-dir` at or under the
-  loop directory is refused. Run before `video-follow`, it changes nothing `video-follow` writes.
+  `follow.source.png` that `video-sway` keeps on its first run. An `--out-dir` at or under the
+  loop directory is refused. Run before `video-sway`, it changes nothing `video-sway` writes.
 - **What is inside an ellipse is not read.** Every region is written `ownership: "unknown"` in
   every cell, the first included, from its centre to its rim; no cell is marked or held on a
   guess. `solid_px` counts the body's silhouette under the ellipse (alpha ≥ 128), not whose
   pixels they are. Saying which cells hold the part alone is for a person or a model that looks
   at the board of the cells as cut, and for a second reader apart from the first.
-  `video-follow` takes no such list: it moves every cell.
+  `video-sway` takes no such list: it moves every cell.
 - **`follow-inspect.json`** (`kind: video-follow-inspection`, `schema_version: 2`):
 
   | key | what it holds |
   |---|---|
   | `input_id` | one sha256 over what the answer is read from: the schema version, the strip's sha256, the meta's `cut_sha256`, the regions, the settings, the policy and the engine's version |
   | `inputs.strip` | `file`, `sha256`, `bytes`: the strip as cut that was read |
-  | `inputs.meta` | `file`, `sha256`, `bytes`: `<name>.strip.json` as read; `cut_sha256`: its sha256 without the `follow` record `video-follow` adds (keys sorted, no spaces); `follow_recorded` |
+  | `inputs.meta` | `file`, `sha256`, `bytes`: `<name>.strip.json` as read; `cut_sha256`: its sha256 without the `follow` record `video-sway` adds (keys sorted, no spaces); `follow_recorded` |
   | `inputs.cut` | `frames`, `w`, `h`, `delay_ms`, as read from the meta |
   | `inputs.regions`, `inputs.settings` | the ellipses in the order given; `gain`, `on_fold`, `freq_hz`, `zeta`, `read_on` and `stretch_floor` (null where not asked) |
   | `inputs.policy`, `inputs.engine` | the way the motion is read and a region moved, by name (`follow.POLICY`) with the constants it is fixed by, and the ways a reading is carried (`transport`) and a floor kept (`stretch_floor`), by name; the engine's `name` and `version` |
-  | `follow` | the follow-through as `video-follow` records it in the strip's meta, without `gif` and `webp` |
+  | `follow` | the follow-through as `video-sway` records it in the strip's meta, without `gif` and `webp` |
   | `carry_basis` | `{"reading": "outline-lay", "region": "unverified"}`: what carries a region, and that whose pixels it holds is not read |
   | `regions[i]` | `index`, `ellipse` as given, `radius_px`, `gain` (0 when held), `held`, `gain_limit`; over all cells the largest `reach_px`, `fold_ratio`, `bend` and `bend_deg`, the least `jacobian_min`, the sum of `changed_px`; `ring`, its colour on the boards |
   | `seams` | per pair of moving regions that meet in some cell (`regions`: [i, j]), the largest seam: `jump`, `deg`, the `cell` and the point `at` (x, y) |
@@ -1485,7 +1481,7 @@ sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,6
   | `boards` | `scale`, `columns`, `size`, `ground`; `source` and `moved`, each `file`, `sha256` (the PNG file) and `pixels_sha256` (its pixels) |
 
 - **`carry_px`** is how far the cell's body lies from the first cell's, in whole pixels: what
-  every region's ellipse is carried by in that cell, and what `video-follow` carries it by. It
+  every region's ellipse is carried by in that cell, and what `video-sway` carries it by. It
   was written nowhere before; from the record's rounded offsets it cannot be worked back for a
   strip of more than thirteen cells (the answer keeps six harmonics of the cycle).
 - **`jacobian_min`** is the least area of the source that one pixel of the moved cell takes, over
@@ -1505,7 +1501,7 @@ sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,6
   number as `fold_ratio`, named for what it does: at 1 a line tilts 45°, and a region `--on-fold
   lower` lowered moves just under it. A round region moving along a radius has G = 1 − D, but a
   region moving along its long axis keeps D high while G stays near 1, so neither stands for the
-  other. And where two regions overlap, `video-follow` moves each pixel by the larger of their
+  other. And where two regions overlap, `video-sway` moves each pixel by the larger of their
   weighted moves (by the larger weight where they move by one gain), so across the curve where the
   two are equal the move's gradient jumps from one region's to the other's and a straight line
   bends there: `seams`, the largest jump on that curve — the norm of the difference of the two
@@ -1515,7 +1511,7 @@ sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,6
   three, not from `fold.ratio`; a floor lowers the bend and the seam only as it lowers the gain.
 - **The record names what it was read from.** It holds no path, no time and nothing of the
   machine: the same loop asked the same way writes the same record, byte for byte, anywhere.
-  `input_id` is the same before and after `video-follow` is run on the loop, and another after a
+  `input_id` is the same before and after `video-sway` is run on the loop, and another after a
   new cut, an alignment, a changed region or setting (`read_on` and `stretch_floor` among them), or
   another engine version — what somebody
   saw on one cut's boards is not evidence for another cut. `--scale` and `--columns` change the
@@ -1528,7 +1524,7 @@ sprite-gen video-follow-inspect --loop-dir set/front-run/loop --region 136,164,6
   pixels just outside the ellipse — the first the move does not touch — so inside an ellipse the
   cell shows whole (but for another region's ring crossing it), and at `--scale 2` or more no
   cell pixel is covered whole. `follow-inspect.source.png` has the cells as cut;
-  `follow-inspect.moved.png` has them as `video-follow` would write them, laid and ringed alike.
+  `follow-inspect.moved.png` has them as `video-sway` would write them, laid and ringed alike.
   They are two files so that whoever says what is inside an ellipse can be given the cells as cut
   alone, without the answer beside them.
 

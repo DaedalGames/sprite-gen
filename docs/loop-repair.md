@@ -1597,10 +1597,10 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   cannot be made leaves the set as it was. The first alignment also records the strip as cut,
   before anything is rewritten (`cycle_align.origin`: its file's sha256 — `follow.source.png`'s
   where a follow-through moved it —, cell size, scale, crop origin, `sample_indices`, each cell's
-  pixels by sha256, and the body's motion as `video-follow` reads it there, `reading`), and every
+  pixels by sha256, and the body's motion as `video-sway` reads it there, `reading`), and every
   later alignment keeps it as it is. A loop aligned before this record existed has none, and gets
   none: its cut is no longer there to read. With `cells_from` it lets a follow-through whose
-  regions were read on the cut be carried to the aligned loop (`video-follow --read-on`,
+  regions were read on the cut be carried to the aligned loop (`video-sway --read-on`,
   docs/video-pipeline.md section 6). Neither record changes a pixel of the strip, GIF or WebP.
 - **Frames between are kept for later passes** (`--between-cache DIR`): every frame RIFE makes between
   two source frames is stored in `DIR`. A later alignment given the same `DIR` takes a kept frame instead
@@ -1652,9 +1652,9 @@ only an item of a walk or run filmed in two or more directions is taken, any oth
 filming), or as `video-cycle-align --foot` on the set's loops. A foot given for an item that failed,
 or whose state was not aligned, is named in that state's `feet_unused` and a warning.
 Cutting a loop again with `video-loop` removes its `cycle.source/`, so the next alignment reads
-the new cut. An alignment also clears a follow-through (`video-follow`, which moved the old
+the new cut. An alignment also clears a follow-through (`video-sway`, which moved the old
 cells): `follow.source.png` and the strip's `follow` record are removed and the loop's row says
-`follow_cleared`; run `video-follow` again after it, with `--read-on` naming the strip the regions
+`follow_cleared`; run `video-sway` again after it, with `--read-on` naming the strip the regions
 were read on.
 
 How much RIFE that is, on the 2026-10-03 sets (the experiment's `finalize.py`): resampling to

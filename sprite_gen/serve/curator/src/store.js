@@ -11,9 +11,35 @@ function isNumericScalar(v) {
   return typeof v === "string" && /^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$/.test(v);
 }
 
+// 굽기 방식 — 파이썬 curation.BREATHE_MODES 미러. 생략 = pixel.
+const BREATHE_MODES = ["pixel", "smooth"];
+// smooth 모양 값의 허용 범위 — 파이썬 curation.BREATHE_SMOOTH_SHAPE_RANGES 미러.
+const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9] };
+
 function breatheRangeProblems(raw) {
   const bounds = [["depth", 0.005, 0.20, 0.06], ["breaths", 1, 8, 1], ["lag", 0, 0.45, 0.1]];
   const bad = [];
+  // 모르는 mode 는 굽기가 거부한다 — 여기서도 원본을 지키고 알린다 (pixel 로 읽어 되쓰지 않는다).
+  if (raw.mode != null && !BREATHE_MODES.includes(raw.mode)) bad.push(`mode=${JSON.stringify(raw.mode)}`);
+  // smooth 에는 진행파가 없다 — 0 아닌 lag 는 굽기가 거부한다 (파이썬 state_breathe 미러).
+  if (raw.mode === "smooth" && raw.lag != null && Number(raw.lag) !== 0) {
+    bad.push(`lag=${JSON.stringify(raw.lag)} (smooth 에는 lag 가 없다)`);
+  }
+  // 모양 값은 smooth 만 쓴다 — pixel 줄에 있으면 굽기가 거부하고, smooth 줄은 범위를 본다.
+  for (const [key, [lo, hi]] of Object.entries(BREATHE_SMOOTH_SHAPE_RANGES)) {
+    if (raw[key] === undefined) continue;
+    if (raw.mode !== "smooth") { bad.push(`${key} (smooth 만 쓰는 모양 값)`); continue; }
+    const v = isNumericScalar(raw[key]) ? Number(raw[key]) : NaN;
+    if (!Number.isFinite(v) || v < lo || v > hi) bad.push(`${key}=${JSON.stringify(raw[key])}`);
+  }
+  // 들숨 꼭대기 칸(smooth): 1 부터 커지는 정수, 서로 두 칸 이상 — 파이썬 state_breathe 미러.
+  if (raw.breath_peaks !== undefined) {
+    const p = raw.breath_peaks;
+    const ok = raw.mode === "smooth" && Array.isArray(p) && p.length > 0 && p.every(Number.isInteger)
+      && p[0] >= 1 && p.every((v, i) => i === 0 || v - p[i - 1] >= 2)
+      && (raw.breaths == null || Number(raw.breaths) === p.length);
+    if (!ok) bad.push(`breath_peaks=${JSON.stringify(p)}`);
+  }
   for (const [key, lo, hi, dflt] of bounds) {
     // 생략(undefined)은 기본값. 명시적 null 은 굽기가 `float(None)` 으로 거부하므로
     // **키와 무관하게** 여기서도 문제로 본다 — `Number(null) = 0` 이라 하한이 0 인 `lag`
@@ -610,15 +636,21 @@ function seedEntries() {
       // 켜짐/꺼짐이 반대가 되고 첫 autosave 가 설정을 지운다 (validator note 2026-07-26).
       // 명시적 `null` 은 키와 무관하게 위 범위 검사에 걸려 여기 안 온다.
       breathe: rawBreathe && !retired.length && !outOfRange.length
+        // smooth 줄은 적힌 그대로 들고 있다. 미러가 없어 미리보기도 편집 결과도 굽기와 맞출 수
+        // 없고, 아래 pixel 정규화를 태우면 첫 autosave 가 pixel 기본값(depth 0.06, lag 0.1)을
+        // 채워 넣어 smooth 줄의 진폭을 바꾸고 굽기가 lag 로 거부하게 된다.
+        ? rawBreathe.mode === "smooth" ? JSON.parse(JSON.stringify(rawBreathe))
         // `depth` 생략은 굽기에서 0.06 이다. `Number(undefined)` = NaN 이고
         // `JSON.stringify(NaN)` 은 `null` 이라, 기본값 분기가 없으면 첫 autosave 가
         // 사이드카에 `depth: null` 을 박아 **굽기가 죽는다** (validator 실측 2026-07-26).
-        ? { depth: rawBreathe.depth == null ? 0.06 : Number(rawBreathe.depth),
+        : { depth: rawBreathe.depth == null ? 0.06 : Number(rawBreathe.depth),
             // 위에서 정수 검증을 통과했으므로 반올림이 필요 없다 — 반올림하면 굽기와 갈린다
             breaths: Number(rawBreathe.breaths == null ? 1 : rawBreathe.breaths),
             lag: Number(rawBreathe.lag == null ? 0.1 : rawBreathe.lag),
             rigid_row: rawBreathe.rigid_row == null ? null : Number(rawBreathe.rigid_row),
-            anatomy: rawBreathe.anatomy || null }
+            anatomy: rawBreathe.anatomy || null,
+            // 적힌 `mode: "pixel"` 은 그대로 되쓴다 — 생략과 같은 뜻이지만 사용자가 쓴 키다.
+            ...(rawBreathe.mode != null ? { mode: rawBreathe.mode } : {}) }
         : null };
   }
   // 폐기 스키마가 하나라도 있으면 조용히 넘어가지 않는다 — 사용자가 마이그레이션을

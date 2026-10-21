@@ -424,13 +424,14 @@ def test_a_part_that_crosses_an_ellipse_is_shown_and_not_judged(tmp_path):
 
 
 def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
-    description, add_arguments, run = cli.COMMANDS['video-follow-inspect']
+    verb, run = cli.VERB_ALIASES['video-follow-inspect']       # the old name, kept: the new verb's arguments
+    description, add_arguments, _ = cli.COMMANDS[verb]
     assert run is follow_inspect.run and 'nothing moved' in description
     loop_dir, out = strip_dir(tmp_path/'loop'), tmp_path/'out'
     asked = ['--loop-dir', str(loop_dir), '--region', '60,72,18,16', '--region', '66,20,9,9', '--gain', '50', '--on-fold', 'lower',
              '--freq', '2.5', '--zeta', '0.5']
     parsers = [argparse.ArgumentParser(), argparse.ArgumentParser()]
-    cli.COMMANDS['video-follow'][1](parsers[0])
+    cli.COMMANDS[cli.VERB_ALIASES['video-follow'][0]][1](parsers[0])
     add_arguments(parsers[1])
     followed, inspected = vars(parsers[0].parse_args(asked)), vars(parsers[1].parse_args([*asked, '--out-dir', str(out)]))
     assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == {'board'}

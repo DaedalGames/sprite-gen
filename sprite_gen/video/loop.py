@@ -126,11 +126,20 @@ FACINGS = ("right", "left")
 # the kept one stale, so writing the cycle removes it: an alignment after a re-cut (say, once RIFE
 # is installed and the jumps are repaired) reads the new cut, not the old one.
 CYCLE_SOURCE_DIR = "cycle.source"
-# The strip as it was before `video-follow` moved a region of it; a later follow-through reads
-# from it, and a new cut or alignment removes it (docs/video-pipeline.md section 6).
+# The strip as it was before `video-sway` (the Sway layer; old name `video-follow`) moved a region of it;
+# a later sway reads from it, and a new cut or alignment removes it (docs/video-pipeline.md section 6).
+# Its name, and the key the sway's record is written under, stay `follow` in this release: a consumer reads
+# them by those names. The record is read under either key.
 FOLLOW_SOURCE = "follow.source.png"
 # A refused cut hands nothing over (`refuse`); the frames it wrote, if it got that far, are kept here to look at.
 CYCLE_REFUSED_DIR = "cycle.refused"
+SWAY_RECORD = "follow"
+SWAY_RECORD_KEYS = ("sway", "follow")
+
+
+def sway_recorded(meta: dict) -> bool:
+    """Whether a loop's strip sidecar carries a sway's record, under its new key or its old one."""
+    return any(key in meta for key in SWAY_RECORD_KEYS)
 
 
 # A gait's period is a fact about the body, not about how long the clip runs: the

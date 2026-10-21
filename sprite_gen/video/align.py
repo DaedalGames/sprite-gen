@@ -97,7 +97,7 @@ from sprite_gen._deps import np
 from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
-from sprite_gen.video import follow as follow_mod
+from sprite_gen.video import sway as sway_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import loop as loop_mod
@@ -669,7 +669,7 @@ def origin_of(loop_dir: Path, meta_path: Path, meta: dict[str, Any]) -> dict[str
     strip = cut_strip(loop_dir, meta_path, meta)
     if strip is None:
         return meta["cycle_align"].get("origin")
-    return follow_mod.cut_origin(strip.read_bytes(), meta)
+    return sway_mod.cut_origin(strip.read_bytes(), meta)
 
 
 def _rebuild(loop_dir: Path, meta_path: Path, meta: dict[str, Any], frames: list[Image.Image], fps: float,
@@ -692,11 +692,11 @@ def _rebuild(loop_dir: Path, meta_path: Path, meta: dict[str, Any], frames: list
         standing_frame=int(meta.get("body_ref_frame") or 0))
     # what build_strip does not own (how the cut was anchored) is carried over as it was; a
     # follow-through moved the old cycle's cells, so it is cleared and the record says so
-    if "follow" in meta or (loop_dir / loop_mod.FOLLOW_SOURCE).exists():
+    if loop_mod.sway_recorded(meta) or (loop_dir / loop_mod.FOLLOW_SOURCE).exists():
         record["follow_cleared"] = True
     (loop_dir / loop_mod.FOLLOW_SOURCE).unlink(missing_ok=True)
     # a loop one cycle of which was taken out (`--cycles` k > 1) no longer holds the steps it was counted with
-    merged = {**{k: v for k, v in meta.items() if k not in strip_meta and k not in ("cycle_align", "follow")
+    merged = {**{k: v for k, v in meta.items() if k not in strip_meta and k not in ("cycle_align", *loop_mod.SWAY_RECORD_KEYS)
                  and not (k == "steps" and "cycle_taken" in record)}, **strip_meta}
     if meta.get("foot_anchor") and meta.get("foot_anchor") != "feet":
         merged["foot_anchor"] = meta["foot_anchor"]
