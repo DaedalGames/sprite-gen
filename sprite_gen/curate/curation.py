@@ -220,6 +220,21 @@ def curation_path(run_dir: Path) -> Path:
 BREATHE_DEPTH_MAX = 0.20
 BREATHE_BREATHS_MAX = 8
 BREATHE_LAG_MAX = 0.45
+# 굽기 방식. pixel(기본, `mode` 생략)은 정수 행·열 사상이라 도트 격자를 지키고, smooth 는
+# 큰 일러·영상 프레임용 — 머리를 자리·바이트 그대로 두고 몸통만 쌍선형으로 들어 올린다
+# (`sprite_gen.effects.breathe`). smooth 의 기본 진폭은 일러에 맞게 작다 — 어깨선이 목 아래
+# 몸통 높이의 0.85 % 오른다 (흉상 일러에서 화면 높이 약 0.5 %, 화면 크기로 봐도 숨이 세지 않다).
+BREATHE_MODES = ("pixel", "smooth")
+BREATHE_SMOOTH_DEPTH = 0.0085
+# smooth 의 가슴 부풂 — 가슴 가운데에서 이 비율만큼 넓어지고, 바깥으로 갈수록 무게만큼 준다.
+BREATHE_SMOOTH_DEPTH_X = 0.028
+# smooth 의 모양 (기본값과 허용 범위). chest_y: 가슴 가운데 높이 (목 아래 몸통 비율),
+# chest_rx: 가슴 무게 가로 반지름 (몸통 반폭의 배), chest_ry: 세로 반지름 (목 아래 몸통 비율),
+# shoulder: 어깨가 오르는 양 (가슴의 배), shoulder_lag: 어깨가 늦는 정도 (한 호흡 비율, 1/π 미만이라
+# 시간이 되감기지 않는다).
+BREATHE_SMOOTH_SHAPE = {"chest_y": 0.31, "chest_rx": 0.83, "chest_ry": 0.28, "shoulder": 0.5, "shoulder_lag": 0.08}
+BREATHE_SMOOTH_SHAPE_RANGES = {"chest_y": (0.05, 0.95), "chest_rx": (0.2, 3.0), "chest_ry": (0.05, 1.5),
+                               "shoulder": (0.0, 1.5), "shoulder_lag": (0.0, 0.3)}
 
 RETIRED_BREATHE_KEYS = {
     "splits": "분할선은 봉투 경계로 대체됐다 — 경계는 자동 검출되고 `rigid_row` 로만 덮어쓴다",
@@ -254,7 +269,13 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     반환: {"depth": float, "depth_x": float|None, "breaths": int, "lag": float,
            "rigid_row": int|None, "anatomy": dict|None}
     depth_x: 가로 독립 진폭 — None = depth 따름(레거시), 0 = 가로 항등.
-    compose/GIF 가 재생 시퀀스 위에 결정론으로 굽는다 — 디스크 프레임 불변."""
+    compose/GIF 가 재생 시퀀스 위에 결정론으로 굽는다 — 디스크 프레임 불변.
+
+    `mode` 를 적은 사이드카만 반환에 `mode` 가 실린다 — 안 적은 사이드카(지금까지의 전부)는
+    정규화 결과도 굽기도 이전과 바이트 같다. smooth 는 `lag` 가 없고(진행파는 첫 칸을 움직인다),
+    `depth` 생략은 `BREATHE_SMOOTH_DEPTH`, `depth_x` 생략은 `BREATHE_SMOOTH_DEPTH_X` 이며, 모양 값
+    (`BREATHE_SMOOTH_SHAPE` 의 키)이 기본값과 함께 실린다. 모양 값은 smooth 만 쓴다 — pixel 줄에
+    있으면 조용히 무시하지 않고 거부한다."""
     if not curation:
         return None
     entry = curation.get("states", {}).get(state)
@@ -269,16 +290,27 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
             f"{detail}\n"
             f"  마이그레이션: `sprite-gen migrate-breathe <run-dir> --apply` 또는 해당 키를 지우고 "
             f"`depth`(기본 0.06)·`breaths`·`lag`(기본 0.10) 로 다시 적어라. 조용히 변환하지 않는다.")
+    mode = raw.get("mode")
+    if mode is not None and (not isinstance(mode, str) or mode not in BREATHE_MODES):
+        raise SystemExit(
+            f"curation: states.{state}.breathe.mode = {mode!r} 를 모른다 — "
+            f"{' | '.join(BREATHE_MODES)} 중 하나다 (생략하면 pixel). 조용히 pixel 로 굽지 않는다.")
+    smooth = mode == "smooth"
+    stray = sorted(k for k in BREATHE_SMOOTH_SHAPE if k in raw)
+    if stray and not smooth:
+        raise SystemExit(
+            f"curation: states.{state}.breathe 의 {', '.join(stray)} 는 smooth 의 모양 값이다 — "
+            f"pixel 은 쓰지 않는다. `mode: \"smooth\"` 를 적거나 그 키를 지워라. 조용히 무시하지 않는다.")
     # 형변환 계약(미러와 동일해야 한다): depth/lag 는 실수(숫자 문자열 허용),
     # breaths/rigid_row 는 **정수여야 한다**. 2.7 을 조용히 2 로 깎으면 프리뷰(반올림 3)와
     # 갈리고, "요청 그대로 적용된다" 는 문서도 거짓이 된다 (validator 실측 2026-07-25).
     try:
-        depth = float(raw.get("depth", 0.06))
+        depth = float(raw.get("depth", BREATHE_SMOOTH_DEPTH if smooth else 0.06))
         # 가로 독립 진폭 (2026-07-30 가로/세로 분리): None = depth 따름(레거시 동일),
         # 0 = 가로 사상 항등. depth 와 달리 0 이 유효하다 — "가로만 끄기" 가 정당한 상태다.
         raw_dx = raw.get("depth_x")
         depth_x = None if raw_dx is None else float(raw_dx)
-        lag = float(raw.get("lag", 0.10))
+        lag = float(raw.get("lag", 0.0 if smooth else 0.10))
         breaths = _exact_int("breaths", raw.get("breaths", 1), state)
     except (TypeError, ValueError) as exc:
         # 폐기 키는 요란하게 거부하면서 형식 오류만 조용히 호흡을 꺼버리면 계약이 어긋난다
@@ -313,9 +345,34 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     if torso_half is not None:
         torso_half = _exact_int("torso_half", torso_half, state)
     frozen = raw.get("anatomy")
-    return {"depth": depth, "depth_x": depth_x, "breaths": breaths, "lag": lag,
-            "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,
-            "anatomy": frozen if isinstance(frozen, dict) else None}
+    if smooth:
+        # 진행파(lag)는 윗행의 위상을 늦춰 위상 0 인 칸도 움직인다 — smooth 의 첫 칸은 원본
+        # 그대로여야 루프와 묶음의 이음이 안 바뀐다. 0 아닌 lag 를 조용히 버리지 않는다.
+        if lag != 0.0:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.lag = {raw.get('lag')!r} — smooth 에는 진행파가 없다. "
+                f"위상 0 인 칸이 원본 그대로여야 루프·묶음 이음이 안 바뀐다. lag 를 지워라.")
+        shape = {}
+        for name, default in BREATHE_SMOOTH_SHAPE.items():
+            given = raw.get(name, default)
+            try:
+                value = float(given)
+            except (TypeError, ValueError):
+                raise SystemExit(f"curation: states.{state}.breathe.{name} 를 숫자로 못 읽는다: {given!r}")
+            lo, hi = BREATHE_SMOOTH_SHAPE_RANGES[name]
+            if not lo <= value <= hi:
+                raise SystemExit(
+                    f"curation: states.{state}.breathe.{name} = {given!r} 가 범위 [{lo}, {hi}] 밖이다. "
+                    f"조용히 깎지 않는다 — 사이드카를 고쳐라.")
+            shape[name] = value
+        return {"mode": mode, "depth": depth,
+                "depth_x": BREATHE_SMOOTH_DEPTH_X if depth_x is None else depth_x,
+                "breaths": breaths, **shape, "rigid_row": rigid_row, "axis_x": axis_x,
+                "torso_half": torso_half, "anatomy": frozen if isinstance(frozen, dict) else None}
+    cfg = {"depth": depth, "depth_x": depth_x, "breaths": breaths, "lag": lag,
+           "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,
+           "anatomy": frozen if isinstance(frozen, dict) else None}
+    return cfg if mode is None else {"mode": mode, **cfg}
 
 
 def edit_index(curation: dict[str, Any] | None, state: str, index: int) -> int:

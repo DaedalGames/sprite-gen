@@ -42,7 +42,7 @@ flowchart LR
 | **A · atlas rows** — one still becomes a runtime sprite sheet | [run-contract.md](run-contract.md) | `prepare` → `gen` / `gen-set` → `extract` → `compose-atlas`; optional `curation` and recompose |
 | **B · video → loop** — one still becomes transparent motion loops | [video-pipeline.md](video-pipeline.md) | `video-canvas` → `video` (or `video-prompt` and a video MCP on your agent) → `video-frames` → `video-loop`, `video-set`, `video-cycle-align`, `video-follow` (`video-follow-inspect` shows every cell of it and moves nothing), `video-set-sheet` (a set's directions on one sheet, on one ground line), `video-stop` (a walk or run that stops, from the clip's own start played backwards); `handed-check` for an item on one side |
 | **C · utilities** — imported images in, clean cuts out | [sheet-slicing.md](sheet-slicing.md) | `cutout`, `slice-sheet`, `ui-kit`, `unpack-atlas` |
-| **D · post-processing** — finished sheets, refined | [recolor.md](recolor.md) | `recolor`, `recolor-palette`, `compose-layers`, breathing (compose), `export-pngs`, `export-aseprite` |
+| **D · post-processing** — finished sheets, refined | [recolor.md](recolor.md) | `recolor`, `recolor-palette`, `compose-layers`, breathing (compose, or `breathe` on a folder of frames), `export-pngs`, `export-aseprite` |
 | **E · asset tools** — independent background, shadow and motion tools | [asset-tools.md](asset-tools.md) | `background-tile`, `shadow`, `inspect-motion` |
 | **S · scene** — optional composition of existing assets | [scene.md](scene.md) | `scene-render`, `scene-inspect` |
 

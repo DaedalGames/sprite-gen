@@ -93,7 +93,8 @@ def _mark_row(frame: Image.Image, near: float, column: int, reach: int = 4) -> f
     """`near` 근처 어두운 선의 무게중심 행 (소수) — 한 열 위에서 어두움으로 가중."""
     a = np.asarray(frame.convert("RGBA"), np.float64)
     lo, hi = int(near) - reach, int(near) + reach + 1
-    col = a[lo:hi, column, :3].mean(axis=1)
+    alpha = a[lo:hi, column, 3:4] / 255.0           # 몸통 색 위에 얹어 읽는다 — 투명은 어둡지 않다
+    col = (a[lo:hi, column, :3] * alpha + np.array(BODY[:3]) * (1.0 - alpha)).mean(axis=1)
     weight = np.clip(sum(BODY[:3]) / 3.0 - col, 0.0, None)   # 몸통 색 = 0, 표시선 쪽으로 선형
     assert weight.sum() > 0, "표시선을 못 찾았다"
     return float((weight * np.arange(lo, hi)).sum() / weight.sum())
@@ -166,7 +167,7 @@ def _marked(h: int = 120, **raw):
     box = solid_alpha_bbox(src)
     rows = {"chest": box[1] + int(round(chest_y)), "shoulder": box[1] + int(round(shoulder))}
     cols = {"axis": box[0] + anat.axis_x,
-            "tip": box[0] + anat.axis_x + int(0.9 * anat.torso_half),     # 어깨 끝 쪽
+            "tip": box[0] + anat.axis_x + int(B.SHOULDER_X * anat.torso_half),  # 어깨 자리
             "side": box[0] + anat.axis_x - int(0.95 * anat.torso_half)}   # 가슴 무게 밖
     return src, anat, cfg, rows, cols
 
@@ -205,6 +206,23 @@ def test_it_is_not_a_whole_row_moving_up(h: int) -> None:
         f"어깨 끝이 {tip:.2f}px — 가슴({center:.2f}px)의 shoulder {cfg['shoulder']} 배쯤 달싹여야 한다"
 
 
+def test_the_neck_holds_while_the_shoulder_beside_it_breathes() -> None:
+    """목은 목 너비만 붙잡는다 — 강체 경계 바로 아래, 목 가운데는 거의 그대로지만 같은 높이의 목
+    바로 옆(어깨)은 이미 숨을 쉰다. 행 전체를 오래 붙잡으면 목 옆에 높이 붙은 어깨가 묶인다."""
+    src = _bust(1000)
+    anat = analyze(src)
+    cfg = _cfg({"mode": "smooth"})                   # 기본 모양·진폭
+    lo, hi = anat.neck_span
+    top, end = B.smooth_band(anat)
+    y = np.array([top + 0.25 * (end - top)])
+    lift = cfg["depth"] * anat.basis_rows
+    _, neck = B.smooth_displacement(anat, cfg, np.array([0.5 * (lo + hi + 1)]), y, 1.0, 1.0)
+    _, beside = B.smooth_displacement(anat, cfg, np.array([hi + 0.8 * (hi - lo + 1)]), y, 1.0, 1.0)
+    assert -neck[0] < 0.05 * lift, f"목 가운데가 {-neck[0]:.2f}px 오른다 — 목은 거의 그대로여야 한다"
+    assert -beside[0] > 0.6 * cfg["shoulder"] * lift, \
+        f"목 옆 어깨가 {-beside[0]:.2f}px — 가슴({lift:.2f}px)의 shoulder 배 가까이 올라야 한다"
+
+
 def test_the_shoulders_follow_the_chest_a_little_late() -> None:
     src, anat, cfg, rows, cols = _marked()
     lift = cfg["depth"] * anat.basis_rows
@@ -240,15 +258,16 @@ def test_no_seam_or_tear_between_the_head_and_the_body(h: int) -> None:
     cfg = _cfg(_smooth())
     for phase in (0.25, B.INHALE, 0.6):
         got = np.asarray(B.phase_frame(src, cfg, phase, anat)).astype(int)
-        for column in (box[0] + anat.axis_x, box[0] + anat.axis_x + int(0.9 * anat.torso_half)):
+        for column in (box[0] + anat.axis_x, box[0] + anat.axis_x + int(B.SHOULDER_X * anat.torso_half)):
             red = got[box[1]:box[3], column, 0]           # 정수리부터 발끝까지 — 경계를 가로지른다
             red = red[got[box[1]:box[3], column, 3] == 255]
             steps = np.diff(red)
             assert steps.min() >= 0, f"위상 {phase} {column}열: 기울기가 거꾸로 섰다 — 행이 접혔다"
             assert steps.max() <= slope * (1 + B.MAX_ROW_STRAIN) + 1.0, \
                 f"위상 {phase} {column}열: 한 행에 {steps.max()} 뛰었다 — 이음새(행 빠짐)다"
-        for y in range(box[1], box[3]):                   # 몸통 안이 끊기지 않는다
-            alpha = got[y, :, 3]
+        inner = int(np.ceil(h * 0.46 + cfg["depth"] * anat.basis_rows)) + 2
+        for y in range(inner, box[3]):                    # 몸통 안이 끊기지 않는다 (윗변은 어깨가
+            alpha = got[y, :, 3]                          # 들리며 모양이 바뀌는 자리라 뺀다)
             inside = np.nonzero(alpha)[0]
             if inside.size:
                 run = alpha[inside[0]:inside[-1] + 1]
@@ -372,11 +391,27 @@ def test_a_swell_reaching_past_the_canvas_is_still_refused() -> None:
     pixel 과 같이 조용히 자르지 않고 멈춘다. 기본 모양에서는 생기지 않는다(위 시험)."""
     src = _bust(margin=0.0)
     with pytest.raises(SystemExit, match="셀 밖"):
-        B.phase_frame(src, _cfg(_smooth(chest_rx=2.5, depth_x=0.1)), B.INHALE)
-    roomy = _bust(margin=0.12)
-    got = B.phase_frame(roomy, _cfg(_smooth(depth_x=0.05)), B.INHALE)
-    before, after = solid_alpha_bbox(roomy), solid_alpha_bbox(got)
-    assert after[2] - after[0] > before[2] - before[0], "depth_x 를 줬는데 가슴이 안 넓어졌다"
+        B.phase_frame(src, _cfg(_smooth(depth=0.01, chest_rx=2.5, depth_x=0.05)), B.INHALE)
+    # 가슴 안에 그은 세로선은 depth_x 만큼 가운데에서 바깥으로 밀린다 (실루엣 밖 변은 그대로).
+    probe = _bust(margin=0.12, gradient=False)
+    anat = analyze(probe)
+    cfg = _cfg(_smooth(depth=0.01, depth_x=0.05))
+    box = solid_alpha_bbox(probe)
+    cx, cy = B.smooth_chest(anat, cfg)
+    row = box[1] + int(cy)
+    a = np.asarray(probe).copy()
+    col = box[0] + int(cx + 0.4 * cfg["chest_rx"] * anat.torso_half)
+    a[row - 4:row + 5, col] = MARK
+    roomy = Image.fromarray(a, "RGBA")
+    still = np.asarray(B.phase_frame(roomy, {**cfg, "depth_x": 0.0}, B.INHALE, anat), np.float64)
+    puffed = np.asarray(B.phase_frame(roomy, cfg, B.INHALE, anat), np.float64)
+
+    def centre(img):
+        line = img[row, col - 4:col + 5, :3].mean(axis=1)
+        weight = np.clip(sum(BODY[:3]) / 3.0 - line, 0.0, None)
+        return float((weight * np.arange(col - 4, col + 5)).sum() / weight.sum())
+
+    assert centre(puffed) - centre(still) > 0.2, "depth_x 를 줬는데 가슴이 안 부풀었다"
 
 
 def test_a_strain_past_the_cap_is_refused() -> None:

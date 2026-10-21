@@ -57,6 +57,14 @@ class Anatomy:
     torso_source: str = "auto"        # "auto" | "manual" — 보호 램프 앵커가 갈린다 (breathe.protect)
     face: tuple[int, int] | None = None
     warnings: tuple[str, ...] = field(default=())
+    # 잰 프레임의 콘텐츠 bbox 왼쪽 위 (캔버스 좌표). 사이드카·manifest 에는 싣지 않는다
+    # (`as_dict` 밖) — 굽기가 기준 프레임에서 매번 다시 재므로 캐시할 값이 아니다. smooth 는
+    # 줄 전체를 이 자리에 놓는다: 칸마다 머리 윗선이 흔들려도 경계는 기준 칸의 자리다.
+    origin: tuple[int, int] | None = field(default=None, compare=False)
+    # 강체 경계 행에서 몸통 축을 지나는 불투명 구간 (콘텐츠 bbox 기준 열, 양 끝 포함) — 목의
+    # 가로 자리. `origin` 처럼 사이드카에 싣지 않는다. smooth 가 목 너비만 붙잡고 그 옆 어깨는
+    # 놓아 주는 데 쓴다 (목이 몸통 축에서 비켜 있는 그림도 있다 — 긴 머리가 무게중심을 끈다).
+    neck_span: tuple[int, int] | None = field(default=None, compare=False)
 
     @property
     def has_appendage(self) -> bool:
@@ -100,6 +108,31 @@ def axis_x(image: Image.Image, box: tuple[int, int, int, int]) -> int:
 _axis_centroid = axis_x
 
 
+def center_run(px, box: tuple[int, int, int, int], cx: int, y: int) -> tuple[int, int] | None:
+    """캔버스 행 `y` 에서 몸통 축을 지나는(축이 비었으면 축에 가장 가까운) 불투명 연속 구간 —
+    box 상대 열 (lo, hi), 양 끝 포함. 그 행이 비었으면 None."""
+    x0, _y0, x1, _y1 = box
+    width = x1 - x0
+    seed = None
+    if px[x0 + cx, y][3] >= ALPHA_SOLID:
+        seed = cx
+    else:
+        best = None
+        for i in range(width):
+            if px[x0 + i, y][3] >= ALPHA_SOLID and (best is None or abs(i - cx) < abs(best - cx)):
+                best = i
+        seed = best
+    if seed is None:
+        return None
+    lo = seed
+    while lo > 0 and px[x0 + lo - 1, y][3] >= ALPHA_SOLID:
+        lo -= 1
+    hi = seed
+    while hi < width - 1 and px[x0 + hi + 1, y][3] >= ALPHA_SOLID:
+        hi += 1
+    return lo, hi
+
+
 def width_profile(image: Image.Image, box: tuple[int, int, int, int], cx: int) -> list[int]:
     """행별 '몸통 중심 런' 폭.
 
@@ -107,29 +140,10 @@ def width_profile(image: Image.Image, box: tuple[int, int, int, int], cx: int) -
     몸통 축을 지나는 **연속 런**만 재면 떨어져 있는 부속이 배제된다 — 실루엣의
     국소 두께를 세로축으로 샘플링한 것과 같다."""
     px = image.load()
-    x0, y0, x1, y1 = box
-    width = x1 - x0
     out: list[int] = []
-    for y in range(y0, y1):
-        seed = None
-        if px[x0 + cx, y][3] >= ALPHA_SOLID:
-            seed = cx
-        else:
-            best = None
-            for i in range(width):
-                if px[x0 + i, y][3] >= ALPHA_SOLID and (best is None or abs(i - cx) < abs(best - cx)):
-                    best = i
-            seed = best
-        if seed is None:
-            out.append(0)
-            continue
-        lo = seed
-        while lo > 0 and px[x0 + lo - 1, y][3] >= ALPHA_SOLID:
-            lo -= 1
-        hi = seed
-        while hi < width - 1 and px[x0 + hi + 1, y][3] >= ALPHA_SOLID:
-            hi += 1
-        out.append(hi - lo + 1)
+    for y in range(box[1], box[3]):
+        run = center_run(px, box, cx, y)
+        out.append(0 if run is None else run[1] - run[0] + 1)
     return out
 
 
@@ -321,4 +335,5 @@ def analyze(image: Image.Image, rigid_row: int | None = None,
     return Anatomy(width=w, height=h, axis_x=cx, neck_row=neck_row, neck_source=neck_source,
                    rigid_row=auto_rigid, rigid_source=rigid_source, basis_row=basis_row,
                    torso_half=torso, max_half=max_half, torso_source=torso_source, face=face,
-                   warnings=tuple(warnings))
+                   warnings=tuple(warnings), origin=(x0, y0),
+                   neck_span=center_run(image.load(), box, cx, y0 + min(h - 1, auto_rigid)))

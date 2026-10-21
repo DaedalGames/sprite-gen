@@ -42,16 +42,39 @@ AI 개입 0 — 같은 입력이면 항상 같은 출력.
 (구 테이크 방식 — exhale 프레임을 raw 테이크로 굽고 전체 재추출 — 은 v1.56.31 에서
 폐기: 깜빡임×호흡 조합 불가 + 적용마다 수 분 + 팔레트 드리프트. 봉투 방식은 그 셋 중
 무엇도 해소하지 않으므로 되돌릴 근거가 없다.)
+
+## smooth 모드 (큰 일러·영상 프레임)
+
+위 불변식은 도트 그림의 것이다. 큰 일러에서는 같은 워프가 머리를 통째로 오르내리게 하고
+(발이 고정이라 몸통이 늘면 그 위가 다 뜬다), 정수 행 복제가 칸마다 떨림으로 읽힌다. 가로줄을
+통째로 올리는 것도 숨이 아니다 — 어깨와 가슴이 같이 올라 위아래로만 움직이는 것처럼 보인다.
+`mode: "smooth"` 는 같은 해부를 쓰되 2차원 변위장 하나를 굽는다:
+
+    가슴: 몸통 축 위 가슴 가운데의 타원 cos² 무게로 depth x 기준 높이만큼 오르고 depth_x 만큼 부푼다
+    어깨: 어깨선 좌우가 가슴 오름의 shoulder 배만큼, shoulder_lag 만큼 늦게 오른다
+    목 밴드(강체 경계 ~ 어깨선)에서 켜지고 콘텐츠 맨 아래에서 꺼진다
+
+정사상(원본 점의 내용이 가는 자리)의 역을 고정점 반복으로 풀어 쌍선형으로 뜬다(곱한 알파).
+강체 경계 위(목·턱 위)와 무게 밖은 원본 바이트 그대로다. 한 호흡은 0 에서 시작해 들숨(INHALE)에
+1, 날숨에 0 으로 돌아오는 한쪽 혹이고 어깨의 늦음도 양 끝에서 0 이라, 위상 0 인 칸은 원본과
+바이트 같다. 가슴 무게가 몸통 안에서 0 으로 떨어져 화면 변에 닿은 그림도 밖으로 밀리지 않는다.
+줄 전체가 기준 칸(첫 칸)에서 잰 해부와 그 자리를 쓴다 — 영상 루프의 머리 윗선이 칸마다 흔들려도
+경계는 움직이지 않는다.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
+from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from sprite_gen.effects.anatomy import Anatomy, analyze
-from sprite_gen.curate.curation import normalize_transform
+from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
+                                        BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import solid_alpha_bbox
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
@@ -67,6 +90,14 @@ DEFAULT_DEPTH = 0.06
 DEFAULT_LAG = 0.10
 # 한 호흡이 부드럽게 읽히려면 필요한 최소 프레임 수 (프레임을 찍어낼 때의 권고치).
 SMOOTH_CYCLE_FRAMES = 6
+# smooth 모드 — 들숨이 한 호흡에서 차지하는 비율 (들숨이 날숨보다 짧다).
+INHALE = 0.40
+DEFAULT_SMOOTH_DEPTH = BREATHE_SMOOTH_DEPTH
+DEFAULT_SMOOTH_DEPTH_X = BREATHE_SMOOTH_DEPTH_X
+SMOOTH_SHAPE = dict(BREATHE_SMOOTH_SHAPE)
+# smooth 의 어깨 혹 — 몸통 축에서 좌우로 몸통 반폭의 이 배 자리, 가로 반지름도 몸통 반폭 비율.
+SHOULDER_X = 0.55
+SHOULDER_RX = 0.45
 
 
 # ── 파형 ────────────────────────────────────────────────────────────
@@ -377,6 +408,219 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
     return out
 
 
+# ── smooth 모드 (큰 일러·영상 프레임) ───────────────────────────────
+
+def breathe_mode(cfg: dict) -> str:
+    """cfg 의 굽기 방식 — 생략은 pixel. 모르는 값을 조용히 pixel 로 굽지 않는다."""
+    mode = cfg.get("mode")
+    if mode is None:
+        return "pixel"
+    if not isinstance(mode, str) or mode not in BREATHE_MODES:
+        raise SystemExit(f"breathe: mode {mode!r} 를 모른다 — {' | '.join(BREATHE_MODES)} 중 하나다.")
+    return mode
+
+
+def smooth_wave(t: float) -> float:
+    """smooth 의 한 호흡 — 위상 0 에서 0, 들숨 끝(INHALE)에 1, 날숨 끝에 다시 0.
+
+    pixel 의 `wave` 는 위아래로 흔드는 사인이고 진행파 지연까지 있어 위상 0 에서도 윗행이
+    움직인다. 여기는 쉼(0)에서 올랐다 돌아오기만 하는 한쪽 혹이고, 양 끝과 정점에서 기울기가
+    0 이라 루프 이음에서 꺾이지 않는다."""
+    t = t % 1.0
+    g = 0.5 * t / INHALE if t < INHALE else 0.5 + 0.5 * (t - INHALE) / (1.0 - INHALE)
+    return 0.5 - 0.5 * math.cos(2.0 * math.pi * g)
+
+
+def smooth_shoulder_wave(t: float, lag: float) -> float:
+    """어깨의 호흡 — 가슴보다 `lag` 만큼 늦게 정점에 닿되 위상 0 과 1 에서는 가슴과 같이 0.
+
+    `wave(t - lag)` 로 늦추면 위상 0 에서 어깨가 아직 날숨 끝에 걸려 있어 첫 칸이 원본이 아니게
+    된다. 시간을 `t - lag·sin(πt)` 로 휘면 양 끝은 그대로 두고 가운데만 늦출 수 있다 (lag < 1/π
+    이면 단조라 되감기지 않는다)."""
+    t = t % 1.0
+    return smooth_wave(t - lag * math.sin(math.pi * t))
+
+
+def smooth_band(anat: Anatomy) -> tuple[float, float]:
+    """(강체 경계, 목 밴드 끝) — 콘텐츠 bbox 기준 행. 그 사이가 목 밴드다: 경계에서 0 이던 움직임이
+    여기서 켜진다(목 너비 안은 밴드 끝까지 천천히). 폭은 pixel 테이퍼의 전폭(경계 위아래 각 TAPER)이고
+    전부 경계 **아래**에 둔다 — 경계 위(목·턱 위)는 한 픽셀도 움직이지 않아야 한다."""
+    top = float(anat.rigid_row)
+    return top, top + 2.0 * max(1.5, TAPER * anat.height)
+
+
+def smooth_shoulder_row(anat: Anatomy) -> float:
+    """어깨선 (콘텐츠 bbox 기준 행) — 어깨 혹의 가운데, 목 밴드의 위 4할."""
+    top, end = smooth_band(anat)
+    return top + 0.4 * (end - top)
+
+
+def _neck(anat: Anatomy) -> tuple[float, float]:
+    """(목 가운데 열, 목 반폭) — 해부가 강체 경계 행에서 잰 구간. 손으로 만든 해부처럼 구간이
+    없으면 몸통 축에 몸통 반폭의 1/4 로 둔다."""
+    if anat.neck_span is not None:
+        lo, hi = anat.neck_span
+        return 0.5 * (lo + hi + 1), max(1.0, 0.5 * (hi - lo + 1))
+    return anat.axis_x + 0.5, max(1.0, 0.25 * anat.torso_half)
+
+
+def _shape(cfg: dict) -> dict:
+    return {k: (SMOOTH_SHAPE[k] if cfg.get(k) is None else float(cfg[k])) for k in SMOOTH_SHAPE}
+
+
+def smooth_chest(anat: Anatomy, cfg: dict) -> tuple[float, float]:
+    """가슴 가운데 (콘텐츠 bbox 기준 x, y) — 몸통 축 위, 목 아래 몸통의 `chest_y` 비율 높이."""
+    top = float(anat.rigid_row)
+    return anat.axis_x + 0.5, top + _shape(cfg)["chest_y"] * (anat.height - top)
+
+
+def _smoothstep_array(a: float, b: float, x: np.ndarray) -> np.ndarray:
+    if b <= a:
+        return (x >= b).astype(np.float64)
+    u = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return u * u * (3.0 - 2.0 * u)
+
+
+def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
+                        chest: float, shoulders: float) -> tuple[np.ndarray, np.ndarray]:
+    """콘텐츠 bbox 기준 점 (x, y) 의 내용이 가는 변위 (dx, dy) — 정사상, 위로 오르면 dy < 0.
+
+    가슴: 가운데에 놓인 타원(가로 chest_rx × 몸통 반폭, 세로 chest_ry × 목 아래 몸통)의 cos² 무게로
+    `depth × 기준 높이` 만큼 오르고, 그 안이 가운데에서 바깥으로 `depth_x` 만큼 부푼다.
+    어깨: 목 밴드 높이, 몸통 축에서 좌우로 몸통 반폭의 SHOULDER_X 배 자리에 놓인 둥근 혹 둘이
+    가슴 오름의 `shoulder` 배만큼 오른다 — 가슴 무게가 이미 덮은 자리는 그만큼 덜 (가운데가 두 번
+    오르지 않게). 목과 어깨 사이(옷깃)는 어느 혹에도 안 들어 그대로다.
+    고정: 강체 경계 위는 0. 목 너비 안은 목 밴드 전체에 걸쳐 천천히 켜지고(목은 거의 그대로), 그
+    밖은 밴드의 0.15 만에(눌림이 행당 상한을 넘지 않는 한) 켜진다 — 목 옆에 높이 붙은 어깨도 숨을
+    쉰다. 콘텐츠 맨 아래에서 다시 0 이다 (발바닥 고정)."""
+    shape = _shape(cfg)
+    top, band_end = smooth_band(anat)
+    band = band_end - top
+    height = float(anat.height)
+    torso = float(anat.torso_half)
+    cx, cy = smooth_chest(anat, cfg)
+    neck_x, neck_half = _neck(anat)
+    rx = shape["chest_rx"] * torso
+    ry = shape["chest_ry"] * (height - top)
+    r = np.sqrt(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2)
+    w_chest = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+    neckness = 1.0 - _smoothstep_array(neck_half, 1.5 * neck_half, np.abs(x - neck_x))
+    across = np.minimum(1.0, np.abs(np.abs(x - cx) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
+    down = np.minimum(1.0, np.abs(y - smooth_shoulder_row(anat)) / (1.4 * band))   # 양 어깨 높이가 달라도
+    w_shoulder = np.cos(0.5 * np.pi * down) ** 2 * np.cos(0.5 * np.pi * across) ** 2
+    lift = float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH) * anat.basis_rows
+    swell = float(cfg.get("depth_x") if cfg.get("depth_x") is not None else DEFAULT_SMOOTH_DEPTH_X)
+    # 어깨가 켜지는 구간은 오르는 양의 8배 이상 — 더 짧으면 그 사이가 행당 상한 넘게 눌린다.
+    quick = max(0.15 * band, 8.0 * shape["shoulder"] * lift)
+    u = np.clip((y - top) / (quick + (band - quick) * neckness), 0.0, 1.0) if band > quick else \
+        np.clip((y - top) / quick, 0.0, 1.0)
+    guard = u * u * (3.0 - 2.0 * u) * (1.0 - _smoothstep_array(height - 0.5 * band, height, y))
+    rise = lift * (chest * w_chest + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_chest))
+    puff = swell * chest * w_chest
+    return puff * (x - cx) * guard, (puff * (y - cy) - rise) * guard
+
+
+def smooth_strain(anat: Anatomy, cfg: dict) -> tuple[float, float]:
+    """(행당 최대 변형, 최소 면적비) — 가슴과 어깨가 함께 정점일 때의 변위장 기울기에서.
+
+    행당 변형은 늘고 주는 성분(∂dx/∂x, ∂dy/∂y)의 최대다 — pixel 의 행당 변형과 같은 뜻. 목 옆에서
+    어깨가 오르며 생기는 비틀림(옆 칸끼리 오르는 양의 차)은 늘고 줄지 않으니 여기 세지 않고,
+    대신 사상이 접히지 않는지를 면적비 det(I + ∇D) 로 본다."""
+    ys = np.arange(anat.height, dtype=np.float64) + 0.5
+    xs = np.arange(anat.width, dtype=np.float64) + 0.5
+    if ys.size < 2 or xs.size < 2:
+        return 0.0, 1.0
+    gx, gy = np.meshgrid(xs, ys)
+    dx, dy = smooth_displacement(anat, cfg, gx, gy, 1.0, 1.0)
+    dxy, dxx = np.gradient(dx)
+    dyy, dyx = np.gradient(dy)
+    stretch = float(max(np.abs(dxx).max(), np.abs(dyy).max()))
+    area = float(((1.0 + dxx) * (1.0 + dyy) - dxy * dyx).min())
+    return stretch, area
+
+
+def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float) -> Image.Image:
+    """smooth 의 한 위상 — 캔버스 크기 불변, 강체 경계 위와 발바닥 고정.
+
+    정사상(원본 점 p 의 내용이 p + D(p) 로 간다)의 역을 고정점 반복(q = o - D(q))으로 풀고, 그
+    자리를 곱한 알파에서 쌍선형으로 뜬다. 변위가 행당 상한(MAX_ROW_STRAIN) 아래라 반복은
+    수축이다. 움직이지 않는 픽셀(경계 위, 무게 밖)은 원본 바이트를 그대로 둔다 — 곱하고 나누는
+    왕복조차 거치지 않는다."""
+    rgba = frame.convert("RGBA")
+    chest = smooth_wave(t)
+    shoulders = smooth_shoulder_wave(t, _shape(cfg)["shoulder_lag"])
+    box = solid_alpha_bbox(rgba)
+    if not box or (chest == 0.0 and shoulders == 0.0):
+        return rgba                                  # 위상 0 — 원본 그대로 (바이트)
+    if anat.origin is not None:
+        # 줄의 기준 칸에서 잰 자리 — 해부가 한 벌이듯 경계·축·발바닥의 자리도 한 벌이다.
+        # 영상 루프는 머리 윗선이 칸마다 흔들려, 칸마다 다시 놓으면 경계 위 행이 움직인다.
+        box = (anat.origin[0], anat.origin[1],
+               anat.origin[0] + anat.width, anat.origin[1] + anat.height)
+    src = np.asarray(rgba)
+    canvas_h, canvas_w = src.shape[:2]
+    # 움직일 수 있는 행: 강체 경계 아래 ~ 콘텐츠 맨 아래 (그 밖은 변위가 0 이다).
+    y_lo = max(0, int(math.floor(box[1] + anat.rigid_row)))
+    y_hi = min(canvas_h, box[1] + anat.height)
+    if y_hi <= y_lo:
+        return rgba
+    oy, ox = np.mgrid[y_lo:y_hi, 0:canvas_w].astype(np.float64)
+    oy += 0.5 - box[1]                               # 콘텐츠 bbox 기준 픽셀 중심
+    ox += 0.5 - box[0]
+
+    def field(x, y):
+        return smooth_displacement(anat, cfg, x, y, chest, shoulders)
+
+    # 밀려 나가는 내용 — 원본 픽셀 중심이 가는 자리가 캔버스 밖이면 조용히 자르지 않는다.
+    fx, fy = field(ox, oy)
+    land_x, land_y = ox + fx + box[0], oy + fy + box[1]
+    gone = (land_x < 0.0) | (land_x >= canvas_w) | (land_y < 0.0) | (land_y >= canvas_h)
+    clipped = int(np.count_nonzero(src[y_lo:y_hi, :, 3][gone]))
+    if clipped:
+        raise SystemExit(
+            f"breathe(smooth): 가슴 부풂이 불투명 픽셀 {clipped}개를 셀 밖으로 민다 "
+            f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). "
+            f"chest_rx 나 depth_x 를 줄여라 — 기본 모양은 가슴 무게가 몸통 안에서 0 이 된다.")
+    qx, qy = ox.copy(), oy.copy()
+    for _ in range(8):
+        dx, dy = field(qx, qy)
+        qx, qy = ox - dx, oy - dy
+    moved = (qx != ox) | (qy != oy)
+    if not moved.any():
+        return rgba
+    pm = src.astype(np.float64) / 255.0
+    pm[..., :3] *= pm[..., 3:4]
+    sx = qx[moved] + box[0] - 0.5                    # 캔버스 인덱스 좌표
+    sy = qy[moved] + box[1] - 0.5
+    x0, y0 = np.floor(sx).astype(np.int64), np.floor(sy).astype(np.int64)
+    ax, ay = (sx - x0)[:, None], (sy - y0)[:, None]
+    x0c, x1c = np.clip(x0, 0, canvas_w - 1), np.clip(x0 + 1, 0, canvas_w - 1)
+    y0c, y1c = np.clip(y0, 0, canvas_h - 1), np.clip(y0 + 1, 0, canvas_h - 1)
+    val = ((pm[y0c, x0c] * (1.0 - ax) + pm[y0c, x1c] * ax) * (1.0 - ay)
+           + (pm[y1c, x0c] * (1.0 - ax) + pm[y1c, x1c] * ax) * ay)
+    alpha = val[:, 3:4]
+    rgb = np.where(alpha > 0.0, val[:, :3] / np.maximum(alpha, 1e-12), 0.0)
+    out = src.copy()
+    region = out[y_lo:y_hi]
+    region[moved] = np.clip(np.floor(np.concatenate([rgb, alpha], axis=1) * 255.0 + 0.5), 0, 255).astype(np.uint8)
+    return Image.fromarray(out, "RGBA")
+
+
+def _smooth_phase_frame(frame: Image.Image, cfg: dict, phase: float, anat: Anatomy) -> Image.Image:
+    lag = cfg.get("lag")
+    if lag is not None and float(lag) != 0.0:
+        # 진행파는 윗행 위상을 늦춰 위상 0 인 칸도 움직인다 — 조용히 버리지 않는다.
+        raise SystemExit(f"breathe(smooth): lag {lag} — smooth 에는 진행파가 없다. 위상 0 인 칸이 원본 "
+                         f"그대로여야 루프·묶음 이음이 안 바뀐다. lag 를 지워라 (어깨가 늦는 건 shoulder_lag).")
+    strain, area = smooth_strain(anat, cfg)
+    if strain > MAX_ROW_STRAIN or area < 1.0 - MAX_ROW_STRAIN:
+        raise SystemExit(
+            f"breathe(smooth): 행당 변형 {strain:.3f}·최소 면적비 {area:.3f} — 상한 {MAX_ROW_STRAIN} 을 넘는다. "
+            f"가슴·어깨가 오르는 만큼을 목 밴드와 가슴 무게가 못 받는다 (강체 경계 {anat.rigid_row}/{anat.height}, "
+            f"기준 {anat.basis_rows}행). depth·depth_x 를 낮추거나 chest_rx·chest_ry 를 넓혀라. 조용히 깎지 않는다.")
+    return _smooth_warp(frame, anat, cfg, phase)
+
+
 # ── 해부 결과 얼리기 / 자가 복구 ────────────────────────────────────
 
 def _fnv1a(data: bytes) -> int:
@@ -583,9 +827,12 @@ def phase_frame(frame: Image.Image, cfg: dict, phase: float,
     """프레임에 호흡 위상 하나(0 <= phase < 1)를 적용.
 
     `anat` 를 주면 그것을 쓴다 — 줄 전체가 한 벌을 공유해야 하므로 호출자가 한 번
-    확정해 넘기는 게 정석이다. 생략하면 이 프레임을 기준으로 확정한다 (단발 호출용)."""
+    확정해 넘기는 게 정석이다. 생략하면 이 프레임을 기준으로 확정한다 (단발 호출용).
+    `cfg["mode"]` 가 smooth 면 smooth 로 굽는다 — GIF·아틀라스·레이어·CLI 가 모두 여기를 탄다."""
     if anat is None:
         anat = resolve_anatomy(frame, cfg)
+    if breathe_mode(cfg) == "smooth":
+        return _smooth_phase_frame(frame, cfg, phase, anat)
     depth = float(cfg.get("depth", DEFAULT_DEPTH))
     raw_dx = cfg.get("depth_x")
     depth_x = None if raw_dx is None else float(raw_dx)
@@ -611,3 +858,85 @@ def bake_breathe_sequence(images: list[Image.Image], cfg: dict) -> tuple[list[Im
     phases = fit_breathe_pattern(len(images), cfg)
     anat = resolve_anatomy(images[0], cfg)        # 줄 전체가 한 벌을 공유한다
     return [phase_frame(images[i], cfg, phases[i], anat) for i in range(len(images))], phases
+
+
+# ── CLI: 프레임 폴더에 굽기 (`sprite-gen breathe`) ─────────────────
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("frames", help="folder of the loop's frames (*.png, played in name order)")
+    parser.add_argument("out", help="new folder for the breathing frames (same names) and breathe.json")
+    parser.add_argument("--mode", choices=BREATHE_MODES, default=None,
+                        help="pixel (default): integer rows and columns, for pixel art; smooth: the head stays "
+                             "in place, the body rises smoothly, for large illustrations and video frames")
+    parser.add_argument("--depth", type=float, default=None,
+                        help="how far the body rises, as a share of its height below the neck "
+                             f"(default {DEFAULT_DEPTH} pixel, {DEFAULT_SMOOTH_DEPTH} smooth)")
+    parser.add_argument("--depth-x", type=float, default=None,
+                        help=f"sideways swell (pixel: follows --depth; smooth: the chest puffs out by this share, "
+                             f"default {DEFAULT_SMOOTH_DEPTH_X})")
+    parser.add_argument("--breaths", type=int, default=None, help="breaths per loop (default 1)")
+    parser.add_argument("--lag", type=float, default=None, help=f"pixel only: travelling-wave lag (default {DEFAULT_LAG})")
+    parser.add_argument("--rigid-row", type=int, default=None,
+                        help="the row the head starts below, counted from the top of the figure (default: measured)")
+    shape = parser.add_argument_group("smooth shape (defaults in parentheses)")
+    shape.add_argument("--chest-y", type=float, default=None,
+                       help=f"chest centre height, a share of the body below the neck ({SMOOTH_SHAPE['chest_y']})")
+    shape.add_argument("--chest-rx", type=float, default=None,
+                       help=f"chest weight's half width, times the torso half width ({SMOOTH_SHAPE['chest_rx']})")
+    shape.add_argument("--chest-ry", type=float, default=None,
+                       help=f"chest weight's half height, a share of the body below the neck ({SMOOTH_SHAPE['chest_ry']})")
+    shape.add_argument("--shoulder", type=float, default=None,
+                       help=f"how far the shoulders rise, times the chest's ({SMOOTH_SHAPE['shoulder']})")
+    shape.add_argument("--shoulder-lag", type=float, default=None,
+                       help=f"how late the shoulders peak, a share of one breath ({SMOOTH_SHAPE['shoulder_lag']})")
+
+
+def run(*, frames: str, out: str, mode: str | None = None, depth: float | None = None,
+        depth_x: float | None = None, breaths: int | None = None, lag: float | None = None,
+        rigid_row: int | None = None, chest_y: float | None = None, chest_rx: float | None = None,
+        chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None) -> int:
+    """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
+    같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다."""
+    src_dir, out_dir = Path(frames), Path(out)
+    raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
+                             ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
+                             ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag))
+           if v is not None}
+    try:
+        cfg = state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
+    except SystemExit as exc:
+        raise SystemExit(f"breathe: 사이드카와 같은 검사에서 거부됐다 — {exc}")
+    paths = sorted(src_dir.glob("*.png"))
+    if not paths:
+        raise SystemExit(f"breathe: {src_dir} 에 PNG 프레임이 없다")
+    if out_dir.resolve() == src_dir.resolve():
+        raise SystemExit("breathe: out 이 frames 와 같은 폴더다 — 원본 프레임 위에 덮어쓰지 않는다")
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise SystemExit(f"breathe: {out_dir} 가 비어 있지 않다 — 새 폴더를 주라")
+    images = []
+    for path in paths:
+        with Image.open(path) as opened:
+            images.append(opened.convert("RGBA"))
+    if len({im.size for im in images}) != 1:
+        raise SystemExit(f"breathe: 프레임 크기가 서로 다르다 — {sorted({im.size for im in images})}")
+    resolved = anatomy_report(images, cfg)
+    baked, phases = bake_breathe_sequence(images, cfg)
+    # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다.
+    staging = out_dir.parent / f".{out_dir.name}.partial"
+    if staging.exists():
+        for stale in staging.iterdir():
+            stale.unlink()
+        staging.rmdir()
+    staging.mkdir(parents=True)
+    for path, frame in zip(paths, baked):
+        frame.save(staging / path.name)
+    report = {"frames": len(paths), "source": str(src_dir), "config": cfg, "phases": phases,
+              "resolved": resolved}
+    (staging / "breathe.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                                          encoding="utf-8")
+    if out_dir.exists():
+        out_dir.rmdir()
+    staging.rename(out_dir)
+    print(f"breathe: {len(paths)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
+          f"breaths {cfg['breaths']} -> {out_dir}")
+    return 0

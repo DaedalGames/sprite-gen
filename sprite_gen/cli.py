@@ -31,7 +31,7 @@ from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
 from sprite_gen.video import rife_install
-from sprite_gen.effects import recolor, shadow
+from sprite_gen.effects import breathe, recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
@@ -437,6 +437,13 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Draft a palette map (distinct opaque colours by frequency) from a base sheet.",
         recolor.add_palette_arguments,
         recolor.run_palette,
+    ),
+    # The Breathe layer for frames that are not a curation run (a video loop's cells): the sidecar's values, its
+    # normalization and its bake, so the same values give the same bytes either way.
+    "breathe": (
+        "Lay the Breathe layer over a folder of loop frames: pixel (default) or smooth (large illustrations, video frames).",
+        breathe.add_arguments,
+        breathe.run,
     ),
     "inspect": ("Inspect sprite rows for frame-count, identity, and motion defects.", _add_inspect, inspect.run),
     "score": ("Score a sprite inspect report and emit correction hints.", _add_score, score.run),
