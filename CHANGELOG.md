@@ -59,7 +59,10 @@ Moving the written names to `sway` is a later change made together with the tool
   It also takes the smooth shape flags: `--chest-y`, `--chest-rx`, `--chest-ry`, `--shoulder`, `--shoulder-lag`, `--chest-tilt`, `--chest-bias`, `--chest-bias-y`, `--chest-dir`, `--chest-x`, and `--chest-flat`.
   The same values give the same bytes as a curation bake.
   It writes the frames under their names and `breathe.json` (config, phases, the anatomy used) into a new folder all at once.
-  It refuses the source folder or a folder that is not empty.
+  Before creating or deleting anything, it refuses if `<out>` and `<frames>` are the same folder, if either lies inside the other based on real disk location (following symbolic links and treating two spellings on a case-insensitive disk as the same folder), or if `<out>` already exists and is not empty, while an existing empty folder is accepted.
+  It never writes anything into `<frames>`, and it never changes or deletes any frames or other files there.
+  It builds the result in a temporary folder of its own next to `<out>`, with a name no other folder has, and moves it into place in one step, deleting only that temporary folder if a run cannot finish while leaving alone folders it did not make, such as a leftover temporary folder of an earlier run.
+  When `<out>` is a symbolic link to an empty folder, the result is placed in the folder the link points to, and the link stays.
 - **Output change: The curation webview does not preview a smooth row.**
   The live preview mirrors the pixel warp only.
   It shows the original frame with a notice.
