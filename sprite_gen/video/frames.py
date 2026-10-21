@@ -87,7 +87,9 @@ SPECK_MIN_PX = 8
 SPECK_APART = 0.1
 # Edge decontamination (`sprite_gen.frames.decontam`). A decoded frame's chroma is blurred by
 # 4:2:0 while its luma is not, so frames use the video fit. One palette serves the whole clip,
-# learned on the first frame, so the colours an edge may take cannot change between frames.
+# learned on the first frame, so the colours an edge may take cannot change between frames, and
+# one history carries each frame's calls to the next (the pass's *Hold* and *Settle*), so the
+# codec's noise does not flip an edge pixel between colours from one frame to the next.
 # `auto` is the default: a thin strand on a chroma key comes out of the codec mixed with the key
 # (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
 # key, a subject with no interior) the frames keep the matte's bytes and the report says why;
@@ -96,7 +98,7 @@ DECONTAM_MODES = ("off", "auto", "palette")
 DECONTAM_DEFAULT = "auto"
 DECONTAM_FIT = "video"
 DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
-                      "key_part_kept_px", "behind_kept_px")
+                      "key_part_kept_px", "behind_kept_px", "held_px", "settled_px")
 BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
 
 
@@ -362,6 +364,7 @@ def key_frames(
     if decontam not in DECONTAM_MODES:
         raise SystemExit(f"video-frames: unknown --decontam {decontam!r}; expected one of {', '.join(DECONTAM_MODES)}")
     clip_palette: dict[str, Any] | None = None
+    clip_history: dict[str, Any] = {}  # the last frame's calls, in clip order
     decontam_first: dict[str, Any] | None = None
     decontam_totals = {name: 0 for name in DECONTAM_STAT_KEYS}
     decontam_applied = 0
@@ -376,7 +379,7 @@ def key_frames(
         dst = keyed_dir / src.name
         stats = cutout(src, dst, key=key, spill_max_fraction=spill_max, spill_min_tint=spill_tint,
                        spill_require_hue=spill == "full", decontam=decontam, decontam_fit=DECONTAM_FIT,
-                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS)
+                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS, decontam_history=clip_history)
         image = Image.open(dst).convert("RGBA")
         # The specks go before anything reads the frame: the edge band, the coverage, the loop.
         image, specks = drop_specks(image)

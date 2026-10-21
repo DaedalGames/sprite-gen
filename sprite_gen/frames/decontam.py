@@ -25,9 +25,13 @@ all, and no channel gain is applied, so nothing can drift warm.
 
 Guards, in order of the decision they make:
 
-- *Background flank.* Keyed pixels within `FLANK_PX` of the subject may regain
-  coverage (the faint sides of a strand the hard cut erased), above a noise
+- *Background flank (still fit).* Keyed pixels within `FLANK_PX` of the subject may
+  regain coverage (the faint sides of a strand the hard cut erased), above a noise
   floor measured on the background itself, and only when chained to the subject.
+  The video fit gives the keyed flank nothing: a decoded frame's blur reads as a
+  faint blend on every keyed pixel near the subject (*Frame edge*), and the codec's
+  noise carried those across the floor and back from one frame to the next, so the
+  dark gaps between strands filled with a faint smear that came and went.
 - *Frame edge.* Within `edge_band` of the frame's top, left and right edges (the
   band `video-frames` reads as the subject touching the frame or the key surviving
   the matte), a pixel the matte left transparent stays transparent. A decoded
@@ -65,7 +69,7 @@ Guards, in order of the decision they make:
   for the palette to keep (a green charm under a green key, under
   `KEY_MATERIAL_MAX_SHARE` of the interior). A key-free palette then has no colour that
   explains the part's edge, and the fit repainted it in the nearest key-free colour: a
-  green charm's rim came out brown. Band and flank pixels within `KEY_PART_GUARD_PX` of
+  green charm's rim came out brown. Band pixels within `KEY_PART_GUARD_PX` of
   such a part (opaque, deeper than `BAND_PX`, key-hued past `KEY_HUE_TINT`) keep the
   engine's bytes, and the key-hue cap leaves them alone.
 - *Material behind (video fit).* A band pixel that has the colour, as it is or at its
@@ -81,6 +85,19 @@ Guards, in order of the decision they make:
 - *Depth.* Coverage is refitted only within `alpha_depth` of the keyed region
   (the engine's unmix reach, same meaning). Deeper band pixels get colour only,
   so a key reflection on a solid surface is recoloured, not turned see-through.
+- *Hold (video fit, with a clip's `history`).* Codec noise moves an edge pixel back
+  and forth across the tests above from one frame to the next, and each crossing
+  changes the colour written by far more than the noise did (the matte follows the
+  noise smoothly, so with the pass off the edge stays calm). So each test keeps the
+  outcome it had at that pixel in the last frame until this frame's evidence passes
+  its bar the other way by `VIDEO_HOLD`, and the palette colour picked last frame
+  stays unless another one's line passes closer by as much. A pixel that moves
+  changes its evidence by far more than that and is decided afresh.
+- *Settle (video fit, with a clip's `history`).* A pixel written in this frame and the
+  last in the same palette colour, whose source did not move by more than
+  `VIDEO_STILL` anywhere in its 3x3 box, moves `VIDEO_SETTLE` of the way from what it
+  was toward this frame's fit, and never farther than `VIDEO_SETTLE_REACH` from that
+  fit: what is left changing there is the codec's noise.
 
 A subject that owns key-coloured material (more than `KEY_MATERIAL_MAX_SHARE` of
 its interior carries the key hue, the same test `video-frames --spill auto` runs
@@ -95,6 +112,8 @@ Everything here is integer-exact or a fixed sequence of float64 operations: no
 random initialisation, no iteration-order dependence, the same input gives the
 same bytes. The one learned component, the palette, is a histogram k-means with
 a deterministic seed (greedy weighted farthest-point) and a fixed iteration count.
+With a clip's `history` the input is the clip so far: a frame's bytes depend on the
+frames before it, in the order they were given, and on nothing else.
 """
 
 from __future__ import annotations
@@ -134,8 +153,14 @@ TINT_SHIFT = 8.0  # a tint moves the colour at least this far toward the key ...
 TINT_RATIO = 2.0  # ... and at least this many times farther than the fit misses by
 KEY_PART_GUARD_PX = BAND_PX  # video fit: edge pixels this close to a key-coloured part keep the engine's bytes
 VIDEO_BEHIND_PX = 3  # video fit: the material behind an edge pixel is the subject's mean within this box radius
+VIDEO_HOLD = 16.0  # video fit: how far (RGB) a test must pass the other way, or a colour fit closer, to undo last frame's call
+VIDEO_SETTLE = 0.1  # video fit: the share of the way a written pixel that stood still moves from last frame's value
+VIDEO_SETTLE_REACH = 12.0  # video fit: ... and never farther than this (per channel) from what this frame's fit gives
+VIDEO_STILL = 8  # video fit: stood still = no source channel within the pixel's 3x3 box moved more than this
 LUMA = np.array([0.299, 0.587, 0.114])
 _CHUNK = 1 << 16
+# what the video fit keeps of each pixel it examined (`history["tests"]`): that it saw it, and each held test's outcome
+_SEEN, _EXPLAINED, _BEHIND, _BLEND, _TINT_SHIFT, _TINT_RATIO = 1, 2, 4, 8, 16, 32
 
 
 def validate(mode: str, fit: str = "still") -> None:
@@ -274,6 +299,40 @@ def _box3(rgb: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
     return acc / 9.0
 
 
+def _line_miss(towards: np.ndarray, line: np.ndarray) -> np.ndarray:
+    """How far `towards` (observation minus background) passes from the segment from 0 to `line` (colour minus
+    background), per pixel."""
+    length = np.maximum((line * line).sum(-1), 1e-9)
+    along = np.clip((towards * line).sum(-1) / length, 0.0, 1.0)
+    return np.linalg.norm(towards - along[:, None] * line, axis=-1)
+
+
+def _hold(value: np.ndarray, bar: Any, before: np.ndarray, bit: int, *, strict: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """`value <= bar` (`<` when `strict`), with the outcome the last frame recorded under `bit` in `before` (*Hold*):
+    a pixel it passed passes up to bar + VIDEO_HOLD, one it failed needs bar - VIDEO_HOLD, and a pixel it did not
+    examine takes the plain test. Returns (outcome, held), held where the outcome is not this frame's alone."""
+    fresh = value < bar if strict else value <= bar
+    seen = (before & _SEEN) != 0
+    shifted = bar + np.where(seen, np.where((before & bit) != 0, VIDEO_HOLD, -VIDEO_HOLD), 0.0)
+    outcome = value < shifted if strict else value <= shifted
+    return outcome, outcome != fresh
+
+
+def _box_max3(values: np.ndarray) -> np.ndarray:
+    """Maximum over each pixel's 3x3 box (edge-clamped) of a 2-D array."""
+    pad = np.pad(values, 1, mode="edge")
+    height, width = values.shape
+    return np.max([pad[1 + dy:1 + dy + height, 1 + dx:1 + dx + width] for dy in (-1, 0, 1) for dx in (-1, 0, 1)], axis=0)
+
+
+def _last_frame(history: dict[str, Any] | None, shape: tuple[int, ...], palette: np.ndarray) -> dict[str, Any] | None:
+    """The previous frame's record in a clip's `history`, or None where it cannot speak for this frame: no record
+    yet, a frame of another size, or another palette (picks are indices into it)."""
+    if not history or history["shape"] != shape or not np.array_equal(history["palette"], palette):
+        return None
+    return history
+
+
 def not_applicable(keyed: np.ndarray, keyed_mask: np.ndarray, chroma_key: tuple[int, int, int]) -> str | None:
     """Why the pass cannot run on this image, or None when it can."""
     keyed_channels, _ = _key_channel_split(chroma_key)
@@ -328,7 +387,8 @@ def palette_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
 def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndarray,
                   chroma_key: tuple[int, int, int], *, fit: str = "still", alpha_depth: int = 4,
                   palette: dict[str, Any] | None = None, mode: str = "palette",
-                  source_alpha: np.ndarray | None = None, edge_band: int = 0) -> tuple[np.ndarray, dict[str, Any]]:
+                  source_alpha: np.ndarray | None = None, edge_band: int = 0,
+                  history: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
     """Re-explain the edge of an already keyed image. Returns (RGBA uint8, stats).
 
     `source_rgb` (H, W, 3) is the frame as generated and `source_alpha` (H, W) its own
@@ -338,6 +398,9 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     `palette` is a `subject_palette` result to reuse (a clip's); None learns this frame's.
     `edge_band` (px) keeps what the matte left transparent along the top, left and right
     edges transparent (*Frame edge*); 0 leaves the frame edge to the pass like anywhere else.
+    `history` (video fit) is a dict a clip hands to every frame in order: the pass reads the
+    previous frame's record from it (*Hold*, *Settle*) and leaves this frame's; empty, it
+    starts from this frame alone. The still fit ignores it.
     `mode="auto"` returns the input unchanged, with the reason in the stats, where the
     pass does not apply; `mode="palette"` raises SystemExit there instead.
     """
@@ -349,6 +412,8 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         if reason is not None:
             if mode == "palette":
                 raise SystemExit(f"decontam: {reason}; run without decontam")
+            if history is not None:
+                history.clear()  # a frame left as keyed: the next one has no last frame to hold to
             return np.array(keyed, dtype=np.uint8, copy=True), {"mode": mode, "applied": False, "reason": reason}
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     rgb = np.asarray(source_rgb, dtype=np.float64)[..., :3]
@@ -366,10 +431,10 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     # video frame's chroma is blurred, so there the colour is no such evidence and the fit decides alone
     material_test = fit == "still"
     # *Frame edge*: what the matte left transparent along the top, left and right edges stays so
-    held = np.zeros(keyed_mask.shape, dtype=bool)
+    frame_edge = np.zeros(keyed_mask.shape, dtype=bool)
     if edge_band > 0:
-        held[:edge_band] = held[:, :edge_band] = held[:, -edge_band:] = True
-        held &= out[..., 3] == 0
+        frame_edge[:edge_band] = frame_edge[:, :edge_band] = frame_edge[:, -edge_band:] = True
+        frame_edge &= out[..., 3] == 0
 
     far_background = keyed_mask & ~flank
     background = local_background(rgb, far_background, keyed_mask, BACKGROUND_RADIUS)
@@ -381,7 +446,9 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         sigma_luma = sigma_rgb = 0.0
     margin = max(OPAQUE_MARGIN, NOISE_SIGMAS * sigma_rgb, spread if material_test else 0.0)
 
-    rows, cols = np.nonzero(band | flank)
+    # the video fit gives no coverage back to the keyed flank (*Background flank*): it examines the band only
+    rows, cols = np.nonzero(band if fit == "video" else band | flank)
+    last = _last_frame(history, keyed_mask.shape, palette_rgb) if fit == "video" else None
     edge = _IN_BAND_UNMIX_KEY_DEPTH  # a still's antialiased edge: the engine's in-band unmix depth
     if material_test:
         # the subject's plain material right behind the edge: deeper than it and without the key's hue
@@ -409,6 +476,9 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     unexplained = np.zeros(len(rows), dtype=bool)
     own = np.zeros(len(rows), dtype=bool)
     behind_kept = np.zeros(len(rows), dtype=bool)
+    picks = np.zeros(len(rows), dtype=np.uint8)
+    tests = np.zeros(len(rows), dtype=np.uint8)  # this frame's record for the next (*Hold*)
+    held_calls = np.zeros(len(rows), dtype=bool)
     for start in range(0, len(rows), _CHUNK):
         r = rows[start:start + _CHUNK]
         c = cols[start:start + _CHUNK]
@@ -423,13 +493,20 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         best = np.full(len(r), np.inf)
         pick = np.zeros(len(r), dtype=np.int64)
         for index, colour in enumerate(palette_rgb):
-            line = colour - choose_bg
-            length = np.maximum((line * line).sum(-1), 1e-9)
-            along = np.clip((towards * line).sum(-1) / length, 0.0, 1.0)
-            miss = np.linalg.norm(towards - along[:, None] * line, axis=-1)
+            miss = _line_miss(towards, colour - choose_bg)
             closer = miss < best
             best[closer] = miss[closer]
             pick[closer] = index
+        before = np.zeros(len(r), dtype=np.uint8) if last is None else last["tests"][r, c]
+        held_here = np.zeros(len(r), dtype=bool)
+        if last is not None:
+            # *Hold*: last frame's colour stays unless another one's line passes closer by VIDEO_HOLD
+            kept = last["pick"][r, c].astype(np.int64)
+            seen = (before & _SEEN) != 0
+            kept_miss = _line_miss(towards, palette_rgb[np.where(seen, kept, 0)] - choose_bg)
+            stay = seen & (kept_miss <= best + VIDEO_HOLD)
+            held_here |= stay & (kept != pick)
+            pick = np.where(stay, kept, pick)
         near = np.min([np.linalg.norm(obs - colour, axis=-1) for colour in palette_rgb], axis=0)
         if material_test:
             # the subject's own colour at its own light, as closely as its interior sits to the palette
@@ -450,7 +527,10 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
             alpha = np.where(separated, 0.5 * (alpha + luma_alpha), alpha)
         residual = offset - alpha[:, None] * line
         miss = np.linalg.norm(residual, axis=-1)
-        explained = miss <= UNEXPLAINED_RATIO * np.linalg.norm(offset, axis=-1) + UNEXPLAINED_SLACK
+        fits, held = _hold(miss, UNEXPLAINED_RATIO * np.linalg.norm(offset, axis=-1) + UNEXPLAINED_SLACK, before,
+                           _EXPLAINED)
+        held_here |= held
+        explained = fits
         if fit == "still":
             # a blend's luma lies between its colour's and the key's; a still keeps luma exact, so a
             # pixel darker than the line allows (outline ink the interior never shows) is not a blend
@@ -459,7 +539,9 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         mean = behind_mean[start:start + len(r)]
         behind_distance = np.minimum(np.linalg.norm(obs - mean, axis=-1),
                                      np.linalg.norm(obs - recolor_to_luma(mean, obs @ LUMA), axis=-1))
-        behind_near = (behind_weight[start:start + len(r)] > 0) & (behind_distance <= margin)
+        like_behind, held = _hold(behind_distance, margin, before, _BEHIND)
+        held_here |= held
+        behind_near = (behind_weight[start:start + len(r)] > 0) & like_behind
         if material_test:
             # Deeper than a still's antialiased edge, a key share shows only as the key's hue: a pixel
             # without it is the subject's own colour. On the edge, so is a pixel without it that has
@@ -469,14 +551,19 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
             settled = hueless & (deep | behind_near)
         else:
             settled = ~in_flank & behind_near
-        kept_as_is = settled | guarded[start:start + len(r)] | held[r, c]
-        is_blend = explained & (alpha < 1.0) & (in_flank | (miss + margin < material)) & ~kept_as_is
+        kept_as_is = settled | guarded[start:start + len(r)] | frame_edge[r, c]
+        closer_as_blend, held = _hold(miss + margin, material, before, _BLEND, strict=True)
+        held_here |= held
+        is_blend = explained & (alpha < 1.0) & (in_flank | closer_as_blend) & ~kept_as_is
         # a tint: displaced from its colour toward the key clearly more than the fit misses by, but
         # not by enough to prove partial coverage, and by more than shading any palette colour
         # accounts for. Recoloured, coverage untouched.
         shift = (1.0 - alpha) * np.sqrt((line * line).sum(-1))
-        is_tint = (explained & ~is_blend & ~in_flank & (shift >= TINT_SHIFT) & (shift >= TINT_RATIO * miss)
-                   & ~own_colour & ~kept_as_is)
+        moved_far, held = _hold(TINT_SHIFT, shift, before, _TINT_SHIFT)
+        held_here |= held
+        moved_more, held = _hold(TINT_RATIO * miss, shift, before, _TINT_RATIO)
+        held_here |= held
+        is_tint = explained & ~is_blend & ~in_flank & moved_far & moved_more & ~own_colour & ~kept_as_is
         # coverage: refit within the unmix reach and on the flank; colour only deeper in the band
         refit = (in_flank | (depth[r, c] <= alpha_depth)) & ~is_tint
         floor = np.maximum(MIN_RECOVERED_ALPHA, NOISE_SIGMAS * sigma_luma / np.maximum(np.abs((chosen - bg) @ LUMA), 1e-6))
@@ -494,8 +581,13 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
         unexplained[start:start + len(r)] = ~explained
         if not material_test:
             behind_kept[start:start + len(r)] = settled
-        own[start:start + len(r)] = (material_test & ~is_blend & ~is_tint & ~in_flank & ~held[r, c]
+        own[start:start + len(r)] = (material_test & ~is_blend & ~is_tint & ~in_flank & ~frame_edge[r, c]
                                      & ((material <= margin) | settled))
+        picks[start:start + len(r)] = pick
+        tests[start:start + len(r)] = (_SEEN | np.where(fits, _EXPLAINED, 0) | np.where(like_behind, _BEHIND, 0)
+                                       | np.where(closer_as_blend, _BLEND, 0) | np.where(moved_far, _TINT_SHIFT, 0)
+                                       | np.where(moved_more, _TINT_RATIO, 0))
+        held_calls[start:start + len(r)] = held_here
 
     alpha8 = np.clip(np.round(alpha_new * 255), 0, 255).astype(np.uint8)
     colour8 = np.clip(np.round(colour_new), 0, 255).astype(np.uint8)
@@ -526,6 +618,30 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     detached = flank & visible & ~attached
     out[detached] = 0
     out[out[..., 3] == 0] = 0
+    settled_px = 0
+    if fit == "video" and history is not None:
+        written = np.zeros(keyed_mask.shape, dtype=bool)
+        written[rows[blend], cols[blend]] = True
+        pick_map = np.full(keyed_mask.shape, 255, dtype=np.uint8)
+        pick_map[rows, cols] = picks
+        source8 = np.asarray(source_rgb)[..., :3].astype(np.uint8)
+        if last is not None:
+            # *Settle*: a pixel written in this frame and the last in the same colour, whose source stood still,
+            # moves VIDEO_SETTLE of the way from what it was, never farther than VIDEO_SETTLE_REACH from this fit
+            moved = np.abs(source8.astype(np.int16) - last["source"].astype(np.int16)).max(-1)
+            calm = (written & last["written"] & (pick_map == last["pick"]) & (_box_max3(moved) <= VIDEO_STILL)
+                    & (out[..., 3] > 0))
+            fresh = out[calm].astype(np.float64)
+            was = last["out"][calm].astype(np.float64)
+            eased = np.clip(was + VIDEO_SETTLE * (fresh - was), fresh - VIDEO_SETTLE_REACH, fresh + VIDEO_SETTLE_REACH)
+            out[calm] = np.clip(np.round(eased), 0, 255).astype(np.uint8)
+            out[out[..., 3] == 0] = 0
+            settled_px = int(np.count_nonzero(calm))
+        tests_map = np.zeros(keyed_mask.shape, dtype=np.uint8)
+        tests_map[rows, cols] = tests
+        history.clear()
+        history.update(shape=keyed_mask.shape, palette=palette_rgb.copy(), tests=tests_map, pick=pick_map,
+                       written=written, out=out.copy(), source=source8)
     recovered = int(np.count_nonzero(flank & (out[..., 3] > 0)))
     changed = int(np.count_nonzero((out != np.asarray(keyed, dtype=np.uint8)).any(axis=-1)))
     stats = {
@@ -555,4 +671,6 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     if fit == "video":
         stats["key_part_kept_px"] = int(np.count_nonzero(guarded))
         stats["behind_kept_px"] = int(np.count_nonzero(behind_kept))
+        stats["held_px"] = int(np.count_nonzero(held_calls))
+        stats["settled_px"] = settled_px
     return out, stats
