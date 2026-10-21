@@ -582,9 +582,10 @@ brightest unkeyed channel under half of it, so a green screen that leans toward 
 yellow, such as the studio green (0, 177, 64), is the key while a colour as near cyan or
 yellow as green is not. It is a superset of the interior rule (family union signature), so
 nothing the old detector found is lost, and hot pink and purple fail on their lit green
-channel, which is magenta's only unkeyed channel. Where the old detector found a colour, the
-detector finds the same colour, since the samples only the lean admits are read only when the
-rest make up less than 12% of the samples. One
+channel, which is magenta's only unkeyed channel. Where the old detector found a colour,
+the detector finds the same colour, since the samples only the lean admits are read only
+when the rest make up less than 12% of the samples, and only where the declared key's own
+cut would leave the border's one background they give. One
 function classifies the border everywhere — `detect_background_key_rgb`, `cutout --key
 auto`, `video-canvas --key` and the edge-contact split below. The interior rule is
 untouched. And because the painted colour's authority is border evidence, its erase ball

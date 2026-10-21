@@ -291,7 +291,7 @@ def _reference_window(reference: Path, key: str) -> tuple[str, Image.Image | Non
     if kind not in ("green", "magenta"):
         return kind, None, None, {}
     target = KEY_TARGETS[kind]
-    painted = detect_background_key_rgb(image, target)
+    painted = detect_background_key_rgb(image, target, _EXTRACT_KEY_THRESHOLD)
     box = subject_window(image, target, _EXTRACT_KEY_THRESHOLD, SPILL_REFERENCE_MARGIN, painted)
     facts: dict[str, Any] = {"reference_size": list(image.size), "reference_window": list(box) if box else None,
                              "reference_stride": 1}
