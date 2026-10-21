@@ -451,6 +451,142 @@ def test_a_leaning_green_patch_in_the_subject_is_the_painted_colours_only_when_t
             assert all(pixel[3] == 0 for pixel in buried), background
 
 
+# --- the lean is read only where the rule before it finds no background ----------------------
+# (0, 200, 71) is admitted only through the lean (blue just over 35% of green) and shares the 8-wide
+# histogram bin of the interior-family background (0, 200, 64). Read with it, it moved the mean the
+# detector returns one step toward itself, and the painted ball's edge with it: the teal subject
+# (0, 154, 149) sits 96.65 from (0, 200, 64), just outside the ball, and 95.77 from (0, 200, 65),
+# inside it, so the ball grew from the background into all of it. In a bin of its own, (0, 200, 90)
+# outnumbering the background was the mode. Either way a border the rule before the lean takes
+# changed colour. Each variant spreads the lean over the top-left 24 x 24 (20.5% of the samples) or
+# over everything but a 32 x 32 block of the background in the bottom-right corner (77.3%).
+
+LEAN_MIX_BACKGROUND = (0, 200, 64)
+LEAN_MIX_SUBJECT = (0, 154, 149)
+LEAN_MIX_SUBJECT_BOX = (40, 40, 88, 88)  # x0, y0, x1, y1 (exclusive): 48 x 48
+
+
+def make_lean_mix_still(lean: tuple[int, int, int], spread: str) -> Image.Image:
+    """SIZE x SIZE: the background with the leaning green in the top-left 24 x 24 (`corner`) or the leaning
+    green with the background in the bottom-right 32 x 32 (`around`), and the teal subject in the middle."""
+    base, block, box = ((LEAN_MIX_BACKGROUND, lean, (0, 0, 24, 24)) if spread == "corner"
+                        else (lean, LEAN_MIX_BACKGROUND, (96, 96, SIZE, SIZE)))
+    img = Image.new("RGBA", (SIZE, SIZE), base + (255,))
+    px = img.load()
+    for colour, (x0, y0, x1, y1) in ((block, box), (LEAN_MIX_SUBJECT, LEAN_MIX_SUBJECT_BOX)):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                px[x, y] = colour + (255,)
+    return img
+
+
+@pytest.mark.parametrize(
+    ("lean", "spread"),
+    [
+        pytest.param((0, 200, 71), "corner", id="same-bin-minority"),
+        pytest.param((0, 200, 71), "around", id="same-bin-majority"),
+        pytest.param((0, 200, 90), "corner", id="own-bin-minority"),
+        pytest.param((0, 200, 90), "around", id="own-bin-majority"),
+    ],
+)
+def test_lean_samples_leave_the_background_the_rule_before_the_lean_finds(
+    lean: tuple[int, int, int], spread: str
+) -> None:
+    """Where the colours the rule admitted before the lean make up 12% of the samples, the detector returns the
+    colour they give, unmoved by the lean's samples, and the frame keys exactly as it does from that colour
+    pinned: the subject just outside its ball keeps every pixel, and the background goes, its leaning part too."""
+    from sprite_gen._deps import np
+    from sprite_gen.frames.extract import _KEY_DETECT_MIN_FRACTION, _key_detect_sample_mask
+
+    assert is_border_key_candidate(lean, GREEN) and not is_key_family(lean, GREEN)  # admitted through the lean only
+    assert color_dist(LEAN_MIX_SUBJECT, (0, 200, 65)) <= _EXTRACT_KEY_THRESHOLD < color_dist(LEAN_MIX_SUBJECT, LEAN_MIX_BACKGROUND)
+    source = make_lean_mix_still(lean, spread)
+    samples = _key_detect_sample_mask(SIZE, SIZE)
+    found_before = samples & (np.asarray(source)[..., :3] == LEAN_MIX_BACKGROUND).all(axis=-1)
+    assert found_before.sum() >= samples.sum() * _KEY_DETECT_MIN_FRACTION  # a border the rule before the lean takes
+
+    assert detect_background_key_rgb(source, GREEN) == LEAN_MIX_BACKGROUND
+    result = remove_chroma_background(
+        source, GREEN, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA
+    )
+    pinned = remove_chroma_background(
+        source, GREEN, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA,
+        background_key=LEAN_MIX_BACKGROUND,
+    )
+    assert result.tobytes() == pinned.tobytes()
+    out = result.load()
+    x0, y0, x1, y1 = LEAN_MIX_SUBJECT_BOX
+    subject = [(x, y) for y in range(y0, y1) for x in range(x0, x1)]
+    assert sum(out[x, y][3] == 0 for x, y in subject) == 0, "the subject just outside the ball is erased"
+    assert all(out[x, y][3] == 0 for y in range(SIZE) for x in range(SIZE)
+               if not (x0 <= x < x1 and y0 <= y < y1)), "background gone"
+
+
+@pytest.mark.parametrize("block", [0, 16], ids=["none-before-the-lean", "under-12pct-before-the-lean"])
+def test_lean_samples_find_the_background_the_rule_before_the_lean_does_not(block: int) -> None:
+    """A leaning green fills the border and the rule before the lean finds nothing there: no colour it admits,
+    or a 16 x 16 block of an interior-family green, 9.1% of the samples, under the 12% it needs. The lean's
+    samples are read with the others then: their mode is the painted colour and the background keys out."""
+    lean = (0, 200, 90)
+    source = make_flat_key_still(lean)
+    px = source.load()
+    for y in range(block):
+        for x in range(block):
+            px[x, y] = LEAN_MIX_BACKGROUND + (255,)
+    assert detect_background_key_rgb(source, GREEN) == lean
+    result = remove_chroma_background(
+        source, GREEN, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA
+    )
+    assert audit(result, source) == (0, 0)
+
+
+def test_the_colour_found_before_the_lean_never_leans_itself() -> None:
+    """The cut reads a painted colour as it did before the lean unless the colour leans itself
+    (`_painted_key_leans`), so a border the rule before the lean takes keys as before only if the colour found
+    there does not lean. It is the floor of the mean of one 8-wide bin of colours that rule admits, and a floor
+    can cross the rule's line (an unkeyed channel at most 35% of green). Checked exactly for green over every
+    bin of green and one unkeyed channel, the other at 0 where the bin leaves the most room (the rule reads both
+    alike): the means a bin's members give are their convex hull, and none floors to a colour the rule refuses.
+    Bins 16 wide would not hold."""
+    from fractions import Fraction
+
+    from sprite_gen._deps import np
+    from sprite_gen.frames.extract import _KEY_DETECT_BIN_SHIFT, _border_key_candidate_field, _key_channel_split
+
+    width = 1 << _KEY_DETECT_BIN_SHIFT
+    values = np.arange(256, dtype=np.int32)
+    green, unkeyed = np.meshgrid(values, values, indexing="ij")
+    rgb = np.stack([unkeyed, green, np.zeros_like(green)], axis=-1)
+    admitted = _border_key_candidate_field(rgb, *_key_channel_split(GREEN), lean=False)  # [green, unkeyed]
+    for g0 in range(0, 256, width):
+        for u0 in range(0, 256, width):
+            block = admitted[g0:g0 + width, u0:u0 + width]
+            if not block.any() or block.all():
+                continue  # no member, or no floor to cross
+            # a green's members are the low end of its column: its highest member bounds the column
+            tops = [(g0 + i, u0 + int(np.flatnonzero(column).max())) for i, column in enumerate(block) if column.any()]
+            hull: list[tuple[int, int]] = []  # the hull's upper edge, left to right
+            for point in tops:
+                while len(hull) >= 2 and ((hull[-1][0] - hull[-2][0]) * (point[1] - hull[-2][1])
+                                          >= (point[0] - hull[-2][0]) * (hull[-1][1] - hull[-2][1])):
+                    hull.pop()
+                hull.append(point)
+
+            def highest_mean(g: int) -> Fraction:  # the highest unkeyed mean the members give at mean green g
+                for (ga, ua), (gb, ub) in zip(hull, hull[1:]):
+                    if ga <= g <= gb:
+                        return ua + Fraction(ub - ua, gb - ga) * (g - ga)
+                return Fraction(hull[0][1])
+
+            last = hull[-1][0]
+            for g in range(hull[0][0], last + 1):
+                refused = np.flatnonzero(~block[g - g0])
+                if not len(refused):
+                    continue
+                lowest = u0 + int(refused.min())  # the floor must stay under it at green g
+                assert highest_mean(g) < lowest and (g == last or highest_mean(g + 1) <= lowest), (g, lowest, hull)
+
+
 def color_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
     return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
 
