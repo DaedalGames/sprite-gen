@@ -25,10 +25,12 @@ behind the body leaves no body there in any frame but where the mask leaks; one 
 siblings show (`FRONT`). It is read on a mask of its own: a part in front of the body lies over body the anchor and the
 feet do not reach, the part's mask, grown against those seeds, may take that body too, and its siblings' masks the same;
 body a sibling's mask takes is not counted as body, so the more they take the less the part reads in front. So the
-order's mask also seeds the body with every solid pixel of a colour the clip's rims show less than `RARE` of the time,
-opened by the rim's core. That seed lies beside the part and gives the body the part's dark edge where the two meet, so
-it reads the order and nothing else; the rim is read once a frame for both masks. Among frames none of which has one of
-its walk phase a cycle or two away that shows its part, there is nothing to read the order from, and it is no order.
+order's mask also seeds the body with every solid pixel of a colour the rims of the frames read show less than `RARE` of
+the time, opened by the rim's core. That seed lies beside the part and gives the body the part's dark edge where the two
+meet, so it reads the order and nothing else; the rim is read once a frame for both masks. Among frames none of which
+has one of its walk phase a cycle or two away that shows its part, there is nothing to read the order from, and it is no
+order. A lay reads the order from the frames beside the loop's wrap alone (`WRAP`), where a part on its own beat is
+laid.
 
 Laying (`lay`) takes a frame's own part out and lays another drawing's part in its place, in front of the body or
 behind it. The body — every pixel of the frame outside its part mask — is laid as the frame drew it: behind, a solid
@@ -38,9 +40,10 @@ there was nothing; in front, what it hid is taken from the plates given, frames 
 where none does. Where either mask is empty nothing is laid: an empty mask on the frame leaves its own part where it is
 (two parts), on the other drawing lays none.
 
-`lay_behind` lays a set of frames' parts behind their bodies only where the clip reads its part behind the body, and
-lays them all or none. It reads the order first and refuses a part in front of the body, or no order, before it reads a
-frame's mask; then a frame or a part with an empty mask. A refusal changes no frame and says why.
+`lay_behind` lays a set of frames' parts behind their bodies only where the clip's frames beside the wrap read its part
+behind the body, and lays them all or none. It reads the order first and refuses a part in front of the body, or no
+order, before it reads a frame's mask; then a frame or a part with an empty mask. A refusal changes no frame and says
+why.
 
 Every distance is a share of the body's height, read at the scale the clip's union box is read at (`READ_EDGE`).
 """
@@ -83,7 +86,8 @@ RIM_KEEP = 0.1  # the rim's pieces with a core, this share of the largest such
 SOLID = 0.9  # alpha at or above which a pixel is solid: laying a part behind the body never changes one of the body's
 FRONT = 0.15  # of the part's pixels, the share its siblings show solid body in: over it the part is in front
 BODY_GAP = 0.007  # of the body's height: the sibling's body is read this far from its own part
-RARE = 0.01  # of a colour's solid pixels in the clip, the share in a rim under which the order's mask seeds the body
+RARE = 0.01  # of a colour's solid pixels in the frames read, the share in a rim under which the order's mask seeds the body
+WRAP = 4  # frames: the order is read from the clip's frames this near the loop's wrap on either side, in every cycle
 NB = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
@@ -204,8 +208,8 @@ class Masker:
             self.anchor[ry0:max(ry0, (by1 - y0) // self.factor), rx0:max(rx0, (bx1 - x0) // self.factor)] = True
         self._rims: dict[int, tuple[np.ndarray, list[int]]] = {}
         self._masks: dict[int, np.ndarray] = {}
-        self._order_masks: dict[tuple[int, float], np.ndarray] = {}
-        self._rim_share: np.ndarray | None = None
+        self._order_masks: dict[tuple[int, float, tuple[int, ...]], np.ndarray] = {}
+        self._rim_shares: dict[tuple[int, ...], np.ndarray] = {}
 
     def _read(self, frame: Image.Image) -> np.ndarray:
         """`frame` at the reading's scale, straight RGBA in 0..1."""
@@ -348,39 +352,45 @@ class Masker:
         """The part mask of the clip's frame at time `t`, in its pixels."""
         return self._full(self._clip_read(t), self.clip[t])
 
-    def _rare(self, a: np.ndarray, rare: float) -> np.ndarray:
-        """The solid pixels of `a` (at the reading) of a colour the clip's rims show less than `rare` of the time — of
-        the clip's solid pixels of that colour, the share that lie in a rim — opened by the rim's core."""
-        if self._rim_share is None:
+    def near_wrap(self, frames: int = WRAP) -> list[int]:
+        """The clip's times within `frames` of the loop's wrap on either side, in every cycle."""
+        return [t for t in self.times if t % self.length < frames or t % self.length >= self.length - frames]
+
+    def _rare(self, a: np.ndarray, rare: float, times: tuple[int, ...]) -> np.ndarray:
+        """The solid pixels of `a` (at the reading) of a colour the rims of the clip's frames at `times` show less than
+        `rare` of the time — of their solid pixels of that colour, the share that lie in a rim — opened by the rim's
+        core."""
+        if times not in self._rim_shares:
             in_rim, every = np.zeros(BINS ** 3), np.zeros(BINS ** 3)
-            for t in self.times:
+            for t in times:
                 solid = self.read[t][..., 3] > SOLID_GROW
                 code = _code(self.read[t])
                 every += np.bincount(code[solid], minlength=BINS ** 3)
                 in_rim += np.bincount(code[self._clip_rim(t)[0] & solid], minlength=BINS ** 3)
-            self._rim_share = in_rim / np.maximum(every, 1)
-        return _opened((a[..., 3] > SOLID_GROW) & (self._rim_share[_code(a)] < rare), self.core)
+            self._rim_shares[times] = in_rim / np.maximum(every, 1)
+        return _opened((a[..., 3] > SOLID_GROW) & (self._rim_shares[times][_code(a)] < rare), self.core)
 
-    def _order_read(self, t: int, rare: float) -> np.ndarray:
+    def _order_read(self, t: int, rare: float, times: tuple[int, ...]) -> np.ndarray:
         """The order's part mask of the clip's frame at time `t`, at the reading (kept): the body seeded with the
-        colours the clip's rims show less than `rare` of the time too."""
-        if (t, rare) not in self._order_masks:
+        colours the rims of the frames at `times` show less than `rare` of the time too."""
+        if (t, rare, times) not in self._order_masks:
             a = self.read[t]
-            self._order_masks[t, rare] = self.mask_read(a, t, rim=self._clip_rim(t), seed=self._rare(a, rare))[0]
-        return self._order_masks[t, rare]
+            self._order_masks[t, rare, times] = self.mask_read(a, t, rim=self._clip_rim(t), seed=self._rare(a, rare, times))[0]
+        return self._order_masks[t, rare, times]
 
     def order(self, times: Iterable[int], rare: float = RARE) -> dict[str, Any]:
-        """In front of the body or behind it, from the clip's frames at `times`: of their part's pixels (the order's
-        mask), the share a frame of the same walk phase a cycle or two away among them shows solid body in (its own
-        part kept clear). Where no frame among them that shows its part has such a frame, the order is None."""
-        times = sorted(set(times))
+        """In front of the body or behind it, from the clip's frames at `times` (their rims alone are read): of their
+        part's pixels (the order's mask), the share a frame of the same walk phase a cycle or two away among them shows
+        solid body in (its own part kept clear). Where no frame among them that shows its part has such a frame, the
+        order is None."""
+        times = tuple(sorted(set(times)))
         front = total = 0
         for g in times:
             for s in times:
                 if s != g and (s - g) % self.length == 0 and abs(s - g) <= 2 * self.length:
-                    body = (self.read[s][..., 3] > SOLID) & ~_dilate(self._order_read(s, rare), self.body_gap)
-                    front += int((self._order_read(g, rare) & body).sum())
-                    total += int(self._order_read(g, rare).sum())
+                    body = (self.read[s][..., 3] > SOLID) & ~_dilate(self._order_read(s, rare, times), self.body_gap)
+                    front += int((self._order_read(g, rare, times) & body).sum())
+                    total += int(self._order_read(g, rare, times).sum())
         if not total:
             return {"order": None, "front_share": None, "part_px": 0}
         share = front / total
@@ -427,16 +437,18 @@ def lay(frame: Image.Image, mask: np.ndarray, part: Image.Image, part_mask: np.n
     }
 
 
-def lay_behind(masker: Masker, times: Iterable[int], lays: Sequence[tuple[Image.Image, float, Image.Image, float]]
-               ) -> tuple[list[Image.Image], dict[str, Any]]:
+def lay_behind(masker: Masker, lays: Sequence[tuple[Image.Image, float, Image.Image, float]], *,
+               times: Iterable[int] | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
     """Each of `lays` — a frame, the clip time it shows, a frame whose part to lay on it and the time that one shows —
     the first with the second's part laid behind its body in place of its own (`lay`), where the clip's frames at
-    `times` read the part behind the body (`Masker.order`): (the frames, what was done). Or none is laid — the frames as
-    given — and the record says why (`refused`): "front", the part is in front of the body; "no pairs", no order is
-    read from `times`; "empty", a frame's part mask or a part's is empty. The order is read before any frame's mask."""
+    `times` (by default those beside the loop's wrap, `Masker.near_wrap`) read the part behind the body
+    (`Masker.order`): (the frames, what was done). Or none is laid — the frames as given — and the record says why
+    (`refused`): "front", the part is in front of the body; "no pairs", no order is read from `times`; "empty", a
+    frame's part mask or a part's is empty. The order is read before any frame's mask."""
     given = [frame for frame, _, _, _ in lays]
+    times = masker.near_wrap() if times is None else sorted(set(times))
     order = masker.order(times)
-    record: dict[str, Any] = {"order": order, "refused": None, "lays": []}
+    record: dict[str, Any] = {"order": order, "times": list(times), "refused": None, "lays": []}
     if order["order"] != "behind":
         return given, {**record, "refused": order["order"] or "no pairs"}
     made = []
