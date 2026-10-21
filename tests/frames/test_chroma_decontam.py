@@ -933,6 +933,37 @@ def test_video_frames_default_edge_changes_no_more_than_off_from_frame_to_frame(
     assert on["rows"][0]["decontam"]["held_px"] == on["rows"][0]["decontam"]["settled_px"] == 0  # nothing to hold yet
 
 
+def _premultiplied(rgba: np.ndarray) -> np.ndarray:
+    """RGBA as what it adds to any background: colour times coverage, and the coverage, both 0-255."""
+    x = rgba.astype(np.float64)
+    return np.concatenate([x[..., :3] * x[..., 3:4] / 255.0, x[..., 3:4]], -1)
+
+
+def test_video_fit_spreads_a_changed_call_over_frames_on_a_still_edge(tmp_path: Path):
+    """One decoded frame, then another held still: the noise between them moved some edge pixels across the pass's
+    tests, past the hold. Shown at once, such a pixel changed by the whole gap between the matte's colour and the
+    fit's in one frame (kept to written, a tint to a blend, one palette colour to another): on a still edge, the rare
+    large jump that off does not have. The video fit moves it from what it showed toward its new call a step a frame
+    instead, never more than VIDEO_STEP while the source stands still, until it arrives."""
+    F, A = _render(widths=STRANDS_1_TO_3)
+    clean = _composite_on(F, A, GREEN_PAINTED)
+    first = _noisy_420(clean, np.random.default_rng(1000), 3.0)
+    held = _noisy_420(clean, np.random.default_rng(1001), 3.0)
+    files = []
+    for t in range(20):
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(first if t == 0 else held).save(path)
+        files.append(path)
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    shown = [_premultiplied(_keyed(tmp_path / "on", path)) for path in files]
+    moves = [np.abs(b - a).max(-1) for a, b in zip(shown[1:], shown[2:])]  # the source no longer changes
+    assert max(float(m.max()) for m in moves) > 2.0  # still on its way to the new calls ...
+    assert all(float(m.max()) <= decontam.VIDEO_STEP + 1.0 for m in moves)  # ... a step a frame (+1: uint8 rounding)
+    assert not moves[-1].any()  # ... and arrived
+    assert on["decontam"]["totals"]["blending_px"] > 0
+    assert on["rows"][0]["decontam"]["blending_px"] == 0  # the first frame shows its own calls
+
+
 def test_video_frames_give_a_frame_shown_twice_the_same_bytes(tmp_path: Path):
     """The history holds and settles toward what a frame shows: a frame repeated comes out as it did."""
     files, _ = _clip(tmp_path, GREEN_PAINTED, frames=1, widths=STRANDS_1_TO_3)
