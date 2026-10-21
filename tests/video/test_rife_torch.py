@@ -225,6 +225,112 @@ def test_the_binary_and_the_torch_backend_judge_the_walkers_alike_on_one_machine
     assert verdicts[0] == verdicts[1]
 
 
+# --- a device that fails: a RIFE that fails, in PyTorch's words -------------------------------------------------------
+
+# A device that fails, in PyTorch's words: the GPU out of its memory, its driver failing on a call, CUDA not starting,
+# and a CUDA call queued before CUDA started failing when it did.
+FAILURE_TEXT = {
+    "OutOfMemoryError": "CUDA out of memory. Tried to allocate 72.00 MiB. GPU 0 has a total capacity of 14.56 GiB of which "
+                        "21.81 MiB is free.",
+    "AcceleratorError": "CUDA error: an illegal memory access was encountered",
+    "RuntimeError": "No CUDA GPUs are available",
+    "DeferredCudaCallError": "CUDA call failed lazily at initialization with error: device-side assert triggered",
+}
+# Where it fails: as the network, its model loaded, is put on it, or as a frame runs on it.
+WHERE = {"set up": ("IFNet", "to"), "run": ("TorchRunner", "_run")}
+
+
+def _failure(name: str) -> BaseException:
+    import torch
+
+    return {"OutOfMemoryError": torch.OutOfMemoryError, "AcceleratorError": torch.AcceleratorError, "RuntimeError": RuntimeError,
+            "DeferredCudaCallError": torch.cuda.DeferredCudaCallError}[name](FAILURE_TEXT[name])
+
+
+def _fails(monkeypatch, where: str, error: BaseException) -> None:
+    """The torch backend raising `error` where WHERE names."""
+    from sprite_gen.video import rife_torch
+
+    def raised(*args, **kwargs):
+        raise error
+
+    owner, name = WHERE[where]
+    monkeypatch.setattr(getattr(rife_torch, owner), name, raised)
+
+
+def _made(runner, where: str) -> None:
+    """The torch backend set up as `video-loop` finds it (`rife.Rife()`, torch chosen), or a frame made by it."""
+    if where == "set up":
+        rife.Rife()
+    else:
+        rife.Rife(runner=runner)(_disc(40), _disc(72), 0.5)
+
+
+@pytest.mark.torch_rife
+@pytest.mark.parametrize("where", sorted(WHERE))
+@pytest.mark.parametrize("failure", sorted(FAILURE_TEXT))
+def test_a_device_that_fails_is_a_rife_that_fails_in_pytorchs_words(runner, monkeypatch, failure, where):
+    """The device failing — out of its memory, its driver failing, CUDA not starting, a CUDA call queued before CUDA
+    started failing when it did — as the network, its model loaded, is put on it or as a frame runs: a RIFE that fails
+    (`RifeUnavailable`, not RIFE not installed, which a loop would cut around), PyTorch's words in its message and the
+    error its cause."""
+    error = _failure(failure)
+    _fails(monkeypatch, where, error)
+    monkeypatch.setenv("SPRITE_GEN_RIFE_BACKEND", "torch")
+    with pytest.raises(rife.RifeUnavailable) as failed:
+        _made(runner, where)
+    assert not isinstance(failed.value, rife.RifeNotInstalled)
+    assert FAILURE_TEXT[failure] in str(failed.value) and failed.value.__cause__ is error
+
+
+@pytest.mark.torch_rife
+@pytest.mark.parametrize("where", sorted(WHERE))
+def test_a_fault_of_the_code_where_the_device_is_used_is_raised_as_it_is(runner, monkeypatch, where):
+    """A TypeError where the network is put on the device or a frame runs is a fault of this code, not the device failing:
+    raised as it is, not read as a RIFE that fails."""
+    error = TypeError("to() received an invalid combination of arguments - got (str, bool)")
+    _fails(monkeypatch, where, error)
+    monkeypatch.setenv("SPRITE_GEN_RIFE_BACKEND", "torch")
+    with pytest.raises(TypeError) as raised:
+        _made(runner, where)
+    assert raised.value is error
+
+
+@pytest.mark.torch_rife
+def test_a_loop_whose_device_fails_as_the_network_is_put_on_it_fails_with_its_record(monkeypatch, tmp_path):
+    """`video-loop` with a jump to repair, torch chosen, and the device out of its memory as the network is put on it: the
+    loop fails as one whose RIFE fails does — its record written `failed` with PyTorch's words, the gait fallback's frames
+    removed, the line saying to fix RIFE or pass --repair off — not with the error raised past them."""
+    from sprite_gen.video import loop
+    from tests.video.test_loop_repair import _keyed, _loop, _run
+
+    error = _failure("OutOfMemoryError")
+    _fails(monkeypatch, "set up", error)
+    monkeypatch.setenv("SPRITE_GEN_RIFE_BACKEND", "torch")
+    filmed, _ = _loop({10: 12})
+    keyed = _keyed(tmp_path, filmed)
+    fallback = tmp_path / "out" / loop.FALLBACK_FRAMES_DIR
+    fallback.mkdir(parents=True)
+    with pytest.raises(SystemExit, match=r"fix RIFE, or pass --repair off") as failed:
+        _run(tmp_path, keyed)
+    assert FAILURE_TEXT["OutOfMemoryError"] in str(failed.value) and failed.value.__cause__.__cause__ is error
+    report = json.loads((tmp_path / "w.json").read_text())
+    assert report["status"] == "failed" and FAILURE_TEXT["OutOfMemoryError"] in report["error"]
+    assert not fallback.exists()
+
+
+@pytest.mark.torch_rife
+def test_the_install_check_frame_fails_where_the_device_fails_as_the_network_is_put_on_it(monkeypatch):
+    """`sprite-gen rife install --backend torch`'s check frame, the model installed and the device out of its memory as the
+    network is put on it: the install says its check frame failed, in PyTorch's words, not with the error raised past
+    it."""
+    error = _failure("OutOfMemoryError")
+    _fails(monkeypatch, "set up", error)
+    with pytest.raises(SystemExit, match=r"^rife install: installed, but the check frame failed: ") as failed:
+        rife_install.check(Path("unused"), rife.locate_model(), backend="torch")
+    assert FAILURE_TEXT["OutOfMemoryError"] in str(failed.value) and failed.value.__cause__.__cause__ is error
+
+
 # --- choosing and refusing: no torch needed ---------------------------------------------------------------------------
 
 def _no_torch(monkeypatch) -> None:
