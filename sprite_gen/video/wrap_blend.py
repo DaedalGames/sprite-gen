@@ -27,8 +27,8 @@ What fails is widened 3 px and the ramp is feathered 7x7; a pixel whose weight i
 pixel. A ramp that steps more than the cut already does, or does not shrink the wrap, is not used
 (the after check): the cut is delivered as filmed, with a warning line.
 
-The values are the diagnosis's (plan sprite-gen/seam-sharpness-blend-1021); changing one is measuring
-the tables again.
+The values are the ones docs/loop-repair.md section 6 records with its synthetic readings and limits;
+changing one is measuring them again.
 """
 
 from __future__ import annotations

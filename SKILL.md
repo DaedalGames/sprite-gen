@@ -152,6 +152,8 @@ Use existing automatic pipeline stages for background removal, extraction, align
 
 For attack repeat coverage, observed one-shot returns and structured loop failure reports, follow [video-pipeline](docs/video-pipeline.md#one-shot-actions--cycle-autoperiodicone-shot).
 
+A pinned idle or attack whose last frame the video model drew again has its wrap blended by default (`video-loop --wrap-blend auto`, a redraw only; `off` cuts as filmed), with details in [loop repair](docs/loop-repair.md#6-the-redrawn-wrap-a-pinned-clip-whose-last-frame-the-model-drew-again).
+
 Scene creation consumes finished assets and remains optional. Asset metadata owns frames, native durations and anchors; scene specs own placement, scale, playback rate, planes, camera and light. Measure stride only with declared same-foot contact and an isolated foot ROI; unknown contact stays unverified. Apply only a verified report for the exact selected asset with an explicit scene direction. Never infer walking direction from the bottommost silhouette, reverse frames or change source assets to make a scene work.
 
 ## 실행 인터프리터

@@ -1023,7 +1023,7 @@ last frame has to land within `max(seam_max x the mean step, PIN_NOISE_MAX)` of 
 the analysis thumbnail. A near-still clip moves so little per frame that the ratio reads the
 re-render noise of the pinned frame as a jump; a clip that ends in another pose still fails,
 with its own message (`the pinned clip does not end on its first frame`). The report says
-`kind = "pinned"` and records `pin_error` and `pin_tolerance`.
+`kind = "pinned"` and records `pin_error` and `pin_tolerance`. Where the pinned frame redraws the first, `--wrap-blend auto` (the default) takes the first frame's drawing back over the last half second, a redraw only, recorded as `wrap_blend`. Passing `--wrap-blend off` cuts as before with identical bytes. See [loop repair](loop-repair.md#6-the-redrawn-wrap-a-pinned-clip-whose-last-frame-the-model-drew-again) for the gating and blending rules.
 
 `--cycle once-return` is for a clip pinned to end on its first frame that plays once (`video-set
 --play once-return`, [play modes](#play-modes)). It keeps every frame, the last too, so the strip

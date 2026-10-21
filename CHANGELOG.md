@@ -2,6 +2,56 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## Unreleased
+
+**Upgrading from 2.45.3: Existing outputs change bytes for some clips.**
+This affects only cuts made with `--anchor none` using:
+`video-loop --cycle pinned`
+whose pin the gate passes and whose pinned last frame redraws the first.
+This is how `video-set` cuts idle and attack clips filmed with their first frame as the last.
+A redraw occurs when the first cell differs from the pinned frame by more than `--seam-max` (default 2.0) times the cut's median step at full size.
+Only these cuts now give different `cycle/` cells (the last half second), strip, GIF and WebP.
+Every other cut gives the same bytes as 2.45.3:
+a pinned cut whose pinned frame draws the first as it is,
+every non-pinned cut (walk, run, auto, periodic, fixed, one-shot, once, once-return, lifetime),
+a body-anchored pinned cut,
+and anything cut with `--wrap-blend off`.
+A pinned clip whose pin the gate refuses fails as before with the same message.
+A source projection reads a blended strip as `source-processing-unsupported`.
+No restoration schema changes.
+
+- **Changed (default):** A video model given the first frame as the last draws that frame again (softer or sharper, another tone, hair strands a pixel over).
+  The pin gate reads the pose and passes.
+  The drawing stays, so the loop's wrap shows one jump in sharpness where every other step shows the motion.
+  Over the cut's last half second (K = min(round(0.5 s x fps), floor(L / 4)) cells, 12 at 24 fps), wrap blending adds back j/(K+1) of the redraw's difference (first cell minus pinned frame, premultiplied) on the j-th cell.
+  Each pose stays the cell's own, and its drawing turns into the first cell's by the wrap.
+  Only a redraw is ramped.
+  A pixel is held where the two ends hold a part, a line or a dot in different places, and where a ramp cell does not stand where the pinned frame stands.
+  This check applies after one softness match of at most 0.7 px.
+  A pixel is held if it is more than 12 levels outside what the other end holds within 1 px on a 7x7 mean or a 7 px run, over black and over white.
+  It is also held if its value is more than 12 outside the other end's 1 px range where the other end has under half this end's range there, in any direction, length or width.
+  Held pixels are widened 3 px and the weight feathered 7x7.
+  A pixel of weight 0 is the filmed byte.
+  A ramp that steps more than the cut already does, or that does not shrink the wrap, is not used: the cut is written as filmed and a `warning:` line says so.
+  A wrap still over `--seam-max` after blending also gets a `warning:` line.
+  New flag (default `auto`, and `video-set` takes the default):
+  `video-loop --wrap-blend auto|off`
+  New report key `wrap_blend` on every pinned cut (`applied`, `why`, `K`, `cells`, `residual_ratio`, `wrap_ratio_before`, `wrap_ratio_after`, `ramp_step_max_ratio`, `bound_ratio`, `pose_share`, `presence_share`, `never_settled`, `equalize`, `after_check`, `seconds`).
+  `wrap_blend: {cells, K}` appears in the strip metadata where it applied, and in the CLI summary.
+  [loop repair](docs/loop-repair.md#6-the-redrawn-wrap-a-pinned-clip-whose-last-frame-the-model-drew-again)
+- **Tests**: `tests/video/test_wrap_blend.py` on synthetic clips:
+  a redraw of tone and 0.5 px softness has its wrap brought from 7.31x to 0.57x the median step and only the ramp's cells, strip, GIF and WebP differ from off;
+  an arm still coming down in the ramp stays the filmed arm;
+  a part moved 2 to 64 px, or present at one end only, is never drawn twice (the 14 px part on a flat figure is cut as filmed with a warning);
+  1 px lines moved 2 to 32 px on a flat figure are byte for byte;
+  stripes swinging inside the ramp keep their swing;
+  a strand against the silhouette is held over white where black alone lets it through;
+  the softness match blurs the sharper end, never past 0.7 px;
+  the idle-still fixture gives every output byte for byte;
+  fixed cuts, body-anchored pinned cuts and refused pins are not touched;
+  a ramp that steps past the cut is refused with a warning;
+  a 1 px line at slope 1/3 moved 8 px is held line for line, thin structures change by at most 2 levels and busier quiet grounds by at most 3, strands off the silhouette by none.
+
 ## v2.45.3 - The seam check reads the frames that play when the body anchor spreads a sideways slide; such a cut passes again, as it did in 2.44.0
 
 **Upgrading from 2.45.2: Every cut 2.45.2 passed, and every `--anchor motion-auto` run, gives the same bytes as 2.45.2.** Only `--anchor body` cuts that 2.45.2 refused because of the walk sliding sideways before the anchor can now pass, read on the frames that play. Refused cuts print the same error line as before, the report's `producer` field names the new version, and there are no restoration schema changes.
