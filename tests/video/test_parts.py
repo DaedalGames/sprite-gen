@@ -174,10 +174,14 @@ def _frame(t: float, walker: str) -> Image.Image:
 
 
 @functools.lru_cache(maxsize=None)
+def _regions(walker: str) -> list:
+    regions, _ = auto_motion.discover([_frame(t, walker) for t in range(N)], reference_index=0)
+    return regions
+
+
+@functools.lru_cache(maxsize=None)
 def _masker(walker: str) -> parts.Masker:
-    clip = {t: _frame(t, walker) for t in CLIP}
-    regions, _ = auto_motion.discover([clip[t] for t in range(N)], reference_index=0)
-    return parts.Masker(clip, N, regions)
+    return parts.Masker({t: _frame(t, walker) for t in CLIP}, N, _regions(walker))
 
 
 def _read(mask: np.ndarray, t: float, walker: str) -> dict[str, float]:
@@ -211,17 +215,34 @@ def test_a_tail_behind_the_body_is_read_where_it_is_drawn_on_every_frame():
     assert sum(_crossed(t) for t in range(N)) >= 4
 
 
+@pytest.mark.parametrize("reading", ["clip", "wrap"])
 @pytest.mark.parametrize("walker, rare", [("side", parts.RARE), ("back", parts.RARE), ("back_bushy", parts.RARE),
                                           ("side", parts.RARE / 2), ("side", 2 * parts.RARE),
                                           ("back_bushy", parts.RARE / 2), ("back_bushy", 2 * parts.RARE)])
-def test_in_front_of_the_body_or_behind_it_is_read_from_the_clip(walker, rare):
-    # The order's mask seeds the body with the colours the clip's rims rarely show; half the share and twice it read
-    # each walker the same way.
-    read = _masker(walker).order(READ, rare)
+def test_in_front_of_the_body_or_behind_it_is_read_from_the_clip(walker, rare, reading):
+    # The order's mask seeds the body with the colours the rims of the frames read rarely show; read from every other
+    # frame of the clip or from the frames beside the wrap alone, and with half the share or twice it, each walker reads
+    # the same way.
+    masker = _masker(walker)
+    read = masker.order(READ if reading == "clip" else masker.near_wrap(), rare)
     if walker == "side":
         assert read["order"] == "behind" and read["front_share"] < parts.FRONT - 0.1, read
     else:
         assert read["order"] == "front" and read["front_share"] > parts.FRONT + 0.05, read
+
+
+def test_a_lay_reads_the_order_from_the_frames_beside_the_wrap_alone(monkeypatch):
+    # A lay reads the rims of the clip's frames within WRAP of the wrap, on either side and in every cycle, and of no
+    # other frame.
+    clip = {t: _frame(t, "back_bushy") for t in CLIP}
+    masker = parts.Masker(clip, N, _regions("back_bushy"))
+    read = []
+    rim = masker.rim
+    monkeypatch.setattr(masker, "rim", lambda a, at: read.append(at) or rim(a, at))
+    _, record = parts.lay_behind(masker, [(clip[0], 0, clip[N], N)])
+    near = [t for t in CLIP if t % N < parts.WRAP or t % N >= N - parts.WRAP]
+    assert record["refused"] == "front" and record["times"] == near and sorted(read) == near
+    assert len(near) == 3 * 2 * parts.WRAP
 
 
 def test_a_tail_laid_behind_the_body_changes_none_of_its_solid_pixels():
@@ -229,7 +250,7 @@ def test_a_tail_laid_behind_the_body_changes_none_of_its_solid_pixels():
     masker = _masker("side")
     times = range(0, N, 3)
     lays = [(_frame(t, "side"), t, _frame(t + 1.0, "side"), t + 1.0) for t in times]
-    made, record = parts.lay_behind(masker, READ, lays)
+    made, record = parts.lay_behind(masker, lays)
     assert record["refused"] is None and record["order"]["order"] == "behind" and len(made) == len(lays)
     for (frame, t, source, at), laid, done in zip(lays, made, record["lays"]):
         mask, source_mask = masker.clip_mask(t), masker.mask(source, at)
@@ -255,7 +276,7 @@ def test_a_tail_in_front_of_the_body_is_not_laid_and_no_frame_is_read_for_it(wal
     masker = _masker(walker)
     monkeypatch.setattr(masker, "mask", lambda frame, at: pytest.fail(f"a mask read at {at} after the order"))
     lays = [(_frame(t, walker), t, _frame(t + 0.5, walker), t + 0.5) for t in range(0, N, 5)]
-    made, record = parts.lay_behind(masker, READ, lays)
+    made, record = parts.lay_behind(masker, lays)
     assert record["refused"] == "front" and record["order"]["order"] == "front" and record["lays"] == []
     assert _bytes(made) == _bytes(frame for frame, _, _, _ in lays)
 
@@ -283,7 +304,7 @@ def test_a_tail_with_no_mask_refuses_every_frame_laid_with_it():
     masker = _masker("side")
     hidden = _drawn(18.0, None, "side")[0]
     lays = [(_frame(t, "side"), t, _frame(t + 1.0, "side"), t + 1.0) for t in (0, 9)] + [(_frame(18, "side"), 18, hidden, 18.0)]
-    made, record = parts.lay_behind(masker, READ, lays)
+    made, record = parts.lay_behind(masker, lays)
     assert record["refused"] == "empty" and record["order"]["order"] == "behind"
     assert [(done["refused"], done["source_px"] > 0) for done in record["lays"]] == [(None, True), (None, True), ("empty", False)]
     assert _bytes(made) == _bytes(frame for frame, _, _, _ in lays)
@@ -295,7 +316,7 @@ def test_frames_none_of_which_has_one_of_its_walk_phase_a_cycle_away_read_no_ord
     masker = _masker("side")
     assert masker.order(range(N)) == {"order": None, "front_share": None, "part_px": 0}
     lays = [(_frame(t, "side"), t, _frame(t + 1.0, "side"), t + 1.0) for t in (0, 9)]
-    made, record = parts.lay_behind(masker, range(N), lays)
+    made, record = parts.lay_behind(masker, lays, times=range(N))
     assert record["refused"] == "no pairs" and record["lays"] == []
     assert _bytes(made) == _bytes(frame for frame, _, _, _ in lays)
 
