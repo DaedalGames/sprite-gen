@@ -25,6 +25,8 @@ from sprite_gen.video import clip_prompt as video_prompt
 from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
 from sprite_gen.video import follow_inspect as video_follow_inspect
+from sprite_gen.video import sway as video_sway
+from sprite_gen.video import sway_inspect as video_sway_inspect
 from sprite_gen.video import set_sheet as video_set_sheet
 from sprite_gen.video import stop as video_stop
 from sprite_gen.video import compare as video_compare
@@ -385,16 +387,16 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         video_align.add_arguments,
         video_align.run,
     ),
-    "video-follow": (
-        "A soft part of a looping body follows the body's motion: an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align).",
-        video_follow.add_arguments,
-        video_follow.run,
+    "video-sway": (
+        "The Sway layer: a soft part of a looping body sways with the body's motion, an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align). Old name video-follow, still run.",
+        video_sway.add_arguments,
+        video_sway.run,
     ),
-    # The same request as video-follow, answered by the same code, written down instead of over the loop.
-    "video-follow-inspect": (
-        "Where video-follow carries each region in every cell and what it would change there, with nothing moved: a record and two boards of every cell, for whoever says what is inside an ellipse.",
-        video_follow_inspect.add_arguments,
-        video_follow_inspect.run,
+    # The same request as video-sway, answered by the same code, written down instead of over the loop.
+    "video-sway-inspect": (
+        "Where video-sway carries each region in every cell and what it would change there, with nothing moved: a record and two boards of every cell, for whoever says what is inside an ellipse. Old name video-follow-inspect, still run.",
+        video_sway_inspect.add_arguments,
+        video_sway_inspect.run,
     ),
     "video-set-sheet": (
         "The directions of one set on one sheet: rows in compass order (S SW W NW N NE E SE), one cell holding every body box, one ground line under every cell, no row scaled; an optional centre picture stood on the same line at the rows' standing height.",
@@ -455,6 +457,14 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
 }
 
 
+# Old verb names, kept: each parses its new verb's arguments and runs its own module's `run`, which does the same
+# and says the old name in what it prints.
+VERB_ALIASES: dict[str, tuple[str, Callable[..., int]]] = {
+    "video-follow": ("video-sway", video_follow.run),
+    "video-follow-inspect": ("video-sway-inspect", video_follow_inspect.run),
+}
+
+
 def command_domains() -> dict[str, list[str]]:
     """Verbs grouped by domain, derived from each verb's `run` module — never hand-listed."""
     groups: dict[str, list[str]] = {d: [] for d in _modules.DOMAIN_ORDER}
@@ -488,7 +498,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<tool>")
     for name, (description, add_args, _run) in COMMANDS.items():
-        sp = sub.add_parser(name, description=description)
+        aliases = [old for old, (new, _old_run) in VERB_ALIASES.items() if new == name]
+        sp = sub.add_parser(name, aliases=aliases, description=description)
         add_args(sp)
     return parser
 
@@ -503,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     kwargs = vars(args).copy()
     kwargs.pop("_retired_pp", None)
     command = kwargs.pop("command")
-    _description, _add_args, run_fn = COMMANDS[command]
+    run_fn = VERB_ALIASES[command][1] if command in VERB_ALIASES else COMMANDS[command][2]
     return run_fn(**kwargs)
 
 
