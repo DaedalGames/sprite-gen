@@ -80,3 +80,17 @@ def test_a_sidecar_the_bake_refuses_is_kept_and_reported(tmp_path, sidecar) -> N
     saved = got["payload"]["states"]["idle"].get("breathe")
     assert saved == sidecar, f"굽기가 거부하는 사이드카를 왕복이 고쳐 썼다: {saved}"
     assert [m for kind, m in got["status"] if kind == "err"], "거부할 사이드카인데 알림이 없다"
+
+
+def test_the_mirrored_modes_are_the_same_list() -> None:
+    """큐레이터가 아는 mode 목록이 굽기와 같아야 한다 — 갈리면 굽기가 받는 줄을 웹뷰가
+    '읽을 수 없는 사이드카'로 들고 있거나, 굽기가 거부하는 줄을 웹뷰가 받아 되쓴다."""
+    import re
+
+    from sprite_gen.curate import curation as C
+    from sprite_gen.serve.serve_curation import CURATOR_DIR
+
+    js = (CURATOR_DIR / "src" / "store.js").read_text(encoding="utf-8")
+    m = re.search(r"const BREATHE_MODES = \[(.*?)\];", js)
+    assert m, "BREATHE_MODES 가 미러에 없다"
+    assert [k.strip().strip('"') for k in m.group(1).split(",")] == list(C.BREATHE_MODES)

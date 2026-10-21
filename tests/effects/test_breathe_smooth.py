@@ -129,6 +129,22 @@ def test_the_head_stays_in_place_byte_for_byte(h: int) -> None:
         assert got.tobytes() != src.tobytes(), f"위상 {phase}: 몸통이 안 움직였다"
 
 
+def test_the_head_line_is_the_reference_cells_for_the_whole_loop() -> None:
+    """칸마다 머리 윗선이 흔들려도(머리카락 한 올이 솟는 칸) 경계는 줄의 기준 칸(첫 칸)에서 잰
+    자리에 있다 — 해부가 줄 한 벌이듯 그 자리도 한 벌이다. 칸마다 그 칸의 bbox 로 다시 놓으면
+    경계 바로 위 행이 칸에 따라 움직인다 (영상 루프는 머리 윗선이 칸마다 한두 px 흔들린다)."""
+    base = _bust()
+    top = solid_alpha_bbox(base)[1]
+    cut = top + analyze(base).rigid_row
+    strand = np.asarray(base).copy()
+    strand[top - 3:top, base.width // 2] = BODY      # 머리 위로 솟은 한 올 — bbox 윗선이 3px 오른다
+    frames = [base, Image.fromarray(strand, "RGBA")] * 6
+    baked, _ = B.bake_breathe_sequence(frames, _cfg(_smooth()))
+    for i, (src, got) in enumerate(zip(frames, baked)):
+        assert np.asarray(got)[:cut].tobytes() == np.asarray(src)[:cut].tobytes(), \
+            f"{i}번 칸: 기준 칸의 강체 경계({cut}행) 위가 움직였다"
+
+
 # ── 3. depth 만큼 올랐다 돌아온다, breaths 회 ──────────────────────
 
 def _shoulder_marked(h: int = 120):
@@ -147,10 +163,11 @@ def test_the_shoulder_line_rises_by_depth_and_settles_back(h: int) -> None:
     column = solid_alpha_bbox(src)[0] + anat.axis_x
     depth = 0.025
     lift = depth * anat.basis_rows
-    rest = _mark_row(src, row, column)
+    reach = int(lift) + 4                           # 선이 오르는 만큼 창을 넓힌다
+    rest = _mark_row(src, row, column, reach)
     for phase in (0.0, 0.2, B.INHALE, 0.7, 0.95):
         got = B.phase_frame(src, _cfg(_smooth(depth=depth)), phase, anat)
-        rise = rest - _mark_row(got, row, column)
+        rise = rest - _mark_row(got, row, column, reach)
         want = lift * B.smooth_wave(phase)
         assert rise == pytest.approx(want, abs=0.3), \
             f"위상 {phase}: 어깨선이 {rise:.2f}px 올랐다 — {want:.2f}px 여야 한다 (depth {depth} × 기준 {anat.basis_rows}행)"
@@ -276,8 +293,9 @@ def test_a_figure_cut_by_the_frame_is_not_refused() -> None:
     for phase in (0.2, B.INHALE, 0.7):
         got = np.asarray(B.phase_frame(src, _cfg(_smooth()), phase, anat))
         assert (got[-1, :, 3] == np.asarray(src)[-1, :, 3]).all(), "아래 변이 비었다 — 발바닥이 떴다"
-        body = slice(solid_alpha_bbox(src)[1] + anat.rigid_row + 2, h)
-        assert (got[body, 0, 3] > 0).all() and (got[body, w - 1, 3] > 0).all(), "옆 변이 비었다"
+        for col in (0, w - 1):                       # 원본이 변까지 찬 행은 그대로 찬다
+            rows = np.nonzero(np.asarray(src)[:, col, 3] == 255)[0]
+            assert rows.size and (got[rows, col, 3] == 255).all(), f"{col}열: 옆 변이 비었다"
 
 
 def test_a_sideways_swell_off_the_canvas_is_still_refused() -> None:
