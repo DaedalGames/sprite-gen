@@ -315,7 +315,8 @@ def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
     given = _cfg({"mode": "smooth", "chest_y": 0.4, "chest_rx": 0.8, "chest_ry": 0.3,
                   "shoulder": 0.6, "shoulder_lag": 0.1})
     assert {k: given[k] for k in SHAPE} == {"chest_y": 0.4, "chest_rx": 0.8, "chest_ry": 0.3,
-                                            "shoulder": 0.6, "shoulder_lag": 0.1}
+                                            "shoulder": 0.6, "shoulder_lag": 0.1,
+                                            "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0}
     assert _cfg({"mode": "pixel", "breaths": 2})["mode"] == "pixel"
 
 

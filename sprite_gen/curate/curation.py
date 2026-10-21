@@ -231,10 +231,14 @@ BREATHE_SMOOTH_DEPTH_X = 0.028
 # smooth 의 모양 (기본값과 허용 범위). chest_y: 가슴 가운데 높이 (목 아래 몸통 비율),
 # chest_rx: 가슴 무게 가로 반지름 (몸통 반폭의 배), chest_ry: 세로 반지름 (목 아래 몸통 비율),
 # shoulder: 어깨가 오르는 양 (가슴의 배), shoulder_lag: 어깨가 늦는 정도 (한 호흡 비율, 1/π 미만이라
-# 시간이 되감기지 않는다).
-BREATHE_SMOOTH_SHAPE = {"chest_y": 0.31, "chest_rx": 0.83, "chest_ry": 0.28, "shoulder": 0.5, "shoulder_lag": 0.08}
+# 시간이 되감기지 않는다). 몸이 향한 쪽 — chest_tilt: 가슴 무게를 화면에서 시계방향으로 돌린 각(도),
+# chest_bias: 무게를 긴 축 따라 한쪽으로 키움 (음수 = 화면 왼쪽이 크게), chest_dir: 가슴이 가는 방향
+# (바로 위에서 잰 각(도), 음수 = 왼쪽 위). 셋 다 0 이면 몸이 정면을 본다.
+BREATHE_SMOOTH_SHAPE = {"chest_y": 0.31, "chest_rx": 0.83, "chest_ry": 0.28, "shoulder": 0.5, "shoulder_lag": 0.08,
+                        "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0}
 BREATHE_SMOOTH_SHAPE_RANGES = {"chest_y": (0.05, 0.95), "chest_rx": (0.2, 3.0), "chest_ry": (0.05, 1.5),
-                               "shoulder": (0.0, 1.5), "shoulder_lag": (0.0, 0.3)}
+                               "shoulder": (0.0, 1.5), "shoulder_lag": (0.0, 0.3), "chest_tilt": (-60.0, 60.0),
+                               "chest_bias": (-0.9, 0.9), "chest_dir": (-90.0, 90.0)}
 
 RETIRED_BREATHE_KEYS = {
     "splits": "분할선은 봉투 경계로 대체됐다 — 경계는 자동 검출되고 `rigid_row` 로만 덮어쓴다",

@@ -51,6 +51,7 @@ AI 개입 0 — 같은 입력이면 항상 같은 출력.
 `mode: "smooth"` 는 같은 해부를 쓰되 2차원 변위장 하나를 굽는다:
 
     가슴: 몸통 축 위 가슴 가운데의 타원 cos² 무게로 depth x 기준 높이만큼 오르고 depth_x 만큼 부푼다
+          (몸이 옆을 보면 chest_tilt·chest_bias·chest_dir 로 타원을 눕히고 앞쪽을 키우고 앞-위로 보낸다)
     어깨: 어깨선 좌우가 가슴 오름의 shoulder 배만큼, shoulder_lag 만큼 늦게 오른다
     목 밴드(강체 경계 ~ 어깨선)에서 켜지고 콘텐츠 맨 아래에서 꺼진다
 
@@ -485,8 +486,9 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
                         chest: float, shoulders: float) -> tuple[np.ndarray, np.ndarray]:
     """콘텐츠 bbox 기준 점 (x, y) 의 내용이 가는 변위 (dx, dy) — 정사상, 위로 오르면 dy < 0.
 
-    가슴: 가운데에 놓인 타원(가로 chest_rx × 몸통 반폭, 세로 chest_ry × 목 아래 몸통)의 cos² 무게로
-    `depth × 기준 높이` 만큼 오르고, 그 안이 가운데에서 바깥으로 `depth_x` 만큼 부푼다.
+    가슴: 가운데에 놓인 타원(가로 chest_rx × 몸통 반폭, 세로 chest_ry × 목 아래 몸통, chest_tilt 만큼
+    기울임)의 cos² 무게로 `depth × 기준 높이` 만큼 chest_dir 쪽(0 = 바로 위)으로 가고, 그 안이 가운데에서
+    바깥으로 `depth_x` 만큼 부푼다. chest_bias 는 무게를 긴 축 따라 한쪽으로 키운다 (몸이 향한 앞쪽).
     어깨: 목 밴드 높이, 몸통 축에서 좌우로 몸통 반폭의 SHOULDER_X 배 자리에 놓인 둥근 혹 둘이
     가슴 오름의 `shoulder` 배만큼 오른다 — 가슴 무게가 이미 덮은 자리는 그만큼 덜 (가운데가 두 번
     오르지 않게). 목과 어깨 사이(옷깃)는 어느 혹에도 안 들어 그대로다.
@@ -502,8 +504,15 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
     neck_x, neck_half = _neck(anat)
     rx = shape["chest_rx"] * torso
     ry = shape["chest_ry"] * (height - top)
-    r = np.sqrt(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2)
-    w_chest = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+    # 몸이 향한 쪽: 타원을 기울이고(chest_tilt), 긴 축 따라 한쪽을 키우고(chest_bias), 가슴이 가는 쪽을
+    # 바로 위에서 돌린다(chest_dir). 셋 다 0 이면 아래 식은 기울이기 전 식과 비트 같다 (곱 1·0 과 합 0).
+    tilt = math.radians(shape["chest_tilt"])
+    along = (x - cx) * math.cos(tilt) + (y - cy) * math.sin(tilt)
+    across_axis = (y - cy) * math.cos(tilt) - (x - cx) * math.sin(tilt)
+    r = np.sqrt((along / rx) ** 2 + (across_axis / ry) ** 2)
+    w_round = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+    w_chest = w_round * (1.0 + shape["chest_bias"] * np.clip(along / rx, -1.0, 1.0))
+    heading = math.radians(shape["chest_dir"])
     neckness = 1.0 - _smoothstep_array(neck_half, 1.5 * neck_half, np.abs(x - neck_x))
     across = np.minimum(1.0, np.abs(np.abs(x - cx) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
     down = np.minimum(1.0, np.abs(y - smooth_shoulder_row(anat)) / (1.4 * band))   # 양 어깨 높이가 달라도
@@ -515,9 +524,10 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
     u = np.clip((y - top) / (quick + (band - quick) * neckness), 0.0, 1.0) if band > quick else \
         np.clip((y - top) / quick, 0.0, 1.0)
     guard = u * u * (3.0 - 2.0 * u) * (1.0 - _smoothstep_array(height - 0.5 * band, height, y))
-    rise = lift * (chest * w_chest + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_chest))
+    rise = lift * (chest * w_chest * math.cos(heading) + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_round))
+    forward = lift * chest * w_chest * math.sin(heading)
     puff = swell * chest * w_chest
-    return puff * (x - cx) * guard, (puff * (y - cy) - rise) * guard
+    return (puff * (x - cx) + forward) * guard, (puff * (y - cy) - rise) * guard
 
 
 def smooth_strain(anat: Anatomy, cfg: dict) -> tuple[float, float]:
@@ -889,18 +899,26 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help=f"how far the shoulders rise, times the chest's ({SMOOTH_SHAPE['shoulder']})")
     shape.add_argument("--shoulder-lag", type=float, default=None,
                        help=f"how late the shoulders peak, a share of one breath ({SMOOTH_SHAPE['shoulder_lag']})")
+    shape.add_argument("--chest-tilt", type=float, default=None,
+                       help="the chest weight turned clockwise on screen, degrees, for a body turned aside (0)")
+    shape.add_argument("--chest-bias", type=float, default=None,
+                       help="one side of the chest breathes more, -0.9..0.9, negative the screen's left (0)")
+    shape.add_argument("--chest-dir", type=float, default=None,
+                       help="where the chest moves, degrees from straight up, negative up-left (0)")
 
 
 def run(*, frames: str, out: str, mode: str | None = None, depth: float | None = None,
         depth_x: float | None = None, breaths: int | None = None, lag: float | None = None,
         rigid_row: int | None = None, chest_y: float | None = None, chest_rx: float | None = None,
-        chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None) -> int:
+        chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None,
+        chest_tilt: float | None = None, chest_bias: float | None = None, chest_dir: float | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
     같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다."""
     src_dir, out_dir = Path(frames), Path(out)
     raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
                              ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
-                             ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag))
+                             ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag),
+                             ("chest_tilt", chest_tilt), ("chest_bias", chest_bias), ("chest_dir", chest_dir))
            if v is not None}
     try:
         cfg = state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
