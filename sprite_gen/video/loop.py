@@ -70,6 +70,11 @@ SEAM_RATIO_MAX = 2.0  # loop seam / mean adjacent distance inside the cycle
 # The step gate stands where the seam gate does: a --seam-max past it lifts it, every step's bound is then --seam-max,
 # and a fixed cut the clip's crossings count an odd number of steps is kept with a warning line (`fixed_count`).
 STEP_RATIO_MAX = 2.5
+# The step gate's floor: a largest step between drawings at most this on the analysis thumbnail (mean absolute RGBA
+# difference, 0..1, as PIN_NOISE_MAX) is a pixel's jitter, not a jump, over however small a mean step. A still pose
+# 41 to 120 px tall moved a whole row reads 0.015 to 0.019, a slow walk's step with that row in it 0.018 to 0.020; a
+# frame of a walk cut 400 px tall moved 6 px and back reads 0.057.
+STEP_NOISE_MAX = 0.03
 PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mean (flat profile = no repeat)
 # Where the gait fallback writes the frames it scaled back (removed once the strip is built).
 FALLBACK_FRAMES_DIR = ".gait-fallback-frames"
@@ -1284,7 +1289,7 @@ def drawing_steps(cells: list[Image.Image]) -> dict[str, Any] | None:
     shows its drawing again): each drawing's first cell on the analysis features (`_small_features`) and the step into the
     next drawing's, the last drawing's into the first's across the wrap. The largest of them, the wrap's included, over
     the mean of the others (`largest_ratio`, from the cell `largest_from` into the cell `largest_into`, each a drawing's
-    first), and the wrap's (`wrap_ratio`). None for a loop of fewer than three drawings."""
+    first; `largest_step` itself), and the wrap's (`wrap_ratio`). None for a loop of fewer than three drawings."""
     runs, hold = repair_mod.flow_drawings(repair_mod.flow_states(cells))
     if len(runs) < 3:
         return None
@@ -1295,6 +1300,7 @@ def drawing_steps(cells: list[Image.Image]) -> dict[str, Any] | None:
     largest = int(np.argmax(steps))
     return {"read": "drawings", "drawings": len(runs), "hold": hold, "mean_step": round(mean, 6),
             "largest_ratio": round(float(steps[largest]) / mean, 4) if mean > 0 else None,
+            "largest_step": round(float(steps[largest]), 6),
             "largest_from": firsts[largest], "largest_into": firsts[(largest + 1) % len(firsts)],
             "wrap_ratio": round(float(steps[-1]) / mean, 4) if mean > 0 else None}
 
@@ -2074,7 +2080,8 @@ def run_loop(
         raise SystemExit(error)
     if prof.gait and not single_play:
         # Every step of the loop as it plays, read between its drawings: a frame that jumps inside the loop, which the
-        # seam ratio at the wrap does not see. The bound is the step gate's, or the seam gate's where --seam-max lifts it.
+        # seam ratio at the wrap does not see. The bound is the step gate's, or the seam gate's where --seam-max lifts it;
+        # a largest step under the noise floor is a pixel's jitter of a loop that barely moves, and is not a jump.
         step_max = max(STEP_RATIO_MAX, seam_max)
         read = drawing_steps([strip.crop((k * strip_meta["w"], 0, (k + 1) * strip_meta["w"], strip_meta["h"]))
                               for k in range(strip_meta["frames"])])
@@ -2083,9 +2090,12 @@ def run_loop(
         else:
             of = strip_meta["sample_indices"]
             read.update(largest_into=of[read["largest_into"]], largest_from=of[read["largest_from"]], max=step_max,
-                        lifted=seam_max > STEP_RATIO_MAX)
+                        noise_max=STEP_NOISE_MAX, lifted=seam_max > STEP_RATIO_MAX)
             report_base["step_gate"] = read
             ratio = read["largest_ratio"]
+            if ratio is not None and ratio > STEP_RATIO_MAX and read["largest_step"] <= STEP_NOISE_MAX:
+                read["under_noise"] = True
+                ratio = None
             if ratio is not None and ratio > step_max:
                 known = _step_reason(report_base["jump_repair"], {read["largest_from"], read["largest_into"]})
                 error = (f"video-loop: loop step ratio {ratio:.2f} exceeds {step_max:g} ({cycle['kind']} length {L} frames "
@@ -2162,7 +2172,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-len", type=int, help="override: maximum cycle length in frames, on every path that sets one (a cut longer fails)")
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
-    parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX}): the wrap over the mean step. A walk or run is also held to the step gate — its largest step between drawings over their mean step at most {STEP_RATIO_MAX:g}, and a fixed cut not one the clip's crossings count an odd number of steps; a --seam-max past {STEP_RATIO_MAX:g} lifts the step gate with it (every step's bound is then --seam-max, and an odd count a warning line)")
+    parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX}): the wrap over the mean step. A walk or run is also held to the step gate — its largest step between drawings over their mean step at most {STEP_RATIO_MAX:g} (a step under {STEP_NOISE_MAX:g} on the analysis thumbnail is a pixel's jitter, not held to it), and a fixed cut not one the clip's crossings count an odd number of steps; a --seam-max past {STEP_RATIO_MAX:g} lifts the step gate with it (every step's bound is then --seam-max, and an odd count a warning line)")
     parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin); once-return: the whole clip with its last frame, played once from its first pose back to it (loop false, returns true), for a clip pinned to end on its first frame (the gate is that pin)")
     parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
     parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
@@ -2234,7 +2244,8 @@ def run(**kwargs: object) -> int:
         overlap = payload["wrap_overlap"]
         summary["wrap_overlap"] = {k: overlap[k] for k in ("seam", "frames", "side", "width", "seam_after", "skipped") if k in overlap}
     if payload.get("step_gate"):
-        summary["step_gate"] = {k: payload["step_gate"][k] for k in ("drawings", "hold", "largest_ratio", "largest_into", "max", "skipped")
+        summary["step_gate"] = {k: payload["step_gate"][k] for k in ("drawings", "hold", "largest_ratio", "largest_into", "max",
+                                                                     "under_noise", "skipped")
                                 if k in payload["step_gate"]}
     if payload.get("jump_repair", {}).get("replaced"):
         summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
