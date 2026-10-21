@@ -14,7 +14,7 @@ function isNumericScalar(v) {
 // 굽기 방식 — 파이썬 curation.BREATHE_MODES 미러. 생략 = pixel.
 const BREATHE_MODES = ["pixel", "smooth"];
 // smooth 모양 값의 허용 범위 — 파이썬 curation.BREATHE_SMOOTH_SHAPE_RANGES 미러.
-const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0] };
+const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9] };
 
 function breatheRangeProblems(raw) {
   const bounds = [["depth", 0.005, 0.20, 0.06], ["breaths", 1, 8, 1], ["lag", 0, 0.45, 0.1]];
@@ -31,6 +31,14 @@ function breatheRangeProblems(raw) {
     if (raw.mode !== "smooth") { bad.push(`${key} (smooth 만 쓰는 모양 값)`); continue; }
     const v = isNumericScalar(raw[key]) ? Number(raw[key]) : NaN;
     if (!Number.isFinite(v) || v < lo || v > hi) bad.push(`${key}=${JSON.stringify(raw[key])}`);
+  }
+  // 들숨 꼭대기 칸(smooth): 1 부터 커지는 정수, 서로 두 칸 이상 — 파이썬 state_breathe 미러.
+  if (raw.breath_peaks !== undefined) {
+    const p = raw.breath_peaks;
+    const ok = raw.mode === "smooth" && Array.isArray(p) && p.length > 0 && p.every(Number.isInteger)
+      && p[0] >= 1 && p.every((v, i) => i === 0 || v - p[i - 1] >= 2)
+      && (raw.breaths == null || Number(raw.breaths) === p.length);
+    if (!ok) bad.push(`breath_peaks=${JSON.stringify(p)}`);
   }
   for (const [key, lo, hi, dflt] of bounds) {
     // 생략(undefined)은 기본값. 명시적 null 은 굽기가 `float(None)` 으로 거부하므로

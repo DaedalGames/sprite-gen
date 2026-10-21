@@ -233,12 +233,20 @@ BREATHE_SMOOTH_DEPTH_X = 0.028
 # shoulder: 어깨가 오르는 양 (가슴의 배), shoulder_lag: 어깨가 늦는 정도 (한 호흡 비율, 1/π 미만이라
 # 시간이 되감기지 않는다). 몸이 향한 쪽 — chest_tilt: 가슴 무게를 화면에서 시계방향으로 돌린 각(도),
 # chest_bias: 무게를 긴 축 따라 한쪽으로 키움 (음수 = 화면 왼쪽이 크게), chest_dir: 가슴이 가는 방향
-# (바로 위에서 잰 각(도), 음수 = 왼쪽 위). 셋 다 0 이면 몸이 정면을 본다.
+# (바로 위에서 잰 각(도), 음수 = 왼쪽 위). 셋 다 0 이면 몸이 정면을 본다. chest_bias 는 무게의 꼭대기를
+# 가슴 타원의 긴 축 따라(타원 가로 반지름 비율), chest_bias_y 는 그 축을 가로질러(세로 반지름 비율, 양수 =
+# 아래) 옮긴다 — 무게는 꼭대기에서 테두리까지 반직선으로 줄어 가까운 쪽이 짧고 돌아간 쪽이 길다.
+# chest_x: 가슴 중심을 몸통 축에서 옮김 (몸통 반폭 비율 — 긴 머리처럼 한쪽으로 쏠린 것이 축을 끌 때),
+# chest_flat: 꼭대기 둘레에서 전량으로 오르는 몫 (꼭대기에서 테두리까지의 비율).
 BREATHE_SMOOTH_SHAPE = {"chest_y": 0.31, "chest_rx": 0.83, "chest_ry": 0.28, "shoulder": 0.5, "shoulder_lag": 0.08,
-                        "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0}
+                        "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0, "chest_x": 0.0, "chest_bias_y": 0.0,
+                        "chest_flat": 0.0}
 BREATHE_SMOOTH_SHAPE_RANGES = {"chest_y": (0.05, 0.95), "chest_rx": (0.2, 3.0), "chest_ry": (0.05, 1.5),
                                "shoulder": (0.0, 1.5), "shoulder_lag": (0.0, 0.3), "chest_tilt": (-60.0, 60.0),
-                               "chest_bias": (-0.9, 0.9), "chest_dir": (-90.0, 90.0)}
+                               "chest_bias": (-0.9, 0.9), "chest_dir": (-90.0, 90.0), "chest_x": (-1.0, 1.0),
+                               "chest_bias_y": (-0.9, 0.9), "chest_flat": (0.0, 0.9)}
+# 꼭대기는 타원 안쪽이어야 한다 — 테두리에 닿으면 그쪽으로 무게가 줄어들 거리가 없다.
+BREATHE_SMOOTH_PEAK_REACH = 0.9
 
 RETIRED_BREATHE_KEYS = {
     "splits": "분할선은 봉투 경계로 대체됐다 — 경계는 자동 검출되고 `rigid_row` 로만 덮어쓴다",
@@ -300,7 +308,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
             f"curation: states.{state}.breathe.mode = {mode!r} 를 모른다 — "
             f"{' | '.join(BREATHE_MODES)} 중 하나다 (생략하면 pixel). 조용히 pixel 로 굽지 않는다.")
     smooth = mode == "smooth"
-    stray = sorted(k for k in BREATHE_SMOOTH_SHAPE if k in raw)
+    stray = sorted(k for k in (*BREATHE_SMOOTH_SHAPE, "breath_peaks") if k in raw)
     if stray and not smooth:
         raise SystemExit(
             f"curation: states.{state}.breathe 의 {', '.join(stray)} 는 smooth 의 모양 값이다 — "
@@ -315,7 +323,8 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
         raw_dx = raw.get("depth_x")
         depth_x = None if raw_dx is None else float(raw_dx)
         lag = float(raw.get("lag", 0.0 if smooth else 0.10))
-        breaths = _exact_int("breaths", raw.get("breaths", 1), state)
+        peaks = raw.get("breath_peaks") if smooth else None
+        breaths = _exact_int("breaths", raw.get("breaths", len(peaks) if isinstance(peaks, list) else 1), state)
     except (TypeError, ValueError) as exc:
         # 폐기 키는 요란하게 거부하면서 형식 오류만 조용히 호흡을 꺼버리면 계약이 어긋난다
         # — 둘 다 "이 사이드카는 그대로 못 쓴다" 이고, 조용한 쪽은 사용자가 못 알아챈다.
@@ -356,6 +365,20 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
             raise SystemExit(
                 f"curation: states.{state}.breathe.lag = {raw.get('lag')!r} — smooth 에는 진행파가 없다. "
                 f"위상 0 인 칸이 원본 그대로여야 루프·묶음 이음이 안 바뀐다. lag 를 지워라.")
+        if peaks is not None:
+            # 들숨 꼭대기 칸 — 숨 박자를 바깥에서 받는다. 첫 칸은 쉼이어야 하므로 1 부터, 꼭대기 사이는
+            # 날숨과 다음 들숨이 나눠 쓸 두 칸 이상. 루프 길이는 굽기가 알므로 끝은 거기서 본다.
+            if not isinstance(peaks, list) or not peaks:
+                raise SystemExit(f"curation: states.{state}.breathe.breath_peaks = {peaks!r} — 들숨 꼭대기 칸 목록이어야 한다")
+            peaks = [_exact_int("breath_peaks", p, state) for p in peaks]
+            if peaks[0] < 1 or any(b - a < 2 for a, b in zip(peaks, peaks[1:])):
+                raise SystemExit(
+                    f"curation: states.{state}.breathe.breath_peaks = {peaks} — 1 부터, 커지는 순서로, 서로 두 칸 이상 "
+                    f"떨어져야 한다 (첫 칸은 쉼이고, 꼭대기 사이에 날숨과 들숨이 들어간다).")
+            if "breaths" in raw and breaths != len(peaks):
+                raise SystemExit(
+                    f"curation: states.{state}.breathe.breaths = {breaths} 인데 breath_peaks 는 {len(peaks)}개다 — "
+                    f"숨 횟수는 꼭대기 수다. breaths 를 지우거나 맞춰라.")
         shape = {}
         for name, default in BREATHE_SMOOTH_SHAPE.items():
             given = raw.get(name, default)
@@ -369,9 +392,14 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
                     f"curation: states.{state}.breathe.{name} = {given!r} 가 범위 [{lo}, {hi}] 밖이다. "
                     f"조용히 깎지 않는다 — 사이드카를 고쳐라.")
             shape[name] = value
+        if math.hypot(shape["chest_bias"], shape["chest_bias_y"]) > BREATHE_SMOOTH_PEAK_REACH:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.chest_bias {shape['chest_bias']:g}, chest_bias_y "
+                f"{shape['chest_bias_y']:g} — 꼭대기가 가슴 타원 테두리에 너무 가깝다 (반지름 비율 "
+                f"{BREATHE_SMOOTH_PEAK_REACH:g} 안이어야 한다).")
         return {"mode": mode, "depth": depth,
                 "depth_x": BREATHE_SMOOTH_DEPTH_X if depth_x is None else depth_x,
-                "breaths": breaths, **shape, "rigid_row": rigid_row, "axis_x": axis_x,
+                "breaths": breaths, "breath_peaks": peaks, **shape, "rigid_row": rigid_row, "axis_x": axis_x,
                 "torso_half": torso_half, "anatomy": frozen if isinstance(frozen, dict) else None}
     cfg = {"depth": depth, "depth_x": depth_x, "breaths": breaths, "lag": lag,
            "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,

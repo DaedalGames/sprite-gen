@@ -470,9 +470,30 @@ def _shape(cfg: dict) -> dict:
 
 
 def smooth_chest(anat: Anatomy, cfg: dict) -> tuple[float, float]:
-    """가슴 가운데 (콘텐츠 bbox 기준 x, y) — 몸통 축 위, 목 아래 몸통의 `chest_y` 비율 높이."""
+    """가슴 타원의 가운데 (콘텐츠 bbox 기준 x, y) — 몸통 축에서 `chest_x` × 몸통 반폭, 목 아래 몸통의
+    `chest_y` 비율 높이."""
+    shape = _shape(cfg)
     top = float(anat.rigid_row)
-    return anat.axis_x + 0.5, top + _shape(cfg)["chest_y"] * (anat.height - top)
+    return anat.axis_x + 0.5 + shape["chest_x"] * anat.torso_half, top + shape["chest_y"] * (anat.height - top)
+
+
+def _chest_frame(anat: Anatomy, cfg: dict) -> tuple[float, float, float, float, float, float]:
+    """(가운데 x, y, 가로 반지름, 세로 반지름, cos 기울기, sin 기울기) — 가슴 타원."""
+    shape = _shape(cfg)
+    cx, cy = smooth_chest(anat, cfg)
+    tilt = math.radians(shape["chest_tilt"])
+    top = float(anat.rigid_row)
+    return (cx, cy, shape["chest_rx"] * anat.torso_half, shape["chest_ry"] * (anat.height - top),
+            math.cos(tilt), math.sin(tilt))
+
+
+def smooth_chest_peak(anat: Anatomy, cfg: dict) -> tuple[float, float]:
+    """무게의 꼭대기 P (콘텐츠 bbox 기준 x, y) — 타원 가운데에서 긴 축 따라 `chest_bias` × 가로 반지름,
+    가로질러 `chest_bias_y` × 세로 반지름. 둘 다 0 이면 가운데다."""
+    shape = _shape(cfg)
+    cx, cy, rx, ry, cos_t, sin_t = _chest_frame(anat, cfg)
+    along, across = shape["chest_bias"] * rx, shape["chest_bias_y"] * ry
+    return cx + along * cos_t - across * sin_t, cy + along * sin_t + across * cos_t
 
 
 def _smoothstep_array(a: float, b: float, x: np.ndarray) -> np.ndarray:
@@ -500,21 +521,33 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
     band = band_end - top
     height = float(anat.height)
     torso = float(anat.torso_half)
-    cx, cy = smooth_chest(anat, cfg)
+    cx, cy, rx, ry, cos_t, sin_t = _chest_frame(anat, cfg)
+    axis = anat.axis_x + 0.5
     neck_x, neck_half = _neck(anat)
-    rx = shape["chest_rx"] * torso
-    ry = shape["chest_ry"] * (height - top)
-    # 몸이 향한 쪽: 타원을 기울이고(chest_tilt), 긴 축 따라 한쪽을 키우고(chest_bias), 가슴이 가는 쪽을
-    # 바로 위에서 돌린다(chest_dir). 셋 다 0 이면 아래 식은 기울이기 전 식과 비트 같다 (곱 1·0 과 합 0).
-    tilt = math.radians(shape["chest_tilt"])
-    along = (x - cx) * math.cos(tilt) + (y - cy) * math.sin(tilt)
-    across_axis = (y - cy) * math.cos(tilt) - (x - cx) * math.sin(tilt)
-    r = np.sqrt((along / rx) ** 2 + (across_axis / ry) ** 2)
-    w_round = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
-    w_chest = w_round * (1.0 + shape["chest_bias"] * np.clip(along / rx, -1.0, 1.0))
+    # 몸이 향한 쪽: 타원을 기울이고(chest_tilt), 꼭대기를 앞쪽으로 옮기고(chest_bias, chest_bias_y), 가슴이
+    # 가는 쪽을 바로 위에서 돌린다(chest_dir). 모두 0 이면 아래 식은 이 값들이 생기기 전 식과 비트 같다.
+    along = (x - cx) * cos_t + (y - cy) * sin_t
+    across_axis = (y - cy) * cos_t - (x - cx) * sin_t
+    u, v = along / rx, across_axis / ry                     # 타원을 단위원으로 편 좌표
+    pu, pv = shape["chest_bias"], shape["chest_bias_y"]
+    if pu == 0.0 and pv == 0.0:
+        r = np.sqrt(u ** 2 + v ** 2)
+    else:
+        # 꼭대기 P 에서 이 점을 지나 테두리에 닿는 반직선 위의 몫 — P 에서 0, 테두리에서 1. 가까운 쪽은
+        # 짧은 거리에서, 돌아간 쪽은 긴 거리에서 0 으로 떨어진다.
+        du, dv = u - pu, v - pv
+        dd = du * du + dv * dv
+        pd = pu * du + pv * dv
+        reach = (-pd + np.sqrt(pd * pd + dd * (1.0 - pu * pu - pv * pv)))
+        r = np.where(dd > 0.0, dd / np.maximum(reach, 1e-300), 0.0)
+    flat = shape["chest_flat"]
+    if flat > 0.0:
+        r = np.clip((r - flat) / (1.0 - flat), 0.0, None)
+    w_chest = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+    px, py = smooth_chest_peak(anat, cfg)
     heading = math.radians(shape["chest_dir"])
     neckness = 1.0 - _smoothstep_array(neck_half, 1.5 * neck_half, np.abs(x - neck_x))
-    across = np.minimum(1.0, np.abs(np.abs(x - cx) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
+    across = np.minimum(1.0, np.abs(np.abs(x - axis) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
     down = np.minimum(1.0, np.abs(y - smooth_shoulder_row(anat)) / (1.4 * band))   # 양 어깨 높이가 달라도
     w_shoulder = np.cos(0.5 * np.pi * down) ** 2 * np.cos(0.5 * np.pi * across) ** 2
     lift = float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH) * anat.basis_rows
@@ -524,10 +557,10 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
     u = np.clip((y - top) / (quick + (band - quick) * neckness), 0.0, 1.0) if band > quick else \
         np.clip((y - top) / quick, 0.0, 1.0)
     guard = u * u * (3.0 - 2.0 * u) * (1.0 - _smoothstep_array(height - 0.5 * band, height, y))
-    rise = lift * (chest * w_chest * math.cos(heading) + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_round))
+    rise = lift * (chest * w_chest * math.cos(heading) + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_chest))
     forward = lift * chest * w_chest * math.sin(heading)
     puff = swell * chest * w_chest
-    return (puff * (x - cx) + forward) * guard, (puff * (y - cy) - rise) * guard
+    return (puff * (x - px) + forward) * guard, (puff * (y - py) - rise) * guard
 
 
 def smooth_strain(anat: Anatomy, cfg: dict) -> tuple[float, float]:
@@ -805,8 +838,31 @@ def fit_breathe_pattern(seq_len: int, cfg: dict) -> list[float]:
     (validator 검증 2026-07-25: 시트 1344x192 -> 576x192)."""
     if seq_len <= 0:
         return []
+    if cfg.get("breath_peaks"):
+        return _peaked_phases(seq_len, list(cfg["breath_peaks"]))
     breaths = max(1, int(cfg.get("breaths", 1)))
     return [((i * breaths) % seq_len) / seq_len for i in range(seq_len)]
+
+
+def _peaked_phases(seq_len: int, peaks: list[int]) -> list[float]:
+    """들숨 꼭대기 칸을 바깥에서 받은 위상 (smooth) — 숨 k 는 쉼에서 시작해 `peaks[k]` 칸에서 가득 차고(위상
+    INHALE) 다음 쉼으로 돌아간다. 쉼은 0 칸, 꼭대기 사이를 날숨 1-INHALE : 들숨 INHALE 로 나누는 자리, 그리고
+    루프 끝이다 — 첫 칸이 쉼이고 루프가 쉼에서 닫힌다. 숨마다 위상은 [0, 1) 이다."""
+    if peaks[-1] > seq_len - 2:
+        raise SystemExit(f"breathe: breath_peaks 의 마지막 {peaks[-1]} 가 {seq_len}칸 루프의 끝에 너무 가깝다 — "
+                         f"꼭대기 뒤에 날숨이 들어갈 칸이 있어야 루프가 쉼에서 닫힌다 ({seq_len - 2} 까지).")
+    rests = [0.0] + [p + (1.0 - INHALE) * (q - p) for p, q in zip(peaks, peaks[1:])] + [float(seq_len)]
+    phases = []
+    k = 0
+    for i in range(seq_len):
+        while i >= rests[k + 1]:
+            k += 1
+        start, peak, end = rests[k], peaks[k], rests[k + 1]
+        if i <= peak:
+            phases.append(INHALE * (i - start) / (peak - start))
+        else:
+            phases.append(INHALE + (1.0 - INHALE) * (i - peak) / (end - peak))
+    return phases
 
 
 def fitted_breath_count(seq_len: int, cfg: dict) -> int:
@@ -872,6 +928,13 @@ def bake_breathe_sequence(images: list[Image.Image], cfg: dict) -> tuple[list[Im
 
 # ── CLI: 프레임 폴더에 굽기 (`sprite-gen breathe`) ─────────────────
 
+def _cells(text: str) -> list[int]:
+    try:
+        return [int(part) for part in text.split(",") if part.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"cell numbers separated by commas, not {text!r}")
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("frames", help="folder of the loop's frames (*.png, played in name order)")
     parser.add_argument("out", help="new folder for the breathing frames (same names) and breathe.json")
@@ -905,20 +968,33 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="one side of the chest breathes more, -0.9..0.9, negative the screen's left (0)")
     shape.add_argument("--chest-dir", type=float, default=None,
                        help="where the chest moves, degrees from straight up, negative up-left (0)")
+    shape.add_argument("--chest-x", type=float, default=None,
+                       help="the chest's centre moved off the body axis, times the torso half width (0)")
+    shape.add_argument("--chest-bias-y", type=float, default=None,
+                       help="the chest's peak moved across its long axis, times its half height, positive down (0)")
+    shape.add_argument("--chest-flat", type=float, default=None,
+                       help="share of the way from the peak to the rim that rises in full (0)")
+    shape.add_argument("--breath-peaks", type=_cells, default=None, metavar="CELL,CELL,...",
+                       help="smooth: the cells where each in-breath peaks (the breath count is how many); the first "
+                            "cell stays at rest and the loop closes at rest")
 
 
 def run(*, frames: str, out: str, mode: str | None = None, depth: float | None = None,
         depth_x: float | None = None, breaths: int | None = None, lag: float | None = None,
         rigid_row: int | None = None, chest_y: float | None = None, chest_rx: float | None = None,
         chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None,
-        chest_tilt: float | None = None, chest_bias: float | None = None, chest_dir: float | None = None) -> int:
+        chest_tilt: float | None = None, chest_bias: float | None = None, chest_dir: float | None = None,
+        chest_x: float | None = None, chest_bias_y: float | None = None, chest_flat: float | None = None,
+        breath_peaks: list[int] | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
     같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다."""
     src_dir, out_dir = Path(frames), Path(out)
     raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
                              ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
                              ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag),
-                             ("chest_tilt", chest_tilt), ("chest_bias", chest_bias), ("chest_dir", chest_dir))
+                             ("chest_tilt", chest_tilt), ("chest_bias", chest_bias), ("chest_dir", chest_dir),
+                             ("chest_x", chest_x), ("chest_bias_y", chest_bias_y), ("chest_flat", chest_flat),
+                             ("breath_peaks", breath_peaks))
            if v is not None}
     try:
         cfg = state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
