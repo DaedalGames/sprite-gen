@@ -576,10 +576,13 @@ pink (250, 77, 150) and purple (213, 112, 246) alive *inside* the subject. Grok 
 the key" for a colour that filled the whole border, the detector fell back to the declared
 key, and at ~120 from pure magenta the entire background survived. A flat border is
 already evidence of *background*, so the border rule `extract.is_border_key_candidate`
-drops the balance and keeps the hue signature: every keyed channel lit (≥ 64), every
-unkeyed channel dark (< 64) and under 35 % of the brightest keyed channel. It is a
-superset of the interior rule (family ∪ signature), so nothing the old detector found is
-lost, and hot pink / purple fail it on a different axis (their green channel is lit). One
+drops the balance and keeps the hue signature: every keyed channel lit (>= 64), the
+darkest unkeyed channel dark (< 64) and under 35 % of the brightest keyed channel, and the
+brightest unkeyed channel under half of it, so a green screen that leans toward cyan or
+yellow, such as the studio green (0, 177, 64), is the key while a colour as near cyan or
+yellow as green is not. It is a superset of the interior rule (family union signature), so
+nothing the old detector found is lost, and hot pink and purple fail on their lit green
+channel, which is magenta's only unkeyed channel. One
 function classifies the border everywhere — `detect_background_key_rgb`, `cutout --key
 auto`, `video-canvas --key` and the edge-contact split below. The interior rule is
 untouched. And because the painted colour's authority is border evidence, its erase ball

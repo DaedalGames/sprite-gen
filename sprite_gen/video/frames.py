@@ -53,7 +53,7 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.frames.cutout import cutout
 from sprite_gen.frames.decontam import palette_from_stats
-from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split
+from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split, _painted_key_leans
 from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.spec.runio import atomic_write_text
 
@@ -234,13 +234,15 @@ def edge_contact(image: Image.Image) -> dict[str, int]:
     return {"top": top, "left": left, "right": right}
 
 
-def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tuple[int, int, int] | None) -> dict[str, int]:
+def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tuple[int, int, int] | None,
+                          painted_key: tuple[int, int, int] | None = None) -> dict[str, int]:
     """Split the opaque edge-band pixels into `subject` and `residual` (leftover key background).
 
     A contact pixel whose *raw* colour carries the declared key's hue signature
-    (`is_border_key_candidate`) is either background the matte failed to erase or the subject's
-    own rim: a body reaching the band brings its antialiased edge, the key blended into it, there
-    first. It is residual only when the opaque piece of the keyed frame it belongs to — its opaque
+    (`is_border_key_candidate`; the leaning greens only when `painted_key`, the background the
+    frame was keyed from, leans itself: `extract._painted_key_leans`) is either background the
+    matte failed to erase or the subject's own rim: a body reaching the band brings its
+    antialiased edge, the key blended into it, there first. It is residual only when the opaque piece of the keyed frame it belongs to — its opaque
     pixels, corners joining them, the pieces `drop_specks` reads — holds no pixel off the key's
     signature: background on its own. Joined to one, it is the subject's. Without a chroma key
     (matte route) every contact is the subject.
@@ -257,7 +259,9 @@ def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tupl
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key) if chroma_key is not None else ([], [])
     if not total or not keyed_channels:
         return {"subject": total, "residual": 0}
-    keyish = _border_key_candidate_field(np.asarray(raw.convert("RGB"), dtype=np.int32), keyed_channels, unkeyed_channels)
+    lean = painted_key is not None and _painted_key_leans(painted_key, keyed_channels, unkeyed_channels)
+    keyish = _border_key_candidate_field(np.asarray(raw.convert("RGB"), dtype=np.int32), keyed_channels, unkeyed_channels,
+                                         lean=lean)
     suspect = contact & keyish
     if not suspect.any():
         return {"subject": total, "residual": 0}
@@ -390,7 +394,9 @@ def key_frames(
             contact = edge_contact(image)
             if any(v > EDGE_MAX_PIXELS for v in contact.values()):
                 chroma = stats.get("chroma_key")
-                contact.update(classify_edge_contact(Image.open(src), image, tuple(chroma) if chroma else None))
+                painted = stats.get("chroma_key_painted")
+                contact.update(classify_edge_contact(Image.open(src), image, tuple(chroma) if chroma else None,
+                                                     tuple(painted) if painted else None))
                 contact["key_painted"] = stats.get("chroma_key_painted")
                 contacts.append({"frame": src.name, **contact})
             row["edge"] = contact

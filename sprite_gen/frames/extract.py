@@ -232,7 +232,21 @@ _KEY_FAMILY_KEYED_BALANCE = 0.8  # for two-channel keys (magenta) the dimmer key
 # painted keys' never is (46..59). So the border rule keeps the hue signature — keyed
 # channels lit, unkeyed channels dark and saturated against the *brighter* keyed
 # channel — and drops the balance between the keyed channels.
+# Leaning green (2026-10-21): the dark bar was set between magentas, whose one unkeyed
+# channel is what tells a painted key from hot pink. Green has two, and a green screen
+# leans on one of them — the studio chroma-key green #00B140 is (0, 177, 64), blue on the
+# bar — so holding every unkeyed channel under the bar refused a whole painted background
+# that leans a little further. For a key with two unkeyed channels the darker one keeps
+# the bar, and the one the colour leans on only has to stay under half the brightest
+# keyed channel: the hue then sits nearer the key than the neighbouring secondary (green
+# 120 degrees, cyan 180 and yellow 60, the midpoints 150 and 90). A key with one unkeyed
+# channel is unchanged — its darker and leaning channel are the same one, under the bar —
+# so hot pink's lit green still refuses it. The lean is evidence about the background that
+# leans, so inside the frame it widens only the ball of a painted colour that leans itself
+# (`_painted_key_leans`): on a background the rule took before, a leaning-green patch in
+# the subject is not the painted colour's and stays.
 _BORDER_KEY_MAX_UNKEYED_RATIO = _KEY_FAMILY_MAX_UNKEYED_RATIO  # against the brightest keyed channel, not the dimmest
+_BORDER_KEY_MAX_LEAN_RATIO = 0.5  # the unkeyed channel a key leans on stays under half the brightest keyed channel
 _KEY_DETECT_CORNER_DIV = 5  # corner patch = width/5 x height/5 (same sampling as the YCbCr path)
 _KEY_DETECT_MIN_FRACTION = 0.12  # family share of the samples needed to trust the detection
 _KEY_DETECT_BIN_SHIFT = 3  # RGB histogram bin width 8 — the mode bin, never a mean, picks the colour
@@ -271,22 +285,27 @@ def is_border_key_candidate(color: tuple[int, int, int], chroma_key: tuple[int, 
     and the `video-frames` edge-contact split. A superset of `is_key_family`:
     everything the interior rule admits, plus colours that carry the key's hue
     *signature* without the keyed channels balancing — every keyed channel lit
-    (>= 64), every unkeyed channel dark (< 64, the key split's own bar) and
-    under 35% of the *brightest* keyed channel. So Grok's (216, 46, 147)
-    magenta is a candidate; hot pink (250, 77, 150) and purple (213, 112, 246)
-    are not (their green channel is lit), nor are ivory and cyan. The interior
-    rule stays `is_key_family` — a pixel *inside* the frame has no border evidence.
+    (>= 64), the darkest unkeyed channel dark (< 64, the key split's own bar)
+    and under 35% of the *brightest* keyed channel, and the brightest unkeyed
+    channel — the one a green screen leans on — under half of it. So Grok's
+    (216, 46, 147) magenta is a candidate, and so are greens leaning toward cyan
+    or yellow such as (0, 177, 64) and (0, 200, 90); hot pink (250, 77, 150) and
+    purple (213, 112, 246) are not (their green channel, magenta's only unkeyed
+    one, is lit), nor are ivory and cyan. The interior rule stays
+    `is_key_family` — a pixel *inside* the frame has no border evidence.
     """
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     if not keyed_channels:
         return False
     keyed_min = min(color[index] for index in keyed_channels)
     keyed_max = max(color[index] for index in keyed_channels)
+    unkeyed_min = min(color[index] for index in unkeyed_channels)
     unkeyed_max = max(color[index] for index in unkeyed_channels)
     return is_key_family(color, chroma_key) or (
         keyed_min >= _KEY_FAMILY_MIN_KEYED
-        and unkeyed_max < _KEY_CHANNEL_DARK
-        and unkeyed_max <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO
+        and unkeyed_min < _KEY_CHANNEL_DARK
+        and unkeyed_min <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO
+        and unkeyed_max < keyed_max * _BORDER_KEY_MAX_LEAN_RATIO
     )
 
 
@@ -302,17 +321,42 @@ def _key_family_field(rgb: np.ndarray, keyed_channels: list[int], unkeyed_channe
     )
 
 
-def _border_key_candidate_field(rgb: np.ndarray, keyed_channels: list[int], unkeyed_channels: list[int]) -> np.ndarray:
-    """Vector form of `is_border_key_candidate` — same inequalities, same constants."""
+def _border_key_candidate_field(rgb: np.ndarray, keyed_channels: list[int], unkeyed_channels: list[int], *,
+                                lean: bool = True) -> np.ndarray:
+    """Vector form of `is_border_key_candidate` — same inequalities, same constants.
+
+    `lean=False` holds the brightest unkeyed channel to the darkest one's bars as well (every
+    unkeyed channel dark): the signature as a painted colour that does not lean carries it
+    (`_painted_key_leans`), which is the border rule as it was before the lean.
+    """
     keyed_min = rgb[..., keyed_channels].min(axis=-1)
     keyed_max = rgb[..., keyed_channels].max(axis=-1)
+    unkeyed_min = rgb[..., unkeyed_channels].min(axis=-1)
     unkeyed_max = rgb[..., unkeyed_channels].max(axis=-1)
     signature = (
         (keyed_min >= _KEY_FAMILY_MIN_KEYED)
-        & (unkeyed_max < _KEY_CHANNEL_DARK)
-        & (unkeyed_max <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO)
+        & (unkeyed_min < _KEY_CHANNEL_DARK)
+        & (unkeyed_min <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO)
+        & (unkeyed_max < keyed_max * _BORDER_KEY_MAX_LEAN_RATIO)
     )
+    if not lean:
+        signature &= (unkeyed_max < _KEY_CHANNEL_DARK) & (unkeyed_max <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO)
     return _key_family_field(rgb, keyed_channels, unkeyed_channels) | signature
+
+
+def _painted_key_leans(painted_key: tuple[int, int, int], keyed_channels: list[int], unkeyed_channels: list[int]) -> bool:
+    """Whether the painted colour is the key only through the lean: a green screen leaning toward cyan or yellow.
+
+    The lean is border evidence about *that* background. What its ball claims inside the frame
+    (`hard_key_mask`, `subject_window`) and which edge pixels read as leftover background
+    (`video-frames`' edge-contact split) lean as far as the painted colour gives them leave to:
+    on a background that leans, the colours that lean with it; on one that does not, only the
+    signature with every unkeyed channel dark — so a leaning-green patch buried in the subject on
+    a background the rule took before the lean stays as it was.
+    """
+    rgb = np.asarray([painted_key], dtype=np.int32)
+    return bool(_border_key_candidate_field(rgb, keyed_channels, unkeyed_channels)[0]
+                and not _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels, lean=False)[0])
 
 
 def _key_detect_sample_mask(height: int, width: int, top: int = 0, bottom: int | None = None) -> np.ndarray:
@@ -440,11 +484,14 @@ def hard_key_mask(source_rgb: np.ndarray, alpha: np.ndarray, chroma_key: tuple[i
         # unkeyed channel over the signature bar). An isolated patch inside
         # the subject that merely resembles the painted colour is left alone:
         # hot pink (250, 77, 150) sits 46 from Grok's (216, 46, 147) magenta
-        # and would otherwise be cut out of the subject. The declared key's
-        # ball stays what it always was — a colour ball, position-blind.
+        # and would otherwise be cut out of the subject. The signature is the
+        # one the painted colour carries: the leaning greens only when it leans
+        # itself (`_painted_key_leans`). The declared key's ball stays what it
+        # always was — a colour ball, position-blind.
         painted_distance = _key_distance_field(source_rgb, painted_key)
         in_ball = painted_distance <= threshold
-        painted_keyed = in_ball & _border_key_candidate_field(source_rgb, keyed_channels, unkeyed_channels)
+        lean = _painted_key_leans(painted_key, keyed_channels, unkeyed_channels)
+        painted_keyed = in_ball & _border_key_candidate_field(source_rgb, keyed_channels, unkeyed_channels, lean=lean)
         painted_keyed |= in_ball & (key_distance <= threshold)
         painted_keyed = _grow_into(painted_keyed, in_ball)
         key_distance = np.where(painted_keyed, np.minimum(key_distance, painted_distance), key_distance)
@@ -460,7 +507,8 @@ def subject_window(image: Image.Image, chroma_key: tuple[int, int, int], thresho
 
     `hard_key_mask` keys, whatever their alpha, every pixel within `threshold` of the
     declared key and, when the painted colour differs, every pixel within `threshold` of
-    the painted colour that carries the key's border signature (`is_border_key_candidate`).
+    the painted colour that carries the key's border signature (`is_border_key_candidate`,
+    leaning only when the painted colour leans: `_painted_key_leans`).
     Only the other pixels can stay opaque. Returns their bounding box grown by `margin`
     and clipped to the image, as (left, top, right, bottom), or None when there are none
     (the whole image keys out). Pass the painted colour the engine will use.
@@ -479,6 +527,7 @@ def subject_window(image: Image.Image, chroma_key: tuple[int, int, int], thresho
     """
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     ball = painted_key is not None and tuple(painted_key) != tuple(chroma_key) and bool(keyed_channels)
+    lean = ball and _painted_key_leans(painted_key, keyed_channels, unkeyed_channels)  # type: ignore[arg-type]
     width, height = image.size
     rows = np.zeros(height, dtype=bool)
     cols = np.zeros(width, dtype=bool)
@@ -487,7 +536,7 @@ def subject_window(image: Image.Image, chroma_key: tuple[int, int, int], thresho
         erased = _key_distance_field(rgb, chroma_key) <= threshold
         if ball:
             erased |= ((_key_distance_field(rgb, painted_key) <= threshold)
-                       & _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels))
+                       & _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels, lean=lean))
         rows[top:top + len(rgb)] = ~erased.all(axis=1)
         cols |= ~erased.all(axis=0)
     if not rows.any():
