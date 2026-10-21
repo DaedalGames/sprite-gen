@@ -139,11 +139,12 @@ def _fail_unmeasured_skip(report: pytest.TestReport | pytest.CollectReport, node
 
 @pytest.fixture(autouse=True)
 def _engine_tta(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test runs the augmentation the engine ships (`rife.TTA`) and its backend, the binary: a
-    SPRITE_GEN_RIFE_TTA or SPRITE_GEN_RIFE_BACKEND left in the calling shell would change what the real-RIFE
-    tests measure. SPRITE_GEN_RIFE_DEVICE stays: it names where the torch backend's tests run."""
+    """Every test runs the augmentation the engine ships (`rife.TTA`) and its backend, the binary, in this process: a
+    SPRITE_GEN_RIFE_TTA, SPRITE_GEN_RIFE_BACKEND or SPRITE_GEN_RIFE_EXECUTOR left in the calling shell would change what
+    the real-RIFE tests measure. SPRITE_GEN_RIFE_DEVICE stays: it names where the torch backend's tests run."""
     monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
     monkeypatch.delenv("SPRITE_GEN_RIFE_BACKEND", raising=False)
+    monkeypatch.delenv("SPRITE_GEN_RIFE_EXECUTOR", raising=False)
 
 
 @pytest.hookimpl(wrapper=True)
