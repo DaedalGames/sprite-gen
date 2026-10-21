@@ -81,7 +81,9 @@ def _bust(h: int = 120, *, gradient: bool = True, marks: tuple[float, ...] = (),
 
 
 def _smooth(**extra) -> dict:
-    return {"mode": "smooth", "depth": 0.025, "breaths": 2, **extra}
+    """smooth 사이드카 — 값이 None 인 키는 적지 않는다 (생략과 같다)."""
+    raw = {"mode": "smooth", "depth": 0.025, "breaths": 2, **extra}
+    return {k: v for k, v in raw.items() if v is not None}
 
 
 def _cfg(raw: dict) -> dict:
@@ -301,7 +303,8 @@ def test_the_default_pixel_mode_is_byte_identical_to_before(build, mode) -> None
 
 # ── 8. 사이드카 ─────────────────────────────────────────────────────
 
-SHAPE = ("chest_y", "chest_rx", "chest_ry", "shoulder", "shoulder_lag", "chest_tilt", "chest_bias", "chest_dir")
+SHAPE = ("chest_y", "chest_rx", "chest_ry", "shoulder", "shoulder_lag", "chest_tilt", "chest_bias", "chest_dir",
+         "chest_x", "chest_bias_y", "chest_flat")
 
 
 def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
@@ -316,7 +319,8 @@ def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
                   "shoulder": 0.6, "shoulder_lag": 0.1})
     assert {k: given[k] for k in SHAPE} == {"chest_y": 0.4, "chest_rx": 0.8, "chest_ry": 0.3,
                                             "shoulder": 0.6, "shoulder_lag": 0.1,
-                                            "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0}
+                                            "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0,
+                                            "chest_x": 0.0, "chest_bias_y": 0.0, "chest_flat": 0.0}
     assert _cfg({"mode": "pixel", "breaths": 2})["mode"] == "pixel"
 
 
@@ -337,7 +341,8 @@ def test_an_unknown_mode_is_refused_loudly(bad) -> None:
 
 @pytest.mark.parametrize("key,value", [("chest_y", 0.0), ("chest_rx", 9.0), ("chest_ry", -1),
                                        ("shoulder", 3.0), ("shoulder_lag", 0.5), ("chest_y", "x"),
-                                       ("chest_tilt", 75), ("chest_bias", -1.0), ("chest_dir", 120)])
+                                       ("chest_tilt", 75), ("chest_bias", -1.0), ("chest_dir", 120),
+                                       ("chest_x", 1.5), ("chest_bias_y", 0.95), ("chest_flat", 0.95)])
 def test_a_shape_value_out_of_range_is_refused(key, value) -> None:
     with pytest.raises(SystemExit, match=key):
         _cfg(_smooth(**{key: value}))
@@ -373,7 +378,8 @@ SMOOTH_GOLDEN = [
 
 
 @pytest.mark.parametrize("h,raw,digest", SMOOTH_GOLDEN, ids=["default", "deeper", "400px"])
-@pytest.mark.parametrize("neutral", [{}, {"chest_tilt": 0, "chest_bias": 0, "chest_dir": 0}], ids=["omitted", "zeros"])
+@pytest.mark.parametrize("neutral", [{}, {"chest_tilt": 0, "chest_bias": 0, "chest_dir": 0, "chest_x": 0,
+                                       "chest_bias_y": 0, "chest_flat": 0}], ids=["omitted", "zeros"])
 def test_neutral_facing_values_bake_the_same_bytes(h, raw, digest, neutral) -> None:
     frames, _ = B.bake_breathe_sequence([_bust(h)] * 12, _cfg({**raw, **neutral}))
     assert hashlib.sha256(b"".join(f.tobytes() for f in frames)).hexdigest() == digest, \
@@ -412,15 +418,112 @@ def test_a_tilted_chest_weight_lies_along_its_tilt() -> None:
 
 
 def test_the_front_side_breathes_more() -> None:
-    """치우침은 타원 긴 축의 한쪽을 키운다 — 음수면 화면 왼쪽(몸이 왼쪽을 볼 때의 앞쪽)이 더 오른다."""
+    """치우침은 무게의 꼭대기 P 를 긴 축 따라 옮긴다 — 음수면 화면 왼쪽(몸이 왼쪽을 볼 때의 앞쪽)이다.
+    무게는 P 에서 그 반직선이 테두리에 닿는 곳까지 잰다: 가까운 쪽은 짧게, 돌아간 쪽은 길게 줄어든다."""
     _, anat = _chest_frame()
     cfg = _cfg(_smooth(depth_x=0.0, chest_bias=-0.5))
     cx, cy = B.smooth_chest(anat, cfg)
-    d = 0.5 * cfg["chest_rx"] * anat.torso_half
-    _, left = _field(anat, cfg, cx - d, cy)
-    _, right = _field(anat, cfg, cx + d, cy)
-    assert -left > 1.5 * -right, f"앞쪽(왼쪽 {-left:.2f}px)이 돌아간 쪽({-right:.2f}px)보다 크게 오르지 않는다"
-    assert -left / -right == pytest.approx((1 + 0.5 * 0.5) / (1 - 0.5 * 0.5), rel=1e-6)
+    rx = cfg["chest_rx"] * anat.torso_half
+    lift = cfg["depth"] * anat.basis_rows
+    px, py = B.smooth_chest_peak(anat, cfg)
+    assert (px, py) == pytest.approx((cx - 0.5 * rx, cy))
+    _, at_peak = _field(anat, cfg, px, py)
+    _, right = _field(anat, cfg, cx + 0.5 * rx, cy)          # P 에서 rx, 오른쪽 테두리까지 1.5 rx: 2/3
+    assert -at_peak == pytest.approx(lift, rel=1e-6)
+    assert -right == pytest.approx(lift * np.cos(np.pi / 3) ** 2, rel=1e-6)
+    # 무게가 절반이 되는 거리: 왼쪽(가까운 쪽)은 P 에서 0.25 rx, 오른쪽(돌아간 쪽)은 0.75 rx.
+    _, near = _field(anat, cfg, px - 0.25 * rx, py)
+    _, far = _field(anat, cfg, px + 0.75 * rx, py)
+    assert -near == pytest.approx(0.5 * lift, rel=1e-6) and -far == pytest.approx(0.5 * lift, rel=1e-6)
+
+
+def test_the_peak_moves_across_the_long_axis_too() -> None:
+    _, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.0, chest_bias=-0.4, chest_bias_y=0.3, chest_tilt=12))
+    cx, cy = B.smooth_chest(anat, cfg)
+    rx, ry = cfg["chest_rx"] * anat.torso_half, cfg["chest_ry"] * (anat.height - anat.rigid_row)
+    t = np.radians(12.0)
+    along, across = -0.4 * rx, 0.3 * ry
+    want = (cx + along * np.cos(t) - across * np.sin(t), cy + along * np.sin(t) + across * np.cos(t))
+    assert B.smooth_chest_peak(anat, cfg) == pytest.approx(want)
+    lift = cfg["depth"] * anat.basis_rows
+    assert -_field(anat, cfg, *want)[1] == pytest.approx(lift, rel=1e-6), "꼭대기에서 가슴이 depth 만큼 오르지 않는다"
+
+
+def test_chest_x_moves_the_chest_off_the_body_axis() -> None:
+    """긴 머리처럼 한쪽으로 쏠린 것이 몸통 축(무게중심)을 끌면 가슴은 축에 없다 — chest_x 로 옮긴다."""
+    _, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.0, chest_x=-0.2))
+    cx, cy = B.smooth_chest(anat, cfg)
+    assert cx == pytest.approx(anat.axis_x + 0.5 - 0.2 * anat.torso_half)
+    lift = cfg["depth"] * anat.basis_rows
+    assert -_field(anat, cfg, cx, cy)[1] == pytest.approx(lift, rel=1e-6)
+    assert -_field(anat, cfg, anat.axis_x + 0.5, cy)[1] < lift
+
+
+def test_a_flat_top_carries_the_whole_lift() -> None:
+    _, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.0, chest_flat=0.3))
+    cx, cy = B.smooth_chest(anat, cfg)
+    rx = cfg["chest_rx"] * anat.torso_half
+    lift = cfg["depth"] * anat.basis_rows
+    assert -_field(anat, cfg, cx + 0.25 * rx, cy)[1] == pytest.approx(lift, rel=1e-6), "평평한 꼭대기 안인데 덜 오른다"
+    assert -_field(anat, cfg, cx + 0.6 * rx, cy)[1] < lift
+
+
+def test_the_chest_puffs_out_from_its_peak() -> None:
+    """부풂의 원점은 꼭대기 P 다 — P 는 옆으로 가지 않고, 그 양옆은 바깥으로 간다."""
+    _, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.02, chest_bias=-0.4))
+    px, py = B.smooth_chest_peak(anat, cfg)
+    rx = cfg["chest_rx"] * anat.torso_half
+    assert _field(anat, cfg, px, py)[0] == pytest.approx(0.0, abs=1e-9)
+    assert _field(anat, cfg, px - 0.2 * rx, py)[0] < 0 < _field(anat, cfg, px + 0.2 * rx, py)[0]
+
+
+def test_a_peak_off_the_ellipse_is_refused() -> None:
+    with pytest.raises(SystemExit, match="chest_bias"):
+        _cfg(_smooth(chest_bias=-0.8, chest_bias_y=0.8))
+
+
+# ── 숨 박자를 바깥에서: 들숨 꼭대기 칸 목록 ───────────────────────
+
+def test_breath_peaks_put_each_in_breath_where_asked() -> None:
+    """`breath_peaks` 는 들숨 꼭대기 칸이다 — 그 칸에서 숨이 가득 차고, 첫 칸은 쉼(원본 그대로),
+    루프 끝은 다시 쉼으로 닫힌다. 꼭대기 사이는 날숨이 먼저 6할, 다음 들숨이 4할을 쓴다."""
+    cfg = _cfg(_smooth(breath_peaks=[10, 40, 52], breaths=None))
+    assert cfg["breaths"] == 3 and cfg["breath_peaks"] == [10, 40, 52]
+    phases = B.fit_breathe_pattern(60, cfg)
+    curve = [B.smooth_wave(t) for t in phases]
+    assert phases[0] == 0.0 and curve[0] == 0.0
+    for p in (10, 40, 52):
+        assert curve[p] == pytest.approx(1.0), f"{p}번 칸이 들숨 꼭대기가 아니다: {curve[p]}"
+    rests = [i for i in range(1, 60) if curve[i] < curve[i - 1] and curve[i] <= curve[(i + 1) % 60]]
+    assert rests == [28, 47], f"숨 사이 쉼이 꼭대기 사이 날숨 6할 자리에 있어야 한다: {rests}"
+    assert curve[59] < curve[58], "루프 끝이 쉼으로 돌아가지 않는다"
+    src = _bust()
+    frames, _ = B.bake_breathe_sequence([src] * 60, cfg)
+    assert frames[0].tobytes() == src.tobytes()
+
+
+@pytest.mark.parametrize("raw,why", [
+    ({"breath_peaks": [10, 10]}, "breath_peaks"), ({"breath_peaks": [12, 5]}, "breath_peaks"),
+    ({"breath_peaks": [0, 20]}, "breath_peaks"), ({"breath_peaks": [10, 2.5]}, "breath_peaks"),
+    ({"breath_peaks": [10, 40], "breaths": 3}, "breaths"),
+], ids=["repeat", "unsorted", "first-cell", "not-int", "count-mismatch"])
+def test_breath_peaks_that_cannot_be_kept_are_refused(raw, why) -> None:
+    with pytest.raises(SystemExit, match=why):
+        _cfg({"mode": "smooth", **raw})
+
+
+def test_breath_peaks_past_the_loop_are_refused_at_the_bake() -> None:
+    with pytest.raises(SystemExit, match="breath_peaks"):
+        B.fit_breathe_pattern(30, _cfg(_smooth(breath_peaks=[10, 29], breaths=None)))
+
+
+def test_breath_peaks_on_pixel_are_refused() -> None:
+    with pytest.raises(SystemExit, match="breath_peaks"):
+        _cfg({"depth": 0.06, "breath_peaks": [5, 15]})
 
 
 @pytest.mark.parametrize("angle", [-30.0, 20.0])
@@ -540,13 +643,15 @@ def _blinking(h: int = 120, count: int = 12) -> list[Image.Image]:
 @pytest.mark.parametrize("raw,flags", [
     (_smooth(), ["--mode", "smooth", "--depth", "0.025", "--breaths", "2"]),
     (_smooth(chest_y=0.4, shoulder=0.3, shoulder_lag=0.12, depth_x=0.01, chest_tilt=-20, chest_bias=-0.4,
-             chest_dir=-25),
+             chest_dir=-25, chest_x=-0.1, chest_bias_y=0.2, chest_flat=0.25),
      ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--chest-y", "0.4",
       "--shoulder", "0.3", "--shoulder-lag", "0.12", "--depth-x", "0.01", "--chest-tilt", "-20",
-      "--chest-bias", "-0.4", "--chest-dir", "-25"]),
+      "--chest-bias", "-0.4", "--chest-dir", "-25", "--chest-x", "-0.1", "--chest-bias-y", "0.2",
+      "--chest-flat", "0.25"]),
+    (_smooth(breath_peaks=[3, 9], breaths=None), ["--mode", "smooth", "--depth", "0.025", "--breath-peaks", "3,9"]),
     ({"depth": 0.06, "breaths": 2, "lag": 0.1},
      ["--depth", "0.06", "--breaths", "2", "--lag", "0.1"]),
-], ids=["smooth", "smooth-shape", "pixel"])
+], ids=["smooth", "smooth-shape", "smooth-peaks", "pixel"])
 def test_the_cli_bakes_what_the_curation_bake_bakes(tmp_path, raw, flags) -> None:
     from sprite_gen import cli
 
