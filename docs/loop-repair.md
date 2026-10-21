@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the seam bridge (the wrap of a loop that is not a walk), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -69,7 +69,7 @@ cut before RIFE existed still cuts — and nothing is left unsaid:
 
 | Where | Default without RIFE | Asked for by name |
 |---|---|---|
-| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced | `--repair on`: fails with the install line |
+| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced. For the seam bridge, the wrap is cut as filmed: `jump_repair` reads `why`, `rife`, `install`, and `unmade` (the `frames`, `anchors`, and `line` of the run it stopped at). One `video-loop: warning:` line says no frame was made round the wrap and names `sprite-gen rife install`. | `--repair on`: fails with the install line |
 | `video-set` cycle alignment (section 4) | `--align-cycles auto`: the state is skipped and every loop keeps its own length; `cycle_align.<state>` reads `applied: false` with `why`, `rife`, `install`; the set report lists it under `warnings`; one `video-set: warning:` line | `video-cycle-align`: fails with the install line |
 
 A RIFE that is found and then fails (a binary that cannot reach Vulkan, say) is an error in every
@@ -228,7 +228,7 @@ below; a frame made is the whole picture at one time, so the legs take the time 
 and on every walker measured the loop keeps the flow repair). Before all of it, a cut two steps
 long whose wrap a part on its own beat leaves open has the frames beside its wrap made again between
 the clip's frames a cycle apart and its own ([the overlapped
-wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below).
+wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below). A loop of any other state is not read for its flow; where its wrap jumps, frames round it are made again ([the seam bridge](#the-seam-bridge-a-loop-that-is-not-a-walk-whose-wrap-jumps) below).
 
 | Rule | Value | Why |
 |---|---|---|
@@ -336,8 +336,7 @@ so does a filmed ghost between two clean frames under `--repair on`. Under `--re
 filmed ghost then gives way to the clean frame beside it (`no_proposal: "no interpolator"`), and
 only a jump left (`unmade`: the `frames`, `neighbours` and `off` of the group the search stopped at)
 sets `why`, `rife` and `install`.
-`--repair off` cuts the loop as filmed and records `jump_repair: {"applied": false, "why":
-"--repair off"}`. Other states are not touched (`"why": "not a gait state (…)"`).
+`--repair off` cuts the loop as filmed and records `jump_repair: {"applied": false, "why": "--repair off"}`. A loop of another state has its wrap read (the seam bridge, below); a cut played once is not touched (`"why": "not a gait state (...)"`).
 
 Until the flow reading picked the frames, the size reading did: a step whose change of coverage,
 over the whole box or the hair behind the body, was at least 1.4 times the loop's median remade
@@ -718,6 +717,52 @@ alone: nothing is read or made for it, `wrap_overlap` says so (`skipped`: "turne
 off)", no `tries`, `calls` 0) with the `warning:` line every skipped wrap has, and the gate refuses the cut
 as filmed, the loop failing on its seam as where every run is refused. The jump repair, the eased retime and
 the gate are as with it on; `--repair off` turns it off with the rest.
+
+### The seam bridge: a loop that is not a walk, whose wrap jumps
+
+A user expects an idle loop, jump, attack, or generic in-place action to be smoothed at its wrap like a walk. A walk's flow repair reads every frame against the line between its neighbours. An idle's own motion (a blink, an eye half shut, a mouth that opens) leaves that line too, so flow repair would remake those frames and take out the motion. A loop that is not a walk is therefore not read for its flow; its wrap alone is read, leaving the walk path unchanged.
+
+The seam bridge (`repair.seam_bridge`, driven from `loop.run_loop`) runs under `--repair auto` (the default) or `on` for any state that is not a gait (not walk or run). It runs on a cut that plays as a loop, and skips cuts played once (`--cycle once`, `once-return`, or an effect's lifetime), which retain `"why": "not a gait state (...)"`. A pinned clip (`--cycle pinned`) whose pin the gate refuses is skipped (`skipped`: "the pin does not close: the clip is refused on it"), because the clip is refused on its pin whatever its wrap shows. It runs after the anchor (`--anchor`), before `cycle/`, the strip, the GIF, and the WebP are written.
+
+| Rule | Value | Why |
+|---|---|---|
+| When | `--repair auto` or `on`; a state other than walk or run; a cut played as a loop; not a pinned clip whose pin the gate refuses | a cut played once (`--cycle once`, `once-return`, an effect's lifetime) needs no wrap; a clip refused on its pin is refused whatever its wrap shows |
+| The reading | On the frames as they play, cropped to their union box, on the seam gate's analysis thumbnail (`loop.cell_features`, the reading `loop.wrap_on_cells` uses); the wrap step is compared with the mean of the three steps either side of it (`repair.SURGE_AROUND`, 3) | a loop whose steps are uneven (a body moving only in whole pixels, with many zero-step frames) would otherwise read an ordinary wrap as a jump |
+| Not a jump | The wrap ratio is at most `--seam-max` (default 2.0), or the wrap step is at most `loop.PIN_NOISE_MAX` (0.005) | `skipped`: "the wrap reads as a step of the loop"; a wrap step at most 0.005 is re-render noise on a near-still loop where large ratios show nothing; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| Drawn on twos or threes | The cut is drawn on twos or threes (`cycle_drawings.hold` over 1, read on the cut) | `skipped`: "drawn on twos or threes: a frame made round the wrap would split a drawing"; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| Too short | A loop under 12 frames (`repair.BRIDGE_MIN_FRAMES`) | `skipped`: "a loop of N frames, under 12: no steps either side of the widest stretch"; under 12 frames cannot fit the widest stretch and three steps either side without sharing; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| How many frames and which | One frame, then two, then four (`repair.BRIDGE_WIDTHS`, fewest first), ceil(m/2) frames before the wrap and floor(m/2) after (`repair.bridge_run`): for a 48-frame loop, frame 47; frames 47 and 0; frames 46, 47, 0, and 1 | testing the fewest frames first keeps as much filmed motion as possible while centring the repair across the wrap |
+| The straight line | The straight line between the two anchors (their thumbnails mixed in equal steps); rejected if any step along that line exceeds `--seam-max` times the mean of the three steps either side (`rejected_for: "line"`) | stops before making frames if even an even blend across the anchors jumps |
+| How each frame is made | Made by RIFE between the anchors either side of the run, at its own time between them (`repair.between_time`) | the loop keeps its length and every frame its time |
+| Faults | Checked for smear, outline, ghost (ghost screen on the stretch and three frames either side, empty); `rejected_for: "fault"`. Frames with `crossfade` over 0.015 are kept with a `warning:` line | avoids taking interpolation artifacts, matching the shared policy of section 4, while keeping slight cross-fading inside outlines |
+| Taken | The first run where no frame has an interpolation fault and every step of the stretch is within `--seam-max` times the mean of the three steps either side (`rejected_for: "seam"` otherwise) | ends search on the smallest valid bridge; if none is taken, the filmed loop is kept for the seam gate to judge as before |
+| How many calls | At most 1 + 2 + 4 = 7 plain RIFE calls per loop | at most one call per frame across candidate widths |
+| Without RIFE | Under `--repair auto`, wrap is cut as filmed, `jump_repair` records `why`, `rife`, `install`, and `unmade`, and a warning line names `sprite-gen rife install`; under `--repair on`, fails with the install command | RIFE is looked for only when a frame is to be made |
+
+| Case | Wrap reading | Bridge action | Gate result |
+|---|---|---|---|
+| J = 2.6 | 2.65 against steps beside it | Bridged by one frame (frame 47, halfway between frames 46 and 0; stretch reads 1.65) | Passes at 1.55 on rendered cells (refused at 2.41 with `--repair off`) |
+| J = 5 | 4.63 against steps beside it | One frame: straight line reads 2.77, none made. Two frames: made, stretch reads 2.35, refused. Four frames (46, 47, 0, 1 at times 0.2, 0.4, 0.6, 0.8 between frames 45 and 2): stretch reads 1.85, taken | Passes at 1.84 (refused at 4.30 as filmed) |
+| J = 12 | 10.68 against steps beside it | Straight lines read 5.43, 3.76, 2.57; nothing made | Refused at 10.22 as before |
+| J = 1 (closed loop) | 1.10 against steps beside it | Not bridged; no interpolator looked for | Same bytes as `--repair off` |
+| Whole pixels (x = round(6 sin), closed loop) | 2.06 against loop mean step, 1.51 against steps beside it | Not bridged | Read by the bridge alone |
+| Near-still loop (shading patch) | 57 times steps beside it, wrap step is 0.00035 (under 0.005) | Not bridged | Read by the bridge alone |
+| Drawn on twos (J = 2.6) | 4.47 against steps beside it | Skipped: drawn on twos or threes | Refused at 3.00 as filmed |
+| Real RIFE (rife-v4.6 with augmentation, J = 2.6) | 2.65 against steps beside it | Closed by one frame without faults | Passes gate |
+
+Cost: at most seven plain RIFE calls per loop, one per frame. From the RIFE table in section 1 (a 960 x 960 frame on Modal `cpu=2`), a frame takes 4.3 to 6.2 s with no augmentation, and 44.0 to 60.5 s with `-x -z`. Seven frames take 30 to 43 s with augmentation off, and five to seven minutes with `-x -z`. A CPU host sets `SPRITE_GEN_RIFE_TTA=` (empty: no augmentation). The readings take little time, evaluating a few thumbnails and running the ghost screen on the stretch and the three frames either side rather than the whole loop.
+
+Limits:
+- Anchors up to five frames apart can tear a small part that a large part swings across, and no fault check above detects it (on the third walker of `tests/video/test_loop_overlap.py`, a big tail across a hand, the reading `rife.torn` names it; it costs 34 calls of the binary a frame and the bridge does not run it). The walk flow repair, over two or three frames, takes the same risk; that is why the bridge stops at four frames.
+- A wrap where only a small part changes (such as a mouth alone) reads as a step on the whole body thumbnail and is not bridged.
+- A blink or mouth movement inside the frames made is not kept: the frames made show the move between the anchors (at most four frames, or a sixth of a second at 24 fps).
+- A wrap that needs more than four frames to close is not bridged: the loop is refused by the gate as before; regenerate the clip.
+
+The report record stays `jump_repair` (so source projection and restoration, which read `jump_repair.replaced` and `jump_repair.facing`, read it as they read a walk's), with `reading: "seam"`, `limit`, `floor`, `around` (3), `widths` ([1, 2, 4]), `facing`, `replaced` (the frames made, in play order), `calls`, and `applied`. Where it read the wrap, it records `seam` (the wrap over the mean of the steps beside it), `wrap` (the wrap step itself), and `hold`. Where it was not tried, it records `skipped`. Each try in `tries` records `width`, `frames`, `anchors`, `line`, and where frames were made, `made` (per frame: `frame`, `t`, `proposal`, `faults`, `look`), `faults`, `look`, and `after` (the stretch's largest step over the mean of the steps beside it, read again), along with `outcome` (`accepted` or `rejected`) and `rejected_for` (`line`, `fault`, `seam`). Where a run was taken, it records `width` and `seam_after`. Where a frame was made, `interpolator` records `{"kind": "rife-ncnn-vulkan", binary, model, tta, binary_calls}` or `{"kind": "injected"}`.
+
+The CLI summary carries `jump_repair` with `reading`, `seam`, `replaced`, `seam_after` (and `why`) where the wrap was read as a jump. `video-set`'s item record for a loop left unrepaired for want of RIFE carries `seam` where a walk's carries `off_max_before`.
+
+Warning lines: where frames were made, one line names them, the anchors, and says to look at them in the loop or cut it with `--repair off`. Where the wrap jumps and nothing was taken, one line says which widths were tried and why each was refused, cut as filmed. Where RIFE was not found under `--repair auto`, one line says no frame was made round the wrap and names `sprite-gen rife install`. Where a frame made cross-fades two drawings inside its outline (`crossfade` over 0.015), it is kept and named in a `warning:` line.
 
 ## 3. The jolt index — reported on every walk, a gate only when asked
 
