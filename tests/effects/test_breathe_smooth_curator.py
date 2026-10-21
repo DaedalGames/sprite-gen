@@ -59,7 +59,7 @@ def test_the_mirror_refuses_a_smooth_row_instead_of_drawing_pixel(tmp_path) -> N
     {"mode": "smooth", "breaths": 2},                       # depth 생략 = smooth 기본값
     {"mode": "smooth", "depth": 0.02, "depth_x": 0.01, "breaths": 3, "rigid_row": 40},
     {"mode": "smooth", "breaths": 2, "chest_y": 0.4, "chest_rx": 0.9, "chest_ry": 0.3,
-     "shoulder": 0.6, "shoulder_lag": 0.1},
+     "shoulder": 0.6, "shoulder_lag": 0.1, "chest_tilt": -20, "chest_bias": -0.4, "chest_dir": -30},
 ], ids=["smooth", "depth-omitted", "with-overrides", "with-shape"])
 def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> None:
     got = _roundtrip(_run(sidecar), tmp_path)
@@ -76,7 +76,10 @@ def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> 
     {"mode": "smooth", "depth": 0.02, "breaths": 2, "lag": 0.1},
     {"depth": 0.06, "breaths": 2, "chest_y": 0.3},
     {"mode": "smooth", "breaths": 2, "shoulder_lag": 0.5},
-], ids=["unknown-mode", "smooth-with-lag", "shape-on-pixel", "shape-out-of-range"])
+    {"mode": "smooth", "breaths": 2, "chest_dir": -120},
+    {"depth": 0.06, "breaths": 2, "chest_tilt": 10},
+], ids=["unknown-mode", "smooth-with-lag", "shape-on-pixel", "shape-out-of-range", "dir-out-of-range",
+        "tilt-on-pixel"])
 def test_a_sidecar_the_bake_refuses_is_kept_and_reported(tmp_path, sidecar) -> None:
     with pytest.raises(SystemExit):
         state_breathe({"states": {"idle": {"breathe": sidecar}}}, "idle")

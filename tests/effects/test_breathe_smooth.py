@@ -301,7 +301,7 @@ def test_the_default_pixel_mode_is_byte_identical_to_before(build, mode) -> None
 
 # ── 8. 사이드카 ─────────────────────────────────────────────────────
 
-SHAPE = ("chest_y", "chest_rx", "chest_ry", "shoulder", "shoulder_lag")
+SHAPE = ("chest_y", "chest_rx", "chest_ry", "shoulder", "shoulder_lag", "chest_tilt", "chest_bias", "chest_dir")
 
 
 def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
@@ -335,7 +335,8 @@ def test_an_unknown_mode_is_refused_loudly(bad) -> None:
 
 
 @pytest.mark.parametrize("key,value", [("chest_y", 0.0), ("chest_rx", 9.0), ("chest_ry", -1),
-                                       ("shoulder", 3.0), ("shoulder_lag", 0.5), ("chest_y", "x")])
+                                       ("shoulder", 3.0), ("shoulder_lag", 0.5), ("chest_y", "x"),
+                                       ("chest_tilt", 75), ("chest_bias", -1.0), ("chest_dir", 120)])
 def test_a_shape_value_out_of_range_is_refused(key, value) -> None:
     with pytest.raises(SystemExit, match=key):
         _cfg(_smooth(**{key: value}))
@@ -357,6 +358,107 @@ def test_the_sidecar_picks_the_smooth_warp() -> None:
     new_pixel = {tuple(p) for f in pixel for p in np.asarray(f).reshape(-1, 4)} - colors
     assert new_smooth, "smooth 사이드카인데 사잇값이 하나도 없다 — pixel 로 구웠다"
     assert not new_pixel
+
+
+# ── 8b. 몸이 향한 쪽 — 타원 기울기, 앞쪽 치우침, 가슴이 가는 방향 ──────
+
+# `cfbf5d3`(이 셋이 생기기 전) 의 smooth 굽기 — 12칸. 중립값(0)이나 생략이면 이 바이트 그대로다.
+SMOOTH_GOLDEN = [
+    (120, {"mode": "smooth", "breaths": 2}, "e35f051ec9a998b2908fc2a2b08a3c3bae0374fd538a0ed3c388f885ac043d1d"),
+    (120, {"mode": "smooth", "depth": 0.02, "breaths": 2, "depth_x": 0.04},
+     "85325d5280d32acccb66c05f123f6cbc1d81b71c10d15ec7cfe7f603c517a788"),
+    (400, {"mode": "smooth", "breaths": 1}, "b0b92dec97874838a616a50683724c1eb79557bf7cceef1093bb8fe7c0a5b574"),
+]
+
+
+@pytest.mark.parametrize("h,raw,digest", SMOOTH_GOLDEN, ids=["default", "deeper", "400px"])
+@pytest.mark.parametrize("neutral", [{}, {"chest_tilt": 0, "chest_bias": 0, "chest_dir": 0}], ids=["omitted", "zeros"])
+def test_neutral_facing_values_bake_the_same_bytes(h, raw, digest, neutral) -> None:
+    frames, _ = B.bake_breathe_sequence([_bust(h)] * 12, _cfg({**raw, **neutral}))
+    assert hashlib.sha256(b"".join(f.tobytes() for f in frames)).hexdigest() == digest, \
+        "몸 방향 값이 중립인데 smooth 굽기가 바뀌었다"
+
+
+def _field(anat, cfg, x, y):
+    dx, dy = B.smooth_displacement(anat, cfg, np.array([float(x)]), np.array([float(y)]), 1.0, 0.0)
+    return float(dx[0]), float(dy[0])
+
+
+def _chest_frame():
+    src = _bust(1000)
+    anat = analyze(src)
+    return src, anat
+
+
+def test_a_tilted_chest_weight_lies_along_its_tilt() -> None:
+    """기울인 타원은 그 기울기를 따라 놓인다 — 기울인 긴 축 위의 점은 기울이기 전 수평 축 위의
+    점과 같은 무게(같은 오름)를 받고, 그 자리의 수평 점은 덜 받는다. 화면에서 양수는 시계방향
+    (오른쪽 끝이 내려간다)."""
+    _, anat = _chest_frame()
+    flat = _cfg(_smooth(depth_x=0.0))
+    tilted = _cfg(_smooth(depth_x=0.0, chest_tilt=30))
+    cx, cy = B.smooth_chest(anat, flat)
+    d = 0.5 * flat["chest_rx"] * anat.torso_half
+    t = np.radians(30.0)
+    _, level = _field(anat, flat, cx + d, cy)
+    _, along = _field(anat, tilted, cx + d * np.cos(t), cy + d * np.sin(t))
+    _, off = _field(anat, tilted, cx + d, cy)
+    assert along == pytest.approx(level, rel=1e-6), "기울인 긴 축 위의 점이 기울이기 전 수평 축의 무게를 안 받는다"
+    assert -off < 0.9 * -level, "기울였는데 수평 자리가 그대로 무게를 받는다"
+    left_up, right_down = (_field(anat, tilted, cx - d * np.cos(t), cy - d * np.sin(t))[1],
+                           _field(anat, tilted, cx + d * np.cos(t), cy + d * np.sin(t))[1])
+    assert left_up == pytest.approx(right_down, rel=1e-6), "기울기만으로는 좌우가 같아야 한다 (치우침은 따로)"
+
+
+def test_the_front_side_breathes_more() -> None:
+    """치우침은 타원 긴 축의 한쪽을 키운다 — 음수면 화면 왼쪽(몸이 왼쪽을 볼 때의 앞쪽)이 더 오른다."""
+    _, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.0, chest_bias=-0.5))
+    cx, cy = B.smooth_chest(anat, cfg)
+    d = 0.5 * cfg["chest_rx"] * anat.torso_half
+    _, left = _field(anat, cfg, cx - d, cy)
+    _, right = _field(anat, cfg, cx + d, cy)
+    assert -left > 1.5 * -right, f"앞쪽(왼쪽 {-left:.2f}px)이 돌아간 쪽({-right:.2f}px)보다 크게 오르지 않는다"
+    assert -left / -right == pytest.approx((1 + 0.5 * 0.5) / (1 - 0.5 * 0.5), rel=1e-6)
+
+
+@pytest.mark.parametrize("angle", [-30.0, 20.0])
+def test_the_chest_moves_along_its_direction(angle) -> None:
+    """가슴 가운데는 `chest_dir` 쪽으로 간다 — 0 이 바로 위, 음수가 왼쪽 위. 크기는 그대로
+    depth × 기준 높이다. 어깨는 위로만 달싹인다."""
+    src, anat = _chest_frame()
+    cfg = _cfg(_smooth(depth_x=0.0, chest_dir=angle))
+    cx, cy = B.smooth_chest(anat, cfg)
+    lift = cfg["depth"] * anat.basis_rows
+    dx, dy = _field(anat, cfg, cx, cy)
+    t = np.radians(angle)
+    assert (dx, dy) == pytest.approx((lift * np.sin(t), -lift * np.cos(t)), rel=1e-6)
+    # 픽셀로도: 가슴 가운데에 그은 세로선이 그 방향의 가로 성분만큼 옆으로 간다.
+    box = solid_alpha_bbox(src)
+    a = np.asarray(_bust(1000, gradient=False)).copy()
+    row, col = box[1] + int(cy), box[0] + int(cx)
+    a[row - 24:row + 25, col] = MARK                   # 위로 가도 그 행에 선이 남게 길게
+    marked = Image.fromarray(a, "RGBA")
+    got = np.asarray(B.phase_frame(marked, cfg, B.INHALE, anat), np.float64)
+
+    def centre(img):
+        line = img[row, col - 12:col + 13, :3].mean(axis=1)
+        weight = np.clip(sum(BODY[:3]) / 3.0 - line, 0.0, None)
+        return float((weight * np.arange(col - 12, col + 13)).sum() / weight.sum())
+
+    shift = centre(got) - centre(np.asarray(marked, np.float64))
+    assert shift == pytest.approx(lift * np.sin(t), abs=0.35), f"가슴이 옆으로 {shift:.2f}px — {lift * np.sin(t):.2f}px 여야 한다"
+
+
+def test_facing_values_keep_the_head_still() -> None:
+    src = _bust(1000)
+    anat = analyze(src)
+    cut = solid_alpha_bbox(src)[1] + anat.rigid_row
+    cfg = _cfg(_smooth(chest_tilt=-25, chest_bias=-0.6, chest_dir=-35))
+    for phase in (0.2, B.INHALE, 0.7):
+        got = B.phase_frame(src, cfg, phase, anat)
+        assert np.asarray(got)[:cut].tobytes() == np.asarray(src)[:cut].tobytes(), \
+            f"위상 {phase}: 몸 방향 값을 줬더니 목·턱 위가 움직였다"
 
 
 # ── 9. lag ──────────────────────────────────────────────────────────
@@ -436,9 +538,11 @@ def _blinking(h: int = 120, count: int = 12) -> list[Image.Image]:
 
 @pytest.mark.parametrize("raw,flags", [
     (_smooth(), ["--mode", "smooth", "--depth", "0.025", "--breaths", "2"]),
-    (_smooth(chest_y=0.4, shoulder=0.3, shoulder_lag=0.12, depth_x=0.01),
+    (_smooth(chest_y=0.4, shoulder=0.3, shoulder_lag=0.12, depth_x=0.01, chest_tilt=-20, chest_bias=-0.4,
+             chest_dir=-25),
      ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--chest-y", "0.4",
-      "--shoulder", "0.3", "--shoulder-lag", "0.12", "--depth-x", "0.01"]),
+      "--shoulder", "0.3", "--shoulder-lag", "0.12", "--depth-x", "0.01", "--chest-tilt", "-20",
+      "--chest-bias", "-0.4", "--chest-dir", "-25"]),
     ({"depth": 0.06, "breaths": 2, "lag": 0.1},
      ["--depth", "0.06", "--breaths", "2", "--lag", "0.1"]),
 ], ids=["smooth", "smooth-shape", "pixel"])
