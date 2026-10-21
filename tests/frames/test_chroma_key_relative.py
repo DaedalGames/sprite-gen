@@ -833,7 +833,7 @@ def test_edge_contact_split_reads_painted_key_residue_as_residual(
         raw.putpixel((x, 0), residue)
         raw.putpixel((x, 2), near_subject)
     joined = classify_edge_contact(raw, keyed, key, painted)
-    assert joined == {"subject": 40 * 40 - (40 - 4 * 2) * (40 - 4), "residual": 0}  # every band pixel is opaque subject
+    assert joined == {"subject": 40 * 40 - (40 - 4 * 2) * (40 - 4), "residual": 0, "rim": 0}  # every band pixel is opaque subject
     for x in range(0, 11):  # a transparent row and column cut the residue off
         keyed.putpixel((x, 1), (0, 0, 0, 0))
     keyed.putpixel((10, 0), (0, 0, 0, 0))

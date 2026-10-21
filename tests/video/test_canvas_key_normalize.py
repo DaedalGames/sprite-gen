@@ -123,13 +123,15 @@ def test_normalized_dark_still_keys_like_the_pure_key_still(tmp_path: Path) -> N
 # --- frames: residual background vs subject at the edge ---------------------------
 
 
-def _frames(tmp_path: Path, *, residual: bool, touch_top: bool) -> list[Path]:
+def _frames(tmp_path: Path, *, residual: bool, touch_top: bool, touch_from: int = 0) -> list[Path]:
+    """Three frames of a body; with `touch_top` it reaches the top edge from frame `touch_from` on. A body on the
+    edge in the first frame is a drawing cut by its own frame (`video-frames` reads that side as its border)."""
     d = tmp_path / "raw"
     d.mkdir(exist_ok=True)
     files = []
     for k in range(3):
         im = Image.new("RGB", (80, 100), GREEN)
-        top = 0 if touch_top else 20
+        top = 0 if touch_top and k >= touch_from else 20
         for y in range(top, 90):
             for x in range(25 + k, 55 + k):
                 im.putpixel((x, y), (180, 60, 30))
@@ -153,22 +155,22 @@ def test_leftover_key_background_at_the_edge_is_reported_as_residual_not_framing
 
 
 def test_subject_contact_is_still_framing_and_carries_the_split(tmp_path: Path) -> None:
-    files = _frames(tmp_path, residual=False, touch_top=True)
+    files = _frames(tmp_path, residual=False, touch_top=True, touch_from=1)
     with pytest.raises(SystemExit, match="framed too tight") as info:
         frames_mod.key_frames(files, tmp_path / "keyed", key="green")
     assert "leftover" not in str(info.value)
-    raw = Image.open(files[0])
-    keyed = Image.open(tmp_path / "keyed" / files[0].name)
+    raw = Image.open(files[1])
+    keyed = Image.open(tmp_path / "keyed.refused" / files[1].name)  # a refused run keeps its frames under this name
     split = frames_mod.classify_edge_contact(raw, keyed, GREEN)
     assert split["subject"] > 0 and split["residual"] == 0
 
 
 def test_mixed_contact_names_both(tmp_path: Path) -> None:
-    files = _frames(tmp_path, residual=True, touch_top=True)
+    files = _frames(tmp_path, residual=True, touch_top=True, touch_from=1)
     with pytest.raises(SystemExit, match="framed too tight") as info:
         frames_mod.key_frames(files, tmp_path / "keyed", key="green")
     assert "also carry leftover chroma background" in str(info.value)
-    raw = Image.open(files[0])
-    keyed = Image.open(tmp_path / "keyed" / files[0].name)
+    raw = Image.open(files[1])
+    keyed = Image.open(tmp_path / "keyed.refused" / files[1].name)
     split = frames_mod.classify_edge_contact(raw, keyed, GREEN)
     assert split["subject"] > 0 and split["residual"] > 0

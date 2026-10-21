@@ -20,7 +20,7 @@ still ──video-canvas──▶ canvas.png ──video──▶ clip.mp4 ─�
 | `sprite-gen video-canvas` | `sprite_gen/video/canvas.py` | still → padded still (state canvas) + report |
 | `sprite-gen video` | `sprite_gen/gen/video.py` ([gen](video.md)) | still + prompt → mp4 + report |
 | `sprite-gen video-prompt` | `sprite_gen/video/clip_prompt.py` | (direction, state) → the prompt `video-set` sends, for a clip made by a video MCP on your agent ([below](#a-clip-from-a-video-mcp-on-your-agent--zcre)) |
-| `sprite-gen video-frames` | `sprite_gen/video/frames.py` | mp4 → `raw/`, `keyed/` RGBA frames + report |
+| `sprite-gen video-frames` | `sprite_gen/video/frames.py` | mp4 → `raw/`, `keyed/` RGBA frames (`keyed.refused/` when refused) + report |
 | `sprite-gen video-loop` | `sprite_gen/video/loop.py` | keyed frames → `cycle/`, `<name>.strip.png` + `.strip.json`, `<name>.gif`, `<name>.webp` + report |
 | `sprite-gen video-set` | `sprite_gen/video/batch.py` | bases × states → one folder per item, `set.report.json`, `table.md` |
 | `sprite-gen video-cycle-align` | `sprite_gen/video/align.py` | the loop directories of one walk or run, one per direction → one cycle length, each loop turned to start on a foot strike, + report ([loop repair](loop-repair.md) section 4) |
@@ -618,7 +618,7 @@ subject framed too tight, and `--anchor motion-auto`, which never cleans a frame
 the loop's cells and widened them to reach it.
 
 The report also carries per-frame alpha coverage and an **edge-contact check**, read after the
-specks are gone: any opaque pixel in the top/left/right 4-pixel bands fails the run. Each contact pixel is
+specks are gone: any opaque pixel in the top/left/right 4-pixel bands is contact. Each contact pixel is
 classified by its *raw* colour and the piece of the keyed frame it is in (its opaque pixels, corners
 joining them, as the specks are read): the declared key's hue family in a piece with nothing else in
 it is **`residual`** (background the matte did not erase); anything else is **`subject`** — a
@@ -637,7 +637,65 @@ and still fails a frame where the key alone reaches the edge, which is a keying 
 whatever the framing. A frame where the subject touches the edge passes with the
 key-tinted pixels beside it (fringe, or the key reflected on metal): the same reading the
 refusal message gives a mixed contact. Contacts stay in the report either way, with `edge_policy` saying which rule
-applied (`refuse`, `subject-allowed`, `off`).
+applied (`border`, `subject-allowed`, `off`).
+
+**A drawing cut by its own frame** (2.46.0). A bust or half-length drawing runs off the frame
+itself (its sleeve is cut off at the left, its hair at the top). In every frame of its clip the
+subject touches those edges, and no taller or wider canvas gives it room there. The old default
+refused every frame of such a clip as "framed too tight". The new default, `edge_policy: "border"`,
+reads the drawing's own border on the clip's first frame (keyed, its specks erased). A side (top,
+left or right) is a border side when the subject's pixels on that side's outermost row or column
+cover at least 2 % of the side's length (`BORDER_MIN_FRACTION`, 0.02). A strand's tip grazing the
+edge covers less than that; a drawing cut there covers far more. A pixel that is only near the
+edge, inside the 4-pixel band but not on the outermost line, does not make a border.
+
+Subject contact on a border side is accepted in every frame, wherever it is along that side.
+Subject contact on any other side is still the clip framed too tight and refused, with the same
+message as before. Example: a bust cut at the top and left whose hand leaves the right is
+refused. The numbers in a refusal message (top / left / right px of the worst frame) are now the
+pixels the border does not take, side by side. So a caller that reads those numbers to choose a
+taller or wider canvas reads the side that needs room, not the border sides.
+
+Leftover key background is still refused, with one exception: the body's rim the matte cut
+loose. A thin outline drawn with the key's colour blended into it carries the key's hue, so the
+matte erases most of it and can leave a few pixels at the edge between strands of hair, on their
+own; read by colour they are residual. A key-only (residual) piece is accepted only when all of
+these hold: it is on a border side; the same frame's subject reaches that side's band; the whole
+piece holds fewer than 8 pixels (`SPECK_MIN_PX`, the speck size); and every pixel of the piece
+lies within 10 px of the frame's body (`RIM_REACH`). Distance is counted as a square: each way
+and diagonally one pixel is 1. The body is the frame's largest piece that holds a pixel off the
+key's colour, as the speck pass reads the largest piece as the body. The whole piece counts, in
+the band and out of it: an 8-pixel piece with 4 of its pixels in the band is refused. Refused as
+before, for example: a piece of 8 pixels or more; a piece with a pixel farther than 10 px from
+the body; a piece on a side that is not a border side; a piece on a border side the frame's
+subject has left; a stain near a small fleck of the subject's colour but far from the body (the
+reach is to the body, not to any piece of the subject); and a detached stain 30 rows above a
+sleeve on the same side. A corner pixel lies in two bands; it is accepted only when both sides
+accept it. `--allow-subject-edge-contact` and `--allow-edge-contact` judge exactly as before.
+
+A clip whose first frame crosses no side has no border: it is judged and its messages are
+worded exactly as before, byte for byte. When a side is read as the border, `video-frames`
+prints one line on stderr naming the sides and pointing at `edge_border` in the report. The
+report gains `edge_border` (under the default only): `frame` (the first frame's file name),
+`sides`, `outer_px` (the subject's pixels on each side's outermost line), `min_fraction`
+(0.02), `rim_reach` (10), `rim_under_px` (8). Each contact row gains `rim` (residual pixels
+that are the body's rim, whatever side), and under the default `border` (the pixels the border
+took) and `off` (those it did not take, by side: the numbers the refusal message gives). The
+existing row keys stay. Known limit: on a side that is already a border side, a hand that
+newly leaves the frame there is accepted, because by position it cannot be told from the sleeve
+moving along the edge.
+
+**What a refused run leaves** (2.46.0). A caller that does not read the exit code used to find
+a refused run's keyed frames in `keyed/` and pass them on. Now `keyed/` exists only after a run
+that passed. The frames are keyed in a hidden working folder beside it, renamed `keyed/` when
+the run passes, and left as `keyed.refused/` when it is refused (by the edge check, or by a
+frame keyed to 0 % transparency). A refused run leaves no `keyed/`, not even an earlier run's:
+the earlier one is removed when the run starts reading the clip. A pass removes
+`keyed.refused/`. A pass after a longer earlier run no longer finds the earlier run's extra
+frames in `keyed/`. The report (`frames.report.json`, or `--report`) is written either way. It
+gains `status`: `passed`, or `refused` with `error` (the message), `keyed_dir: null` and
+`refused_dir` (the `keyed.refused/` path). A run stopped by an argument error (an unknown flag
+value, a missing clip) touches nothing.
 
 ## 3a. Spill — key colour the model painted into the subject
 
@@ -1021,6 +1079,18 @@ those frames — for a clip that holds too few repeats for the periodicity gate 
 cycle is known (the 2026-09-09 reel jump: 2.3 hops in 145 frames). It is an explicit
 instruction, not a failover: the report says `kind = "fixed"`, and the seam gate still
 applies.
+
+Every `video-loop` refusal that writes `status = "failed"` (selection, the motion anchor, the
+jump repair, the jolt gate, the pin gate, the seam gate, a strip with no body to crop, and a
+GIF or WebP that could not be written or failed its verification) now removes what an earlier
+cut handed over in the output folder: `cycle/`, `<name>.strip.png`, `<name>.strip.json`,
+`<name>.gif`, `<name>.webp`, and `cycle.source/` and `follow.source.png`, which a later
+alignment and follow-through keep beside them. Before this, a refused cut could leave a mixed
+set: the refused run's `cycle/` and strip beside an earlier run's GIF and WebP. A cut the
+refused run had already written (a strip with no body, the pin and seam gates, the GIF and
+WebP) is kept as `cycle.refused/`, to look at. The next cut that passes removes it; a refusal that comes before
+the cut removes an earlier one. An argument error touches nothing. The report is written as
+before, with `status = "failed"`.
 
 `--cycle pinned` is for a clip pinned to end on its first frame (`video --last-frame` set to
 the start image). The cycle is every frame but the last, which re-renders the first, so the

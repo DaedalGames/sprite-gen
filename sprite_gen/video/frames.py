@@ -21,11 +21,26 @@ into it, reaches the band first) — and the two fail
 with different messages: residual points at `video-canvas` normalization of the
 base still, subject contact at a taller/wider canvas.
 
+A drawing can be cut by its own frame: a bust whose sleeve runs off the left and whose hair runs
+off the top touches those edges in every frame, and no canvas gives it room there. The check
+reads that on the clip's first frame (`edge_border`): a side whose outermost row or column the
+subject covers for at least `BORDER_MIN_FRACTION` of its length is the drawing's own **border**,
+and contact there is accepted in every frame. Contact on any other side is still the subject
+framed too tight (a hand that leaves the right). Leftover key is still refused, save the body's
+rim the matte cut loose: a key-only piece under `SPECK_MIN_PX` lying wholly within `RIM_REACH`
+px of the frame's body, on a border side the frame's subject reaches. A first frame that
+crosses no side is judged and worded as before, and the numbers a refusal gives are the pixels
+the border does not take.
+
 `--allow-subject-edge-contact` accepts the second and keeps the first: a clip made
 from a `video-canvas --fit tight` frame is clipped on purpose, but a frame where only
 leftover key background reaches the edge is still a keying defect. A frame where the
 subject touches the edge carries key-tinted fringe pixels beside it and is accepted with
 them. The contacts stay in the report.
+
+The keyed frames are handed over as `keyed/` only by a run that passed. A refused run keeps
+them as `keyed.refused/` (no `keyed/`, not even an earlier run's), and its report, written
+either way, says `status`.
 
 A **speck** is not the subject either: a fleck the model drew drifting across the background,
 well away from the body, that survived the matte. Every keyed frame has its specks erased
@@ -45,6 +60,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +94,17 @@ SPILL_REFERENCE_MAX = 0.005  # the still's own key material ≤ the engine's sma
 SPILL_REFERENCE_MARGIN = 1
 SPILL_REFERENCE_MAX_PIXELS = 6_000_000
 EDGE_MAX_PIXELS = 0  # any opaque pixel on the top/left/right edge band = contact
+SIDES = ("top", "left", "right")
+# The drawing's own border (`edge_border`): a side the first frame's subject covers on its outermost row or
+# column for this share of its length. A drawing cut there (a sleeve, hair off the top) covers far more; a
+# strand's tip grazing the edge covers less.
+BORDER_MIN_FRACTION = 0.02
+# The body's rim the matte cut loose: on a border side, a key-only piece is accepted when it lies wholly within
+# RIM_REACH px of the frame's body (each way and diagonally) and holds fewer than SPECK_MIN_PX pixels — a few
+# pixels of a thin outline the key was blended into, left at the edge between strands. Anything larger or farther
+# is leftover background, refused as before.
+RIM_REACH = 10
+REFUSED_SUFFIX = ".refused"  # keyed/ of a refused run: keyed.refused/
 # Specks (`drop_specks`). A component under SPECK_MIN_FRACTION of the frame's largest one, or under
 # SPECK_MIN_PX, is small; more than SPECK_APART of the largest one's height from it, far. `video-loop`
 # reads the size by the same two numbers when it erases the loose pieces of a cut (`drop_specks` with
@@ -235,9 +262,55 @@ def edge_contact(image: Image.Image) -> dict[str, int]:
     return {"top": top, "left": left, "right": right}
 
 
+def _bands(h: int, w: int) -> dict[str, np.ndarray]:
+    """The top/left/right edge bands, EDGE_ROWS deep; a corner pixel is in two."""
+    bands = {side: np.zeros((h, w), dtype=bool) for side in SIDES}
+    bands["top"][:EDGE_ROWS, :] = True
+    bands["left"][:, :EDGE_ROWS] = True
+    bands["right"][:, max(0, w - EDGE_ROWS):] = True
+    return bands
+
+
+def _edge_pixels(raw: Image.Image, keyed: Image.Image, chroma_key: tuple[int, int, int] | None,
+                 painted_key: tuple[int, int, int] | None = None) -> dict[str, np.ndarray]:
+    """`classify_edge_contact`'s pixels: the edge bands (`bands`), the opaque pixels in them (`contact`), the
+    `residual` among those and the `rim` among the residual."""
+    alpha = np.asarray(keyed.convert("RGBA"))[..., 3]
+    h, w = alpha.shape
+    bands = _bands(h, w)
+    opaque = alpha > 0
+    contact = (bands["top"] | bands["left"] | bands["right"]) & opaque
+    none = np.zeros((h, w), dtype=bool)
+    out = {"bands": bands, "contact": contact, "residual": none, "rim": none}
+    keyed_channels, unkeyed_channels = _key_channel_split(chroma_key) if chroma_key is not None else ([], [])
+    if not contact.any() or not keyed_channels:
+        return out
+    lean = painted_key is not None and _painted_key_leans(painted_key, keyed_channels, unkeyed_channels)
+    keyish = _border_key_candidate_field(np.asarray(raw.convert("RGB"), dtype=np.int32), keyed_channels, unkeyed_channels,
+                                         lean=lean)
+    suspect = contact & keyish
+    if not suspect.any():
+        return out
+    ys, starts, stops, labels, sizes = _components(opaque, diagonal=True)
+    piece = np.zeros((h, w), dtype=np.int64)
+    for y, x0, x1, label in zip(ys, starts, stops, labels):
+        piece[y, x0:x1] = label
+    owned = np.zeros(len(ys), dtype=bool)  # pieces holding a pixel off the key's signature
+    owned[piece[opaque & ~keyish]] = True
+    residual = suspect & ~owned[piece]
+    out["residual"] = residual
+    if residual.any() and owned.any():
+        body = opaque & (piece == int(np.where(owned, sizes, -1).argmax()))
+        apart = np.zeros(len(ys), dtype=bool)  # pieces with a pixel farther than RIM_REACH from the body
+        apart[piece[opaque & ~_near(body, RIM_REACH)]] = True
+        out["rim"] = residual & ~apart[piece] & (sizes[piece] < SPECK_MIN_PX)
+    return out
+
+
 def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tuple[int, int, int] | None,
                           painted_key: tuple[int, int, int] | None = None) -> dict[str, int]:
-    """Split the opaque edge-band pixels into `subject` and `residual` (leftover key background).
+    """Split the opaque edge-band pixels into `subject` and `residual` (leftover key background),
+    and count the `rim` among the residual.
 
     A contact pixel whose *raw* colour carries the declared key's hue signature
     (`is_border_key_candidate`; the leaning greens only when `painted_key`, the background the
@@ -247,33 +320,41 @@ def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tupl
     pixels, corners joining them, the pieces `drop_specks` reads — holds no pixel off the key's
     signature: background on its own. Joined to one, it is the subject's. Without a chroma key
     (matte route) every contact is the subject.
+
+    `rim` is the residual in a piece of fewer than SPECK_MIN_PX pixels lying wholly within
+    RIM_REACH px of the frame's body — the largest piece holding a pixel off the key's signature,
+    as `drop_specks` reads the largest piece as the body: what the border takes of the residual
+    (`key_frames`), whatever side it is on.
     """
-    alpha = np.asarray(keyed.convert("RGBA"))[..., 3]
-    h, w = alpha.shape
-    band = np.zeros((h, w), dtype=bool)
-    band[:EDGE_ROWS, :] = True
-    band[:, :EDGE_ROWS] = True
-    band[:, max(0, w - EDGE_ROWS):] = True
-    opaque = alpha > 0
-    contact = band & opaque
-    total = int(contact.sum())
-    keyed_channels, unkeyed_channels = _key_channel_split(chroma_key) if chroma_key is not None else ([], [])
-    if not total or not keyed_channels:
-        return {"subject": total, "residual": 0}
-    lean = painted_key is not None and _painted_key_leans(painted_key, keyed_channels, unkeyed_channels)
-    keyish = _border_key_candidate_field(np.asarray(raw.convert("RGB"), dtype=np.int32), keyed_channels, unkeyed_channels,
-                                         lean=lean)
-    suspect = contact & keyish
-    if not suspect.any():
-        return {"subject": total, "residual": 0}
-    ys, starts, stops, labels, _ = _components(opaque, diagonal=True)
-    piece = np.zeros((h, w), dtype=np.int64)
-    for y, x0, x1, label in zip(ys, starts, stops, labels):
-        piece[y, x0:x1] = label
-    owned = np.zeros(len(ys), dtype=bool)  # pieces holding a pixel off the key's signature
-    owned[piece[opaque & ~keyish]] = True
-    residual = int((suspect & ~owned[piece]).sum())
-    return {"subject": total - residual, "residual": residual}
+    pixels = _edge_pixels(raw, keyed, chroma_key, painted_key)
+    residual = int(pixels["residual"].sum())
+    return {"subject": int(pixels["contact"].sum()) - residual, "residual": residual, "rim": int(pixels["rim"].sum())}
+
+
+def _border(pixels: dict[str, np.ndarray] | None, size: tuple[int, int], frame: str) -> dict[str, Any]:
+    """The drawing's own border, read on the first frame's edge pixels (`_edge_pixels`; None: it touches no edge),
+    `size` (w, h): `edge_border` in the report."""
+    w, h = size
+    outer = {side: 0 for side in SIDES}
+    if pixels is not None:
+        subject = pixels["contact"] & ~pixels["residual"]
+        outer = {"top": int(subject[0].sum()), "left": int(subject[:, 0].sum()), "right": int(subject[:, -1].sum())}
+    length = {"top": w, "left": h, "right": h}
+    return {"frame": frame, "sides": [s for s in SIDES if outer[s] and outer[s] >= BORDER_MIN_FRACTION * length[s]],
+            "outer_px": outer, "min_fraction": BORDER_MIN_FRACTION, "rim_reach": RIM_REACH, "rim_under_px": SPECK_MIN_PX}
+
+
+def _taken(pixels: dict[str, np.ndarray], sides: list[str]) -> np.ndarray:
+    """The edge pixels the border takes: the subject on a border side, and the rim on a border side the frame's
+    subject reaches. A corner pixel is taken only when both its sides take it."""
+    bands, subject = pixels["bands"], pixels["contact"] & ~pixels["residual"]
+    subject_taken, rim_taken = subject.copy(), pixels["rim"].copy()
+    for side in SIDES:
+        if side not in sides:
+            subject_taken &= ~bands[side]
+        if side not in sides or not (subject & bands[side]).any():
+            rim_taken &= ~bands[side]
+    return subject_taken | rim_taken
 
 
 def _reference_window(reference: Path, key: str) -> tuple[str, Image.Image | None, tuple[int, int, int] | None, dict[str, Any]]:
@@ -333,6 +414,30 @@ def decide_spill(reference: Path, key: str) -> dict[str, Any]:
             "reference_fringe_policy": "dark-only", **facts}
 
 
+class KeyingRefused(SystemExit):
+    """A refused keying (`key_frames`): its message, and the report of the frames it keyed, for `run_frames` to
+    write with `status: refused`."""
+
+    def __init__(self, message: str, report: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+def refused_dir(keyed_dir: Path) -> Path:
+    """Where a refused run keeps the frames it keyed: `keyed.refused/` beside `keyed/`."""
+    return keyed_dir.with_name(keyed_dir.name + REFUSED_SUFFIX)
+
+
+def _withdraw(keyed_dir: Path) -> Path:
+    """Take back what an earlier run handed over, and give this run an empty working folder (returned): until this
+    run passes, `keyed_dir` holds nothing."""
+    work = keyed_dir.with_name(f".{keyed_dir.name}.work")
+    shutil.rmtree(keyed_dir, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    return work
+
+
 def key_frames(
     raw_files: list[Path],
     keyed_dir: Path,
@@ -344,17 +449,34 @@ def key_frames(
     decontam: str = "off",
     alpha_mode: str = "chroma",
 ) -> dict[str, Any]:
+    """Key `raw_files` into `keyed_dir` and read their edges; the report. The frames are keyed in a working folder
+    beside it and handed over as `keyed_dir` when the run passes; a run that does not pass leaves them as
+    `refused_dir(keyed_dir)` and no `keyed_dir`. A refusal raises `KeyingRefused`, carrying the report."""
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness":
-        if decontam != "off":
-            raise SystemExit("video-frames: brightness alpha does not use --decontam")
-        return effect.key_frames(raw_files, keyed_dir)
-    if spill not in ("small", "full"):
+    if alpha_mode == "brightness" and decontam != "off":
+        raise SystemExit("video-frames: brightness alpha does not use --decontam")
+    if alpha_mode == "chroma" and spill not in ("small", "full"):
         raise SystemExit(f"video-frames: key_frames takes a resolved spill mode (small|full), got {spill!r}")
     if decontam not in DECONTAM_MODES:
         raise SystemExit(f"video-frames: unknown --decontam {decontam!r}; expected one of {', '.join(DECONTAM_MODES)}")
+    work = _withdraw(keyed_dir)
+    try:
+        report = (effect.key_frames(raw_files, work) if alpha_mode == "brightness" else
+                  _key_chroma(raw_files, work, key=key, check_edges=check_edges, spill=spill, allow_subject=allow_subject,
+                              decontam=decontam))
+    except BaseException:
+        shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
+        work.rename(refused_dir(keyed_dir))
+        raise
+    shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
+    work.rename(keyed_dir)
+    return report
+
+
+def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges: bool, spill: str, allow_subject: bool,
+                decontam: str) -> dict[str, Any]:
     clip_palette: dict[str, Any] | None = None
     decontam_first: dict[str, Any] | None = None
     decontam_totals = {name: 0 for name in DECONTAM_STAT_KEYS}
@@ -362,10 +484,43 @@ def key_frames(
     # Full correction lowers the tint threshold as well as lifting the size cap.
     spill_max = SPILL_FULL_FRACTION if spill == "full" else None
     spill_tint = SPILL_FULL_MIN_TINT if spill == "full" else None
-    keyed_dir.mkdir(parents=True, exist_ok=True)
+    policy = "off" if not check_edges else ("subject-allowed" if allow_subject else "border")
+    border: dict[str, Any] | None = None
     rows: list[dict[str, Any]] = []
     contacts: list[dict[str, Any]] = []
-    for src in raw_files:
+    # What the border does not take, frame by frame, worded as a contact is (`_edge_contact_message`).
+    untaken: list[dict[str, Any]] = []
+
+    def summary() -> dict[str, Any]:
+        report = {
+            "frames": len(rows),
+            "alpha_zero_pct_min": min(r["alpha_zero_pct"] for r in rows),
+            "alpha_zero_pct_max": max(r["alpha_zero_pct"] for r in rows),
+            "specks": {"dropped": sum(r["specks"] for r in rows), "frames": sum(1 for r in rows if r["specks"]),
+                       "min_fraction": SPECK_MIN_FRACTION, "min_px": SPECK_MIN_PX, "apart": SPECK_APART},
+            "edge_contacts": contacts,
+            "edge_policy": policy,
+            **({"edge_border": border} if policy == "border" else {}),
+            "rows": rows,
+        }
+        if decontam != "off" and decontam_first is not None:
+            report["decontam"] = {
+                "mode": decontam,
+                "fit": DECONTAM_FIT,
+                "palette_source": f"clip (learned on {decontam_first['frame']})",
+                "palette": decontam_first["palette"],
+                "palette_keyfree": decontam_first["palette_keyfree"],
+                "key_material_share": decontam_first["key_material_share"],
+                "material_spread": decontam_first["material_spread"],
+                "edge_band": decontam_first["edge_band"],
+                "applied_frames": decontam_applied,
+                "totals": decontam_totals,
+            }
+        else:
+            report["decontam"] = {"mode": decontam, "applied_frames": 0}
+        return report
+
+    for k, src in enumerate(raw_files):
         dst = keyed_dir / src.name
         stats = cutout(src, dst, key=key, spill_max_fraction=spill_max, spill_min_tint=spill_tint,
                        spill_require_hue=spill == "full", decontam=decontam, decontam_fit=DECONTAM_FIT,
@@ -393,53 +548,55 @@ def key_frames(
                 row["decontam"] = {"applied": False, "reason": done.get("reason")}
         if check_edges:
             contact = edge_contact(image)
-            if any(v > EDGE_MAX_PIXELS for v in contact.values()):
+            touched = any(v > EDGE_MAX_PIXELS for v in contact.values())
+            pixels = None
+            if touched:
                 chroma = stats.get("chroma_key")
                 painted = stats.get("chroma_key_painted")
-                contact.update(classify_edge_contact(Image.open(src), image, tuple(chroma) if chroma else None,
-                                                     tuple(painted) if painted else None))
+                pixels = _edge_pixels(Image.open(src), image, tuple(chroma) if chroma else None, tuple(painted) if painted else None)
+                residual = int(pixels["residual"].sum())
+                contact.update(subject=int(pixels["contact"].sum()) - residual, residual=residual, rim=int(pixels["rim"].sum()))
                 contact["key_painted"] = stats.get("chroma_key_painted")
+            if policy == "border" and k == 0:
+                border = _border(pixels, (w, h), src.name)
+                if border["sides"]:
+                    print(f"video-frames: the first frame's subject runs off the {_sides(border['sides'])} — read as the "
+                          "drawing's own border, where contact is accepted in every frame (`edge_border` in the report)",
+                          file=sys.stderr)
+            if touched:
+                if policy == "border":
+                    taken = _taken(pixels, border["sides"])
+                    off = pixels["contact"] & ~taken
+                    contact["border"] = int(taken.sum())
+                    contact["off"] = {side: int((off & pixels["bands"][side]).sum()) for side in SIDES}
+                    if off.any():
+                        lone = int((off & pixels["residual"]).sum())
+                        untaken.append({"frame": src.name, **contact["off"], "subject": int(off.sum()) - lone, "residual": lone,
+                                        "key_painted": contact["key_painted"]})
                 contacts.append({"frame": src.name, **contact})
             row["edge"] = contact
         if hist[0] == 0:
-            raise SystemExit(f"video-frames: {src.name} keyed to 0% transparency — the background is not the chroma key")
+            rows.append(row)
+            raise KeyingRefused(f"video-frames: {src.name} keyed to 0% transparency — the background is not the chroma key",
+                                summary())
         rows.append(row)
-    report = {
-        "frames": len(rows),
-        "alpha_zero_pct_min": min(r["alpha_zero_pct"] for r in rows),
-        "alpha_zero_pct_max": max(r["alpha_zero_pct"] for r in rows),
-        "specks": {"dropped": sum(r["specks"] for r in rows), "frames": sum(1 for r in rows if r["specks"]),
-                   "min_fraction": SPECK_MIN_FRACTION, "min_px": SPECK_MIN_PX, "apart": SPECK_APART},
-        "edge_contacts": contacts,
-        "edge_policy": "off" if not check_edges else ("subject-allowed" if allow_subject else "refuse"),
-        "rows": rows,
-    }
-    if decontam != "off" and decontam_first is not None:
-        report["decontam"] = {
-            "mode": decontam,
-            "fit": DECONTAM_FIT,
-            "palette_source": f"clip (learned on {decontam_first['frame']})",
-            "palette": decontam_first["palette"],
-            "palette_keyfree": decontam_first["palette_keyfree"],
-            "key_material_share": decontam_first["key_material_share"],
-            "material_spread": decontam_first["material_spread"],
-            "edge_band": decontam_first["edge_band"],
-            "applied_frames": decontam_applied,
-            "totals": decontam_totals,
-        }
-    else:
-        report["decontam"] = {"mode": decontam, "applied_frames": 0}
-    if contacts and check_edges:
-        if not allow_subject:
-            raise SystemExit(_edge_contact_message(contacts))
+    report = summary()
+    if untaken:
+        raise KeyingRefused(_edge_contact_message(untaken), report)
+    if contacts and policy == "subject-allowed":
         # Only a frame where the key alone reaches the edge is leftover background. Where the
         # subject touches it too, the key-tinted pixels beside it are its antialiased fringe or
         # a reflection of the key on it (a silver armour on green) — the same reading
         # `_edge_contact_message` gives a mixed contact.
-        residual = [c for c in contacts if c["residual"] > 0 and c["subject"] == 0]
-        if residual:
-            raise SystemExit(_residual_message(residual))
+        residual_only = [c for c in contacts if c["residual"] > 0 and c["subject"] == 0]
+        if residual_only:
+            raise KeyingRefused(_residual_message(residual_only), report)
     return report
+
+
+def _sides(sides: list[str]) -> str:
+    return (f"{sides[0]} edge" if len(sides) == 1 else
+            f"{', '.join(sides[:-1])} and {sides[-1]} edges")
 
 
 def _worst(contacts: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -500,15 +657,25 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     if not clip.is_file():
         raise SystemExit(f"video-frames: clip not found: {clip}")
     out_dir = out_dir.expanduser().resolve()
-    meta = probe(clip)
     raw_dir = out_dir / "raw"
     keyed_dir = out_dir / "keyed"
+    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
+    # From here the run reads the clip: an earlier run's keyed frames are no longer handed over (`key_frames`).
+    shutil.rmtree(keyed_dir, ignore_errors=True)
+    meta = probe(clip)
     decision = ({"mode": "off", "reason": "brightness alpha"} if alpha_mode == "brightness" else
                 decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"})
     files = extract(clip, raw_dir, meta["stream_index"])
-    report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode)
-    payload = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir), "keyed_dir": str(keyed_dir), "key": key, "spill": decision, **meta, **report}
-    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
+    head = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
+    try:
+        report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode)
+    except KeyingRefused as refused:
+        # The run's record, written whatever it found: the frames it keyed are in `refused_dir`, and nothing is handed over.
+        payload = {**head, "status": "refused", "error": str(refused), "keyed_dir": None, "refused_dir": str(refused_dir(keyed_dir)),
+                   "key": key, "spill": decision, **meta, **refused.report}
+        atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        raise
+    payload = {**head, "status": "passed", "keyed_dir": str(keyed_dir), "key": key, "spill": decision, **meta, **report}
     if source_manifest is not None:
         from sprite_gen.video.evidence import engine_identity
         payload["producer"] = engine_identity()
@@ -527,7 +694,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--alpha-mode", choices=("chroma", "brightness"), default="chroma", help="chroma key (default), or emitted light on black: brightness alpha, unpremultiplied RGB, no speck/edge cleanup; dark smoke becomes faint")
     parser.add_argument("--clip", required=True, type=Path, help="mp4 from `sprite-gen video`, or one made elsewhere from a `video-canvas` still (a video MCP such as ZCRE); an audio track and a cover image are left out")
-    parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here")
+    parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here; a refused run leaves keyed.refused/ and no keyed/")
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto", help="background key (auto reads the corners)")
     parser.add_argument("--allow-edge-contact", action="store_true", help="accept any opaque pixel at the top/left/right edge (subject and leftover key background alike)")
     parser.add_argument("--allow-subject-edge-contact", action="store_true", help="accept the subject touching the top/left/right edge (a `video-canvas --fit tight` clip) but still refuse leftover key background there")
