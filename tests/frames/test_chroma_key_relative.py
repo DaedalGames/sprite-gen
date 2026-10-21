@@ -56,11 +56,19 @@ DARK_KEY_CASES = [
     # flat colour — the detector falls back to the declared key and the ~124 distance keeps
     # the entire background opaque.
     pytest.param("magenta", (255, 0, 255), (216, 46, 147), id="magenta-grok-216-46-147-dist123.70"),
+    # A green screen whose blue channel leans toward cyan, lit over the unkeyed channels' dark bar
+    # (64) while red stays at 0: the studio chroma-key green #00B140, and a brighter lean. Both sit
+    # past 96 from pure green, and neither is interior family (blue over 35% of green).
+    pytest.param("green", (0, 255, 0), (0, 177, 64), id="green-studio-0-177-64-dist100.90"),
+    pytest.param("green", (0, 255, 0), (0, 200, 90), id="green-lean-cyan-0-200-90-dist105.48"),
+    # and its twin leaning the other way, red lit toward yellow
+    pytest.param("green", (0, 255, 0), (90, 210, 0), id="green-lean-yellow-90-210-0-dist100.62"),
 ]
 GROK_MAGENTA_CASES = [c for c in DARK_KEY_CASES if "grok" in c.id]
+LEAN_GREEN_CASES = [c for c in DARK_KEY_CASES if "lean" in c.id or "studio" in c.id]
 # `cutout --key` hands an explicit key to the engine above, which checks the pixels per colour:
-# one green and one Grok magenta show the route.
-CUTOUT_KEY_CASES = [c for c in DARK_KEY_CASES if c.id.startswith(("green-measured", "magenta-grok"))]
+# one green, one Grok magenta and one lean green show the route.
+CUTOUT_KEY_CASES = [c for c in DARK_KEY_CASES if c.id.startswith(("green-measured", "magenta-grok", "green-lean-cyan"))]
 
 
 def make_flat_key_still(background: tuple[int, int, int]) -> Image.Image:
@@ -237,6 +245,7 @@ def test_cutout_auto_route_uses_the_engine_family_rule() -> None:
 
     assert _detect_key_kind((8, 162, 24)) == "green"
     assert _detect_key_kind((170, 8, 180)) == "magenta"
+    assert _detect_key_kind((0, 200, 90)) == "green"  # a green screen leaning toward cyan
     assert _detect_key_kind(HOT_PINK) == "white"
     assert _detect_key_kind((248, 247, 242)) == "white"
 
@@ -269,10 +278,48 @@ def test_cutout_auto_routes_grok_magenta_corners_to_extract(
 
 
 def test_border_candidate_rule_still_rejects_subject_colours_and_non_keys() -> None:
-    """Relaxing the border rule must not let hot pink / purple / ivory / cyan become a key."""
-    for colour in (HOT_PINK, PURPLE, (248, 247, 242), (0, 255, 255), (30, 60, 30)):
+    """Relaxing the border rule must not let hot pink / purple / ivory / cyan become a key, nor the
+    greens past the lean: teal, sea green, a grey-green and a green as near cyan as green."""
+    for colour in (HOT_PINK, PURPLE, (248, 247, 242), (0, 255, 255), (30, 60, 30),
+                   (0, 128, 128), (46, 139, 87), (70, 200, 90), (0, 200, 100)):
         assert detect_background_key_rgb(make_flat_key_still(colour), MAGENTA) == MAGENTA
         assert detect_background_key_rgb(make_flat_key_still(colour), GREEN) == GREEN
+
+
+def test_the_lean_green_widens_only_the_green_key_and_only_toward_green() -> None:
+    """The colours the leaning-green branch adds, over the whole RGB cube: none for magenta (a key with
+    one unkeyed channel keeps that channel dark — hot pink's 77 included), none dropped for either key,
+    and for green only hues nearer green (120 degrees) than yellow or cyan (90 and 180, past 150)."""
+    from sprite_gen._deps import np
+    from sprite_gen.frames.extract import (_BORDER_KEY_MAX_UNKEYED_RATIO, _KEY_CHANNEL_DARK, _border_key_candidate_field,
+                                           _key_channel_split, _key_family_field)
+
+    values = np.arange(256, dtype=np.int32)
+    lean = {GREEN: 0, MAGENTA: 0}
+    for key in (GREEN, MAGENTA):
+        keyed_channels, unkeyed_channels = _key_channel_split(key)
+        for red in range(256):
+            rgb = np.stack(np.meshgrid([red], values, values, indexing="ij"), axis=-1).reshape(-1, 3)
+            border = _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels)
+            keyed_min = rgb[:, keyed_channels].min(axis=-1)
+            keyed_max = rgb[:, keyed_channels].max(axis=-1)
+            unkeyed_max = rgb[:, unkeyed_channels].max(axis=-1)
+            # every unkeyed channel dark: the signature before the lean
+            dark = ((keyed_min >= _KEY_CHANNEL_DARK) & (unkeyed_max < _KEY_CHANNEL_DARK)
+                    & (unkeyed_max <= keyed_max * _BORDER_KEY_MAX_UNKEYED_RATIO))
+            before = dark | _key_family_field(rgb, keyed_channels, unkeyed_channels)
+            assert not (before & ~border).any(), (key, rgb[before & ~border][:4])
+            # without the lean the field is the rule as it was, colour for colour
+            strict = _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels, lean=False)
+            assert (strict == before).all(), (key, rgb[strict != before][:4])
+            added = rgb[border & ~before]
+            lean[key] += len(added)
+            if key == GREEN and len(added):
+                r, g, b = added[:, 0], added[:, 1], added[:, 2]  # green is the largest channel of each
+                hue = 120 + 60 * (b - r) / (g - np.minimum(r, b))
+                assert ((hue > 90) & (hue < 150)).all(), added[(hue <= 90) | (hue >= 150)][:4]
+    assert lean[MAGENTA] == 0
+    assert lean[GREEN] > 0
 
 
 def test_hot_pink_block_inside_the_subject_survives_a_grok_magenta_key() -> None:
@@ -294,18 +341,23 @@ def test_hot_pink_block_inside_the_subject_survives_a_grok_magenta_key() -> None
 from sprite_gen.frames.extract import is_border_key_candidate  # noqa: E402
 
 
-# One row per branch of the rule: the interior rule's colours, the off-balance painted keys, and
-# each of the hue signature's three conditions failing. Purple, ivory and cyan are refused through
-# the detector in `test_border_candidate_rule_still_rejects_subject_colours_and_non_keys`.
+# One row per branch of the rule: the interior rule's colours, the off-balance painted keys, the
+# leaning green, and each of the hue signature's conditions failing. Purple, ivory and cyan are
+# refused through the detector in `test_border_candidate_rule_still_rejects_subject_colours_and_non_keys`.
 @pytest.mark.parametrize(
     ("color", "key", "expected"),
     [
         ((216, 46, 147), MAGENTA, True),  # Grok, 2026-09-11 (blue/red 0.68)
         ((236, 59, 161), MAGENTA, True),  # prop-fence-bamboo raw border
         ((170, 8, 180), MAGENTA, True),  # everything the interior rule admits, the border rule admits
-        (HOT_PINK, MAGENTA, False),  # unkeyed (green) channel lit: 77 >= 64
+        ((0, 177, 64), GREEN, True),  # studio chroma green: blue lit (64), red dark — nearer green than cyan
+        ((0, 200, 90), GREEN, True),  # a green leaning toward cyan, blue 0.45 of green
+        ((90, 210, 0), GREEN, True),  # the same lean toward yellow, on red
+        (HOT_PINK, MAGENTA, False),  # unkeyed (green) channel lit: 77 >= 64, and it is the only one
         ((30, 60, 30), GREEN, False),  # keyed channel not lit
         ((70, 60, 65), MAGENTA, False),  # dark grey-mauve: unkeyed dark but not saturated (60/70)
+        ((70, 200, 90), GREEN, False),  # both unkeyed channels lit: a grey-green, not a lean
+        ((0, 200, 100), GREEN, False),  # blue at half of green: as near cyan as green, past the lean
         ((216, 46, 147), (128, 128, 128), False),  # degenerate key has no candidates
     ],
 )
@@ -331,9 +383,16 @@ def test_border_rule_is_a_superset_of_the_interior_rule_and_matches_its_vector_f
                 assert border, (color, key)
 
 
-@pytest.mark.parametrize(("key", "key_rgb", "background"), GROK_MAGENTA_CASES)
+# The painted key blended half and half with a subject colour, as an antialiased rim is: for Grok's
+# magenta the highlight (its green lit), for the lean greens the brown (its red lit past the lean).
+PAINTED_BALL_CASES = [pytest.param(*c.values, HIGHLIGHT, id=c.id) for c in GROK_MAGENTA_CASES] + [
+    pytest.param(*c.values, SUBJECT, id=c.id) for c in LEAN_GREEN_CASES
+]
+
+
+@pytest.mark.parametrize(("key", "key_rgb", "background", "partner"), PAINTED_BALL_CASES)
 def test_painted_key_ball_is_bounded_by_connectivity_to_the_background(
-    key: str, key_rgb: tuple[int, int, int], background: tuple[int, int, int]
+    key: str, key_rgb: tuple[int, int, int], background: tuple[int, int, int], partner: tuple[int, int, int]
 ) -> None:
     """The cut around the painted colour erases the background it is connected to, not look-alikes inside the subject.
 
@@ -341,10 +400,10 @@ def test_painted_key_ball_is_bounded_by_connectivity_to_the_background(
     a lit subject colour, as an antialiased rim is): one on the subject's rim, touching
     the background, and one buried inside the subject. The rim patch is background
     residue and goes; the buried patch has no border evidence and stays. The declared
-    key's own ball is unchanged — position-blind — so a patch *within 96 of pure magenta*
+    key's own ball is unchanged — position-blind — so a patch *within 96 of the pure key*
     inside the subject is still erased, as it always was.
     """
-    blend = tuple((b + s) // 2 for b, s in zip(background, HIGHLIGHT))  # e.g. (223, 128, 168): G lit, ~90 from bg
+    blend = tuple((b + s) // 2 for b, s in zip(background, partner))  # e.g. (223, 128, 168): G lit, ~90 from bg
     assert not is_border_key_candidate(blend, key_rgb)
     assert color_dist(blend, background) <= _EXTRACT_KEY_THRESHOLD < color_dist(blend, key_rgb)
     source = make_flat_key_still(background)
@@ -365,29 +424,70 @@ def test_painted_key_ball_is_bounded_by_connectivity_to_the_background(
     assert all(out[x, y][3] == 0 for y in range(SIZE) for x in range(SIZE) if not _in_subject(x, y)), "background gone"
 
 
+@pytest.mark.parametrize("patch", [(0, 160, 75), (10, 120, 50)], ids=["emerald", "dark-lean"])
+def test_a_leaning_green_patch_in_the_subject_is_the_painted_colours_only_when_the_background_leans(
+    patch: tuple[int, int, int]
+) -> None:
+    """The lean is evidence about the background that leans. On the dark green the rule took before it
+    (family, no lean), a leaning-green patch buried in the subject within the painted ball is kept byte for
+    byte, as it was before the lean; on a background that leans, the same patch carries the painted colour's
+    signature and is keyed with it, as any signature colour inside the painted ball is."""
+    for background, kept in (((8, 162, 24), True), ((0, 200, 90), False)):
+        assert color_dist(patch, background) <= _EXTRACT_KEY_THRESHOLD < color_dist(patch, GREEN)
+        source = make_flat_key_still(background)
+        px = source.load()
+        for y in range(76, 88):  # buried in the brown, away from the highlight
+            for x in range(76, 88):
+                px[x, y] = patch + (255,)
+        result = remove_chroma_background(
+            source, GREEN, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA
+        )
+        out = result.load()
+        assert audit(result, source)[0] == 0, background
+        buried = [out[x, y] for y in range(76, 88) for x in range(76, 88)]
+        if kept:
+            assert buried == [patch + (255,)] * len(buried), background
+        else:
+            assert all(pixel[3] == 0 for pixel in buried), background
+
+
 def color_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
     return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
 
 
-def test_edge_contact_split_reads_grok_magenta_residue_as_residual() -> None:
-    """`video-frames` edge classification uses the same border rule: leftover Grok magenta is residue, hot pink is subject.
-    A residue is a piece of the keyed frame with nothing but the key's colour in it; joined to the subject, the same
-    pixels are its rim."""
+@pytest.mark.parametrize(
+    ("key", "painted", "residue", "near_subject", "residual"),
+    [
+        pytest.param(MAGENTA, None, (216, 46, 147), HOT_PINK, 10, id="grok-magenta"),
+        # sea green: past the lean, subject
+        pytest.param(GREEN, (0, 200, 90), (0, 200, 90), (46, 139, 87), 10, id="lean-green"),
+        # the frame keyed from a background that does not lean: a piece of leaning green is the subject's, as it was
+        pytest.param(GREEN, (8, 162, 24), (0, 200, 90), (46, 139, 87), 0, id="lean-piece-on-unleaning-background"),
+    ],
+)
+def test_edge_contact_split_reads_painted_key_residue_as_residual(
+    key: tuple[int, int, int], painted: tuple[int, int, int] | None, residue: tuple[int, int, int],
+    near_subject: tuple[int, int, int], residual: int,
+) -> None:
+    """`video-frames` edge classification uses the same border rule: leftover painted key (Grok magenta, a lean green)
+    is residue, a subject colour near it (hot pink, sea green) is subject. A residue is a piece of the keyed frame with
+    nothing but the key's colour in it; joined to the subject, the same pixels are its rim. A leaning green is the
+    key's colour only when the background the frame was keyed from leans itself."""
     from sprite_gen.video.frames import classify_edge_contact
 
     raw = Image.new("RGB", (40, 40), (110, 70, 50))
     keyed = Image.new("RGBA", (40, 40), (110, 70, 50, 255))
     for x in range(0, 10):
-        raw.putpixel((x, 0), (216, 46, 147))
-        raw.putpixel((x, 2), HOT_PINK)
-    joined = classify_edge_contact(raw, keyed, MAGENTA)
+        raw.putpixel((x, 0), residue)
+        raw.putpixel((x, 2), near_subject)
+    joined = classify_edge_contact(raw, keyed, key, painted)
     assert joined == {"subject": 40 * 40 - (40 - 4 * 2) * (40 - 4), "residual": 0}  # every band pixel is opaque subject
     for x in range(0, 11):  # a transparent row and column cut the residue off
         keyed.putpixel((x, 1), (0, 0, 0, 0))
     keyed.putpixel((10, 0), (0, 0, 0, 0))
-    split = classify_edge_contact(raw, keyed, MAGENTA)
-    assert split["residual"] == 10
-    assert split["subject"] == 40 * 40 - 10 - 12 - (40 - 4 * 2) * (40 - 4)  # every other opaque band pixel is subject
+    split = classify_edge_contact(raw, keyed, key, painted)
+    assert split["residual"] == residual
+    assert split["subject"] == 40 * 40 - residual - 12 - (40 - 4 * 2) * (40 - 4)  # every other opaque band pixel is subject
 
 
 # --- real stills (opt-in) ---------------------------------------------------------------

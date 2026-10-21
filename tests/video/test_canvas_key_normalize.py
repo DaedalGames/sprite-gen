@@ -19,6 +19,7 @@ MAGENTA = (255, 0, 255)
 DARK_GREEN = (8, 162, 24)  # 96.38 from pure green: the 2026-09-11 cliff colour
 DARK_MAGENTA = (170, 8, 180)
 GROK_MAGENTA = (216, 46, 147)  # Grok's #FF00FF, 2026-09-11: blue/red = 0.68 — off the interior balance rule
+LEAN_GREEN = (0, 200, 90)  # a green screen leaning toward cyan: blue lit over the dark bar, 105 from pure green
 IVORY = (248, 247, 242)
 SUBJECT = (200, 40, 40)
 SIZE = (120, 160)
@@ -41,7 +42,8 @@ def _corners(im: Image.Image) -> list[tuple[int, ...]]:
     return [im.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
 
 
-@pytest.mark.parametrize("bg,kind,key", [(DARK_GREEN, "green", GREEN), (DARK_MAGENTA, "magenta", MAGENTA), (GROK_MAGENTA, "magenta", MAGENTA)])
+@pytest.mark.parametrize("bg,kind,key", [(DARK_GREEN, "green", GREEN), (DARK_MAGENTA, "magenta", MAGENTA), (GROK_MAGENTA, "magenta", MAGENTA),
+                                         (LEAN_GREEN, "green", GREEN)])
 def test_dark_key_still_is_repainted_to_the_exact_key_and_not_refused(tmp_path: Path, bg, kind, key) -> None:
     still = Image.open(_still(tmp_path, bg))
     out, rep = canvas_mod.pad_canvas(still, canvas_mod.profile_for("jump"))  # tall: real padding above
@@ -62,13 +64,13 @@ def test_dark_key_still_is_repainted_to_the_exact_key_and_not_refused(tmp_path: 
     assert (data[outside] == key).all()
 
 
-@pytest.mark.parametrize("bg", [GROK_MAGENTA])
-def test_explicit_magenta_on_grok_magenta_corners_is_accepted_not_refused(tmp_path: Path, bg) -> None:
-    """A flat border in the key's hue is the key, whatever balance the model painted it with."""
-    assert canvas_mod.resolve_key(bg, "magenta") == "magenta"
-    assert canvas_mod.resolve_key(bg, "auto") == "magenta"
-    out, rep = canvas_mod.pad_canvas(Image.open(_still(tmp_path, bg)), canvas_mod.profile_for("walk"), key="magenta")
-    assert rep["key_painted"] == list(bg) and _corners(out) == [MAGENTA] * 4
+@pytest.mark.parametrize("bg,kind,key", [(GROK_MAGENTA, "magenta", MAGENTA), (LEAN_GREEN, "green", GREEN)])
+def test_explicit_key_on_painted_key_corners_is_accepted_not_refused(tmp_path: Path, bg, kind, key) -> None:
+    """A flat border in the key's hue is the key, whatever balance or lean the model painted it with."""
+    assert canvas_mod.resolve_key(bg, kind) == kind
+    assert canvas_mod.resolve_key(bg, "auto") == kind
+    out, rep = canvas_mod.pad_canvas(Image.open(_still(tmp_path, bg)), canvas_mod.profile_for("walk"), key=kind)
+    assert rep["key_painted"] == list(bg) and _corners(out) == [key] * 4
 
 
 def test_exact_key_still_is_unchanged_and_reports_zero_painted_drift(tmp_path: Path) -> None:
