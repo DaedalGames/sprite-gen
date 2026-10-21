@@ -244,7 +244,9 @@ _KEY_FAMILY_KEYED_BALANCE = 0.8  # for two-channel keys (magenta) the dimmer key
 # so hot pink's lit green still refuses it. The lean is evidence about the background that
 # leans, so inside the frame it widens only the ball of a painted colour that leans itself
 # (`_painted_key_leans`): on a background the rule took before, a leaning-green patch in
-# the subject is not the painted colour's and stays.
+# the subject is not the painted colour's and stays. On the border it is read only where
+# the rule before it finds no background (`detect_background_key_rgb`): a border that rule
+# took keeps the colour it found there, which does not lean, and keys as it did.
 _BORDER_KEY_MAX_UNKEYED_RATIO = _KEY_FAMILY_MAX_UNKEYED_RATIO  # against the brightest keyed channel, not the dimmest
 _BORDER_KEY_MAX_LEAN_RATIO = 0.5  # the unkeyed channel a key leans on stays under half the brightest keyed channel
 _KEY_DETECT_CORNER_DIV = 5  # corner patch = width/5 x height/5 (same sampling as the YCbCr path)
@@ -353,6 +355,12 @@ def _painted_key_leans(painted_key: tuple[int, int, int], keyed_channels: list[i
     on a background that leans, the colours that lean with it; on one that does not, only the
     signature with every unkeyed channel dark — so a leaning-green patch buried in the subject on
     a background the rule took before the lean stays as it was.
+
+    A colour `detect_background_key_rgb` finds from the candidates before the lean never leans: a
+    key with one unkeyed channel has no lean, and with two (green) the floor of a mean of one
+    8-wide bin of them is one of them (asserted over every bin of green in
+    tests/frames/test_chroma_key_relative.py). So on a border the rule took before the lean, every
+    reader of the painted colour reads it as it did.
     """
     rgb = np.asarray([painted_key], dtype=np.int32)
     return bool(_border_key_candidate_field(rgb, keyed_channels, unkeyed_channels)[0]
@@ -411,6 +419,15 @@ def detect_background_key_rgb(
     declared key comes back unchanged, which keeps `remove_chroma_background`
     byte-identical to its pre-detection behaviour on exact-key backgrounds.
 
+    The lean (`_BORDER_KEY_MAX_LEAN_RATIO`) is read second. The candidates the rule
+    admitted before it (`_border_key_candidate_field(..., lean=False)`) are counted on
+    their own: when they make up 12% of the samples, the answer is their mode bin's mean,
+    byte for byte what the detector returned before the lean. Only when they fall short do the
+    samples only the lean admits join them. Read together, a leaning sample in the bin
+    of a background found before moves its mean (and with it the edge of the painted
+    ball, past a subject on the radius), and leaning samples outnumbering that bin in
+    their own take the mode.
+
     The image is read a band of rows at a time (any mode, each band converted to RGBA
     on its own) into a count and a channel sum per bin, so the corners of a large
     still cost a histogram, not an array of samples.
@@ -420,29 +437,33 @@ def detect_background_key_rgb(
         return tuple(chroma_key)  # type: ignore[return-value]
     width, height = image.size
     bits = 8 - _KEY_DETECT_BIN_SHIFT
-    # one slot per bin, ordered by (R, G, B) bin: the lowest slot is the lowest bin
-    counts = np.zeros(1 << (3 * bits), dtype=np.int64)
-    sums = np.zeros((3, 1 << (3 * bits)), dtype=np.float64)  # integers far below 2**53: exact
-    sampled = family_count = 0
+    # one slot per bin, ordered by (R, G, B) bin: the lowest slot is the lowest bin; row 0 holds
+    # the candidates the rule admitted before the lean, row 1 the ones only the lean admits
+    counts = np.zeros((2, 1 << (3 * bits)), dtype=np.int64)
+    sums = np.zeros((2, 3, 1 << (3 * bits)), dtype=np.float64)  # integers far below 2**53: exact
+    sampled = 0
     for top in range(0, height, _KEY_DETECT_BAND_ROWS):
         bottom = min(height, top + _KEY_DETECT_BAND_ROWS)
         band = _rgba_rows(image, top, bottom)
         sample = _key_detect_sample_mask(height, width, top, bottom) & (band[..., 3] != 0)
         rgb = band[sample][:, :3].astype(np.int32)
-        family = _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels)
         sampled += len(rgb)
-        family_count += int(np.count_nonzero(family))
-        colors = rgb[family]
-        bins = colors >> _KEY_DETECT_BIN_SHIFT
-        slots = (bins[:, 0] << (2 * bits)) | (bins[:, 1] << bits) | bins[:, 2]
-        counts += np.bincount(slots, minlength=len(counts))
-        for channel in range(3):
-            sums[channel] += np.bincount(slots, weights=colors[:, channel], minlength=len(counts))
-    if not sampled or family_count < sampled * _KEY_DETECT_MIN_FRACTION:
-        return tuple(chroma_key)  # type: ignore[return-value]
-    mode = int(np.argmax(counts))  # first max = lowest slot on a tie: deterministic
-    members = int(counts[mode])
-    return tuple(int(sums[channel][mode]) // members for channel in range(3))  # type: ignore[return-value]
+        before = _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels, lean=False)
+        lean = _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels) & ~before
+        for row, family in enumerate((before, lean)):
+            colors = rgb[family]
+            bins = colors >> _KEY_DETECT_BIN_SHIFT
+            slots = (bins[:, 0] << (2 * bits)) | (bins[:, 1] << bits) | bins[:, 2]
+            counts[row] += np.bincount(slots, minlength=counts.shape[1])
+            for channel in range(3):
+                sums[row, channel] += np.bincount(slots, weights=colors[:, channel], minlength=counts.shape[1])
+    for rows in (1, 2):  # the candidates from before the lean, then with the lean's
+        family_counts = counts[:rows].sum(axis=0)
+        if sampled and family_counts.sum() >= sampled * _KEY_DETECT_MIN_FRACTION:
+            mode = int(np.argmax(family_counts))  # first max = lowest slot on a tie: deterministic
+            members = int(family_counts[mode])
+            return tuple(int(sums[:rows, channel, mode].sum()) // members for channel in range(3))  # type: ignore[return-value]
+    return tuple(chroma_key)  # type: ignore[return-value]
 
 
 # remove_chroma_background pixel classes, decided once on the source colors.
