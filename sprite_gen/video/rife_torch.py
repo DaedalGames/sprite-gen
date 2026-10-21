@@ -56,6 +56,12 @@ LAYERS = tuple(f"block{i}.{name}" for i in range(len(BLOCKS))
                for name in ("conv0.0.0", "conv0.1.0", *(f"convblock.{j}.conv" for j in range(8)), "lastconv.0"))
 NCNN_FLOAT16 = 0x01306B47  # ncnn's tag before a float16 weight blob; a float32 one is tagged 0
 NVIDIA_VERSION = Path("/proc/driver/nvidia/version")
+# A device that fails, as the network is put on it or as a frame runs on it, is a RIFE that fails (`rife.RifeUnavailable`),
+# PyTorch's words kept: out of its memory (`torch.OutOfMemoryError`), its driver failing on a call (`torch.AcceleratorError`)
+# and CUDA that does not start are each a RuntimeError; a CUDA call queued before CUDA started that failed when it did is
+# `torch.cuda.DeferredCudaCallError`, an Exception. Anything else (a TypeError, an AttributeError) is a fault of this code,
+# raised as it is.
+DEVICE_FAILURES = (RuntimeError, torch.cuda.DeferredCudaCallError)
 
 
 def _conv(cin: int, cout: int) -> nn.Sequential:
@@ -225,7 +231,8 @@ class TorchRunner:
     `rife.pass_runs`). What its frames depend on is read once, as it loaded and set them, and stays for its life
     (`identity`): the weights' bytes, this network's code, PyTorch's version, and on CUDA its CUDA and cuDNN, the GPU,
     the driver and the settings that make a frame the same bytes; on the CPU the instructions PyTorch runs on.
-    `cuda` that is not there is refused, by why (`rife.RifeUnavailable`)."""
+    `cuda` that is not there is refused, by why, and a device that fails as the network is put on it, or as a frame runs,
+    is a RIFE that fails in PyTorch's words (`DEVICE_FAILURES`, `rife.RifeUnavailable`)."""
 
     def __init__(self, model: Path, device: str):
         if device not in rife.DEVICES:
@@ -236,22 +243,27 @@ class TorchRunner:
             raise rife.RifeUnavailable(f"SPRITE_GEN_RIFE_DEVICE=cuda, and CUDA is not available here: {wheel}; nothing runs "
                                        "on another device in its place — name SPRITE_GEN_RIFE_DEVICE=cpu to run on the CPU")
         files = rife.model_bytes(model)
-        net = IFNet()
         try:
+            net = IFNet()
             net.load_state_dict(state_from_ncnn(files), strict=True)
         except (ValueError, RuntimeError) as exc:
             raise rife.RifeUnavailable(f"rife-torch: the model {model} does not load: {exc}") from exc
         self.model, self.device = model, device
-        self.net = net.to(device).eval()
-        self.blocks = tuple(getattr(self.net, f"block{i}") for i in range(len(BLOCKS)))
-        self._grids: dict[tuple, torch.Tensor] = {}
         ident: dict[str, object] = {"backend": "torch", "device": device, "net": CODE_SHA256, "torch": torch.__version__,
                                     "weights": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
-        if device == "cuda":
-            ident.update(cuda=torch.version.cuda, cudnn=torch.backends.cudnn.version(), gpu=torch.cuda.get_device_name(),
-                         capability=list(torch.cuda.get_device_capability()), driver=_driver(), determinism=_deterministic())
-        else:  # a frame made on the CPU is made by its instructions; one made on a GPU is not, and its host's CPU is no part of it
-            ident.update(cpu=torch.backends.cpu.get_cpu_capability(), arch=platform.machine())
+        try:
+            self.net = net.to(device).eval()
+            if device == "cuda":
+                ident.update(cuda=torch.version.cuda, cudnn=torch.backends.cudnn.version(), gpu=torch.cuda.get_device_name(),
+                             capability=list(torch.cuda.get_device_capability()), driver=_driver(), determinism=_deterministic())
+            else:
+                # a frame made on the CPU is made by its instructions; one made on a GPU is not, and its host's CPU is no
+                # part of it
+                ident.update(cpu=torch.backends.cpu.get_cpu_capability(), arch=platform.machine())
+        except DEVICE_FAILURES as exc:
+            raise rife.RifeUnavailable(f"rife-torch on {device} failed to set up: {exc}") from exc
+        self.blocks = tuple(getattr(self.net, f"block{i}") for i in range(len(BLOCKS)))
+        self._grids: dict[tuple, torch.Tensor] = {}
         self._identity = ident
 
     def identity(self) -> dict[str, object]:
@@ -276,11 +288,11 @@ class TorchRunner:
     def run(self, x: np.ndarray, y: np.ndarray, t: float, modes: tuple[str, ...] | None) -> np.ndarray:
         """One run, as one call of the binary makes it (`rife.Run`): `t` as the binary is handed it (`-s`, four
         decimals), the augmentation `modes` (None: `rife.tta()`). A run that fails on the device (out of its memory) is
-        a RIFE that fails (`rife.RifeUnavailable`)."""
+        a RIFE that fails (`DEVICE_FAILURES`, `rife.RifeUnavailable`)."""
         modes = rife.tta() if modes is None else modes
         try:
             return self._run(x, y, float(f"{t:.4f}"), tuple(modes))
-        except RuntimeError as exc:
+        except DEVICE_FAILURES as exc:
             raise rife.RifeUnavailable(f"rife-torch on {self.device} failed: {exc}") from exc
 
     @torch.inference_mode()

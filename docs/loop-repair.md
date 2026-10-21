@@ -63,8 +63,9 @@ not chosen for you and not traded for another: `cuda` where PyTorch finds no CUD
 why (a PyTorch built for the CPU only, or a CUDA that finds no GPU), and does not run on the CPU.
 Apple's GPU (`mps`) is refused: no release lane measures it, and on a Mac the binary already runs on
 the GPU. PyTorch not installed, or no model where it looks, is RIFE not installed ("Without RIFE"
-below); a backend or device named wrong, a model whose files are not the pinned ones, or a run that
-fails on the device, is a RIFE that fails.
+below); a backend or device named wrong, a model whose files are not the pinned ones, or a device
+that fails as the network is put on it or as a frame runs (out of its memory, its driver or CUDA
+failing), is a RIFE that fails, in PyTorch's own words.
 
 On CUDA every frame runs with cuDNN deterministic, its benchmark off and its convolutions in IEEE
 float32 (`torch.backends.cudnn.conv.fp32_precision = "ieee"`: PyTorch turns TF32 on by default), so the
