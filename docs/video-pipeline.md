@@ -924,9 +924,7 @@ the last bit on every machine. With np.polyfit, whose last bit differs between L
 that stand on the frame's bottom edge read a hair past it or short of it, and whether the frames
 got 2 px of room below — and so the frames the cut is searched on — turned on that bit.
 
-Gates, all fail-loud: no period (profile flat, below the recorded `periodicity_min`), loop seam ratio
-above `--seam-max` (2.0), GIF/WebP re-opened and checked (frame count, `loop=0`,
-transparent corners, no RGB under alpha 0 in the WebP).
+Gates, all fail loud: no period (profile flat, below the recorded `periodicity_min`), loop seam ratio above `--seam-max` (2.0), GIF/WebP reopened and checked (frame count, `loop=0`, transparent corners, no RGB under alpha 0 in the WebP). On every walk or run loop that plays round, the step gate reads cells between drawings and requires the largest step over the mean of the others to be at most `STEP_RATIO_MAX` (2.5). A fixed cut of a walk or run reads clip foot crossings to judge the cut, refusing an odd step count that would swap legs at the wrap. Both checks are lifted by `--seam-max` past 2.5; see `docs/loop-repair.md` section 3, "The step gate".
 
 A walk or run loop then has its jump frames repaired before the strip is built: one or two
 drawings in a row that leave the loop's flow — 3× their region's usual step off the line between

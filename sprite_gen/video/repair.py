@@ -1169,8 +1169,9 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     frames side by side are made from each other and melt the legs. A group whose made drawings carry
     a shared interpolation-quality fault — a ghost too, on its own coverage, where the screen reads
     the loop — keeps every frame it would take, as filmed, and nothing is made from or beside them
-    (`refused`); a made drawing that cross-fades two drawings inside its silhouette is still taken,
-    its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
+    (`refused`), and a drawing of it the loop as it plays still reads at or over `limit` off the flow is
+    `unfixed`, with the faults that refused it (`_refused_left`); a made drawing that cross-fades two drawings inside its
+    silhouette is still taken, its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
     beside it, and the flow search stops at the first group it would make, naming it (`unmade`). The
     flow is read again after each group, on the union box of the original loop. Then, on the loop as the rounds left
     it, the eased retime (`why` ease, `_ease`; `ease` false reads the rush and makes nothing): the worst rush
@@ -1269,7 +1270,28 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     if record["surge"] is not None:
         later = _flow(out, box)
         record["surge_after"] = next((_said_surge(s, later) for s in _surges(later)), None)
+    if refused:
+        record["unfixed"] = [*record["unfixed"], *_refused_left(out, box, record["rounds"], limit)]
     return out, record
+
+
+def _refused_left(frames: list[Image.Image], box: tuple[int, int, int, int], rounds: list[dict[str, Any]],
+                  limit: float) -> list[dict[str, Any]]:
+    """The drawings of the flow groups the rounds refused that the loop as it now plays still reads at or over `limit` off
+    its flow: a group refused keeps its frames as filmed, so a jump is left there. Each as `flow_targets` names a drawing
+    `unfixed` — its frames and its reading (`off`, `turn`, `into`, `out`, `window`), here on the loop as it plays — and
+    the faults that refused its group (`refused`)."""
+    flow = _flow(frames, box)
+    scores = _drawing_scores(flow)
+    faults_of = {t: r["faults"] for r in rounds if r["why"] == "flow" and r["outcome"] == "rejected" for t in r["frames"]}
+    left = []
+    for d, run in enumerate(flow["runs"]):
+        hit = [t for t in run if t in faults_of]
+        if not hit or scores["off"][d] < limit:
+            continue
+        left.append({"frames": run, **{k: round(float(scores[k][d]), 4) for k in ("off", "turn", "into", "out")},
+                     "window": [round(v, 4) for v in flow["fractions"][int(scores["window"][d])]], "refused": faults_of[hit[0]]})
+    return left
 
 
 # --- the jolt index (docs/loop-repair.md section 3) ------------------------------------------

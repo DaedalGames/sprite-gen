@@ -66,6 +66,8 @@ does not close. Repaired frames check the wrap alone, a walk whose ordinary step
 uneven can read a step over the limit on the cells that play and is refused as before,
 and `--anchor feet` reads source frames.
 
+After this rule, the step gate reads cells between drawings for every walk or run loop that plays round. A known limit on walks held on twos or threes was measured on synthetic side walks sliding 0.1 px a frame, cut one stride by hand with `--anchor body` without repair from six starts each. The seam gate reads frames, not drawings: a cut whose wrap falls between drawings reads wrap two or three times the mean step on filmed frames and fails, though between drawings it closes. The body anchor rule also reads frame by frame, refusing all cuts on those held walks even where the ramp closed the wrap (cell wrap 0.0 to 1.21), because largest frame steps are 2.48 to 4.17 while cells between drawings step at most 1.39 to 1.70. Those cuts stay refused; reading seam gate and anchor rules between drawings is left to later work. Unheld walks of the same probe were unaffected.
+
 ## Material for a vision-capable reviewer
 
 Provide the original clip, the generated loop played at source speed for at least three
