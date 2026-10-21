@@ -266,6 +266,13 @@ def distance_matrix(files: list[Path]) -> np.ndarray:
     return _distances(np.stack([_load_small(f) for f in files]))
 
 
+def _seam_on_cells(cells: list[Image.Image]) -> tuple[float, float, np.ndarray]:
+    """Cells as they play, on their analysis features: the mean step, the wrap (last -> first) and each step."""
+    flat = np.stack([_small_features(im) for im in cells])
+    steps = np.abs(flat[1:] - flat[:-1])
+    return float(steps.mean()), float(np.abs(flat[-1] - flat[0]).mean()), steps.mean(axis=1)
+
+
 def _distances(flat: np.ndarray) -> np.ndarray:
     """The distance between every two frames of their analysis features (`_small_features`)."""
     n = len(flat)
@@ -1863,12 +1870,32 @@ def run_loop(
     seam_idx = [i + j for j in idx]
     resampled_adjacent = float(np.mean([D[seam_idx[k], seam_idx[k + 1]] for k in range(len(seam_idx) - 1)]))
     resampled_seam = float(D[seam_idx[-1], seam_idx[0]])
-    if report_base["seam_measurement"] == "rendered-cells":
-        # Gate the actual corrected/repaired/resampled strip cells, with the same limit — a cell given way to the frame
+    on_cells = report_base["seam_measurement"] == "rendered-cells"
+    source_ratio = resampled_seam / resampled_adjacent if resampled_adjacent > 0 else math.inf
+    # The body anchor moved the cells to close a wrap the source frames refuse: the cells that play are read again. Where
+    # the seam ratio gates the cut, not a pin or a cut played once.
+    ramped = (not on_cells and anchor == "body" and wrap_dx != 0 and cycle["kind"] not in ("pinned", *nonloop.KINDS)
+              and source_ratio > seam_max)
+    if on_cells or ramped:
+        # The actual corrected/repaired/resampled strip cells, with the same limit — a cell given way to the frame
         # beside it as filmed (`seam_as_filmed`), on the strip the cut makes with those frames.
-        flat = np.stack([_small_features(im) for im in (resampled_cells(*strip_of(seam_frames), idx, L) if as_filmed else pick)])
-        resampled_adjacent = float(np.abs(flat[1:] - flat[:-1]).mean())
-        resampled_seam = float(np.abs(flat[-1] - flat[0]).mean())
+        adjacent, wrap, steps = _seam_on_cells(resampled_cells(*strip_of(seam_frames), idx, L) if as_filmed else pick)
+    if ramped:
+        # The ramp spreads whatever offset the wrap shows over the loop: a jump of a few frames comes out moved into the
+        # loop, not closed. So the cells overrule the source frames only where their wrap and every step of the loop are
+        # within the same limit; otherwise the refusal is the source frames'.
+        largest = int(np.argmax(steps))
+        report_base["seam_after_anchor"] = {
+            "source_seam_ratio": round(source_ratio, 4) if math.isfinite(source_ratio) else None,
+            "seam_ratio": round(wrap / adjacent, 4) if adjacent > 0 else None,
+            "largest_step_ratio": round(float(steps[largest]) / adjacent, 4) if adjacent > 0 else None,
+            "largest_step_into": idx[largest + 1],
+        }
+        if adjacent > 0 and wrap / adjacent <= seam_max and float(steps[largest]) / adjacent <= seam_max:
+            report_base["seam_measurement"] = "rendered-cells"
+            on_cells = True
+    if on_cells:
+        resampled_adjacent, resampled_seam = adjacent, wrap
     seam_ratio = resampled_seam / resampled_adjacent if resampled_adjacent > 0 else math.inf
     delay_ms = max(20, round(1000 * cycle_seconds / n_out))
     gif_path = out_dir / f"{name}.gif"
