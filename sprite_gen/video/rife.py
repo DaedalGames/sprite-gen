@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""RIFE in-betweens for RGBA sprite frames, through the external `rife-ncnn-vulkan` binary.
+"""RIFE in-betweens for RGBA sprite frames, through the external `rife-ncnn-vulkan` binary or, where SPRITE_GEN_RIFE_BACKEND
+names it, the same rife-v4.6 in PyTorch (`rife_torch`).
 
 Where it runs, what it costs and why this build: docs/loop-repair.md section 1. RIFE reads
 three colour channels and no alpha, so a frame is interpolated as two images — its colour and
@@ -29,6 +30,16 @@ puts it (`install_root()`, docs/loop-repair.md section 1). A RIFE that cannot be
 `RifeNotInstalled`, which a caller may answer by cutting the loop as filmed with a warning; a
 RIFE that is found and then fails is `RifeUnavailable` and always an error.
 
+SPRITE_GEN_RIFE_BACKEND=torch runs the frame in PyTorch instead (`backend()`, `rife_torch`), on the device
+SPRITE_GEN_RIFE_DEVICE names (`device()`: cuda, the default, or cpu), from the same model files the binary runs
+(`locate_model()`, checked against MODEL_SHA256). Nothing falls back: with torch chosen the binary is neither looked for
+nor run, and a device that cannot be had is not traded for another. PyTorch or the model not installed is
+`RifeNotInstalled`, as the binary not installed is; the line that installs it is `install_command()`.
+
+Wherever it runs, a frame is the same two runs of RIFE and the read the same sixteen passes (`frame_runs`, `pass_runs`):
+what turns a frame into RIFE's input (`inputs`) and its two runs back into a frame (`_joined`) is done here, and the runs
+are a runner's (`Binary`, `rife_torch.TorchRunner`), which `Rife` hands each frame whole.
+
 The interpolator is a plain callable `(a, b, t) -> frame`, so a caller can be handed a stand-in
 (`Interpolate`), and a test needs no binary. A caller that reads the passes takes a callable
 `(a, b, t) -> (frame, disagreement)` (`Read`, `Rife.read`).
@@ -44,6 +55,7 @@ again would give the same bytes.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import platform
@@ -62,6 +74,18 @@ from sprite_gen._deps import np
 BINARY = "rife-ncnn-vulkan"
 MODEL = "rife-v4.6"
 RELEASE = "20221029"
+# What runs RIFE (`backend()`): the binary, the default, or rife-v4.6 in PyTorch (`rife_torch`); and the torch devices
+# it runs on (`device()`), the first the default.
+BACKENDS = ("ncnn", "torch")
+DEVICES = ("cuda", "cpu")
+# The model files of rife-v4.6 as the release zips ship them, the macOS and the Ubuntu zip alike: `sprite-gen rife install`
+# checks them, and the torch backend reads its weights out of exactly these (`model_bytes`), as it reads them by their
+# layout (docs/loop-repair.md section 1).
+MODEL_SHA256 = {
+    "flownet.param": "724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c",
+    "flownet.bin": "f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958",
+}
+TORCH_EXTRA = 'pip install "sprite-gen[torch]"'
 # The binary's test-time augmentation, passed on every call: `-x` runs the pair as its eight flips and
 # transposes, `-z` runs it both ways in time as well, and what comes back is averaged — so a frame made
 # from a to b is the one made from b to a (docs/loop-repair.md section 1, "Which setting"). On a machine
@@ -218,6 +242,72 @@ def tta() -> tuple[str, ...]:
     return modes
 
 
+def backend() -> str:
+    """What runs RIFE: SPRITE_GEN_RIFE_BACKEND, `ncnn` (the binary) where it is unset or empty, or `torch` (rife-v4.6 in
+    PyTorch, `rife_torch`). Anything else is refused, not read as the default."""
+    named = os.environ.get("SPRITE_GEN_RIFE_BACKEND") or "ncnn"
+    if named not in BACKENDS:
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_BACKEND={named!r}: name ncnn ({BINARY}, the default) or torch (rife-v4.6 in "
+                              f"PyTorch), or leave it unset")
+    return named
+
+
+def device() -> str:
+    """The torch device the torch backend runs on: SPRITE_GEN_RIFE_DEVICE, `cuda` where it is unset or empty, or `cpu`.
+    Nothing is chosen for it: a CUDA that is not there is refused (`rife_torch.TorchRunner`), never traded for the CPU.
+    Apple's GPU (`mps`) is not opened: no release lane measures it, and on a Mac the binary already runs on the GPU."""
+    named = os.environ.get("SPRITE_GEN_RIFE_DEVICE") or DEVICES[0]
+    if named == "mps":
+        raise RifeUnavailable("SPRITE_GEN_RIFE_DEVICE=mps: the torch backend does not run on Apple's GPU — no release lane "
+                              f"measures it there; on a Mac the default backend ({BINARY}) runs on the GPU, or name cpu")
+    if named not in DEVICES:
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_DEVICE={named!r}: name cuda (the default) or cpu")
+    return named
+
+
+def install_command() -> str:
+    """The line that installs the RIFE `backend()` names, quoted wherever a missing RIFE is reported: INSTALL_COMMAND for the
+    binary; for torch the extra and the model, `sprite-gen rife install --backend torch`. A backend refused names the
+    binary's, as `Rife()` refuses it before anything is looked for."""
+    try:
+        chosen = backend()
+    except RifeUnavailable:
+        chosen = "ncnn"
+    return INSTALL_COMMAND if chosen == "ncnn" else f"{TORCH_EXTRA} && {INSTALL_COMMAND} --backend torch"
+
+
+def locate_model() -> Path:
+    """The model directory the torch backend reads, with no binary looked for: SPRITE_GEN_RIFE_MODEL, else where
+    `sprite-gen rife install` puts the model (`<install_root()>/rife-ncnn-vulkan-<release>-<platform>/rife-v4.6`)."""
+    named = os.environ.get("SPRITE_GEN_RIFE_MODEL")
+    model = Path(named).expanduser() if named else installed_binary().parent / MODEL
+    if not (model / "flownet.param").is_file() or not (model / "flownet.bin").is_file():
+        where = "SPRITE_GEN_RIFE_MODEL" if named else "SPRITE_GEN_RIFE_MODEL is not set, and the install root"
+        raise RifeNotInstalled(f"RIFE model {model} has no flownet.param / flownet.bin ({where}); run `{install_command()}` "
+                               f"(the model {MODEL}, sha256-checked, into the user data directory), or set "
+                               f"SPRITE_GEN_RIFE_MODEL to a {MODEL} directory; see docs/loop-repair.md")
+    return model.resolve()
+
+
+def model_bytes(model: Path) -> dict[str, bytes]:
+    """The two files of the model in `model`, each read once and checked against MODEL_SHA256, so the bytes handed on are
+    the bytes checked: another model, or one cut short or written over, is refused by name, never read
+    (`RifeUnavailable`)."""
+    files = {}
+    for name, pinned in MODEL_SHA256.items():
+        try:
+            data = (model / name).read_bytes()
+        except OSError as exc:
+            raise RifeUnavailable(f"RIFE model {model}: {name} could not be read: {exc}") from exc
+        got = hashlib.sha256(data).hexdigest()
+        if got != pinned:
+            raise RifeUnavailable(f"RIFE model {model}: {name} has sha256 {got}, expected {pinned} ({MODEL} of "
+                                  f"{BINARY} {RELEASE}); install it again (`{INSTALL_COMMAND} --force`), or point "
+                                  f"SPRITE_GEN_RIFE_MODEL at that {MODEL}")
+        files[name] = data
+    return files
+
+
 def _call(binary: Path, model: Path, a: Image.Image, b: Image.Image, t: float, tmp: Path,
           modes: tuple[str, ...] | None = None) -> Image.Image:
     """One run of the binary from `a` to `b` at `t`, with the augmentation `tta()` names, or `modes` (`passes`: none)."""
@@ -279,21 +369,70 @@ def bleed(frame: np.ndarray) -> np.ndarray:
     return np.where(frame[..., 3:] > 0, frame[..., :3], 0.0 if fill is None else fill)
 
 
-def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> Image.Image:
-    """The RGBA frame at fraction `t` (0..1) of the way from `a` to `b`."""
+# One run of RIFE, wherever it runs: from the first image to the second (H x W x 3, uint8) at a fraction, with the
+# augmentation named (None: `tta()`'s, read for the run), to the image it makes (H x W x 3, uint8).
+Run = Callable[[np.ndarray, np.ndarray, float, tuple[str, ...] | None], np.ndarray]
+
+
+def inputs(a: Image.Image, b: Image.Image) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """What RIFE is given for a frame between `a` and `b`: their colour images as `bleed` makes them (H x W x 3) and their
+    coverage (H x W), uint8 — the same wherever RIFE runs."""
     if a.size != b.size:
         raise ValueError(f"rife: frames differ in size ({a.size} vs {b.size})")
     fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (a, b))
-    colour = [Image.fromarray(np.uint8(np.clip(bleed(x), 0, 1) * 255 + 0.5), "RGB") for x in (fa, fb)]
-    cov = [Image.fromarray(np.uint8(x[..., 3] * 255 + 0.5), "L").convert("RGB") for x in (fa, fb)]
-    rgb = np.asarray(_call(binary, model, colour[0], colour[1], t, tmp), dtype=np.float32) / 255.0
-    alpha = np.asarray(_call(binary, model, cov[0], cov[1], t, tmp).convert("L"), dtype=np.float32) / 255.0
-    return _joined(rgb, alpha)
+    return ([np.uint8(np.clip(bleed(x), 0, 1) * 255 + 0.5) for x in (fa, fb)],
+            [np.uint8(x[..., 3] * 255 + 0.5) for x in (fa, fb)])
+
+
+def _grey(cover: np.ndarray) -> np.ndarray:
+    """Coverage (H x W) as the grey image RIFE runs on."""
+    return np.repeat(cover[..., None], 3, axis=-1)
+
+
+def _coverage(made: np.ndarray) -> np.ndarray:
+    """The coverage RIFE made from two grey images, read back to one channel as Pillow reads a grey (`convert("L")`)."""
+    return np.asarray(Image.fromarray(made, "RGB").convert("L"))
+
+
+def frame_runs(run: Run, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
+    """A frame's two runs (`inputs`): the colour, then the coverage, from the first to the second at `t` with the
+    augmentation every call asks for — (colour H x W x 3, coverage H x W), uint8, which `_joined` makes a frame."""
+    return run(colour[0], colour[1], t, None), _coverage(run(_grey(cover[0]), _grey(cover[1]), t, None))
+
+
+def pass_runs(run: Run, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> np.ndarray:
+    """How far the sixteen single passes of a frame (`inputs`) disagree, per pixel (`passes`): PASS_CALLS runs."""
+    grey = [_grey(c) for c in cover]
+    rgbs, alphas = [], []
+    for geometry in PASS_GEOMETRIES:
+        for first, second, at in ((0, 1, t), (1, 0, 1 - t)):
+            made = [run(_turned(pair[first], geometry), _turned(pair[second], geometry), at, ()) for pair in (colour, grey)]
+            rgbs.append(_turned_back(made[0].astype(np.float32) / 255.0, geometry))
+            alphas.append(_turned_back(_coverage(made[1]).astype(np.float32)[..., None] / 255.0, geometry)[..., 0])
+    rgb, alpha = np.stack(rgbs), np.stack(alphas)
+    pre = np.concatenate([rgb * alpha[..., None], alpha[..., None]], axis=-1)
+    apart = np.sqrt(((pre[0::2].mean(axis=0) - pre[1::2].mean(axis=0)) ** 2).sum(axis=-1) / 4.0)
+    return apart.astype(np.float32)
+
+
+def _binary_run(binary: Path, model: Path, tmp: Path) -> Run:
+    """A run of the binary (`_call`, its images written in `tmp`)."""
+    def run(x: np.ndarray, y: np.ndarray, t: float, modes: tuple[str, ...] | None) -> np.ndarray:
+        a, b = Image.fromarray(x, "RGB"), Image.fromarray(y, "RGB")
+        return np.asarray(_call(binary, model, a, b, t, tmp) if modes is None else _call(binary, model, a, b, t, tmp, modes))
+    return run
+
+
+def between(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Path, tmp: Path) -> Image.Image:
+    """The RGBA frame at fraction `t` (0..1) of the way from `a` to `b`, through the binary."""
+    colour, cover = inputs(a, b)
+    return _joined(*frame_runs(_binary_run(binary, model, tmp), colour, cover, t))
 
 
 def _joined(rgb: np.ndarray, alpha: np.ndarray) -> Image.Image:
-    """The RGBA frame of a colour run and a coverage run (0..1): coverage under ALPHA_FLOOR dropped, the colour kept
+    """The RGBA frame of a colour run and a coverage run (uint8): coverage under ALPHA_FLOOR dropped, the colour kept
     wherever there is coverage."""
+    rgb, alpha = rgb.astype(np.float32) / 255.0, alpha.astype(np.float32) / 255.0
     alpha = np.where(alpha < ALPHA_FLOOR, 0.0, alpha)
     out = np.dstack([np.where(alpha[..., None] > 0, rgb, 0.0), alpha])
     return Image.fromarray(np.uint8(np.clip(out, 0, 1) * 255 + 0.5), "RGBA")
@@ -332,22 +471,8 @@ def passes(a: Image.Image, b: Image.Image, t: float, *, binary: Path, model: Pat
     apart the mean of the eight forward passes and the mean of the eight backward ones put the premultiplied colour and
     coverage (0..1, `torn` reads it). Their mean is not the frame: where they disagree it blends their guesses part-covered,
     which the augmentation, combining them inside the binary, does not. PASS_CALLS calls of the binary."""
-    if a.size != b.size:
-        raise ValueError(f"rife: frames differ in size ({a.size} vs {b.size})")
-    fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (a, b))
-    colour = [np.uint8(np.clip(bleed(x), 0, 1) * 255 + 0.5) for x in (fa, fb)]
-    cover = [np.repeat(np.uint8(x[..., 3:] * 255 + 0.5), 3, axis=-1) for x in (fa, fb)]
-    rgbs, alphas = [], []
-    for geometry in PASS_GEOMETRIES:
-        for first, second, at in ((0, 1, t), (1, 0, 1 - t)):
-            runs = [_call(binary, model, Image.fromarray(_turned(pair[first], geometry), "RGB"),
-                          Image.fromarray(_turned(pair[second], geometry), "RGB"), at, tmp, ()) for pair in (colour, cover)]
-            rgbs.append(_turned_back(np.asarray(runs[0], dtype=np.float32) / 255.0, geometry))
-            alphas.append(_turned_back(np.asarray(runs[1].convert("L"), dtype=np.float32)[..., None] / 255.0, geometry)[..., 0])
-    rgb, alpha = np.stack(rgbs), np.stack(alphas)
-    pre = np.concatenate([rgb * alpha[..., None], alpha[..., None]], axis=-1)
-    apart = np.sqrt(((pre[0::2].mean(axis=0) - pre[1::2].mean(axis=0)) ** 2).sum(axis=-1) / 4.0)
-    return apart.astype(np.float32)
+    colour, cover = inputs(a, b)
+    return pass_runs(_binary_run(binary, model, tmp), colour, cover, t)
 
 
 def _mask(mask: np.ndarray, size: int, op: type) -> np.ndarray:
@@ -549,57 +674,115 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+class Binary:
+    """rife-ncnn-vulkan as the runner of a `Rife`: each run one call of the binary, its images written in a directory of
+    its own for the frame. What its frames depend on is read anew every time it is asked (`identity`): the binary runs
+    from its files on disk, and reads its model from them, every call."""
+
+    def __init__(self, binary: Path, model: Path):
+        self.binary, self.model = binary, model
+
+    def frame(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray]:
+        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
+            return frame_runs(_binary_run(self.binary, self.model, Path(td)), colour, cover, t)
+
+    def read(self, colour: list[np.ndarray], cover: list[np.ndarray], t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
+            run = _binary_run(self.binary, self.model, Path(td))
+            return (*frame_runs(run, colour, cover, t), pass_runs(run, colour, cover, t))
+
+    def describe(self) -> dict[str, str]:
+        return {"kind": BINARY, "binary": str(self.binary), "model": self.model.name}
+
+    def identity(self) -> dict[str, object]:
+        """The binary's and each of the model's files by sha256, and the model's path as the binary is handed it (the
+        binary reads the model's version from its name), read now. Files that cannot be read are a RIFE that fails
+        (`RifeUnavailable`)."""
+        try:
+            model = sorted(p for p in self.model.iterdir() if p.is_file())
+            return {"backend": "ncnn", "binary": _file_sha256(self.binary), "model": str(self.model),
+                    "model_files": {p.name: _file_sha256(p) for p in model}}
+        except OSError as exc:
+            raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
+
+
+def torch_runner(model: Path | None = None) -> object:
+    """The torch backend's runner (`rife_torch.TorchRunner`) on `device()`, from `model` (else `locate_model()`): the device
+    named is refused before anything is imported, PyTorch not installed is `RifeNotInstalled` with the extra that installs
+    it."""
+    named = device()
+    try:
+        rife_torch = importlib.import_module("sprite_gen.video.rife_torch")
+    except ImportError as exc:
+        raise RifeNotInstalled(f"SPRITE_GEN_RIFE_BACKEND=torch, and PyTorch cannot be imported ({exc}); install it and the "
+                               f"model {MODEL} with `{install_command()}`; see docs/loop-repair.md") from exc
+    except OSError as exc:  # installed, and its libraries do not load: a RIFE found that fails
+        raise RifeUnavailable(f"SPRITE_GEN_RIFE_BACKEND=torch, and PyTorch failed to load: {exc}") from exc
+    return rife_torch.TorchRunner(model or locate_model(), named)
+
+
 class Rife:
     """A located RIFE as an `Interpolate` callable, and as a `Read` (`read`). Counts the frames it made (`made`) and the
-    times it ran the binary (`calls`)."""
+    times it ran RIFE (`calls`): the binary's calls, or the torch backend's runs.
 
-    def __init__(self, binary: Path | None = None, model: Path | None = None):
-        if binary is None or model is None:
-            binary, model = locate()
-        self.binary, self.model = binary, model
+    What runs it is its runner, which makes a frame whole from what `inputs` gives it (`frame`: two runs; `read`: two
+    runs and the sixteen passes) and names what its frames depend on (`identity`): `Binary` for the binary, or
+    `rife_torch.TorchRunner`. `Rife()` takes the one `backend()` names; `Rife(binary, model)` is the binary at those
+    paths; `Rife(runner=...)` any other."""
+
+    def __init__(self, binary: Path | None = None, model: Path | None = None, *, runner: object | None = None):
+        if runner is None:
+            if binary is not None and model is not None:
+                runner = Binary(binary, model)
+            elif backend() == "ncnn":
+                runner = Binary(*locate())
+            else:
+                runner = torch_runner()
+        self.runner = runner
+        self.binary, self.model = getattr(runner, "binary", None), getattr(runner, "model", None)
         self.tta = tta()  # refused here, before a frame is asked for
         self.made = 0
         self.calls = 0
 
     def __call__(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
-            frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+        frame = _joined(*self.runner.frame(*inputs(a, b), t))  # type: ignore[attr-defined]
         self.made += 1
         self.calls += 2
         return frame
 
     def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
         """The frame at `t`, made as every call makes it (`between`), and how far the sixteen single passes disagree
-        there (`passes`): 2 + PASS_CALLS calls of the binary."""
-        with tempfile.TemporaryDirectory(prefix="sprite-gen-rife-") as td:
-            frame = between(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
-            apart = passes(a, b, t, binary=self.binary, model=self.model, tmp=Path(td))
+        there (`passes`): 2 + PASS_CALLS runs of RIFE."""
+        rgb, alpha, apart = self.runner.read(*inputs(a, b), t)  # type: ignore[attr-defined]
         self.made += 1
         self.calls += 2 + PASS_CALLS
-        return frame, apart
+        return _joined(rgb, alpha), apart
 
     def describe(self) -> dict[str, str]:
-        return {"binary": str(self.binary), "model": self.model.name, "tta": " ".join(self.tta)}
+        """What made the frames, for a report: its `kind` (`rife-ncnn-vulkan`, `rife-torch`), where it runs from, and the
+        augmentation."""
+        return {**self.runner.describe(), "tta": " ".join(self.tta)}  # type: ignore[attr-defined]
+
+    def counts(self) -> dict[str, int]:
+        """The runs it made, as a report names them: the binary's calls (`binary_calls`), or the torch backend's runs
+        (`runs`)."""
+        return {"binary_calls" if isinstance(self.runner, Binary) else "runs": self.calls}
 
     def identity(self) -> str:
         """What a frame this RIFE makes depends on besides its two frames and t, as one string (`Cache` keys
-        on it), read as it is now on every call — nothing of it is kept, so a binary, model or machine changed
-        under this very RIFE is another identity: the binary's and each of the model's files by sha256, and the
-        model's path as the binary is handed it (the binary reads the model's version from its name); the
-        augmentation every call asks for now (`tta()`: SPRITE_GEN_RIFE_TTA is read on every call, and another is
-        another frame); the engine code this process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
+        on it): its runner's (`identity()` of the runner — for the binary its files, read again on every call, so a
+        binary or model changed under this very RIFE is another identity; for the torch backend what it loaded and runs
+        on, the same for its life) and this host's, read as it is now on every call: the augmentation every call asks
+        for now (`tta()`: SPRITE_GEN_RIFE_TTA is read on every call, and another is another frame); the engine code this
+        process loaded (`CODE_SHA256`: it turns a frame into RIFE's two runs and back) and NumPy's and
         Pillow's versions; and the machine — the OS, and `uname`'s host name, OS release and build and
         architecture (platform.uname() keeps its first answer) — as the Apple GPU and llvmpipe are only measured
         to agree to the third decimal of an error (docs/loop-repair.md section 1), so a frame made on one is not
-        taken on another. Files that cannot be read are a RIFE that fails (`RifeUnavailable`)."""
-        try:
-            model = sorted(p for p in self.model.iterdir() if p.is_file())
-            files = {"binary": _file_sha256(self.binary), "model": str(self.model), "model_files": {p.name: _file_sha256(p) for p in model}}
-        except OSError as exc:
-            raise RifeUnavailable(f"{self.binary.name}: the binary or model it runs from could not be read: {exc}") from exc
+        taken on another."""
         return json.dumps({
-            **files, "tta": list(tta()), "code": CODE_SHA256, "numpy": np.__version__, "pillow": PIL.__version__,
-            "machine": [sys.platform, *(os.uname() if hasattr(os, "uname") else platform.uname()[:5])]}, sort_keys=True)
+            **self.runner.identity(), "tta": list(tta()), "code": CODE_SHA256, "numpy": np.__version__,  # type: ignore[attr-defined]
+            "pillow": PIL.__version__, "machine": [sys.platform, *(os.uname() if hasattr(os, "uname") else platform.uname()[:5])]},
+            sort_keys=True)
 
 
 def _kept(path: Path, size: tuple[int, int]) -> Image.Image | None:

@@ -975,11 +975,10 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
             if required:
                 raise
             frames, overlap = asked(frames, read=None)
-            overlap.update(why="RIFE not installed — the wrap cut as filmed", rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+            overlap.update(why="RIFE not installed — the wrap cut as filmed", rife=str(exc), install=rife_mod.install_command())
         overlapped = overlap["frames"]
         if overlap["calls"]:
-            overlap["interpolator"] = ({"kind": "rife-ncnn-vulkan", **made_by[0], "binary_calls": interpolate.calls}
-                                       if made_by else {"kind": "injected"})
+            overlap["interpolator"] = {**made_by[0], **interpolate.counts()} if made_by else {"kind": "injected"}
     wrap_calls = calls
     try:
         repaired, record = repair_mod.repair_jumps(frames, lazy, facing=facing, screen=screen, overlapped=overlapped,
@@ -995,17 +994,17 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
         if "unmade" in record:
             record.update(why="RIFE not installed — cut as filmed" if not record["replaced"] else
                           "RIFE not installed — the jump cut as filmed, each filmed ghost given way to the clean frame beside it",
-                          rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+                          rife=str(exc), install=rife_mod.install_command())
         elif record.get("ease_skipped") == "no interpolator":
             # no jump, but a part that rushes: the frames either side of it were to be made again at eased times
             record.update(why="RIFE not installed — the rush cut as filmed" if not record["replaced"] else
                           "RIFE not installed — the rush cut as filmed, each filmed ghost given way to the clean frame beside it",
-                          rife=str(exc), install=rife_mod.INSTALL_COMMAND)
+                          rife=str(exc), install=rife_mod.install_command())
         return repaired, record, overlap
     frames = repaired
     record["applied"] = bool(record["replaced"])
     if calls > wrap_calls:
-        record["interpolator"] = {"kind": "rife-ncnn-vulkan", **made_by[0]} if made_by else {"kind": "injected"}
+        record["interpolator"] = dict(made_by[0]) if made_by else {"kind": "injected"}
     return frames, record, overlap
 
 
@@ -1029,7 +1028,7 @@ def _ghost_lines(jump_repair: dict[str, Any]) -> list[str]:
         if r["proposal"] is not None:
             why = f"RIFE's frame between its neighbours has a fault ({', '.join(r['faults'])})"
         elif r["no_proposal"] == "no interpolator":
-            why = f"RIFE is not installed, so no frame between its neighbours was made (`{rife_mod.INSTALL_COMMAND}`)"
+            why = f"RIFE is not installed, so no frame between its neighbours was made (`{rife_mod.install_command()}`)"
         else:
             why = r["no_proposal"]
         lines.append(line + f"given way to frame {r['taken']['source']} beside it, shown twice in a row (cycle/frame-{j:03d}.png): "
@@ -1048,7 +1047,7 @@ def _overlap_lines(overlap: dict[str, Any]) -> list[str]:
                 f"two drawings inside its outline (crossfade {r['proposal']['crossfade']:.4f}); kept, a reading to look at "
                 "(docs/loop-repair.md section 2)" for r in taken["made"] if r["look"]]
     if "rife" in overlap:
-        return [f"{said}, and RIFE is not installed, so the overlapped wrap was not made — run `{rife_mod.INSTALL_COMMAND}` "
+        return [f"{said}, and RIFE is not installed, so the overlapped wrap was not made — run `{rife_mod.install_command()}` "
                 "and cut it again (docs/loop-repair.md section 2)"]
     if "skipped" in overlap:
         return [f"{said}; the overlapped wrap was not made: {overlap['skipped']} (docs/loop-repair.md section 2)"]
@@ -1692,7 +1691,7 @@ def run_loop(
             frames, report_base["jump_repair"], overlap = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
                                                                         screen=report_base["ghost_screen"], wrap=wrap)
         except (ValueError, rife_mod.RifeUnavailable) as exc:
-            fix = (f"install RIFE (`{rife_mod.INSTALL_COMMAND}`), or pass --repair auto to cut it as filmed with a warning"
+            fix = (f"install RIFE (`{rife_mod.install_command()}`), or pass --repair auto to cut it as filmed with a warning"
                    if isinstance(exc, rife_mod.RifeNotInstalled) else "fix RIFE, or pass --repair off to cut it as filmed")
             error = (f"video-loop: {exc}; the loop has a frame to make (after a jump, for a part that rushes, at a wrap a part "
                      f"on its own beat does not close, or for a filmed ghost between two clean frames) — {fix} (docs/loop-repair.md)")
@@ -1734,12 +1733,12 @@ def run_loop(
             unmade = report_base["jump_repair"]["unmade"]
             print(f"video-loop: warning: a jump frame was not repaired (frames {unmade['frames']}, {unmade['off']:.2f}x its "
                   "region's usual step off the line between its neighbours) — RIFE is not installed, so the loop is cut as filmed; "
-                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md)", file=sys.stderr)
+                  f"run `{rife_mod.install_command()}` and cut it again (docs/loop-repair.md)", file=sys.stderr)
         elif "rife" in report_base["jump_repair"]:
             rush = report_base["jump_repair"]["surge"]
             print(f"video-loop: warning: a part of the loop rushes (frames {rush['frames']}, {rush['ratio']:.1f}x its steps "
                   "either side) and was not eased — RIFE is not installed, so the loop is cut as filmed; "
-                  f"run `{rife_mod.INSTALL_COMMAND}` and cut it again (docs/loop-repair.md section 2)", file=sys.stderr)
+                  f"run `{rife_mod.install_command()}` and cut it again (docs/loop-repair.md section 2)", file=sys.stderr)
     else:
         report_base["jump_repair"] = {"applied": False, "why": "--repair off" if repair == "off" else f"not a gait state ({state})"}
     if prof.gait:
@@ -1766,7 +1765,7 @@ def run_loop(
             error = (f"video-loop: loop jolts — {'; '.join(over)} ({cycle.get('kind', 'periodic')} length {L} frames from {i}"
                      f"{', after repairing frames ' + str(report_base['jump_repair']['replaced']) if report_base['jump_repair'].get('replaced') else ''}); "
                      "the motion does not play smoothly — regenerate the clip"
-                     f"{' (the jump repair did not run: RIFE is not installed — ' + rife_mod.INSTALL_COMMAND + ')' if 'rife' in report_base['jump_repair'] else ''}")
+                     f"{' (the jump repair did not run: RIFE is not installed — ' + rife_mod.install_command() + ')' if 'rife' in report_base['jump_repair'] else ''}")
             shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
             write_loop_report(target, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error)

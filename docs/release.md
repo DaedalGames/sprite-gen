@@ -24,6 +24,19 @@ RIFE 가 닿는 곳이 하나도 없는 상태로 스위트 전체를 돌려 그
 시험(`pytest -m real_rife`)을 돌린다 — 하나라도 건너뛰거나, 표시된 시험이 없으면 실패다. 그래서 새
 실제-RIFE 시험은 표시만 붙이면 `--rife-only` 가 저절로 걷는다.
 
+RIFE 의 torch 백엔드(`SPRITE_GEN_RIFE_BACKEND=torch`, docs/loop-repair.md 1절)를 돌리는 시험은
+`torch_rife` 표시를 단다(`pyproject.toml` 이 등록한다). `tests/conftest.py` 는 PyTorch 가 import 되지
+않거나, `rife.locate_model()` 이 모델을 못 찾거나, `SPRITE_GEN_RIFE_DEVICE` 가 이름 댄 장치가
+없으면(기본 cuda 인데 CUDA 가 없으면) 그 표시가 붙은 시험을 건너뛴다. 레인은 스위트를 다 돈 뒤 같은
+환경에 PyTorch 2.13.0 의 CPU 판을 PyTorch CPU 인덱스에서 깔고, `sprite-gen rife install --backend torch`
+의 확인 프레임(PyTorch 로 만든다)과 `torch_rife` 가 붙은 시험 전부(`pytest -m torch_rife`)를
+`SPRITE_GEN_RIFE_DEVICE=cpu` 로 돌린다. 하나라도 건너뛰거나 표시된 시험이 없으면 실패다. `--rife-only`
+도 같은 단계를 돈다. `real_rife` 와 `torch_rife` 가 함께 붙은 시험(같은 기계의 바이너리와 torch 판의
+판정 비교)은 `real_rife` 단계에서 빼고 이 단계에서 돈다. `--rife-unmeasured` 는 이 단계를 돌지 않고, 그
+실행에서는 `torch_rife` 가 붙은 시험도 RIFE 때문에 건너뛸 수 있는 것으로 친다.
+`tests/release/test_lane_rife_collection.py` 의 표시 검사도 두 표시를 같이 받는다. CUDA 위의 torch 판은
+이 레인이 재지 않는다.
+
 표시 없이 RIFE 가 없을 때 건너뛰거나 모이지 않는 시험은 두 실행 어느 쪽도 재지 않는다. 그래서
 `--rife-unmeasured` 는 시험을 `pytest --rife-unmeasured` 로 돌리고, 그 실행에서 건너뛴 것마다 — skip
 표시로든, fixture 나 시험 본문에서든, 파일째 import 에서든 — `tests/conftest.py` 가 `real_rife` 표시를

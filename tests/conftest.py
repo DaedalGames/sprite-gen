@@ -61,7 +61,7 @@ def symlink_or_skip(link: Path, target: Path) -> None:
 
 # Tests that skip where no RIFE is reachable for a reason other than RIFE: an input the lane does not
 # give. Named without their parameters. In the lane's RIFE-less run (`pytest --rife-unmeasured`) these
-# and the tests marked real_rife may skip; any other skip fails (docs/release.md).
+# and the tests marked real_rife or torch_rife may skip; any other skip fails (docs/release.md).
 NOT_RIFE_SKIPS = {
     # SPRITE_GEN_CHROMA_REAL_STILLS names model stills, which the repository does not hold.
     "tests/frames/test_chroma_key_relative.py::test_real_still_keys_out_its_painted_border",
@@ -73,38 +73,64 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--rife-unmeasured",
         action="store_true",
         help="the RIFE-less run of scripts/linux_lane.sh: a skip fails unless its test is marked real_rife "
-        "or named in NOT_RIFE_SKIPS (tests/conftest.py)",
+        "or torch_rife, or named in NOT_RIFE_SKIPS (tests/conftest.py)",
     )
+
+
+def _torch_rife_missing() -> str | None:
+    """Why the torch backend cannot run here, None where it can: PyTorch, the rife-v4.6 model it reads
+    (`rife.locate_model()`) and the device SPRITE_GEN_RIFE_DEVICE names."""
+    from sprite_gen.video import rife
+
+    try:
+        import torch
+    except ImportError as exc:
+        return f'PyTorch not installed (pip install "sprite-gen[torch]"): {exc}'
+    try:
+        rife.locate_model()
+        named = rife.device()
+    except rife.RifeUnavailable as exc:
+        return f"RIFE's torch backend cannot run here: {exc}"
+    if named == "cuda" and not torch.cuda.is_available():
+        return "SPRITE_GEN_RIFE_DEVICE is cuda (the default) and PyTorch finds no CUDA here; name SPRITE_GEN_RIFE_DEVICE=cpu"
+    return None
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """A test marked `real_rife` runs the real binary: skipped where `rife.locate()` finds none, and run
-    by `scripts/linux_lane.sh --rife-only` (`-m real_rife`)."""
+    by `scripts/linux_lane.sh --rife-only` (`-m real_rife`). A test marked `torch_rife` runs RIFE's torch
+    backend: skipped where PyTorch, the model or the device is missing (`_torch_rife_missing`), and run by
+    the lanes with none skipped (`-m torch_rife`, docs/release.md)."""
     marked = [item for item in items if item.get_closest_marker("real_rife")]
-    if not marked:
-        return
-    from sprite_gen.video import rife
+    torched = [item for item in items if item.get_closest_marker("torch_rife")]
+    if marked:
+        from sprite_gen.video import rife
 
-    try:
-        rife.locate()
-    except rife.RifeUnavailable:
-        for item in marked:
-            item.add_marker(pytest.mark.skip(reason="rife-ncnn-vulkan not installed (SPRITE_GEN_RIFE / PATH / sprite-gen rife install)"))
+        try:
+            rife.locate()
+        except rife.RifeUnavailable:
+            for item in marked:
+                item.add_marker(pytest.mark.skip(reason="rife-ncnn-vulkan not installed (SPRITE_GEN_RIFE / PATH / sprite-gen rife install)"))
+    why = _torch_rife_missing() if torched else None
+    if why:
+        for item in torched:
+            item.add_marker(pytest.mark.skip(reason=why))
 
 
 def _fail_unmeasured_skip(report: pytest.TestReport | pytest.CollectReport, node: pytest.Item | pytest.Collector) -> None:
     """In the lane's RIFE-less run a skip that `--rife-only` will not run fails, by name: neither run would
-    measure it. `--rife-only` runs the tests marked real_rife; a skip of any other test, or of a whole
-    file, stands only where NOT_RIFE_SKIPS names it. Whatever skipped it: a skip mark, a fixture, the
+    measure it. `--rife-only` runs the tests marked real_rife or torch_rife; a skip of any other test, or of
+    a whole file, stands only where NOT_RIFE_SKIPS names it. Whatever skipped it: a skip mark, a fixture, the
     test body, the file at import."""
     if not report.skipped or hasattr(report, "wasxfail") or not node.config.getoption("rife_unmeasured", False):
         return
-    if node.get_closest_marker("real_rife") or report.nodeid.partition("[")[0] in NOT_RIFE_SKIPS:
+    if (node.get_closest_marker("real_rife") or node.get_closest_marker("torch_rife")
+            or report.nodeid.partition("[")[0] in NOT_RIFE_SKIPS):
         return
     path, line, reason = report.longrepr
     report.outcome = "failed"
     report.longrepr = (
-        "skipped where no RIFE is reachable, but not marked real_rife: `scripts/linux_lane.sh --rife-only` "
+        "skipped where no RIFE is reachable, but not marked real_rife or torch_rife: `scripts/linux_lane.sh --rife-only` "
         f"runs only the marked tests, so neither run measures it\n{path}:{line}: {reason}\n"
         "A test that needs the real rife-ncnn-vulkan is marked `real_rife`; one that skips for another "
         "reason is named in NOT_RIFE_SKIPS (tests/conftest.py)."
@@ -118,7 +144,6 @@ def _engine_tta(monkeypatch: pytest.MonkeyPatch) -> None:
     tests measure. SPRITE_GEN_RIFE_DEVICE stays: it names where the torch backend's tests run."""
     monkeypatch.delenv("SPRITE_GEN_RIFE_TTA", raising=False)
     monkeypatch.delenv("SPRITE_GEN_RIFE_BACKEND", raising=False)
-
 
 
 @pytest.hookimpl(wrapper=True)

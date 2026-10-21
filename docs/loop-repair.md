@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -30,6 +30,53 @@ the binary's test-time augmentation, spatial and temporal (`-x -z`, `rife.TTA`;
 | `rife-ncnn-vulkan-20221029-macos.zip` | `4a63a1f3c9c715773c57d2ee51df1b315ed20cd6c63103e45c483ecc4400b595` |
 | `rife-ncnn-vulkan-20221029-windows.zip` | `d8e4d772d26cd8006ef0ad0bc82eb191b53c68677d1ae2f42506d74cbbbea606` |
 
+| Model file (the macOS and Ubuntu zips hold the same, measured 2026-10-21) | SHA-256 |
+|---|---|
+| `rife-v4.6/flownet.param` | `724569596bcd1e7b9fa50455c604777ebed99746d2ef40aa86e31b5725f1053c` |
+| `rife-v4.6/flownet.bin` | `f334ed2260149ce0188a6dcf049844e8b0cdd912e01cbcfb63553157d2508958` |
+
+#### The torch backend: `SPRITE_GEN_RIFE_BACKEND=torch`
+
+The binary is the default. `SPRITE_GEN_RIFE_BACKEND=torch` runs the same model in PyTorch instead
+(`sprite_gen/video/rife_torch.py`), for a GPU the binary cannot run on: rife-ncnn-vulkan needs Vulkan,
+and a GPU offered for compute alone (CUDA with no Vulkan driver) has none. It is the same RIFE:
+
+- the network is rife-v4.6's IFNet (Practical-RIFE `IFNet_HDv3`), written again with its parameter
+  names;
+- its weights are read out of the binary's own model files above, checked against those SHA-256 first
+  (the binary's float16 weights widened as the binary widens them, no other download);
+- one run does what one call of the binary does with `-x -z`: the pair turned its eight ways and run
+  both ways in time, every way's flows turned back and averaged at each of the network's four levels,
+  the frames averaged and rounded as the binary rounds them; `SPRITE_GEN_RIFE_TTA` means the same;
+- a frame is the same two runs (colour, coverage) and a read the same sixteen passes (section 4), the
+  engine's part of them done by the same code for either backend (`rife.frame_runs`, `rife.pass_runs`).
+
+| Variable | Values | Default |
+|---|---|---|
+| `SPRITE_GEN_RIFE_BACKEND` | `ncnn` (the binary), `torch` | `ncnn` |
+| `SPRITE_GEN_RIFE_DEVICE` | `cuda`, `cpu` (the torch backend's device) | `cuda` |
+| `SPRITE_GEN_RIFE_MODEL` | a `rife-v4.6` directory | beside the binary (`ncnn`); the install root's (`torch`) |
+| `SPRITE_GEN_RIFE_TTA` | `-x`, `-z`, both, or empty | `-x -z`, for both backends |
+
+Nothing falls back. With torch chosen the engine neither looks for the binary nor runs it. A device is
+not chosen for you and not traded for another: `cuda` where PyTorch finds no CUDA is refused, naming
+why (a PyTorch built for the CPU only, or a CUDA that finds no GPU), and does not run on the CPU.
+Apple's GPU (`mps`) is refused: no release lane measures it, and on a Mac the binary already runs on
+the GPU. PyTorch not installed, or no model where it looks, is RIFE not installed ("Without RIFE"
+below); a backend or device named wrong, a model whose files are not the pinned ones, or a run that
+fails on the device, is a RIFE that fails.
+
+On CUDA every frame runs with cuDNN deterministic, its benchmark off and its convolutions in IEEE
+float32 (`torch.backends.cudnn.conv.fp32_precision = "ieee"`: PyTorch turns TF32 on by default), so the
+same frame twice is the same bytes on one GPU, driver and PyTorch. On the CPU it is the same bytes
+whatever the thread count. PyTorch does not promise the same bytes across GPUs or releases, so what
+made a frame (the backend, the model bytes it loaded, its network code, PyTorch, on CUDA the GPU,
+driver, CUDA, cuDNN and those settings as they read back, on the CPU its instruction set) is the RIFE's
+identity, and a frame kept for one is never taken for another (section 4, `--between-cache`). The
+engine's reports name what made their frames: `interpolator.kind` is `rife-ncnn-vulkan` or
+`rife-torch`, and the overlapped wrap counts the binary's calls (`binary_calls`) or the torch backend's
+runs (`runs`).
+
 ### Install — `sprite-gen rife install`
 
 ```bash
@@ -55,11 +102,28 @@ finds out at install time (`--no-check` skips it). `--zip FILE` installs from a 
 downloaded (behind a proxy, in an image build), checked the same way; `--dir DIR` installs
 elsewhere and prints the `SPRITE_GEN_RIFE=…` line the engine then needs. Other platforms (Linux
 on ARM, for one) have no release build: build it from the repository and set `SPRITE_GEN_RIFE`.
+Either backend's install checks the model's two files against their SHA-256 above once the zip is
+unpacked, and installs nothing where they differ.
 
 The engine finds the binary by, in order: `SPRITE_GEN_RIFE` (the binary's path), then
-`rife-ncnn-vulkan` on `PATH`, then the install root above. The model is `SPRITE_GEN_RIFE_MODEL`
-or `rife-v4.6/` next to the binary. When an earlier place holds another RIFE, the install says
-which one the engine runs.
+`rife-ncnn-vulkan` on `PATH`, then the install root above. The model is `SPRITE_GEN_RIFE_MODEL` or
+`rife-v4.6/` next to the binary. When an earlier place holds another RIFE, the install says which one
+the engine runs.
+
+For the torch backend:
+
+```bash
+pip install "sprite-gen[torch]"           # PyTorch 2.13 or later
+sprite-gen rife install --backend torch    # the model, and a check frame through PyTorch
+```
+
+`--backend torch` (the default where `SPRITE_GEN_RIFE_BACKEND=torch`) installs the same zip and makes
+the check frame through PyTorch on `SPRITE_GEN_RIFE_DEVICE` (name `cpu` for an image built without a
+GPU). It reads the model only, so a Linux machine the binary does not run on (ARM) is not refused. The
+backend reads the model from `SPRITE_GEN_RIFE_MODEL`, else the install root's `rife-v4.6/`, never from
+beside a binary on `PATH`. PyPI's Linux wheel of PyTorch is its CUDA build (527 MB, and its CUDA
+libraries); a host that runs the backend on the CPU only installs PyTorch's CPU build first (192 MB):
+`pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu`.
 
 ### Without RIFE
 
@@ -71,6 +135,11 @@ cut before RIFE existed still cuts — and nothing is left unsaid:
 |---|---|---|
 | `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced | `--repair on`: fails with the install line |
 | `video-set` cycle alignment (section 4) | `--align-cycles auto`: the state is skipped and every loop keeps its own length; `cycle_align.<state>` reads `applied: false` with `why`, `rife`, `install`; the set report lists it under `warnings`; one `video-set: warning:` line | `video-cycle-align`: fails with the install line |
+
+With `SPRITE_GEN_RIFE_BACKEND=torch`, PyTorch not installed or no model where the backend looks is RIFE
+not installed in the same way: the records' `rife` names what was missing and `install` gives the torch
+backend's line (`pip install "sprite-gen[torch]" && sprite-gen rife install --backend torch`); the
+binary is not run in its place.
 
 A RIFE that is found and then fails (a binary that cannot reach Vulkan, say) is an error in every
 mode: the install is there and broken, which a warning would hide. A jolt gate passed to a loop
@@ -198,8 +267,37 @@ minutes. A deployment that aligns on a CPU names a lighter augmentation for that
 `SPRITE_GEN_RIFE_TTA=` (none) is 4 to 6 s a 960 × 960 frame, `-z` 7 to 10 s. On a Mac it is under
 two seconds either way. That is the reason section 4 keeps every frame that lands on a source frame.
 
-A PyTorch RIFE was not chosen: it would add a framework of hundreds of megabytes to the image
-for the same model, and llvmpipe already gives the GPU's frame.
+**The torch backend is for a GPU the binary cannot use; the binary stays the default.** A GPU offered
+for compute only cannot run the binary at all, and there the torch backend runs the same model and
+augmentation. Elsewhere it adds PyTorch, hundreds of megabytes, for the same model: on a Mac the binary
+already runs on the GPU. On a CPU host the torch backend is faster than the binary on llvmpipe (the
+table below), but its frames are not the binary's bytes; a deployment that wants it there names it, and
+the default does not move. Measured on synthetic walkers, 2026-10-21:
+
+- **The same verdicts.** The seven pairs of `tests/fixtures/rife-walkers` (clean steps, an outline lost
+  where legs cross far, a ghost band, parts torn, a cross-fade to look at) get the same faults and
+  looks from the binary on an Apple GPU, the binary on llvmpipe and the torch backend on a CPU, each
+  reading at least a tenth of its bound away from it (and three more pairs besides, one left out for a
+  torn reading 8 % from its bound on llvmpipe). The tests keep it: the torch backend judges the seven
+  as the binary did on a machine with no binary, and as this machine's binary does where both run.
+- **Frames as close as two GPUs'.** Against the binary's frame on the Apple GPU, the torch backend's
+  lies 0.005 to 0.052 of 255 apart on average and 11 at most (premultiplied RGBA in the box either
+  covers), and the binary's own frame on llvmpipe 0.007 to 0.25 apart and 76 at most: closer on six of
+  the seven pairs, the seventh 7 % further.
+- **Time** (a 960 × 960 frame of the walker drawn 512 × 768, legs crossing far and the short step, t
+  0.5, after a warm call):
+
+| | `-x -z` frame | plain frame | read (`-x -z` frame and sixteen passes) |
+|---|---|---|---|
+| binary, Apple M4 Max GPU | 1.27 to 1.37 s | 0.77 to 0.82 s | 12.6 to 13.2 s |
+| torch backend, Apple M4 Max CPU (12 threads) | 3.3 to 3.6 s | 0.38 to 0.40 s | 8.8 to 9.0 s |
+| binary, Modal `cpu=2` (llvmpipe), one cold call each | 127.7 to 131.5 s | 9.3 to 9.5 s | not run |
+| torch backend, the same Modal container, 2 threads | 22.6 to 28.5 s | 1.5 to 1.7 s | 45.1 to 46.1 s |
+
+The torch backend's frame on an x86 CPU is not the same bytes as on an Apple CPU (its torn reading is),
+which the CPU's instruction set in its identity keeps apart. PyTorch sizes its threads by the host's
+cores, not a container's share (the container above saw 18): a container names its share
+(`OMP_NUM_THREADS`). On a CUDA GPU the release lane measures it (docs/release.md).
 
 ### Licences
 
@@ -210,8 +308,12 @@ for the same model, and llvmpipe already gives the GPU's frame.
 | RIFE v4.x weights (Practical-RIFE) | MIT — "The content of these links is under the same MIT license as this project." | github.com/hzwer/Practical-RIFE |
 | ncnn | BSD 3-Clause | github.com/Tencent/ncnn |
 
-sprite-gen ships none of these. A deployment that bakes the release zip into an image ships
-the zip's `LICENSE` with it.
+| sprite-gen's torch backend (`sprite_gen/video/rife_torch.py`) | MIT notices in `NOTICE`: the IFNet written again from Practical-RIFE `IFNet_HDv3.py` and `warplayer.py`, © 2021 hzwer; the augmentation from rife-ncnn-vulkan's `RIFE::process_v4`, © 2020 nihui | Practical-RIFE f6b5132 (2022-09-26); rife-ncnn-vulkan 20221029 |
+| PyTorch (the `torch` extra) | BSD 3-Clause | github.com/pytorch/pytorch |
+
+sprite-gen ships none of the binaries, weights or PyTorch: its torch backend is code written again from
+the two MIT sources above, their notices in `NOTICE`, and reads the weights from the release zip's
+model. A deployment that bakes the release zip into an image ships the zip's `LICENSE` with it.
 
 ## 2. Jump frames — `video-loop --repair auto`
 
@@ -1560,22 +1662,28 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   remembered: the RIFE binary file and each file in the model directory, by sha256; the model directory's
   path as given to the binary (the binary reads the model's version from the directory name); the
   augmentation every call asks for at that moment (`rife.tta()`: `SPRITE_GEN_RIFE_TTA`, or the default
-  `-x -z` when it is not set — section 1, "Which setting"), as another augmentation makes another frame; the
-  engine code as loaded, which is the sha256 of `sprite_gen/video/rife.py` read once at import (`rife.py` written
-  over on disk during a run changes no code that is running, so a frame made by the loaded code is kept
-  under that code, and a later process that loads other code gets another key and makes the frames again);
-  the NumPy and Pillow versions; and the host as `os.uname()` reports it at that moment (host name,
-  OS release, build, and architecture), with the OS platform. A binary or model file that cannot be read
-  fails the alignment, as a RIFE that fails does. Any change in cycle length, `--cycles`, source pixels,
-  binary, model, augmentation, engine code, or host makes the frame again. The key does not read the GPU driver or its
-  environment; a caller that changes those between passes gives each pass its own directory. Reading the
-  identity hashes 36.5 MB of binary and model files in about 17 ms on an Apple M1: once for a frame taken,
-  twice for a frame made (making a frame with RIFE takes on the order of a second). After a frame is made,
-  its key is read again; if anything it is made from changed while it was being made, the frame is handed
-  on but not kept, and counted as `not_kept`. Each kept frame is a PNG file named by its key, with its
-  pixel sha256 in a text chunk, written to a temporary file and renamed into place. A kept file that does
-  not read back as that frame is made again, written over, and counted as `unreadable`. A taken frame is
-  a new image of exactly the kept pixels, so the aligned loop is the same, byte for byte, as an alignment
+  `-x -z` when it is not set — section 1, "Which setting"), as another augmentation makes another frame;
+  the engine code as loaded, which is the sha256 of `sprite_gen/video/rife.py` read once at import
+  (`rife.py` written over on disk during a run changes no code that is running, so a frame made by the
+  loaded code is kept under that code, and a later process that loads other code gets another key and
+  makes the frames again); the NumPy and Pillow versions; and the host as `os.uname()` reports it at that
+  moment (host name, OS release, build, and architecture), with the OS platform. With the torch backend
+  (section 1) the binary's and the model's files give way to what the backend loaded and runs on, read
+  once when it loads and kept for its life: the sha256 of the model bytes it read, its network code
+  (`rife_torch.py`, read at import), PyTorch's version, the device, and on CUDA the GPU's name and
+  capability, the driver, CUDA's and cuDNN's versions and the determinism settings as they read back, on
+  the CPU its instruction set; the key names the backend either way, so a frame one backend made is never
+  taken for the other's. A binary or model file that cannot be read fails the alignment, as a RIFE that
+  fails does. Any change in cycle length, `--cycles`, source pixels, binary, model, augmentation, engine
+  code, or host makes the frame again. The key does not read the GPU driver or its environment; a caller
+  that changes those between passes gives each pass its own directory. Reading the identity hashes 36.5
+  MB of binary and model files in about 17 ms on an Apple M1: once for a frame taken, twice for a frame
+  made (making a frame with RIFE takes on the order of a second). After a frame is made, its key is read
+  again; if anything it is made from changed while it was being made, the frame is handed on but not
+  kept, and counted as `not_kept`. Each kept frame is a PNG file named by its key, with its pixel sha256
+  in a text chunk, written to a temporary file and renamed into place. A kept file that does not read
+  back as that frame is made again, written over, and counted as `unreadable`. A taken frame is a new
+  image of exactly the kept pixels, so the aligned loop is the same, byte for byte, as an alignment
   without the directory. Nothing is kept without `--between-cache` (there is no default directory). The
   caller gives each alignment its own directory and removes it when that alignment is done. The engine
   creates `DIR` mode 0700 and files mode 0600, never deletes `DIR`, and records `dir`, `hits`, `misses`,

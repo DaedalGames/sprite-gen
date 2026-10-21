@@ -45,6 +45,11 @@ dev = [
     # subprocess.wait(), which is exactly the case that hangs here.
     "pytest-timeout>=2.3",
 ]
+# RIFE's torch backend (SPRITE_GEN_RIFE_BACKEND=torch, docs/loop-repair.md section 1): rife-v4.6 in PyTorch, for a
+# GPU host the binary cannot run on (Vulkan-less CUDA). 2.13.0 is the release it was measured on. PyPI's Linux x86-64
+# wheel is the CUDA 13 build; a host that runs it on the CPU only takes PyTorch's CPU index
+# (`pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu`) before the extra.
+torch = ["torch>=2.13.0,<3"]
 
 # The console script is what removes the "which python?" question: pip writes it
 # with a shebang naming the interpreter of the environment it was installed
