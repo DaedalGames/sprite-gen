@@ -693,7 +693,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--alpha-mode", choices=("chroma", "brightness"), default="chroma", help="chroma key (default), or emitted light on black: brightness alpha, unpremultiplied RGB, no speck/edge cleanup; dark smoke becomes faint")
     parser.add_argument("--clip", required=True, type=Path, help="mp4 from `sprite-gen video`, or one made elsewhere from a `video-canvas` still (a video MCP such as ZCRE); an audio track and a cover image are left out")
-    parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here")
+    parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here; a refused run leaves keyed.refused/ and no keyed/")
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto", help="background key (auto reads the corners)")
     parser.add_argument("--allow-edge-contact", action="store_true", help="accept any opaque pixel at the top/left/right edge (subject and leftover key background alike)")
     parser.add_argument("--allow-subject-edge-contact", action="store_true", help="accept the subject touching the top/left/right edge (a `video-canvas --fit tight` clip) but still refuse leftover key background there")
