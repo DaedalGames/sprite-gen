@@ -117,11 +117,16 @@ def _key(raw: np.ndarray, key=(0, 255, 0), **kwargs) -> tuple[np.ndarray, dict]:
     return np.array(out), stats
 
 
+def _hard_cut(raw: np.ndarray, key=(0, 255, 0)) -> np.ndarray:
+    """The engine's hard-cut background of a raw frame: what the matte keys outright."""
+    painted = detect_background_key_rgb(Image.fromarray(raw, "RGB").convert("RGBA"), key)
+    keyed, _ = hard_key_mask(raw.astype(np.int32), np.full(raw.shape[:2], 255), key, painted, KEY_ARGS[0])
+    return keyed
+
+
 def _edge(raw: np.ndarray, key=(0, 255, 0)) -> tuple[np.ndarray, np.ndarray]:
     """(edge, interior): the pass's band+flank region and what lies deeper."""
-    image = Image.fromarray(raw, "RGB")
-    painted = detect_background_key_rgb(image.convert("RGBA"), key)
-    keyed, _ = hard_key_mask(raw.astype(np.int32), np.full(raw.shape[:2], 255), key, painted, KEY_ARGS[0])
+    keyed = _hard_cut(raw, key)
     depth = decontam._ring_depth(keyed, decontam.BAND_PX)
     flank = keyed & (decontam._ring_depth(~keyed, decontam.FLANK_PX) <= decontam.FLANK_PX)
     band = ~keyed & (depth <= decontam.BAND_PX)
@@ -319,8 +324,18 @@ def test_magenta_key_keeps_a_skin_tone_and_cleans_its_edge(video):
     off, _ = _key(raw, (255, 0, 255))
     pal, stats = _key(raw, (255, 0, 255), decontam="palette", decontam_fit="video" if video else "still")
     assert any(r > g + 40 for r, g, _b in stats["palette"])  # the skin tone is learned, not greyed toward G + 8
-    halo_off, halo_pal = _halo(off, F, A, edge), _halo(pal, F, A, edge)
-    assert halo_pal[0] <= 0.5 * halo_off[0] and halo_pal[1] <= 0.5 * halo_off[1]
+    if video:
+        # The video fit gives the keyed flank nothing (in a decoded frame its faint coverage is the codec's blur),
+        # and on this frame the flank's coverage is all that keeps half the halo: the band gets cleaner, the flank
+        # stays as the matte keyed it.
+        keyed = _hard_cut(raw, (255, 0, 255))
+        band = edge & ~keyed
+        halo_off, halo_pal = _halo(off, F, A, band), _halo(pal, F, A, band)
+        assert halo_pal[0] <= 0.9 * halo_off[0] and halo_pal[1] <= 0.9 * halo_off[1]
+        assert np.array_equal(off[keyed], pal[keyed])
+    else:
+        halo_off, halo_pal = _halo(off, F, A, edge), _halo(pal, F, A, edge)
+        assert halo_pal[0] <= 0.5 * halo_off[0] and halo_pal[1] <= 0.5 * halo_off[1]
     assert _recall(pal, A, edge) >= _recall(off, A, edge)
     assert np.array_equal(off[interior], pal[interior])
 
@@ -426,7 +441,8 @@ def test_video_frames_keep_the_frame_edge_as_the_matte_left_it(tmp_path: Path):
 
     Each blur row above the head fits a faint blend. Rows 3 to 5 lie within the flank,
     and row 3 inside the gate's edge band too: recovering it put the subject's grey on
-    the frame edge, and the gate read it as the key surviving the matte.
+    the frame edge, and the gate read it as the key surviving the matte. The video fit
+    gives the keyed flank no coverage at all now, so every blur row stays keyed.
     """
     raws = []
     for t in range(2):
@@ -443,9 +459,9 @@ def test_video_frames_keep_the_frame_edge_as_the_matte_left_it(tmp_path: Path):
         plain = np.array(Image.open(tmp_path / "plain" / raw.name))[..., 3]
         keyed = np.array(Image.open(tmp_path / "keyed" / raw.name))[..., 3]
         assert not keyed[band & (plain == 0)].any()
-        # below the edge band the flank still gives the blur rows their coverage back
-        assert keyed[4:6][plain[4:6] == 0].any()
-    assert on["decontam"]["totals"]["recovered_px"] > 0
+        # nor below it: the blur rows under the edge band stay as the matte keyed them
+        assert not keyed[2:6][plain[2:6] == 0].any()
+    assert on["decontam"]["totals"]["recovered_px"] == 0
 
 
 def test_video_frames_rejects_an_unknown_mode(tmp_path: Path):
@@ -847,3 +863,95 @@ def test_video_frames_prints_the_warning_line(tmp_path: Path, monkeypatch, capsy
                    "the frames are the matte's, the same as --decontam off"]
     assert frames_mod.run(clip=clip, out_dir=tmp_path / "off", key="auto", decontam="off") == 0
     assert capsys.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------- video fit over time
+
+def _noisy_420(rgb: np.ndarray, rng: np.random.Generator, sigma: float) -> np.ndarray:
+    """`_subsample_420` with a decoder's noise on top: luma per pixel, chroma per aligned 2x2 block (BT.601)."""
+    x = rgb.astype(np.float64)
+    luma = x @ np.array([0.299, 0.587, 0.114])
+    y = luma + rng.normal(0.0, sigma, luma.shape)
+    cb = (x[..., 2] - luma) * 0.564
+    cr = (x[..., 0] - luma) * 0.713
+    h, w = y.shape
+    for c in (cb, cr):
+        blk = c[: h // 2 * 2, : w // 2 * 2].reshape(h // 2, 2, w // 2, 2).mean((1, 3))
+        blk = blk + rng.normal(0.0, sigma, blk.shape)
+        c[: h // 2 * 2, : w // 2 * 2] = np.repeat(np.repeat(blk, 2, 0), 2, 1)
+    r = y + cr / 0.713
+    b = y + cb / 0.564
+    g = (y - 0.299 * r - 0.114 * b) / 0.587
+    return np.clip(np.round(np.stack([r, g, b], -1)), 0, 255).astype(np.uint8)
+
+
+def _still_clip(tmp_path: Path, frames=8, sigma=2.0) -> tuple[list[Path], tuple[np.ndarray, np.ndarray]]:
+    """The red-strand scene standing still while a decoder's noise changes every frame: (raw frame files, (F, A))."""
+    F, A = _render(widths=STRANDS_1_TO_3)
+    clean = _composite_on(F, A, GREEN_PAINTED)
+    files = []
+    for t in range(frames):
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(_noisy_420(clean, np.random.default_rng(1000 + t), sigma)).save(path)
+        files.append(path)
+    return files, (F, A)
+
+
+def _edge_change(directory: Path, files: list[Path]) -> tuple[float, float]:
+    """Mean and 99th percentile of the change of each edge pixel between consecutive keyed frames, composited on a
+    dark background; the edge is the pass's band and flank in either frame of the pair."""
+    dark = np.array([21.0, 17.0, 29.0])
+    shown, edges = [], []
+    for path in files:
+        out = _keyed(directory, path).astype(np.float64)
+        a = out[..., 3:4] / 255.0
+        shown.append(np.round(out[..., :3] * a + dark * (1 - a)))
+        edges.append(_edge(np.array(Image.open(path).convert("RGB")))[0])
+    change = np.abs(np.diff(np.stack(shown), axis=0)).mean(-1)
+    edge = np.stack(edges)
+    edge = edge[1:] | edge[:-1]
+    return float(change[edge].mean()), float(np.percentile(change[edge], 99))
+
+
+def test_video_frames_default_edge_changes_no_more_than_off_from_frame_to_frame(tmp_path: Path):
+    """A still scene under a decoder's noise. With the pass off the edge follows the noise smoothly; without the
+    hold, the noise carried edge pixels across the pass's tests and back, and each crossing changed the colour
+    written by far more than the noise did, so the edge sparkled where off does not."""
+    files, (F, A) = _still_clip(tmp_path)
+    frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    off_mean, off_p99 = _edge_change(tmp_path / "off", files)
+    on_mean, on_p99 = _edge_change(tmp_path / "on", files)
+    assert on_mean <= off_mean and on_p99 <= off_p99
+    # and the edge is still the hair's colour, not the olive the matte leaves
+    edges = [_edge(np.array(Image.open(path).convert("RGB")))[0] for path in files]
+    before = np.mean([_toward_key(_keyed(tmp_path / "off", path), F, A, edge) for path, edge in zip(files, edges)])
+    after = np.mean([_toward_key(_keyed(tmp_path / "on", path), F, A, edge) for path, edge in zip(files, edges)])
+    assert before > 0.05 and after <= 0.5 * before
+    totals = on["decontam"]["totals"]
+    assert totals["held_px"] > 0 and totals["settled_px"] > 0
+    assert on["rows"][0]["decontam"]["held_px"] == on["rows"][0]["decontam"]["settled_px"] == 0  # nothing to hold yet
+
+
+def test_video_frames_give_a_frame_shown_twice_the_same_bytes(tmp_path: Path):
+    """The history holds and settles toward what a frame shows: a frame repeated comes out as it did."""
+    files, _ = _clip(tmp_path, GREEN_PAINTED, frames=1, widths=STRANDS_1_TO_3)
+    again = tmp_path / "frame-0002.png"
+    shutil.copyfile(files[0], again)
+    on = frames_mod.key_frames([files[0], again], tmp_path / "on", key="green")
+    assert np.array_equal(_keyed(tmp_path / "on", files[0]), _keyed(tmp_path / "on", again))
+    assert on["rows"][1]["decontam"]["settled_px"] > 0
+
+
+def test_video_fit_gives_the_keyed_flank_no_coverage(tmp_path: Path):
+    """In a decoded frame every keyed pixel near the subject reads as a faint blend (its blur), and the codec's
+    noise carried those across the floor and back from frame to frame: the dark gaps between strands filled with a
+    faint smear that came and went. The video fit leaves what the hard cut keyed transparent; the still fit does not."""
+    files, truth = _clip(tmp_path, GREEN_PAINTED, widths=STRANDS_1_TO_3)
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    for path, (_F, _A, raw) in zip(files, truth):
+        assert not _keyed(tmp_path / "on", path)[..., 3][_hard_cut(raw)].any()
+    assert on["decontam"]["totals"]["recovered_px"] == 0
+    F, A = _render(widths=STRANDS_1_TO_3)
+    _, still = _key(_composite_on(F, A, GREEN_PAINTED), decontam="palette", decontam_fit="still")
+    assert still["recovered_px"] > 0
