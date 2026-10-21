@@ -153,7 +153,7 @@ Limitations:
 
 - An edge takes one of the subject's interior colours at its observed brightness. A thin feature whose colour appears nowhere inside the subject keeps the engine's pixels. On the RGB matte that includes the matte's reading of a thin yellow line or dot, with no pixel deeper than two pixels, as a green blend.
 - In video a thin strand's chroma is gone before keying, so its colour is chosen from blurred chroma; strands come back in the hair's hue, sometimes a shade darker or paler than drawn.
-- A subject that owns key-coloured material keeps it in its palette, and its edges are repainted with whatever explains them best, key colour included. Keep the default when that material matters.
+- A subject that owns key-coloured material keeps it in its palette, and its edges are repainted with whatever explains them best, key colour included. Keep the default on stills, but pass `--decontam off` on video when that material matters.
 - The pixel-unfake path binarizes alpha downstream, so on pixel-art rows only edge colours change.
 - The measurements are on a green key. On magenta the pass is covered by synthetic tests (teal, skin-toned and hard-edged warm subjects, the painted key and Grok's darker one), not by a benchmark.
 - A thin feature whose colour the interior never shows can be read as a palette colour plus key and take that colour: a thin yellow line beside red hair with a pink highlight came out pink (colour error 25.8 off to 48.3 auto). `--decontam off` keeps it.
