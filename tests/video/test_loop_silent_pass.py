@@ -3,7 +3,8 @@
 
 - The step gate: every step of a walk's or run's loop as it plays, read between its drawings (`loop.drawing_steps`), the
   largest over their mean at most STEP_RATIO_MAX — a frame that jumps inside the loop, where the seam ratio at the wrap
-  does not see it, fails the loop. A loop held on twos or threes is read a drawing a step, not a frame a step.
+  does not see it, fails the loop. A loop held on twos or threes is read a drawing a step, not a frame a step. A largest
+  step under STEP_NOISE_MAX is a pixel's jitter of a loop that barely moves, not a jump, however it reads over the mean.
 - A frame the jump repair took off the flow and could not make again (its group refused) and that stays off the flow is
   `jump_repair.unfixed`, said in a warning line; `--unfixed refuse` fails such a loop.
 - A fixed cut the clip's own crossings count an odd number of steps fails (`loop.fixed_count`), but where the clip a cut on
@@ -27,6 +28,7 @@ from PIL import Image, ImageDraw
 
 from sprite_gen.video import local_cycle, repair
 from sprite_gen.video import loop as loop_mod
+from tests.video import test_gait_fallback as gait
 from tests.video import test_loop_overlap as overlap
 from tests.video import test_loop_repair as ponytail
 from tests.video.test_body_anchor_gate import PERIOD, _keyed, _moved, _refused, _walk
@@ -85,6 +87,29 @@ def test_a_walk_held_on_threes_is_read_between_its_drawings(tmp_path: Path):
     cells = [strip.crop((k * meta["w"], 0, (k + 1) * meta["w"], meta["h"])) for k in range(meta["frames"])]
     mean, _, steps = loop_mod._seam_on_cells(cells)
     assert float(steps.max()) / mean > loop_mod.STEP_RATIO_MAX  # read a frame a step, the hold would fail it
+
+
+def test_a_pixels_jitter_of_a_walk_that_barely_moves_is_under_the_noise_floor(tmp_path: Path):
+    """The gait fallback's walk going away from the camera, its feet rising a whole crop row every three or four frames:
+    on a walk that barely moves, the step with a row in it is over 2.5 times the loop's mean step, and a pixel's jitter
+    under the noise floor. The loop passes, the reading said in `step_gate`."""
+    code, report, _ = gait.run(tmp_path, [gait.walking_away(k) for k in range(73)])
+    assert code == 0 and report["status"] == "passed"
+    gate = report["step_gate"]
+    assert gate["largest_ratio"] > loop_mod.STEP_RATIO_MAX and gate["largest_step"] <= loop_mod.STEP_NOISE_MAX
+    assert gate["under_noise"] is True and gate["noise_max"] == loop_mod.STEP_NOISE_MAX and "kept" not in gate
+
+
+def test_a_frame_moved_two_pixels_is_a_jump_over_the_noise_floor(tmp_path: Path):
+    """The side walk standing in place, frame JUMP of the cut moved 2 px and back (6 px as the walk is cut 400 px tall):
+    its step is over the noise floor, and the loop fails on it."""
+    frames = _walk(drift=0.0)
+    frames[JUMP] = _moved(frames[JUMP], 2)
+    message, report = _refused(tmp_path, _keyed(tmp_path, "walk", frames), "cut")
+    assert message.startswith("video-loop: loop step ratio ") and report["seam_refusal"]["reading"] == "steps"
+    gate = report["step_gate"]
+    assert gate["largest_ratio"] > loop_mod.STEP_RATIO_MAX and gate["largest_step"] > loop_mod.STEP_NOISE_MAX
+    assert "under_noise" not in gate
 
 
 def _smeared(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
