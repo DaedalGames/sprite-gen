@@ -7,6 +7,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 **Upgrading from 2.45.3: Nothing that ran before gives other bytes.**
 Breathe without `mode` (or `mode: "pixel"`) is the same warp, the same bytes, and the same normalized sidecar.
 Its default did not change.
+All new values at 0 or omitted bake the same bytes as before.
 `video-follow` and `video-follow-inspect` still run under those names and give the same files.
 Their records and file names on disk did not change.
 The record is still written under `follow`.
@@ -26,26 +27,36 @@ Moving the written names to `sway` is a later change made together with the tool
   The chest breathes from its centre.
   It uses a round (cos^2) weight on the body axis at `chest_y` of the body below the neck.
   The weight is `chest_rx` x torso half width wide, and `chest_ry` x the body below the neck tall.
-  The chest centre rises by `depth` x basis rows at the in-breath and puffs out by `depth_x`.
+  The chest centre rises by `depth` x basis rows at the in-breath and puffs out by `depth_x` from P (not from the ellipse centre).
   Two shoulder weights, on either side just below the neck, rise by `shoulder` x the chest's rise.
   They rise `shoulder_lag` of a breath later.
   The neck and the collar beside it hold still.
   Whole rows do not move.
-  For a turned body: `chest_tilt` (degrees, clockwise on screen), `chest_bias` (-0.9 to 0.9, negative = the screen's left breathes more), and `chest_dir` (degrees from straight up, negative = up-left).
+  For a figure whose body axis is pulled to one side (for example by long hair), the chest is not on the axis: `chest_x` moves the chest ellipse's centre off the body axis, in torso half widths (-1 to 1).
+  The shoulders stay where they were (relative to the body axis).
+  For a turned body: `chest_tilt` (degrees, clockwise on screen) and `chest_dir` (degrees from straight up, negative = up-left).
+  `chest_bias` moves the chest weight's peak P along the chest ellipse's long axis, as a share of its horizontal half width (-0.9 to 0.9, negative is the screen's left).
+  `chest_bias_y` moves the peak P across the long axis, as a share of the vertical half height (-0.9 to 0.9, positive is down).
+  The weight falls from P to the ellipse's rim along the ray from P through each point, so the near side falls off over a short distance and the far side over a long one.
+  P must stay inside the ellipse: `chest_bias` and `chest_bias_y` together at most 0.9 of the radii (refused otherwise).
+  `chest_flat` is the share of the way from the peak P to the rim that rises in full (0 to 0.9).
   These default to 0; at 0, nothing changes.
   One breath is a bump from rest (in-breath 40 %, out 60 %).
   A cell at phase 0 is the source byte for byte.
   Seams and joins between loops are untouched.
   `breaths` is a whole number.
-  Refused, never silently clamped: `lag` on smooth (it would move the first cell), a stretch past the per-row strain cap (0.25) or a fold, opaque pixels pushed off the canvas, out-of-range values, and shape keys on a pixel row.
+  `breath_peaks` is a list of cells where each in-breath peaks, for timing the breath from outside (for example to keep the breath's peaks off a big hand movement in the clip).
+  The breath count is the number of peaks (`breaths`, if given, must match).
+  The first cell stays at rest and the loop closes at rest: breaths are separated by rests at cell 0, between two peaks where the out-breath has taken 60 % of the gap and the next in-breath 40 %, and at the loop's end.
+  Refused, never silently clamped: `lag` on smooth (it would move the first cell), a stretch past the per-row strain cap (0.25) or a fold, opaque pixels pushed off the canvas, out-of-range values, `chest_bias` and `chest_bias_y` together past 0.9 of the radii, a peak at cell 0, peaks not increasing or closer than two cells, a last peak within one cell of the loop's end, mismatched `breaths`, and shape keys or `breath_peaks` on a pixel row.
   With the default shape nothing leaves the canvas.
   A figure cut by the frame at its sides or bottom is not refused.
-  Defaults: `depth` 0.0085 (about 0.5 % of the frame height on a bust illustration), `depth_x` 0.028, `chest_y` 0.31, `chest_rx` 0.83, `chest_ry` 0.28, `shoulder` 0.5, `shoulder_lag` 0.08, and `chest_tilt`, `chest_bias`, and `chest_dir` 0.
+  Defaults: `depth` 0.0085 (about 0.5 % of the frame height on a bust illustration), `depth_x` 0.028, `chest_y` 0.31, `chest_rx` 0.83, `chest_ry` 0.28, `shoulder` 0.5, `shoulder_lag` 0.08, and `chest_tilt`, `chest_bias`, `chest_bias_y`, `chest_dir`, `chest_x`, and `chest_flat` 0.
   Performance is about 0.2 s per 960 px frame.
 - **New: `sprite-gen breathe <frames> <out>` lays the Breathe layer over a folder of loop frames outside curation.**
   This lays the Breathe layer (either mode) over a folder of loop frames that is not a curation run, such as a video loop's cells.
-  It takes the sidecar's values through the same checks and the same bake: `--mode`, `--depth`, `--depth-x`, `--breaths`, `--lag`, and `--rigid-row`.
-  It also takes the smooth shape flags: `--chest-y`, `--chest-rx`, `--chest-ry`, `--shoulder`, `--shoulder-lag`, `--chest-tilt`, `--chest-bias`, and `--chest-dir`.
+  It takes the sidecar's values through the same checks and the same bake: `--mode`, `--depth`, `--depth-x`, `--breaths`, `--breath-peaks` (for example `--breath-peaks 30,102`), `--lag`, and `--rigid-row`.
+  It also takes the smooth shape flags: `--chest-y`, `--chest-rx`, `--chest-ry`, `--shoulder`, `--shoulder-lag`, `--chest-tilt`, `--chest-bias`, `--chest-bias-y`, `--chest-dir`, `--chest-x`, and `--chest-flat`.
   The same values give the same bytes as a curation bake.
   It writes the frames under their names and `breathe.json` (config, phases, the anatomy used) into a new folder all at once.
   It refuses the source folder or a folder that is not empty.
