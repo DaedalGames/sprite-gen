@@ -58,7 +58,9 @@ def test_the_mirror_refuses_a_smooth_row_instead_of_drawing_pixel(tmp_path) -> N
     {"mode": "smooth", "depth": 0.02, "breaths": 2},
     {"mode": "smooth", "breaths": 2},                       # depth 생략 = smooth 기본값
     {"mode": "smooth", "depth": 0.02, "depth_x": 0.01, "breaths": 3, "rigid_row": 40},
-], ids=["smooth", "depth-omitted", "with-overrides"])
+    {"mode": "smooth", "breaths": 2, "chest_y": 0.4, "chest_rx": 0.9, "chest_ry": 0.3,
+     "shoulder": 0.6, "shoulder_lag": 0.1},
+], ids=["smooth", "depth-omitted", "with-overrides", "with-shape"])
 def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> None:
     got = _roundtrip(_run(sidecar), tmp_path)
     saved = got["payload"]["states"]["idle"].get("breathe")
@@ -72,7 +74,9 @@ def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> 
 @pytest.mark.parametrize("sidecar", [
     {"mode": "soft", "depth": 0.02, "breaths": 2},
     {"mode": "smooth", "depth": 0.02, "breaths": 2, "lag": 0.1},
-], ids=["unknown-mode", "smooth-with-lag"])
+    {"depth": 0.06, "breaths": 2, "chest_y": 0.3},
+    {"mode": "smooth", "breaths": 2, "shoulder_lag": 0.5},
+], ids=["unknown-mode", "smooth-with-lag", "shape-on-pixel", "shape-out-of-range"])
 def test_a_sidecar_the_bake_refuses_is_kept_and_reported(tmp_path, sidecar) -> None:
     with pytest.raises(SystemExit):
         state_breathe({"states": {"idle": {"breathe": sidecar}}}, "idle")
@@ -94,3 +98,16 @@ def test_the_mirrored_modes_are_the_same_list() -> None:
     m = re.search(r"const BREATHE_MODES = \[(.*?)\];", js)
     assert m, "BREATHE_MODES 가 미러에 없다"
     assert [k.strip().strip('"') for k in m.group(1).split(",")] == list(C.BREATHE_MODES)
+
+
+def test_the_mirrored_shape_ranges_are_the_same_numbers() -> None:
+    import re
+
+    from sprite_gen.curate import curation as C
+    from sprite_gen.serve.serve_curation import CURATOR_DIR
+
+    js = (CURATOR_DIR / "src" / "store.js").read_text(encoding="utf-8")
+    m = re.search(r"const BREATHE_SMOOTH_SHAPE_RANGES = (\{.*?\});", js)
+    assert m, "BREATHE_SMOOTH_SHAPE_RANGES 가 미러에 없다"
+    mirrored = json.loads(re.sub(r"(\w+):", r'"\1":', m.group(1)))
+    assert {k: tuple(v) for k, v in mirrored.items()} == C.BREATHE_SMOOTH_SHAPE_RANGES
