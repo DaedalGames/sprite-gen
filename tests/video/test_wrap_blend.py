@@ -326,9 +326,10 @@ def cut(tmp_path: Path, frames_dir: Path, out: str, **kw: object) -> dict:
                              name="idle", report_path=None, **kw)  # type: ignore[arg-type]
 
 
-def outputs(out_dir: Path) -> dict[str, bytes]:
-    """The cut's cells, strip, GIF and WebP as written (a loop refused on its pin writes no GIF or WebP)."""
-    files = sorted((out_dir / "cycle").glob("frame-*.png")) + [out_dir / f"idle.{x}" for x in ("strip.png", "gif", "webp")]
+def outputs(out_dir: Path, cells: str = "cycle") -> dict[str, bytes]:
+    """The cut's cells, strip, GIF and WebP as written (a loop refused on its pin hands none over and keeps its cells as
+    `cycle.refused/`, docs/video-pipeline.md section 4)."""
+    files = sorted((out_dir / cells).glob("frame-*.png")) + [out_dir / f"idle.{x}" for x in ("strip.png", "gif", "webp")]
     return {f.name: f.read_bytes() for f in files if f.exists()}
 
 
@@ -339,7 +340,9 @@ REDRAW = {"redraw": 0.0, "strands": 0.0, "breath": 6.0}  # the model's tone and 
 
 def test_a_pin_that_redraws_the_first_frame_has_its_wrap_blended_to_under_a_step(tmp_path: Path) -> None:
     frames = character(**REDRAW)
-    report = cut(tmp_path, keyed(tmp_path, frames), "auto")
+    # The blend alone: an idle's wrap that jumps is the seam bridge's too (docs/loop-repair.md section 2), which cuts
+    # the off clip again round its wrap where RIFE is installed; `--repair off` keeps the bridge out of both cuts.
+    report = cut(tmp_path, keyed(tmp_path, frames), "auto", repair="off")
     blend = report["wrap_blend"]
     assert blend["applied"] is True and blend["K"] == K
     assert blend["residual_ratio"] > SEAM_MAX and blend["wrap_ratio_before"] > SEAM_MAX
@@ -349,7 +352,7 @@ def test_a_pin_that_redraws_the_first_frame_has_its_wrap_blended_to_under_a_step
     assert {"pose_share", "presence_share", "never_settled", "ramp_step_max_ratio", "bound_ratio", "seconds"} <= set(blend)
     strip = json.loads((tmp_path / "auto" / "idle.strip.json").read_text())
     assert strip["wrap_blend"] == {"cells": blend["cells"], "K": K}
-    off = cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", wrap_blend="off")
+    off = cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", wrap_blend="off", repair="off")
     assert off["wrap_blend"] == {"applied": False, "why": "--wrap-blend off"} and "wrap_blend" not in off["strip"]
     a, b = outputs(tmp_path / "auto"), outputs(tmp_path / "off")
     changed = {name for name in a if a[name] != b[name]}
@@ -534,8 +537,9 @@ def test_a_pin_the_gate_refuses_fails_as_before_with_its_cut_as_filmed(tmp_path:
             cut(tmp_path, keyed(tmp_path, frames, f"keyed-{out}"), out, **kw)
     report = json.loads((tmp_path / "auto" / "idle.loop.report.json").read_text())
     assert report["status"] == "failed" and report["wrap_blend"]["why"] == "the pin does not close: the clip is refused on it"
-    written = outputs(tmp_path / "auto")
-    assert len([name for name in written if name.startswith("frame-")]) == N - 1 and written == outputs(tmp_path / "off")
+    written = outputs(tmp_path / "auto", "cycle.refused")
+    assert len([name for name in written if name.startswith("frame-")]) == N - 1
+    assert written == outputs(tmp_path / "off", "cycle.refused") and not (tmp_path / "auto" / "cycle").exists()
 
 
 # --- 11. the after check -------------------------------------------------------------------------------------------------------
