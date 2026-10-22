@@ -166,7 +166,7 @@ sprite-gen gen \
   [--quality low|medium|high|xhigh|max|auto] # billed effort; openai takes the range, grok takes auto/low/medium
   [--resolution 1k|1.5k|2k]  # grok output-size tier, priced with --quality
   [--model ID] \
-  [--layout-guide [figure|ui-kit]]  # attach a layout guide: the one-slot figure guide (bare flag) or the UI kit layout; see below
+  [--layout-guide [figure|ui-kit]]  # attach a layout guide: the one-slot figure guide (bare flag) or the UI kit layout
   [--direction side|front|back|front_diagonal|back_diagonal [--facing right|left]] # add the engine's view sentence
   [--handed "the black smartwatch=left wrist" ...]  # with --direction: where an item on one side is in that view
   [--body-plan quadruped | --body-plan "the horse=quadruped" ...]  # with --direction: the view for that body

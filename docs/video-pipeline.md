@@ -35,8 +35,6 @@ is a property of the motion state, owned by one table (`STATE_CANVAS`).
 
 A still cropped
 at the crown gets only the quarter — pass `--headroom 0.26` or more for an overhead swing.
-At this headroom the 16:9 ratio, not `--lead`, sets the width of a square still's canvas,
-so a smaller lead changes nothing.
 
 `--shape tall|wide|square` overrides the row; `--headroom` / `--lead` / `--trail` tune the room
 (`--trail` is the empty fraction of the width kept behind the subject, for a weapon drawn
@@ -113,7 +111,7 @@ that draws the still itself with `still_view_text` and films with `build_prompt`
 
 The run records the plan in `sprite-request.json` as `body_plan` (absent without one), and a run
 prepared again from that request keeps it.
-The new rows are not yet measured on an image model. A request's own `action` is its own words and is
+A request's own `action` is its own words and is
 never rewritten.
 
 ### A clip from a video MCP on your agent — ZCRE
@@ -217,9 +215,6 @@ that draws it — the engine never turns one over for the other.
 [--state walk] --handed … --marker '#RRGGBB'` (or `--image`, `--frames-dir`) finds the item by a saturated colour
 nothing else on the character has — a watch's screen — and checks every frame.
 
-With `--state walk` or `run` it must also show in at least a quarter of the frames
-(`far_shown`); without `--state`, or for a state that does not step, that is reported unchecked.
-
 `--strap '#RRGGBB' --zone TOP,BOTTOM` adds the item's band seen without its marker: pixels of that
 colour in those rows of the body (fractions of its height), eroded so outlines drop out, wider and
 taller than 1.6 % of the body height and away from every marker blob, are another place the item
@@ -233,8 +228,7 @@ the wrong hand. The exit code is 1 on a failure.
 `ffmpeg` extracts every frame; the clip's real fps is recorded (never assumed).
 
 Choose the key
-away from the subject's hues ([chroma-alpha.md](chroma-alpha.md)) — that rule now covers
-the painted key's darker variants too.
+away from the subject's hues ([chroma-alpha.md](chroma-alpha.md)).
 
 The report also carries per-frame alpha coverage and an **edge-contact check**, read after the
 specks are gone: any opaque pixel in the top/left/right 4-pixel bands is contact. Each contact pixel is
@@ -253,10 +247,9 @@ accepts only the subject at the edge — the clipping a `--fit tight` canvas cho
 and still fails a frame where the key alone reaches the edge, which is a keying defect
 whatever the framing.
 
-**A drawing cut by its own frame** (2.46.0). A bust or half-length drawing runs off the frame
+**A drawing cut by its own frame**. A bust or half-length drawing runs off the frame
 itself (its sleeve is cut off at the left, its hair at the top). In every frame of its clip the
-subject touches those edges, and no taller or wider canvas gives it room there. The old default
-refused every frame of such a clip as "framed too tight". The new default, `edge_policy: "border"`,
+subject touches those edges, and no taller or wider canvas gives it room there. The new default, `edge_policy: "border"`,
 reads the drawing's own border on the clip's first frame (keyed, its specks erased). A side (top,
 left or right) is a border side when the subject's pixels on that side's outermost row or column
 cover at least 2 % of the side's length (`BORDER_MIN_FRACTION`, 0.02). A strand's tip grazing the
@@ -279,36 +272,20 @@ piece holds fewer than 8 pixels (`SPECK_MIN_PX`, the speck size); and every pixe
 lies within 10 px of the frame's body (`RIM_REACH`). Distance is counted as a square: each way
 and diagonally one pixel is 1. The body is the frame's largest piece that holds a pixel off the
 key's colour, as the speck pass reads the largest piece as the body. The whole piece counts, in
-the band and out of it: an 8-pixel piece with 4 of its pixels in the band is refused. Refused as
-before, for example: a piece of 8 pixels or more; a piece with a pixel farther than 10 px from
-the body; a piece on a side that is not a border side; a piece on a border side the frame's
-subject has left; a stain near a small fleck of the subject's colour but far from the body (the
-reach is to the body, not to any piece of the subject); and a detached stain 30 rows above a
-sleeve on the same side. A corner pixel lies in two bands; it is accepted only when both sides
-accept it. `--allow-subject-edge-contact` and `--allow-edge-contact` judge exactly as before.
+the band and out of it: an 8-pixel piece with 4 of its pixels in the band is refused. A corner pixel lies in two bands; it is accepted only when both sides
+accept it.
 
-A clip whose first frame crosses no side has no border: it is judged and its messages are
-worded exactly as before, byte for byte. When a side is read as the border, `video-frames`
-prints one line on stderr naming the sides and pointing at `edge_border` in the report. The
-report gains `edge_border` (under the default only): `frame` (the first frame's file name),
-`sides`, `outer_px` (the subject's pixels on each side's outermost line), `min_fraction`
-(0.02), `rim_reach` (10), `rim_under_px` (8). Each contact row gains `rim` (residual pixels
-that are the body's rim, whatever side), and under the default `border` (the pixels the border
-took) and `off` (those it did not take, by side: the numbers the refusal message gives). The
-existing row keys stay. Known limit: on a side that is already a border side, a hand that
+When a side is read as the border, `video-frames`
+prints one line on stderr naming the sides and pointing at `edge_border` in the report. Known limit: on a side that is already a border side, a hand that
 newly leaves the frame there is accepted, because by position it cannot be told from the sleeve
 moving along the edge.
 
-**What a refused run leaves** (2.46.0). A caller that does not read the exit code used to find
-a refused run's keyed frames in `keyed/` and pass them on. Now `keyed/` exists only after a run
+**What a refused run leaves**. Now `keyed/` exists only after a run
 that passed. The frames are keyed in a hidden working folder beside it, renamed `keyed/` when
 the run passes, and left as `keyed.refused/` when it is refused (by the edge check, or by a
 frame keyed to 0 % transparency). A refused run leaves no `keyed/`, not even an earlier run's:
 the earlier one is removed when the run starts reading the clip. A pass removes
-`keyed.refused/`. A pass after a longer earlier run no longer finds the earlier run's extra
-frames in `keyed/`. The report (`frames.report.json`, or `--report`) is written either way. It
-gains `status`: `passed`, or `refused` with `error` (the message), `keyed_dir: null` and
-`refused_dir` (the `keyed.refused/` path). A run stopped by an argument error (an unknown flag
+`keyed.refused/`. The report (`frames.report.json`, or `--report`) is written either way. A run stopped by an argument error (an unknown flag
 value, a missing clip) touches nothing.
 
 ## 3a. Spill — key colour the model painted into the subject
@@ -375,8 +352,7 @@ In `sprite-gen video`, `--image` is the start frame and `--last-frame` is the en
 sets a cut's length, the gait fallback, `--steps` and the one-shot failover included; a cut outside
 them fails rather than being written.
 
-The report records `half_period_guard.reason =
-"ambiguous-harmonic"` and `cycle.review_recommended = true`. See [loop review](loop-review.md)
+See [loop review](loop-review.md)
 for the visual review contract and manual overrides.
 
 **The fundamental period: recorded, never cut on the pixels' word.** A motion that repeats every
@@ -391,10 +367,6 @@ far swapped; where the two legs are drawn alike (one colour of trousers, white f
 and a true cycle half a drawing late are **the same picture**. So
 `video-loop` cuts the period it always cut, and only **records** what a half or a third of it shows
 (`cycle.fundamental`, `sprite_gen/video/period.py`).
-
-What still escapes it is a second stride that drifts across the picture in steps of four
-pixels or more without the body anchor's ramp, and any loop whose half is under the gait floor
-(a walk faster than 0.6 s a step).
 
 **The size is held before the search** (`--anchor motion-auto`, `--size-hold auto`, the default).
 A walk or run filmed from its first frame only (no end frame) often grows or shrinks as it plays:
@@ -447,12 +419,10 @@ jump repair, the jolt gate, the pin gate, the seam gate, a strip with no body to
 GIF or WebP that could not be written or failed its verification) now removes what an earlier
 cut handed over in the output folder: `cycle/`, `<name>.strip.png`, `<name>.strip.json`,
 `<name>.gif`, `<name>.webp`, and `cycle.source/` and `follow.source.png`, which a later
-alignment and follow-through keep beside them. Before this, a refused cut could leave a mixed
-set: the refused run's `cycle/` and strip beside an earlier run's GIF and WebP. A cut the
+alignment and follow-through keep beside them. A cut the
 refused run had already written (a strip with no body, the pin and seam gates, the GIF and
 WebP) is kept as `cycle.refused/`, to look at. The next cut that passes removes it; a refusal that comes before
-the cut removes an earlier one. An argument error touches nothing. The report is written as
-before, with `status = "failed"`.
+the cut removes an earlier one. An argument error touches nothing.
 
 `--cycle pinned` is for a clip pinned to end on its first frame (`video --last-frame` set to
 the start image). The cycle is every frame but the last, which re-renders the first, so the
@@ -488,8 +458,7 @@ Outputs:
   that mixes colours does this, in a cell and again wherever the cell is scaled later; the
   resample knows no key and caps nothing (`tests/video/test_strip_resample.py`). The one
   operation that compares a cell with the key bar, source restoration, handles it itself
-  ([loop-comparison.md](loop-comparison.md#what-a-restored-cell-is)). Colour is no longer sharpened, so a 1 px line
-  inside the body comes out a little softer than LANCZOS drew it when a cell is enlarged. The
+  ([loop-comparison.md](loop-comparison.md#what-a-restored-cell-is)). The
   GIF and WebP are cut from these cells. The function lives in `sprite_gen/util/resample.py`
   and is the resample of every place that scaled a keyed picture with LANCZOS: a row frame fitted to its cell and the twin
   beside a pixel-unfake frame (`extract`), a sliced sheet's figures (`slice-sheet`) and a
@@ -499,8 +468,7 @@ Outputs:
   fallback" in [loop-review.md](loop-review.md)) and a curated transform on a smooth row
   (`curation.apply_transform`). Coverage keeps BICUBIC's edge, held to the coverage of the
   2 x 2 source pixels the colour mixes from, and colour is a BILINEAR mix of premultiplied
-  colour. The
-  same cost applies: colour is not sharpened. A pixel row's curated transform samples NEAREST
+  colour. A pixel row's curated transform samples NEAREST
   and is untouched. The scene GIF's ffmpeg downscale stays LANCZOS: it scales opaque composited
   frames, where nothing is divided by a low coverage.
 - `<name>.gif` — `n_out` frames evenly across the cycle, 1-bit alpha, disposal 2, `loop=0`. `--n-out` and
