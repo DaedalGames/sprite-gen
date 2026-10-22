@@ -70,11 +70,12 @@ SEAM_RATIO_MAX = 2.0  # loop seam / mean adjacent distance inside the cycle
 # The step gate stands where the seam gate does: a --seam-max past it lifts it, every step's bound is then --seam-max,
 # and a fixed cut the clip's crossings count an odd number of steps is kept with a warning line (`fixed_count`).
 STEP_RATIO_MAX = 2.5
-# The step gate's floor: a largest step between drawings at most this on the analysis thumbnail (mean absolute RGBA
-# difference, 0..1, as PIN_NOISE_MAX) is a pixel's jitter, not a jump, over however small a mean step. A still pose
-# 41 to 120 px tall moved a whole row reads 0.015 to 0.019, a slow walk's step with that row in it 0.018 to 0.020; a
-# frame of a walk cut 400 px tall moved 6 px and back reads 0.057.
-STEP_NOISE_MAX = 0.03
+# The step gate's pixel jitter: a step over STEP_RATIO_MAX that its drawing moving at most this many pixels of the frames
+# as filmed makes (`step_jitter`: the move that lays it on the drawing before, read on coverage, so no colour enters it,
+# and with that move taken back the step within STEP_RATIO_MAX) is a pixel's jitter of a loop that barely moves, not a
+# jump, over however small a mean step: one pixel and not two. Read as a mean RGBA difference instead, the same jump of a
+# frame moved 2 px reads 0.057 drawn in colour and 0.021 drawn black.
+STEP_JITTER_PX = 1.5
 PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mean (flat profile = no repeat)
 # Where the gait fallback writes the frames it scaled back (removed once the strip is built).
 FALLBACK_FRAMES_DIR = ".gait-fallback-frames"
@@ -1284,12 +1285,31 @@ def ring_steps(frames: list[Image.Image]) -> dict[str, Any]:
     return reading.judge(len(frames), len(frames))
 
 
-def drawing_steps(cells: list[Image.Image]) -> dict[str, Any] | None:
+def step_jitter(before: Image.Image, after: Image.Image, *, pixel: float, mean: float) -> dict[str, Any] | None:
+    """A step between two drawings that is a pixel's jitter (STEP_JITTER_PX): the move that lays `after` on `before` with
+    the least coverage difference (`stop.register`, on alpha), at most STEP_JITTER_PX pixels of the frames as filmed, each
+    `pixel` cell pixels (the strip's scale; never under one cell pixel), and the step with that move taken back, on the
+    analysis features, within STEP_RATIO_MAX times the loop's `mean` step. The move, in cell pixels, and the ratio of the
+    step taken back, or None."""
+    from sprite_gen.video import stop as stop_mod  # stop imports this module
+    allowed = max(1.0, STEP_JITTER_PX * pixel)
+    (dx, dy), _ = stop_mod.register(before, after, max(4, math.ceil(2 * allowed)))
+    if max(abs(dx), abs(dy)) > allowed:
+        return None
+    back = Image.new("RGBA", after.size, (0, 0, 0, 0))
+    back.paste(after, (dx, dy))
+    ratio = float(np.abs(_small_features(back) - _small_features(before)).mean()) / mean
+    return {"move": [dx, dy], "ratio_moved_back": round(ratio, 4)} if ratio <= STEP_RATIO_MAX else None
+
+
+def drawing_steps(cells: list[Image.Image], pixel: float = 1.0) -> dict[str, Any] | None:
     """A loop's cells as they play, read between their drawings (`repair.flow_drawings`: a cell held on twos or threes
     shows its drawing again): each drawing's first cell on the analysis features (`_small_features`) and the step into the
-    next drawing's, the last drawing's into the first's across the wrap. The largest of them, the wrap's included, over
-    the mean of the others (`largest_ratio`, from the cell `largest_from` into the cell `largest_into`, each a drawing's
-    first; `largest_step` itself), and the wrap's (`wrap_ratio`). None for a loop of fewer than three drawings."""
+    next drawing's, the last drawing's into the first's across the wrap. The largest of them, the wrap's included, that is
+    not a pixel's jitter (`step_jitter`, a drawing's pixel `pixel` cell pixels) over the mean of the others
+    (`largest_ratio`, from the cell `largest_from` into the cell `largest_into`, each a drawing's first), the steps over
+    STEP_RATIO_MAX that are one (`jitter`, larger first, where there are any), and the wrap's (`wrap_ratio`). None for a
+    loop of fewer than three drawings."""
     runs, hold = repair_mod.flow_drawings(repair_mod.flow_states(cells))
     if len(runs) < 3:
         return None
@@ -1297,12 +1317,22 @@ def drawing_steps(cells: list[Image.Image]) -> dict[str, Any] | None:
     flat = np.stack([_small_features(cells[k]) for k in firsts])
     steps = np.abs(np.roll(flat, -1, axis=0) - flat).mean(axis=1)
     mean = float(steps[:-1].mean())
-    largest = int(np.argmax(steps))
+    jitter = []
+    # Larger first: a step the ratio holds to the bound only where it is no pixel's jitter. One of the steps the mean is
+    # taken over is at most the mean, so the walk stops by it.
+    for largest in (int(k) for k in np.argsort(-steps, kind="stable")):
+        into = firsts[(largest + 1) % len(firsts)]
+        if mean <= 0 or float(steps[largest]) / mean <= STEP_RATIO_MAX:
+            break
+        moved = step_jitter(cells[firsts[largest]], cells[into], pixel=pixel, mean=mean)
+        if moved is None:
+            break
+        jitter.append({"from": firsts[largest], "into": into, "ratio": round(float(steps[largest]) / mean, 4), **moved})
     return {"read": "drawings", "drawings": len(runs), "hold": hold, "mean_step": round(mean, 6),
             "largest_ratio": round(float(steps[largest]) / mean, 4) if mean > 0 else None,
-            "largest_step": round(float(steps[largest]), 6),
-            "largest_from": firsts[largest], "largest_into": firsts[(largest + 1) % len(firsts)],
-            "wrap_ratio": round(float(steps[-1]) / mean, 4) if mean > 0 else None}
+            "largest_from": firsts[largest], "largest_into": into,
+            "wrap_ratio": round(float(steps[-1]) / mean, 4) if mean > 0 else None,
+            **({"jitter": jitter} if jitter else {})}
 
 
 def fixed_count(frames: list[Image.Image], D: np.ndarray, start: int, length: int) -> dict[str, Any]:
@@ -2081,21 +2111,21 @@ def run_loop(
     if prof.gait and not single_play:
         # Every step of the loop as it plays, read between its drawings: a frame that jumps inside the loop, which the
         # seam ratio at the wrap does not see. The bound is the step gate's, or the seam gate's where --seam-max lifts it;
-        # a largest step under the noise floor is a pixel's jitter of a loop that barely moves, and is not a jump.
+        # a step its drawing moving a pixel of the frames as filmed makes is a pixel's jitter of a loop that barely moves,
+        # and is not a jump (`step_jitter`, the cells' pixels of one of them the strip's scale).
         step_max = max(STEP_RATIO_MAX, seam_max)
         read = drawing_steps([strip.crop((k * strip_meta["w"], 0, (k + 1) * strip_meta["w"], strip_meta["h"]))
-                              for k in range(strip_meta["frames"])])
+                              for k in range(strip_meta["frames"])], pixel=strip_meta["scale"])
         if read is None:
             report_base["step_gate"] = {"read": "drawings", "skipped": "fewer than three drawings", "max": step_max}
         else:
             of = strip_meta["sample_indices"]
             read.update(largest_into=of[read["largest_into"]], largest_from=of[read["largest_from"]], max=step_max,
-                        noise_max=STEP_NOISE_MAX, lifted=seam_max > STEP_RATIO_MAX)
+                        lifted=seam_max > STEP_RATIO_MAX)
+            for step in read.get("jitter", []):
+                step.update({"from": of[step["from"]], "into": of[step["into"]]})
             report_base["step_gate"] = read
             ratio = read["largest_ratio"]
-            if ratio is not None and ratio > STEP_RATIO_MAX and read["largest_step"] <= STEP_NOISE_MAX:
-                read["under_noise"] = True
-                ratio = None
             if ratio is not None and ratio > step_max:
                 known = _step_reason(report_base["jump_repair"], {read["largest_from"], read["largest_into"]})
                 error = (f"video-loop: loop step ratio {ratio:.2f} exceeds {step_max:g} ({cycle['kind']} length {L} frames "
@@ -2172,7 +2202,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-len", type=int, help="override: maximum cycle length in frames, on every path that sets one (a cut longer fails)")
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
-    parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX}): the wrap over the mean step. A walk or run is also held to the step gate — its largest step between drawings over their mean step at most {STEP_RATIO_MAX:g} (a step under {STEP_NOISE_MAX:g} on the analysis thumbnail is a pixel's jitter, not held to it), and a fixed cut not one the clip's crossings count an odd number of steps; a --seam-max past {STEP_RATIO_MAX:g} lifts the step gate with it (every step's bound is then --seam-max, and an odd count a warning line)")
+    parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX}): the wrap over the mean step. A walk or run is also held to the step gate — its largest step between drawings over their mean step at most {STEP_RATIO_MAX:g} (a step its drawing moving at most {STEP_JITTER_PX:g} pixels of the frames as filmed makes is a pixel's jitter, not held to it), and a fixed cut not one the clip's crossings count an odd number of steps; a --seam-max past {STEP_RATIO_MAX:g} lifts the step gate with it (every step's bound is then --seam-max, and an odd count a warning line)")
     parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin); once-return: the whole clip with its last frame, played once from its first pose back to it (loop false, returns true), for a clip pinned to end on its first frame (the gate is that pin)")
     parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
     parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
@@ -2245,8 +2275,10 @@ def run(**kwargs: object) -> int:
         summary["wrap_overlap"] = {k: overlap[k] for k in ("seam", "frames", "side", "width", "seam_after", "skipped") if k in overlap}
     if payload.get("step_gate"):
         summary["step_gate"] = {k: payload["step_gate"][k] for k in ("drawings", "hold", "largest_ratio", "largest_into", "max",
-                                                                     "under_noise", "skipped")
+                                                                     "skipped")
                                 if k in payload["step_gate"]}
+        if payload["step_gate"].get("jitter"):
+            summary["step_gate"]["jitter"] = [step["into"] for step in payload["step_gate"]["jitter"]]
     if payload.get("jump_repair", {}).get("replaced"):
         summary["jump_repair"] = {k: payload["jump_repair"][k] for k in ("replaced", "off_max_before", "off_max_after")}
         eased = [r for r in payload["jump_repair"]["rounds"] if r.get("why") == "ease" and r["outcome"] == "accepted"]
