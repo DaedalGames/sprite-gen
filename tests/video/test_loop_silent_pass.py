@@ -3,8 +3,9 @@
 
 - The step gate: every step of a walk's or run's loop as it plays, read between its drawings (`loop.drawing_steps`), the
   largest over their mean at most STEP_RATIO_MAX — a frame that jumps inside the loop, where the seam ratio at the wrap
-  does not see it, fails the loop. A loop held on twos or threes is read a drawing a step, not a frame a step. A largest
-  step under STEP_NOISE_MAX is a pixel's jitter of a loop that barely moves, not a jump, however it reads over the mean.
+  does not see it, fails the loop. A loop held on twos or threes is read a drawing a step, not a frame a step. A step
+  over the bound that its drawing moving a pixel of the frames as filmed makes, the move read on coverage, is a pixel's
+  jitter of a loop that barely moves, not a jump, in any colour; a drawing moved two pixels is a jump in any colour.
 - A frame the jump repair took off the flow and could not make again (its group refused) and that stays off the flow is
   `jump_repair.unfixed`, said in a warning line; `--unfixed refuse` fails such a loop.
 - A fixed cut the clip's own crossings count an odd number of steps fails (`loop.fixed_count`), but where the clip a cut on
@@ -89,27 +90,49 @@ def test_a_walk_held_on_threes_is_read_between_its_drawings(tmp_path: Path):
     assert float(steps.max()) / mean > loop_mod.STEP_RATIO_MAX  # read a frame a step, the hold would fail it
 
 
-def test_a_pixels_jitter_of_a_walk_that_barely_moves_is_under_the_noise_floor(tmp_path: Path):
+COLOURS = ("as drawn", "black", "grey near the backdrop")
+
+
+def _coloured(frames: list[Image.Image], colour: str) -> list[Image.Image]:
+    """The frames with their alpha as it is and their colour changed: black, no colour at all, or one dark grey
+    (16, 16, 16) near the backdrop the analysis reads a transparent pixel as (premultiplied, black) — the same geometry
+    at less contrast than a walk drawn in colour."""
+    if colour == "as drawn":
+        return frames
+    out = []
+    for frame in frames:
+        pixels = np.array(frame)
+        pixels[..., :3] = 0 if colour == "black" else 16
+        out.append(Image.fromarray(pixels, "RGBA"))
+    return out
+
+
+@pytest.mark.parametrize("colour", COLOURS)
+def test_a_pixels_jitter_of_a_walk_that_barely_moves_is_not_held_to_the_bound(tmp_path: Path, colour: str):
     """The gait fallback's walk going away from the camera, its feet rising a whole crop row every three or four frames:
-    on a walk that barely moves, the step with a row in it is over 2.5 times the loop's mean step, and a pixel's jitter
-    under the noise floor. The loop passes, the reading said in `step_gate`."""
-    code, report, _ = gait.run(tmp_path, [gait.walking_away(k) for k in range(73)])
+    on a walk that barely moves, the step with a row in it is over 2.5 times the loop's mean step, its drawing moved one
+    pixel, and with that pixel taken back an ordinary step. It is a pixel's jitter in any colour: the loop passes, held
+    to its largest step that is none, and `step_gate.jitter` names the steps."""
+    code, report, _ = gait.run(tmp_path, _coloured([gait.walking_away(k) for k in range(73)], colour))
     assert code == 0 and report["status"] == "passed"
     gate = report["step_gate"]
-    assert gate["largest_ratio"] > loop_mod.STEP_RATIO_MAX and gate["largest_step"] <= loop_mod.STEP_NOISE_MAX
-    assert gate["under_noise"] is True and gate["noise_max"] == loop_mod.STEP_NOISE_MAX and "kept" not in gate
+    assert gate["largest_ratio"] <= loop_mod.STEP_RATIO_MAX and "kept" not in gate
+    assert gate["jitter"] and all(j["ratio"] > loop_mod.STEP_RATIO_MAX >= j["ratio_moved_back"] for j in gate["jitter"])
+    assert all(max(map(abs, j["move"])) == 1 for j in gate["jitter"])
 
 
-def test_a_frame_moved_two_pixels_is_a_jump_over_the_noise_floor(tmp_path: Path):
-    """The side walk standing in place, frame JUMP of the cut moved 2 px and back (6 px as the walk is cut 400 px tall):
-    its step is over the noise floor, and the loop fails on it."""
+@pytest.mark.parametrize("colour", COLOURS)
+def test_a_frame_moved_two_pixels_is_a_jump_in_any_colour(tmp_path: Path, colour: str):
+    """The side walk standing in place, frame JUMP of the cut moved 2 px and back (6 px as the walk is cut 400 px tall),
+    as drawn, black or in a grey near the backdrop: every frame's alpha is the same, and so is the verdict. The drawing
+    moved two pixels of the frames as filmed, not one: the step is no pixel's jitter, and the loop fails on it."""
     frames = _walk(drift=0.0)
     frames[JUMP] = _moved(frames[JUMP], 2)
-    message, report = _refused(tmp_path, _keyed(tmp_path, "walk", frames), "cut")
+    message, report = _refused(tmp_path, _keyed(tmp_path, "walk", _coloured(frames, colour)), "cut")
     assert message.startswith("video-loop: loop step ratio ") and report["seam_refusal"]["reading"] == "steps"
     gate = report["step_gate"]
-    assert gate["largest_ratio"] > loop_mod.STEP_RATIO_MAX and gate["largest_step"] > loop_mod.STEP_NOISE_MAX
-    assert "under_noise" not in gate
+    assert gate["largest_ratio"] > loop_mod.STEP_RATIO_MAX and gate["largest_into"] in (JUMP, JUMP + 1)
+    assert "jitter" not in gate
 
 
 def _smeared(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
