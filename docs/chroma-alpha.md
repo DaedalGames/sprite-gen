@@ -170,7 +170,7 @@ Limitations:
 - A thin key-coloured detail farther than 6 px from any key-coloured interior (the far end of a green ribbon) is repainted in a palette colour.
 - Even with the pass, the thinnest strands keep some olive: the decoder shares chroma across each aligned 2x2 block, so a one-pixel strand has the strand's luma but half the key's chroma, which no single blend line explains; the pass reads it as opaque and keeps it. This is most of what remains. A block-aware fit is planned separately.
 - Only on stills, outside a dark outline the flank can give a few faint pixels in the subject's colour.
-- Time and memory go up: keying on an Intel i5-7500 took 1.21 s a frame with `off` and 3.42 s with `auto` at 1080x1920, and peak memory rose from 396 MB to 908 MB (about 247 MB more per megapixel of frame, or about 1.5 GB more for `video-set` running three concurrent jobs).
+- Time and memory go up: keying on an Intel i5-7500 took 1.14 s a frame with `off` and 3.36 s with `auto` at 1080x1920, and peak memory rose from about 400 MB to 1155 MB (about 365 MB more per megapixel of frame, or about 2.3 GB more for `video-set` running three concurrent jobs).
 
 ## Related
 
