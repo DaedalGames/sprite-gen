@@ -352,11 +352,19 @@ the default does not move. Measured on synthetic walkers, 2026-10-21:
 | torch backend, Apple M4 Max CPU (12 threads) | 3.3 to 3.6 s | 0.38 to 0.40 s | 8.8 to 9.0 s |
 | binary, Modal `cpu=2` (llvmpipe), one cold call each | 127.7 to 131.5 s | 9.3 to 9.5 s | not run |
 | torch backend, the same Modal container, 2 threads | 22.6 to 28.5 s | 1.5 to 1.7 s | 45.1 to 46.1 s |
+| torch backend, Modal NVIDIA T4 (CUDA), in its process | 1.36 to 1.41 s | 0.32 to 0.36 s | 3.9 to 4.1 s |
+| torch backend on that T4, from a `cpu=2` host without PyTorch (`SPRITE_GEN_RIFE_EXECUTOR`, a Modal call each) | 1.49 to 1.52 s | 0.46 to 0.49 s | 4.0 to 4.1 s |
 
 The torch backend's frame on an x86 CPU is not the same bytes as on an Apple CPU (its torn reading is),
 which the CPU's instruction set in its identity keeps apart. PyTorch sizes its threads by the host's
 cores, not a container's share (the container above saw 18): a container names its share
-(`OMP_NUM_THREADS`). On a CUDA GPU the release lane measures it (docs/release.md).
+(`OMP_NUM_THREADS`).
+
+On the T4 (driver 610.57.04, PyTorch 2.13.0 for CUDA 13.0, cuDNN 9.20, 2026-10-22) the frames made
+through the executor, from another container of the same image, are the bytes made in the T4's own
+process: both walkers' frames, plain frames, and reads with their disagreement. The executor adds 0.1 to
+0.2 s to a frame, a read takes as long as in the process, and the probe, a T4 container's cold start,
+took 8.4 s. The T4 lane runs the torch tests on CUDA for a release (docs/release.md).
 
 ### Licences
 
