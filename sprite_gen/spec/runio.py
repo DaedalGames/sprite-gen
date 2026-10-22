@@ -402,29 +402,53 @@ REQUEST_FILENAME = "sprite-request.json"
 # domains/tools/spritefusion-pixel-snapper.md 용어 각주).
 LEGACY_FIT_KEYS = {"pixel_perfect": "pixel_unfake"}
 
+# 대신하는 키 없이 은퇴한 키. v3.0.0 에서 layer-tracks(`compose-layers`)가 빠지면서 최상위
+# `rig`·`layers` 와 행마다의 `states.<state>.track` 을 읽는 코드가 없어졌다. 옛 런 파일에는
+# 남아 있을 수 있어서 이름이 바뀐 키와 같은 길을 탄다: 읽기는 메모리에서 떼고 한 번 알리며,
+# 파일에서 걷어 내는 것은 `migrate_request_file` 하나다.
+RETIRED_REQUEST_KEYS = ("rig", "layers")
+RETIRED_STATE_KEYS = ("track",)
 
-def normalize_retired_fit_keys(request: dict, where: str) -> bool:
-    """은퇴 키를 현행 키로 옮긴다 (**메모리 in-place**, 디스크는 손대지 않는다). 옮겼으면 True.
 
-    두 키가 동시에 있으면 **hard fail** — 어느 쪽이 진실인지 코드가 고를 수 없고, 고르는
-    순간 그게 조용한 폴백이다. 이건 읽기 정규화이지 이관이 아니다: 디스크 스키마를 바꾸는
-    쪽은 `migrate_request_file` 하나뿐이고, 이 함수는 그 writer 도 같이 쓴다 (키 매핑이
-    두 벌 생기지 않게)."""
+def normalize_retired_keys(request: dict, where: str) -> list[str]:
+    """은퇴 키를 현행 스키마로 옮긴다 (**메모리 in-place**, 디스크는 손대지 않는다).
+
+    이름이 바뀐 키(`LEGACY_FIT_KEYS`)는 현행 키로 옮기고, 대신하는 키가 없는 키
+    (`RETIRED_REQUEST_KEYS`, `RETIRED_STATE_KEYS`)는 뗀다. 옮긴 것을 한 줄씩 돌려준다
+    (`fit.pixel_perfect -> fit.pixel_unfake`, `rig (not read)`, `states.walk.track (not read)`);
+    빈 목록이면 은퇴 키가 없었다.
+
+    같은 설정의 은퇴 키와 현행 키가 동시에 있으면 **hard fail** — 어느 쪽이 진실인지 코드가
+    고를 수 없고, 고르는 순간 그게 조용한 폴백이다. 이건 읽기 정규화이지 이관이 아니다: 디스크
+    스키마를 바꾸는 쪽은 `migrate_request_file` 하나뿐이고, 이 함수는 그 writer 도 같이 쓴다
+    (키 매핑이 두 벌 생기지 않게)."""
+    moved: list[str] = []
     fit = request.get("fit")
-    if not isinstance(fit, dict):
-        return False
-    moved = False
-    for legacy, current in LEGACY_FIT_KEYS.items():
-        if legacy not in fit:
-            continue
-        if current in fit:
-            raise SystemExit(
-                f"{where}: both `fit.{legacy}` (retired) and "
-                f"`fit.{current}` are present — two truths for one setting. Delete the "
-                f"`fit.{legacy}` line (its value was {fit[legacy]!r}); the current key is "
-                f"`fit.{current}` = {fit[current]!r}.")
-        fit[current] = fit.pop(legacy)
-        moved = True
+    if isinstance(fit, dict):
+        for legacy, current in LEGACY_FIT_KEYS.items():
+            if legacy not in fit:
+                continue
+            if current in fit:
+                raise SystemExit(
+                    f"{where}: both `fit.{legacy}` (retired) and "
+                    f"`fit.{current}` are present — two truths for one setting. Delete the "
+                    f"`fit.{legacy}` line (its value was {fit[legacy]!r}); the current key is "
+                    f"`fit.{current}` = {fit[current]!r}.")
+            fit[current] = fit.pop(legacy)
+            moved.append(f"fit.{legacy} -> fit.{current}")
+    for key in RETIRED_REQUEST_KEYS:
+        if key in request:
+            del request[key]
+            moved.append(f"{key} (not read)")
+    states = request.get("states")
+    if isinstance(states, dict):
+        for state, entry in states.items():
+            if not isinstance(entry, dict):
+                continue
+            for key in RETIRED_STATE_KEYS:
+                if key in entry:
+                    del entry[key]
+                    moved.append(f"states.{state}.{key} (not read)")
     return moved
 
 
@@ -434,8 +458,8 @@ def normalize_retired_fit_keys(request: dict, where: str) -> bool:
 _RETIRED_KEY_NOTICED: set[str] = set()
 
 
-def _read_request_document(run_dir: Path) -> tuple[Path, dict, bool]:
-    """`sprite-request.json` 을 읽어 (경로, 정규화된 문서, 은퇴 키가 있었나) 를 돌려준다.
+def _read_request_document(run_dir: Path) -> tuple[Path, dict, list[str]]:
+    """`sprite-request.json` 을 읽어 (경로, 정규화된 문서, 옮긴 은퇴 키) 를 돌려준다.
 
     request 파일을 실제로 여는 곳은 여기 하나다 — 읽기 게이트와 이관 writer 가 같은 판독
     (두 키 hard fail 포함)을 쓰게 하려면 파싱이 한 벌이어야 한다."""
@@ -443,14 +467,15 @@ def _read_request_document(run_dir: Path) -> tuple[Path, dict, bool]:
     if not path.is_file():
         raise SystemExit(f"not a sprite-gen run dir (no {REQUEST_FILENAME}): {run_dir}")
     request = json.loads(path.read_text(encoding="utf-8"))
-    return path, request, normalize_retired_fit_keys(request, str(path))
+    return path, request, normalize_retired_keys(request, str(path))
 
 
 def load_request(run_dir: Path) -> dict:
     """런의 numeric SSoT (`sprite-request.json`) 를 읽는 **유일한 게이트**. 읽기만 한다.
 
-    은퇴한 키(`fit.pixel_perfect`)는 현행 키(`fit.pixel_unfake`)로 **메모리에서만** 정규화
-    되고 파일은 바이트 그대로 남는다. 두 키가 동시에 있으면 hard fail.
+    은퇴한 키(`fit.pixel_perfect`)는 현행 키(`fit.pixel_unfake`)로, 대신하는 키가 없는 은퇴 키
+    (`rig`, `layers`, `states.<state>.track`)는 떼어 **메모리에서만** 정규화되고 파일은 바이트
+    그대로 남는다. 은퇴 키와 현행 키가 동시에 있으면 hard fail.
 
     합성 회귀는 이 함수가 정규화한 문서를 디스크에 다시 쓰면 조회만으로
     `sprite-request.json` 과 `run_revision` 이 움직여 큐레이션 사이드카를 stale 로
@@ -458,21 +483,21 @@ def load_request(run_dir: Path) -> dict:
 
     디스크 스키마 이관은 사용자가 명시적으로 부르는 단일 writer 에서만 원자적으로 한다:
     `migrate_request_file()` / `sprite-gen migrate-request <run-dir> --apply`."""
-    path, request, had_retired = _read_request_document(run_dir)
-    if had_retired and str(path) not in _RETIRED_KEY_NOTICED:
+    path, request, retired = _read_request_document(run_dir)
+    if retired and str(path) not in _RETIRED_KEY_NOTICED:
         _RETIRED_KEY_NOTICED.add(str(path))
-        print(f"[request] retired fit key(s) "
-              f"{', '.join(f'{k} -> {v}' for k, v in LEGACY_FIT_KEYS.items())} read as the "
-              f"current key(s); the file is unchanged. Run `sprite-gen migrate-request "
-              f"{run_dir} --apply` to move the schema on disk: {path}", file=sys.stderr)
+        print(f"[request] retired key(s) in {path}: {', '.join(retired)}. They are read as "
+              f"the current schema in memory and the file is unchanged; `sprite-gen "
+              f"migrate-request {run_dir} --apply` moves the schema on disk.", file=sys.stderr)
     return request
 
 
-def migrate_request_file(run_dir: Path, *, apply: bool = False) -> bool:
-    """은퇴한 `fit` 키를 디스크에서 현행 키로 옮긴다 — request 스키마의 **유일한 이관 writer**.
+def migrate_request_file(run_dir: Path, *, apply: bool = False) -> list[str]:
+    """은퇴 키를 디스크에서 현행 스키마로 옮긴다 — request 스키마의 **유일한 이관 writer**.
 
-    Returns True 면 옮길 것이 있었다는 뜻이다 (`apply=False` 인 dry run 에서도 True).
-    이미 현행 키뿐이면 False (멱등 — 두 번째 실행은 아무것도 쓰지 않는다).
+    이름이 바뀐 키는 현행 키로 옮기고 대신하는 키가 없는 키는 걷어 낸다
+    (`normalize_retired_keys`). 옮긴 것(또는 `apply=False` 인 dry run 에서 옮길 것)을 그 함수의
+    줄로 돌려준다. 이미 현행 키뿐이면 빈 목록 (멱등 — 두 번째 실행은 아무것도 쓰지 않는다).
 
     Isolation: `sprite-request.json` 의 read-modify-write 는 **편집 writer 와 같은 격리
     도메인**(`publish_guard` 배타락) 안에서만 일어난다 — 락 획득 **후** fresh 재독하고
@@ -496,30 +521,32 @@ def migrate_request_file(run_dir: Path, *, apply: bool = False) -> bool:
     with publish_guard(run_dir):
         # 락 안 fresh 재독 — 여기서 읽은 문서와 아래 원자 교체 사이에 다른 writer 가 낄 수
         # 없다는 것이 이 함수의 lost-update 계약이다 (편집 writer 와 같은 배타락).
-        path, request, had_retired = _read_request_document(run_dir)
-        if not had_retired:
-            return False
+        path, request, retired = _read_request_document(run_dir)
+        if not retired:
+            return []
         atomic_write_text(path, json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     _RETIRED_KEY_NOTICED.discard(str(path))
-    return True
+    return retired
 
 
 def write_request(run_dir: Path, request: dict) -> None:
     """편집한 request 를 원자적으로 다시 쓴다 — **디스크의 키 형태를 보존한다**.
 
     take 기록·fps 편집처럼 스키마와 무관한 편집도 로더가 정규화해 준 문서를 통째로 되쓴다.
-    그대로 쓰면 그 편집이 은퇴 키를 조용히 현행 키로 바꿔, 스키마 이관이 다시 "아무 명령이나
-    하는 김에 하는 일" 이 된다. 로더가 메모리에서 편 것을 쓰기 직전에 되접으면, 디스크
-    스키마를 바꾸는 곳은 `migrate_request_file` 하나로 남는다.
+    그대로 쓰면 그 편집이 은퇴 키를 조용히 현행 키로 바꾸거나 떼어 내, 스키마 이관이 다시
+    "아무 명령이나 하는 김에 하는 일" 이 된다. 로더가 메모리에서 편 것을 쓰기 직전에 되접으면
+    (이름이 바뀐 키는 옛 이름으로, 뗀 키는 디스크의 값 그대로), 디스크 스키마를 바꾸는 곳은
+    `migrate_request_file` 하나로 남는다.
 
     호출부의 dict 는 건드리지 않는다 (쓴 뒤에도 현행 키로 계속 쓰인다)."""
     path = Path(run_dir) / REQUEST_FILENAME
-    on_disk_fit: dict = {}
     try:
         on_disk = json.loads(path.read_text(encoding="utf-8"))
-        on_disk_fit = on_disk.get("fit") if isinstance(on_disk.get("fit"), dict) else {}
     except (OSError, ValueError):
-        on_disk_fit = {}   # 첫 발행이거나 읽을 수 없다 — 되접을 형태가 없으니 그대로 쓴다
+        on_disk = {}   # 첫 발행이거나 읽을 수 없다 — 되접을 형태가 없으니 그대로 쓴다
+    if not isinstance(on_disk, dict):
+        on_disk = {}
+    on_disk_fit = on_disk.get("fit") if isinstance(on_disk.get("fit"), dict) else {}
     fit = request.get("fit")
     if isinstance(fit, dict):
         restore = {current: legacy for legacy, current in LEGACY_FIT_KEYS.items()
@@ -531,4 +558,23 @@ def write_request(run_dir: Path, request: dict) -> None:
             # `{logical_height, pixel_perfect}` 로 쓰인다 (이름은 보존, 자리는 이동).
             request = {**request, "fit": {restore.get(key, key): value
                                           for key, value in fit.items()}}
+    # 뗀 키는 디스크에 있던 값을 그대로 되돌린다 (자리는 끝으로 간다). 아무 코드도 쓰지 않는
+    # 키라 이 편집의 값이 있을 수 없다 — 디스크에 있으면 그게 유일한 값이다.
+    kept = {key: on_disk[key] for key in RETIRED_REQUEST_KEYS
+            if key in on_disk and key not in request}
+    if kept:
+        request = {**request, **kept}
+    states, disk_states = request.get("states"), on_disk.get("states")
+    if isinstance(states, dict) and isinstance(disk_states, dict):
+        kept_states = {}
+        for state, entry in states.items():
+            disk_entry = disk_states.get(state)
+            if not (isinstance(entry, dict) and isinstance(disk_entry, dict)):
+                continue
+            kept_keys = {key: disk_entry[key] for key in RETIRED_STATE_KEYS
+                         if key in disk_entry and key not in entry}
+            if kept_keys:
+                kept_states[state] = {**entry, **kept_keys}
+        if kept_states:
+            request = {**request, "states": {**states, **kept_states}}
     atomic_write_text(path, json.dumps(request, ensure_ascii=False, indent=2) + "\n")

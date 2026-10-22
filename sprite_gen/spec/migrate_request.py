@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""은퇴한 `fit` 키를 런의 `sprite-request.json` 에서 현행 키로 옮긴다 (일회성, 명시 실행).
+"""은퇴한 키를 런의 `sprite-request.json` 에서 현행 스키마로 옮긴다 (일회성, 명시 실행).
 
-`fit.pixel_perfect` 는 2026-07-25 에 `fit.pixel_unfake` 로 교체됐다. 로더
-(`runio.load_request`) 는 은퇴 키를 **메모리에서만** 현행 키로 읽어 기존 런이 무손실로
-계속 돌게 하고, 디스크 스키마를 실제로 바꾸는 일은 이 명령에서만 한다.
+`fit.pixel_perfect` 는 2026-07-25 에 `fit.pixel_unfake` 로 교체됐고, `rig`·`layers`·
+`states.<state>.track` 은 v3.0.0 에서 layer-tracks(`compose-layers`)와 함께 대신하는 키 없이
+은퇴했다. 로더(`runio.load_request`) 는 은퇴 키를 **메모리에서만** 현행 스키마로 읽어(옮기거나
+떼어) 기존 런이 계속 돌게 하고, 디스크 스키마를 실제로 바꾸는 일은 이 명령에서만 한다.
 
 왜 나뉘어 있나: 예전엔 로더가 정규화한 문서를 곧바로 다시 썼고, 그래서 승인된 런에
 `state_revision()` 을 부른 것만으로 그 런의 `sprite-request.json` 이 재기록됐다. 조회가
@@ -11,7 +12,8 @@ canonical 런의 바이트를 바꾸면 `run_revision`(request 바이트를 해�
 그 런의 큐레이션 사이드카가 stale 로 떨어진다. 읽는 쪽은 읽기만 하고, 쓰는 일은 사용자가
 부른 명령 안에서만 일어난다 (plan sprite-gen/state-revision-read-mutation).
 
-이 명령이 바꾸는 것은 키 이름 하나뿐이고 값·의미는 그대로다. 다만 파일 바이트가 바뀌므로
+이 명령이 바꾸는 것은 은퇴 키뿐이다: 이름이 바뀐 키는 값·의미가 그대로고, 걷어 내는 키는
+이미 아무도 읽지 않는다. 다만 파일 바이트가 바뀌므로
 `run_revision` 은 바뀐다 — 큐레이션 사이드카는 행별 `revision` 스탬프로 구제되고
 (`curation.load_curation_report`), 스탬프가 없는 행은 평소 규칙대로 드롭된다. 그 결과를
 쓰기 전에 미리 말한다: 조용히 잃는 것이 없어야 사용자가 실행 시점을 고를 수 있다.
@@ -24,7 +26,7 @@ import json
 from pathlib import Path
 
 from sprite_gen.curate.curation import CURATION_FILENAME, run_revision
-from sprite_gen.spec.runio import LEGACY_FIT_KEYS, REQUEST_FILENAME, migrate_request_file
+from sprite_gen.spec.runio import REQUEST_FILENAME, migrate_request_file
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -62,18 +64,18 @@ def run(**kwargs: object) -> int:
         print(f"migrate-request: {path} 가 없다")
         return 1
 
-    moved = ", ".join(f"{legacy} -> {current}" for legacy, current in LEGACY_FIT_KEYS.items())
-    if not migrate_request_file(run_dir):
+    moved = migrate_request_file(run_dir)
+    if not moved:
         print(f"migrate-request: {path} 는 이미 현행 키뿐이다 — 옮길 것이 없다")
         return 0
 
-    print(f"migrate-request: {path} 의 은퇴 fit 키 이관 ({moved})")
+    print(f"migrate-request: {path} 의 은퇴 키 이관 ({', '.join(moved)})")
     for line in _curation_impact(run_dir):
         print(f"  {line}")
     if not apply_changes:
         print("migrate-request: dry-run. 실제로 쓰려면 --apply")
         return 0
     migrate_request_file(run_dir, apply=True)
-    print(f"migrate-request: {path} 갱신. 값·의미는 그대로고 키 이름만 바뀐다 "
-          f"(파일 바이트가 바뀌므로 run_revision 은 움직인다).")
+    print(f"migrate-request: {path} 갱신. 이름이 바뀐 키는 값·의미가 그대로고, 걷어 낸 키는 "
+          f"이미 읽히지 않던 것이다 (파일 바이트가 바뀌므로 run_revision 은 움직인다).")
     return 0

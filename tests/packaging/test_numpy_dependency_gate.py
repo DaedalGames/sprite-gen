@@ -145,7 +145,6 @@ _LAUNCHED_ELSEWHERE = {
     "run_correction_loop.py",
     "unpack_atlas_run.py",
     "serve_curation.py",
-    "compose_layers.py",
     "recolor.py",
 }
 

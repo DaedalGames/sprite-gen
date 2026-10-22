@@ -21,7 +21,6 @@ PACKAGE_RUN_MODULES = [
     "compose_atlas",
     "compose_cycle",
     "compose_gif",
-    "compose_layers",
     "correction_loop",
     "export_aseprite",
     "export_pngs",

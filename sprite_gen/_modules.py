@@ -57,8 +57,6 @@ MODULE_DOMAIN = {
     'game_pack': 'compose',
     'compose_cycle': 'compose',
     'compose_gif': 'compose',
-    'compose_layers': 'compose',
-    'layers': 'compose',
     'export_pngs': 'compose',
     'export_aseprite': 'compose',
     'breathe': 'effects',
@@ -88,7 +86,7 @@ DOMAINS: list[tuple[str, str]] = [
     ("video", "Video → loop — canvas, keyed frames, seamless cycle, batch"),
     ("frames", "Frames — chroma/white removal, row extraction, sheet slicing, atlas unpacking"),
     ("curate", "Curation — direction anchors and the curation sidecar"),
-    ("compose", "Compose — runtime atlas, cycles, GIFs, layers, exports"),
+    ("compose", "Compose — runtime atlas, cycles, GIFs, exports"),
     ("background", "Background — repeating painted strips and textures"),
     ("effects", "Post-processing — recolor, breathing, interpolation, projected shadows"),
     ("scene", "Scene — asset placement, camera, lighting, rendering and inspection"),
@@ -114,8 +112,8 @@ PIPELINES: list[dict[str, object]] = [
 TOOL_GROUPS: list[dict[str, object]] = [
     {"key": "C", "name": "utilities", "verbs": ["cutout", "slice-sheet", "ui-kit", "unpack-atlas"],
      "chain": "cutout · slice-sheet · ui-kit · unpack-atlas (each stands alone)", "doc": "docs/sheet-slicing.md"},
-    {"key": "D", "name": "post-processing", "verbs": ["recolor", "recolor-palette", "compose-layers", "breathe", "export-pngs", "export-aseprite"],
-     "chain": "recolor · compose-layers · breathe · export-pngs · export-aseprite", "doc": "docs/recolor.md"},
+    {"key": "D", "name": "post-processing", "verbs": ["recolor", "recolor-palette", "breathe", "export-pngs", "export-aseprite"],
+     "chain": "recolor · breathe · export-pngs · export-aseprite", "doc": "docs/recolor.md"},
     {"key": "E", "name": "asset tools", "verbs": ["background-tile", "shadow", "inspect-motion"],
      "chain": "background-tile · shadow · inspect-motion (independent; no generation required)", "doc": "docs/asset-tools.md"},
 ]

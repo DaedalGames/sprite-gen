@@ -145,7 +145,7 @@ def test_migration_does_not_take_the_pipeline_writer_lock(tmp_path) -> None:
     (run_dir / LOCK_FILENAME).write_text(
         json.dumps({"owner": "extract", "pid": 1, "started": 0}), encoding="utf-8")
 
-    assert migrate_request_file(run_dir, apply=True) is True
+    assert migrate_request_file(run_dir, apply=True) == ["fit.pixel_perfect -> fit.pixel_unfake"]
     assert json.loads((run_dir / REQUEST_FILENAME).read_text(
         encoding="utf-8"))["fit"] == {"pixel_unfake": True}
     # 남의 락을 소비하지도 않는다 (파일은 그대로)

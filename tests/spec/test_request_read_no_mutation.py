@@ -144,7 +144,7 @@ def test_loader_holds_no_writer_call(synthetic_fixture_a_run: Path) -> None:
     import sprite_gen.spec.runio as _runio_mod
     source = Path(_runio_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    read_path = {"load_request", "normalize_retired_fit_keys", "_read_request_document"}
+    read_path = {"load_request", "normalize_retired_keys", "_read_request_document"}
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or node.name not in read_path:
