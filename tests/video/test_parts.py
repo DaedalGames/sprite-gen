@@ -51,29 +51,47 @@ _yy, _xx = np.mgrid[0:H * SS, 0:W * SS].astype(np.float32)
 _yy, _xx = (_yy + 0.5) / SS, (_xx + 0.5) / SS
 
 
-def _seg(p: tuple[float, float], q: tuple[float, float]) -> np.ndarray:
+def _window(points, reach: float) -> tuple[slice, slice]:
+    """The whole pixels (rows, columns) of the box round `points` grown by `reach` px and a pixel more: every point of
+    the supersampled canvas within `reach` of a segment between them lies inside, so a shape of that radius is drawn
+    there alone (the frames are the same bytes as drawn over the whole canvas, in a fraction of the time)."""
+    ys, xs = [pt[0] for pt in points], [pt[1] for pt in points]
+    return (slice(max(0, math.floor(min(ys) - reach) - 1), min(H, math.ceil(max(ys) + reach) + 1)),
+            slice(max(0, math.floor(min(xs) - reach) - 1), min(W, math.ceil(max(xs) + reach) + 1)))
+
+
+def _seg(p: tuple[float, float], q: tuple[float, float], win: tuple[slice, slice]) -> np.ndarray:
+    rows, cols = win
+    fine = slice(rows.start * SS, rows.stop * SS), slice(cols.start * SS, cols.stop * SS)
+    yy, xx = _yy[fine], _xx[fine]
     (py, px), (qy, qx) = p, q
     vy, vx = qy - py, qx - px
-    t = np.clip(((_yy - py) * vy + (_xx - px) * vx) / max(vy * vy + vx * vx, 1e-9), 0, 1)
-    return np.hypot(_yy - (py + t * vy), _xx - (px + t * vx))
+    t = np.clip(((yy - py) * vy + (xx - px) * vx) / max(vy * vy + vx * vx, 1e-9), 0, 1)
+    return np.hypot(yy - (py + t * vy), xx - (px + t * vx))
 
 
 def _cover(inside: np.ndarray) -> np.ndarray:
-    return inside.astype(np.float32).reshape(H, SS, W, SS).mean(axis=(1, 3))
+    return inside.astype(np.float32).reshape(inside.shape[0] // SS, SS, inside.shape[1] // SS, SS).mean(axis=(1, 3))
 
 
-def _shape(e: np.ndarray, rgb: np.ndarray | tuple, line: tuple | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """A shape (its signed distance `e`, inside at or below 0) filled with `rgb`, outlined LINE px in `line` (a darker
-    shade of its colour where none is given): its coverage and colour per pixel."""
-    a = _cover(e <= 0)
-    fill = np.clip(_cover(e <= -LINE) / np.maximum(a, 1e-6), 0, 1)[..., None]
+def _shape(e: np.ndarray, win: tuple[slice, slice], rgb: np.ndarray | tuple, line: tuple | None = None
+           ) -> tuple[np.ndarray, np.ndarray]:
+    """A shape (its signed distance `e` over the window `win`, inside at or below 0) filled with `rgb`, outlined LINE px
+    in `line` (a darker shade of its colour where none is given): its coverage and colour per pixel of the frame, the
+    outline's colour and no coverage outside the window."""
+    a = np.zeros((H, W), np.float32)
+    a[win] = _cover(e <= 0)
+    fill = np.clip(_cover(e <= -LINE) / np.maximum(a[win], 1e-6), 0, 1)[..., None]
     rgb = np.broadcast_to(np.asarray(rgb, np.float32), (H, W, 3))
-    line = 0.35 * np.asarray(rgb if line is None else line, np.float32)
-    return a, fill * rgb + (1 - fill) * line
+    line = np.broadcast_to(0.35 * np.asarray(rgb if line is None else line, np.float32), (H, W, 3))
+    colour = np.array(line)
+    colour[win] = fill * rgb[win] + (1 - fill) * line[win]
+    return a, colour
 
 
 def _capsule(p, q, r, rgb):
-    return _shape(_seg(p, q) - r, rgb)
+    win = _window((p, q), r)
+    return _shape(_seg(p, q, win) - r, win, rgb)
 
 
 def _tail(at: float, bob: float, walker: str) -> tuple[np.ndarray, np.ndarray]:
@@ -84,17 +102,21 @@ def _tail(at: float, bob: float, walker: str) -> tuple[np.ndarray, np.ndarray]:
     angles = [shape["base"] + shape["sway"] * math.sin(phase)]
     for k in range(1, 5):
         angles.append(angles[-1] + 14 * math.sin(phase - 0.7 * k))
-    p = (shape["root"][0] + bob, shape["root"][1])
-    e, tip = np.full(_yy.shape, np.inf, np.float32), None
-    for k, (angle, r) in enumerate(zip(angles, shape["radii"])):
-        q = (p[0] - 13 * math.sin(math.radians(angle)), p[1] + 13 * math.cos(math.radians(angle)))
-        ek = _seg(p, q) - r
+    joints = [(shape["root"][0] + bob, shape["root"][1])]
+    for angle in angles:
+        p = joints[-1]
+        joints.append((p[0] - 13 * math.sin(math.radians(angle)), p[1] + 13 * math.cos(math.radians(angle))))
+    win = _window(joints, max(shape["radii"]))
+    e, tip = np.inf, None
+    for k, r in enumerate(shape["radii"]):
+        ek = _seg(joints[k], joints[k + 1], win) - r
         if k == 4:
             tip = ek < e
         e = np.minimum(e, ek)
-        p = q
     tipped = np.clip(_cover(tip & (e <= 0)) / np.maximum(_cover(e <= 0), 1e-6), 0, 1)[..., None]
-    return _shape(e, (1 - tipped) * np.array(ORANGE, np.float32) + tipped * np.array(CREAM, np.float32), (0.3, 0.2, 0.1))
+    rgb = np.array(np.broadcast_to(np.array(ORANGE, np.float32), (H, W, 3)))
+    rgb[win] = (1 - tipped) * np.array(ORANGE, np.float32) + tipped * np.array(CREAM, np.float32)
+    return _shape(e, win, rgb, (0.3, 0.2, 0.1))
 
 
 def _bob(body: float) -> float:
@@ -102,7 +124,8 @@ def _bob(body: float) -> float:
 
 
 def _arm(shoulder, hand, r, hand_r):
-    return _shape(np.minimum(_seg(shoulder, hand) - r, _seg(hand, hand) - hand_r), ORANGE)
+    win = _window((shoulder, hand), max(r, hand_r))
+    return _shape(np.minimum(_seg(shoulder, hand, win) - r, _seg(hand, hand, win) - hand_r), win, ORANGE)
 
 
 def _layers(body: float, tail: float | None, walker: str, tail_bob: float | None = None
@@ -195,7 +218,8 @@ def _crossed(t: float) -> bool:
     """Whether the near hand and the tail of the walker seen from the side, each drawn alone, overlap at time t."""
     a = -0.5 * math.sin(2 * math.pi * t / N)
     hand = (78 + _bob(t) + 52 * math.cos(a), 104 + 52 * math.sin(a))
-    return bool(((_cover(_seg(hand, hand) <= 6.5) > 0.5) & (_tail(t, _bob(t), "side")[0] > 0.5)).any())
+    win = _window((hand, hand), 6.5)
+    return bool(((_cover(_seg(hand, hand, win) <= 6.5) > 0.5) & (_tail(t, _bob(t), "side")[0][win] > 0.5)).any())
 
 
 def _bytes(frames) -> list[bytes]:
