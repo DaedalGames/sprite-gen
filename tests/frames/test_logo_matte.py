@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFilter
 
-from logo_lettering import (BUTTER, GREEN_PAINTED, MAGENTA_PAINTED, MINT, SKY, key_excess, lettering, over, quilt,
-                            truth_over)
+from logo_lettering import (BUTTER, GREEN_PAINTED, MAGENTA_PAINTED, MINT, SKY, hollow_letters, key_excess, lettering,
+                            over, quilt, truth_over, walled_patch)
 from sprite_gen.frames import logo_matte
 
 
@@ -266,6 +266,69 @@ def test_the_other_key_keeps_the_mint_patches_and_finds_nothing_inside() -> None
 ], ids=["white-glow", "outlined-cyan-glow", "pooled-glow-green", "pooled-glow-magenta", "orange-glow-green", "pixel"])
 def test_a_glow_is_not_see_through_inside(item, key) -> None:
     cut, _ = logo_matte.matte(item().image, key=key)
+    assert not logo_matte.see_through_inside(cut)["wide"]
+
+
+KEY_ISLAND = (96, 156, 9)  # the end validator's counterexample: a 9x9 square of the key in the middle of the patch
+
+
+@pytest.mark.parametrize("holes", [
+    (),
+    (KEY_ISLAND,),
+    (KEY_ISLAND, (70, 105, 5), (65, 130, 4), (120, 205, 15)),  # one more on its own, two glued to the patch's wall
+], ids=["no-hole", "one-hole", "four-holes"])
+def test_a_hole_cut_to_nothing_opens_no_way_out_of_the_letter(holes) -> None:
+    # the mint patch walled in by the navy letter is cut see-through on green and the squares of the key in it are cut
+    # to nothing: walled in by the letter, joined to no edge of the picture, so the patch round them is still inside
+    # and the glow's reach (no glow here) stays a letter's rim
+    cut, _ = logo_matte.matte(walled_patch(holes=holes), key="green")
+    alpha = np.asarray(cut)[..., 3]
+    for y, x, side in holes:
+        assert (alpha[y:y + side, x:x + side] == 0).all()
+    patch = alpha[65:135, 100:220]
+    see = int(((patch > 0) & (patch < logo_matte.INSIDE_ALPHA8)).sum())
+    assert see >= 8400 - sum(side * side for *_, side in holes)
+    inside = logo_matte.see_through_inside(cut)
+    assert inside["wide"] and inside["glow_reach_px"] == logo_matte.INSIDE_EDGE_PX
+    assert inside["px"] >= 0.85 * see
+
+
+def test_a_hole_joined_to_the_outside_is_outside_however_narrow() -> None:
+    # the patch fills the letter but for its 4 px outline, and a hole is glued to the letter's edge: one pixel of navy
+    # between it and the key round the letter. Sealed, the hole is walled in and the patch round it is inside; with
+    # that one pixel of the key, the hole is joined to the outside and the patch has a way out through it
+    patch, holes = (24, 176, 24, 296), ((96, 21, 9),)
+    sealed, _ = logo_matte.matte(walled_patch(patch=patch, holes=holes), key="green")
+    opened, _ = logo_matte.matte(walled_patch(patch=patch, holes=holes, opening=(100, 20)), key="green")
+    assert np.asarray(opened)[100, 19:30, 3].max() == 0  # nothing from the outside into the hole
+    assert logo_matte.see_through_inside(sealed)["wide"]
+    found = logo_matte.see_through_inside(opened)
+    assert found["px"] == 0 and not found["wide"]
+
+
+def test_big_letters_with_counters_are_not_see_through_inside() -> None:
+    # an O's counter and an A's are transparent and walled in by the letters, so not outside; nothing see-through lies
+    # in them past the letters' antialiased rim, so nothing is inside
+    cut, _ = logo_matte.matte(lettering(shapes=hollow_letters, size=(640, 320), glow=None, key=GREEN_PAINTED).image,
+                              key="green")
+    alpha = np.asarray(cut)[..., 3]
+    assert alpha[160, 179] == 0 and alpha[150, 460] == 0  # the middle of the O's counter and of the A's
+    inside = logo_matte.see_through_inside(cut)
+    assert inside["px"] == 0 and not inside["wide"]
+
+
+@pytest.mark.parametrize("item, key", [
+    (lambda: lettering(shapes=hollow_letters, size=(640, 320)), "magenta"),
+    (lambda: lettering(shapes=hollow_letters, size=(640, 320), fill=(232, 182, 52), outline=(20, 24, 40),
+                       glow=(40, 230, 255), glow_radius=6.0, key=GREEN_PAINTED), "green"),
+    (lambda: lettering(shapes=hollow_letters, size=(640, 320), fill=(255, 214, 40), glow=(255, 120, 20),
+                       glow_radius=5.0, glow_strength=0.7, key=GREEN_PAINTED), "green"),
+], ids=["white-glow", "outlined-cyan-glow-green", "orange-glow-green"])
+def test_a_glow_pooled_in_a_big_counter_is_not_see_through_inside(item, key) -> None:
+    # the glow pools round a counter whose middle stays transparent, walled in by the letter: it reaches no farther
+    # from the letter there than beside it
+    cut, _ = logo_matte.matte(item().image, key=key)
+    assert np.asarray(cut)[160, 179, 3] == 0  # the middle of the O's counter
     assert not logo_matte.see_through_inside(cut)["wide"]
 
 

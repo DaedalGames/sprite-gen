@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from logo_lettering import GREEN_PAINTED, MAGENTA_PAINTED, lettering, quilt
+from logo_lettering import GREEN_PAINTED, MAGENTA_PAINTED, lettering, quilt, walled_patch
 from sprite_gen import gen
 from sprite_gen.frames import logo_matte
 from sprite_gen.gen import base as gen_base
@@ -420,6 +420,24 @@ def test_see_through_inside_the_letters_is_refused_and_kept_aside(tmp_path, fake
     assert report["status"] == "refused" and report["refused_at"] == "matte"
     inside = report["logo"]["see_through_inside"]
     assert inside["pct_of_visible"] >= logo_matte.INSIDE_MAX_PCT and inside["wide"]
+
+
+@pytest.mark.parametrize("holes", [(), ((96, 156, 9),)], ids=["no-hole", "key-island"])
+def test_a_hole_cut_in_a_see_through_patch_does_not_let_it_through(tmp_path, fake, holes) -> None:
+    # the end validator's counterexample: a navy letter on green with a mint patch walled in it, with or without a 9x9
+    # square of the key in the patch's middle; the square is cut to nothing and opens no way out of the letter
+    provider = fake(reads=(["I"],))
+    out = tmp_path / "logo"
+    out.mkdir()
+    walled_patch(holes=holes).save(out / "lettering.png")
+    with pytest.raises(SystemExit, match="see-through inside"):
+        _run(tmp_path, text="I", lettering=out / "lettering.png")
+    assert provider.looked == []  # refused before the text check
+    assert not (out / "logo.png").exists() and (out / "logo.rejected.png").is_file()
+    report = _report(tmp_path)
+    assert report["status"] == "refused" and report["refused_at"] == "matte"
+    inside = report["logo"]["see_through_inside"]
+    assert inside["wide"] and inside["glow_reach_px"] == logo_matte.INSIDE_EDGE_PX
 
 
 def test_a_glowing_title_is_not_see_through_inside(tmp_path, fake) -> None:
