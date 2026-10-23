@@ -11,6 +11,7 @@
      가리키는 아틀라스도 입력이다
   4. 내놓다가 못 끝내면 옛 런은 한 바이트도 바뀌지 않고, 이 실행의 임시 폴더만 치운다
   5. out 이 빈 폴더로 가는 링크면 링크가 가리키는 자리에 내놓고 링크는 그대로 둔다
+  6. 내놓은 런은 런 폴더의 이름을 단다 — 캐릭터 id 와 매니페스트의 run_dir 은 임시 폴더가 아니라 런 폴더다
 """
 
 from __future__ import annotations
@@ -264,3 +265,16 @@ def test_an_output_link_to_an_empty_folder_publishes_where_it_points(tmp_path) -
     assert link.is_symlink() and link.resolve() == target.resolve(), "out 링크가 바뀌었다"
     _published(target)
     assert _names(tmp_path) == sorted([".target.sg-rwlock", "pngs", "run", "target"]), "임시 폴더가 남았다"
+
+
+# ── 6. 런은 런 폴더의 이름을 단다 ─────────────────────────────────────
+
+@pytest.mark.parametrize("kind", SOURCES)
+def test_a_run_is_named_after_its_run_dir_not_its_staging_folder(tmp_path, kind) -> None:
+    argv = SOURCES[kind](tmp_path / "source")
+    run = tmp_path / "hero-curator"
+    assert _unpack(*argv, "--out-dir", str(run)) == 0
+    request = json.loads((run / "sprite-request.json").read_text(encoding="utf-8"))
+    manifest = json.loads((run / "frames" / "frames-manifest.json").read_text(encoding="utf-8"))
+    assert request["character"]["id"] == "hero-curator", "임시 폴더 이름이 캐릭터 id 가 됐다"
+    assert manifest["run_dir"] == str(run.resolve()), "매니페스트가 지워진 임시 폴더를 가리킨다"
