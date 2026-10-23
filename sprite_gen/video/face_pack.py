@@ -7,8 +7,10 @@ come back to, and clips that play once. The pack is a folder a player reads (`sp
 `face-bake` bakes from:
 
 - **Anchors** for every frame of every clip, read on the band round the reference's own lower face (so a clip's
-  anchors are the same whatever else the request names), and the **weight**: the lower faces the anchors lay on the
-  reference, joined (`face_layer`).
+  anchors are the same whatever else the request names); a body frame whose own mouth is closed has its place read
+  again on the ring of skin round the mouth, its size and tilt the band's (a head that turns moves its hair, headset
+  and cheeks further than its mouth), and its other frames take the move of the read ones round them. The **weight**:
+  the lower faces the anchors lay on the reference, joined (`face_layer`).
 - **Face frames**: each talking frame's mouth read in reference coordinates (`face_layer.mouth_reading`), its open
   area (`face_layer.open_area`) and its step to every other frame (`face_layer.step_features`, over the clip's median
   step). A closed mouth that smiles is in the smile set, one that does not in the neutral set; an open run takes the
@@ -203,8 +205,8 @@ def each(fn, items, jobs: int) -> list[Any]:
 _WORK: dict[str, Any] = {}
 
 
-def _work_init(band: fl.Band, geom: fl.Geometry) -> None:
-    _WORK["band"], _WORK["geom"] = band, geom
+def _work_init(work: dict[str, Any]) -> None:
+    _WORK.update(work)
 
 
 def _anchor(task: tuple[str, tuple[int, int, int]]) -> dict[str, Any]:
@@ -219,20 +221,46 @@ def _anchor(task: tuple[str, tuple[int, int, int]]) -> dict[str, Any]:
     return a
 
 
+def _on_ring(task: tuple[str, tuple[int, int, int], tuple[int, int], dict[str, Any]]) -> dict[str, Any] | None:
+    """One body frame's anchor with its place read on the ring round the mouth, or None where its own mouth, read
+    through the anchor, is not closed (a worker's task)."""
+    ring, geom = _WORK["ring"], _WORK["geom"]
+    path, place, native, a = task
+    frame = Image.open(path).convert("RGBA")
+    body_ref = fl.warp(np.asarray(frame, np.float32), fl.placement(place, native) @ fl.matrix(a, geom), geom.size)
+    if fl.expression(fl.mouth_reading(body_ref, geom)) is None:
+        return None
+    return fl.place_on(ring, fl.features(fl.to_reference(frame, place, geom.size)), a, geom)
+
+
+def _pool_map(fn, tasks: list[Any], work: dict[str, Any], jobs: int) -> list[Any]:
+    if jobs <= 1:
+        _work_init(work)
+        return [fn(t) for t in tasks]
+    with ProcessPoolExecutor(max_workers=jobs, initializer=_work_init, initargs=(work,)) as pool:
+        return list(pool.map(fn, tasks, chunksize=2))
+
+
 def read_anchors(clips: list[Clip], band: fl.Band, geom: fl.Geometry, jobs: int) -> None:
     """Every frame's anchor, read on `jobs` processes (the reading is most of a pack's time), then each clip's
     misreadings taken out (`face_layer.hampel`)."""
-    tasks = [(str(p), c.place) for c in clips for p in c.files]
-    if jobs <= 1:
-        _work_init(band, geom)
-        rows = [_anchor(t) for t in tasks]
-    else:
-        with ProcessPoolExecutor(max_workers=jobs, initializer=_work_init, initargs=(band, geom)) as pool:
-            rows = list(pool.map(_anchor, tasks, chunksize=2))
+    rows = _pool_map(_anchor, [(str(p), c.place) for c in clips for p in c.files], {"band": band, "geom": geom}, jobs)
     at = 0
     for c in clips:
         c.rows = rows[at:at + len(c.files)]
         c.used = fl.hampel(c.rows, cyclic=c.loop)
+        at += len(c.files)
+
+
+def read_places(bodies: list[Clip], ring: fl.Band, geom: fl.Geometry, jobs: int) -> None:
+    """Every body frame's place read again on the ring round the mouth where its own mouth is closed, and moved with
+    the read frames round it where it is not (`face_layer.on_ring`). The talking clip keeps the band's: its jaw moves
+    as it talks, and the layer is cut from it."""
+    tasks = [(str(p), c.place, c.native, a) for c in bodies for p, a in zip(c.files, c.used)]
+    placed = _pool_map(_on_ring, tasks, {"ring": ring, "geom": geom}, jobs)
+    at = 0
+    for c in bodies:
+        c.used = fl.on_ring(c.used, placed[at:at + len(c.files)], cyclic=c.loop)
         at += len(c.files)
 
 
@@ -285,8 +313,9 @@ def build(request: Path, out: Path, jobs: int = 0) -> dict[str, Any]:
     ref_face = fl.lower_face(ref, geom)
     if not ref_face.any():
         raise SystemExit(f"{PROG}: no lower face grows from face.lower_face.seeds on the reference: the seeds must sit on its skin")
-    band = fl.Band.read(reference, fl.weight(fl.fill_holes(ref_face), geom), geom)
-    read_anchors(clips, band, geom, jobs)
+    w_ref = fl.weight(fl.fill_holes(ref_face), geom)
+    read_anchors(clips, fl.Band.read(reference, w_ref, geom), geom, jobs)
+    read_places(bodies, fl.Band.ring(reference, w_ref, geom), geom, jobs)
     faces = []
     for c in clips:
         faces.extend(lower_faces(c, geom, jobs))
@@ -384,8 +413,9 @@ def build(request: Path, out: Path, jobs: int = 0) -> dict[str, Any]:
             c_entry = {"frame": entry_frame, "own_lift": target, "set": entry_set, "rest": rest,
                        "candidates": {str(k): {"lift": lift(k), "switch": round(v, 3)} for k, v in switches.items()}}
             body_rows.append({"name": c.name, "loop": c.loop, "cells": cells, "keep": keeps,
-                              "to_body": [_six(m) for m in to_body], "own_mouth": c.own_mouth, "entry": c_entry,
-                              "median_step": med_b})
+                              "to_body": [_six(m) for m in to_body], "ring": [u["ring"] for u in c.used],
+                              "ring_read": [k for k, u in enumerate(c.used) if u["ring_read"]],
+                              "own_mouth": c.own_mouth, "entry": c_entry, "median_step": med_b})
 
         for row, (c, folder, cells, keeps, to_body, Fb, med_b, own, entry_frame) in zip(body_rows, prepared):
             row["switch"] = {str(r): [round(v, 3) for v in each(lambda k, r=r: switch(c, to_body, keeps, Fb, med_b, k, r), range(len(c.files)), jobs)]
@@ -434,6 +464,8 @@ def _clip_report(c: Clip) -> dict[str, Any]:
             "band_residual_place_only": _summary([r["band_residual_place_only"] for r in rows]),
             "band_residual_fixed": _summary([r["band_residual_fixed"] for r in rows]),
             "misread": [k for k, u in enumerate(used) if u["misread"]],
+            **({"ring_read": sum(u["ring_read"] for u in used), "ring_move": _summary([float(np.hypot(*u["ring"])) for u in used])}
+               if used and "ring" in used[0] else {}),
             "wide_grid": [k for k, r in enumerate(rows) if r["wide_grid"]],
             "wide_search": [k for k, r in enumerate(rows) if r["search_px"] > fl.SEARCH],
             "search_edge": [k for k, r in enumerate(rows) if r["edge"]]}

@@ -99,7 +99,13 @@ The first place match uses masked normalised cross-correlation within 48 px. If 
 
 A best match on the grid rim is read again on a grid twice as wide: size 0.92 to 1.08 and tilt -8 to 8 degrees. The place required by a size and tilt can be more than 3 px from the first reading. A 3 by 3 grid is therefore read again around the place, size, and tilt it found until the place stays, for at most 4 passes.
 
-Each anchor number is checked against the median of 5 surrounding frames, wrapping around a loop. A reading farther than three scaled MADs and farther than 0.5 px in place, 0.01 in size, or 0.3 degrees in tilt is replaced by the window medians. Anchors depend only on the reference and the frame. Naming other clips in the request does not change them. `--jobs` runs anchor reading in processes.
+Each anchor number is checked against the median of 5 surrounding frames, wrapping around a loop. A reading farther than three scaled MADs and farther than 0.5 px in place, 0.01 in size, or 0.3 degrees in tilt is replaced by the window medians. Anchors depend only on the reference and the clip's own frames. Naming other clips in the request does not change them. `--jobs` runs anchor reading in processes.
+
+The band lies round the reference's own lower face: hair edge, headset, cheeks, and nose. A head that turns moves its hair, headset, and cheeks further than its mouth, so the band's place carries the layer off the mouth. A body frame's place is therefore read again on a ring of skin round the mouth. This applies to body clips only. The talking clip keeps its band anchors, because its jaw moves as it talks and the layer is cut from it.
+
+The ring is the reference's own lower face, its weight, between two ellipses centred on `face.mouth`, with inner half axes 30 by 14 px and outer half axes 60 by 42 px, where the reference is at least 200/255 opaque. The mouth inside the inner ellipse is left out, because a body's closed mouth can smile more or less than the reference's. A body frame is read on the ring when its own mouth, read through its band anchor, is closed. The mouth reading is the one used for talking frames: a mouth 5 px tall or less is closed. Size and tilt stay the band's. Only the place is read again. The frame laid through its band anchor is matched to the ring with masked normalised cross-correlation within 16 px. If the best match sits on the search rim, the search extends to 32 px.
+
+Each read frame's move, ring place less band place, is checked against the moves read among the 5 frames round it, wrapping on a loop, when three or more of them were read. A move farther from their median than three scaled MADs and farther than 0.5 px is a misreading and takes their median. A frame whose mouth is not read closed takes the move of the read frames round it, because an open mouth moves the jaw and the skin round it: linear between the nearest read frame on each side, wrapping on a loop, and before the first or after the last read frame, the nearest one's move. A body clip with no closed frame keeps the band's places.
 
 ### 2. Weight
 
@@ -153,14 +159,14 @@ The pack has kind `sprite-gen-face-pack` and version `1`. `face-bake` checks eve
 
 | Path | What |
 |---|---|
-| `face-pack.json` | FPS, size, rules, requested face geometry, and every talking frame's set, open area, mouth reading, sprite file, and map to the reference. It also contains the two sets and their closed frames, the step matrix, body cells, anchors as maps from the reference, keeps, `own_mouth`, entry and switch tables, own sounds, player, and every file's SHA-256 digest. |
+| `face-pack.json` | FPS, size, rules, requested face geometry, and every talking frame's set, open area, mouth reading, sprite file, and map to the reference. It also contains the two sets and their closed frames, the step matrix, body cells, anchors as maps from the reference, each body row's `ring`, every frame's move in px as x and y, and `ring_read`, the frames read on the ring, keeps, `own_mouth`, entry and switch tables, own sounds, player, and every file's SHA-256 digest. |
 | `sprite-gen-face-v1.mjs` | Player copied from the package. |
 | `face/frame-NNNNN.png` | Sprites indexed by talking frame. |
 | `body/<name>/frame-NNNNN.png` | Body cells. |
 | `body/<name>/keep-NNNNN.png` | Parts of a body cell that stay on top, where present. |
 | `body/<name>/sound.wav` | A clip's own sound. |
 | `weight.npy` | Layer weight in reference coordinates. |
-| `report.json` | Per clip anchor ranges; band residual median, p90, and maximum with anchor, place only, and no alignment; misread frames; frames using the wide grid or wide search; and hand frames. It also records expression sets, each body's entry, and how many frames can switch on for each rest. |
+| `report.json` | Per clip anchor ranges; band residual median, p90, and maximum with anchor, place only, and no alignment; misread frames; frames using the wide grid or wide search; per body clip, `ring_read`, how many frames were read on the ring, and `ring_move`, the median, p90, and maximum length of the move; and hand frames. It also records expression sets, each body's entry, and how many frames can switch on for each rest. |
 
 ## The player
 
