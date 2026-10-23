@@ -1,7 +1,7 @@
 ---
 name: sprite-gen
 version: 3.0.0
-description: "Generates images and game sprites through GPT or Grok with guided provider choices, separate saved defaults, automatic cleanup and optional curation. Handles sprite requests, ordinary image generation/editing, typography logos (로고, 타이포그래피, 타이틀 글자, 타이틀 로고, wordmark, logo, title lettering: a title screen drawn with the title in it, its lettering lifted out transparent), standalone image-to-video clips (i2v, animate this still, 그록 영상, 이매진 비디오, 스틸 움직여줘, first/last frame, reference-to-video, 영상 이어붙이기, 영상 편집, extend/edit a clip), clips from a video MCP on the agent (ZCRE, 지크 MCP), chroma removal, animation atlases, video loops, 큐레이션뷰, image candidates, 팔레트 스왑, palette swap, recolor, engine exports, repeating backgrounds, projected shadows, motion/contact inspection and optional scene composition from existing assets."
+description: "Generates images and game sprites through GPT or Grok with guided provider choices, separate saved defaults, automatic cleanup and optional curation. Handles sprite requests, ordinary image generation/editing, typography logos (로고, 타이포그래피, 타이틀 글자, 타이틀 로고, wordmark, logo, title lettering: a title screen drawn with the title in it, its lettering lifted out transparent), standalone image-to-video clips (i2v, animate this still, 그록 영상, 이매진 비디오, 스틸 움직여줘, first/last frame, reference-to-video, 영상 이어붙이기, 영상 편집, extend/edit a clip), clips from a video MCP on the agent (ZCRE, 지크 MCP), chroma removal, animation atlases, video loops, 큐레이션뷰, image candidates, 팔레트 스왑, palette swap, recolor, engine exports, repeating backgrounds, projected shadows, talking face layers over body motions (말하는 얼굴, 입 맞추기, 얼굴 층, lip sync, face pack), motion/contact inspection and optional scene composition from existing assets."
 license: Apache-2.0
 depends_on:
   required_bins:
@@ -11,6 +11,8 @@ depends_on:
       why: "video-frames (clip -> frames) and video-set"
     - name: img2webp
       why: "video-loop WebP with exact alpha (libwebp); Pillow's animated writer drops -exact"
+    - name: node
+      why: "face-bake: the face pack's player (sprite-gen-face-v1.mjs) picks the frames"
     - name: rife-ncnn-vulkan
       why: "video-loop jump repair and video-cycle-align (RIFE v4.6 in-betweens with the -x -z test-time augmentation, release 20221029). Install once with `sprite-gen rife install` (sha256-checked, into the user data directory); SPRITE_GEN_RIFE or PATH override it; Linux without a GPU also needs libvulkan1 mesa-vulkan-drivers. Without it, walk and run loops are cut as filmed with a warning"
   required_scripts:
@@ -97,6 +99,8 @@ front-facing observations also remain unchanged. Mirroring does not preserve lef
 | Where that ellipse is carried in every other cell, and what the move changes there (an arm crossing a chest moves with it; the stretch, the bend and the seam): a record and boards of every cell, nothing moved | `video-sway-inspect` (old name `video-follow-inspect`) | [video-pipeline](docs/video-pipeline.md#inspecting-a-sway--video-sway-inspect) |
 | A set's directions on one sheet, standing on one ground line (a 3×3 board, an engine import) | `video-set-sheet` | [video-pipeline](docs/video-pipeline.md#7-one-sheet-for-a-set--video-set-sheet) |
 | A walk or run that stops, from the clip's own start played backwards | `video-stop` | [video-pipeline](docs/video-pipeline.md#8-a-walk-or-run-that-stops--video-stop) |
+| Build a talking lower-face pack anchored to every frame of body motions from a reference and keyed clips. | `video-face` | [face-parts](docs/face-parts.md) |
+| Bake a voice and the pack's face layer onto body frames, optionally after a clip's own mouth and sound. | `face-bake` | [face-parts](docs/face-parts.md#face-bake) |
 | Compare the currently displayed loop with a final candidate, including after follow-through | `video-loop-compare` | [loop-comparison](docs/loop-comparison.md) |
 | Restore post-processing damage in the current cut from its exact source times, preserving normal cells and playback | `video-source-manifest` → `video-loop-repair` → `video-loop-compare` | [source restoration](docs/loop-comparison.md#restoring-the-active-cut-from-source) |
 | Video sprites from a clip your agent makes with a connected video MCP (ZCRE, 지크) | `video-canvas`, `video-prompt --no-last-frame`, the agent's own MCP tools (quote, user approval, generate, save the mp4), then `video-frames` and `video-loop`, and for a walk or run cut in two or more directions `video-cycle-align --view …` over their loop directories. sprite-gen never calls the MCP. | [video-pipeline](docs/video-pipeline.md#a-clip-from-a-video-mcp-on-your-agent--zcre) |

@@ -33,6 +33,7 @@ from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
 from sprite_gen.video import rife_install
+from sprite_gen.video import face_bake, face_pack
 from sprite_gen.effects import breathe, recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
@@ -401,6 +402,18 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "A walk or run that stops: the clip's own start played backwards from where it reaches the loop to the still it was filmed from, cut as a one-shot strip beside the loop (seam, drift, speed and refusals reported).",
         video_stop.add_arguments,
         video_stop.run,
+    ),
+    # The face layer (docs/face-parts.md): a talking clip's lower face cut to be laid on body motions, and a line baked
+    # with the pack's own player.
+    "video-face": (
+        "A face pack: a talking clip's lower face (mouth, jaw, cheeks) cut into smile and neutral sets, anchored on every frame of the body motions it is laid on, with the player that picks its frames to a voice.",
+        face_pack.add_arguments,
+        face_pack.run,
+    ),
+    "face-bake": (
+        "Bake a line ahead: a body motion with the face layer talking to a voice, picked by the pack's player (node), as frames, sound and a report; a jump the laying put in is refused.",
+        face_bake.add_arguments,
+        face_bake.run,
     ),
     "rife": (
         "install: download the pinned RIFE (rife-ncnn-vulkan, sha256-checked) into the user data directory, where the loop repair finds it.",
