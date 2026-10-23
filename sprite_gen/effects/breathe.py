@@ -77,7 +77,7 @@ from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
-from sprite_gen.frames.extract import solid_alpha_bbox
+from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
 from sprite_gen.spec.runio import inside_folder, new_stage, same_folder
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
@@ -348,6 +348,7 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
     y_cursor = baseline - total
     prev = 0
     clipped = 0
+    off = dict.fromkeys(FRAME_SIDES, 0)   # 변마다 밖으로 나간 불투명 (모서리 밖은 두 변 모두에 센다)
     deformed = False   # 이 위상에서 변형이 실제로 일어났나 (다듬기 게이트)
     for j in range(height):
         u = 1.0 - j / max(1, height - 1)
@@ -389,6 +390,8 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
                 src_x[ends[0]] = row_op[0]
         pixels = body[j, src_x]
         shown = pixels[:, 3] != 0
+        left = int(np.count_nonzero(shown & (out_x < 0)))
+        right = int(np.count_nonzero(shown & (out_x >= canvas_w)))
         inside = shown & (out_x >= 0) & (out_x < canvas_w)
         n_shown, n_inside = int(np.count_nonzero(shown)), int(np.count_nonzero(inside))
         for r in range(reps):
@@ -398,17 +401,42 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
                 clipped += n_shown - n_inside
             else:
                 clipped += n_shown
+                off["top"] += n_shown if yy < 0 else 0
+            off["left"] += left
+            off["right"] += right
         y_cursor += reps
     if clipped:
         # 조용히 자르지 않는다 — 정수리나 옆구리가 셀 밖으로 나가면 스프라이트가
         # 망가지고, 그건 여백이나 진폭을 사람이 정해야 하는 문제다 (No Silent Fallback).
         raise SystemExit(
-            f"breathe: 늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 {clipped}개가 잘린다 "
-            f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). "
-            f"셀 여백을 늘리거나 depth 를 낮춰라.")
+            f"breathe: 늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 {clipped}개가 잘린다 — {_sides_off(off)} "
+            f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). {_clip_advice(frame, off)}")
     if deformed:
         _thin_outline_1px(out)
     return Image.fromarray(out, "RGBA")
+
+
+SIDE_NAMES = {"top": "위", "left": "왼쪽", "right": "오른쪽"}
+
+
+def _sides_off(off: dict[str, int]) -> str:
+    return ", ".join(f"{SIDE_NAMES[s]} 변 밖 {off[s]}" for s in FRAME_SIDES if off[s])
+
+
+def _clip_advice(frame: Image.Image, off: dict[str, int]) -> str:
+    """pixel 이 셀 밖으로 민 칸의 거절 문구 끝 — 무엇을 하라는지. 밀려 나간 변이 그 칸 그림 자체의 테두리면
+    (`own_border`, video-frames 와 같은 판정) 그림이 원래 화면에 잘린 것일 수 있다 — 큰 일러·영상 칸은 smooth 가
+    머리와 화면 변을 제자리에 둔다. 여백 0 으로 자른 도트 스프라이트도 같은 판정에 걸려 둘을 가를 수 없으니 두
+    길을 다 말한다. 여백을 붙여 굽고 잘라 내는 우회는 밀려 나간 만큼을 조용히 잃는다."""
+    sides, outer = own_border(np.asarray(frame.convert("RGBA"))[..., 3] != 0)
+    crossed = [s for s in FRAME_SIDES if off[s] and s in sides]
+    if not crossed:
+        return "셀 여백을 늘리거나 depth 를 낮춰라."
+    covers = ", ".join(f"{SIDE_NAMES[s]} 변 바깥 줄 {outer[s]} px" for s in crossed)
+    return (f"그림이 {covers} 를 덮는다 — 그 변 길이의 {BORDER_MIN_FRACTION * 100:g} % 이상이라 그림 자체의 테두리로 "
+            f"읽힌다. 원래 화면에 잘린 그림(큰 일러·영상 칸)이면 mode smooth(`--mode smooth`)로 구워라 — 머리와 "
+            f"화면 변이 제자리에 있다. 여백을 붙여 굽고 잘라 내지 마라 — 밀려 나간 만큼 조용히 잃는다. 도트 "
+            f"스프라이트면 셀 여백을 늘리거나 depth 를 낮춰라.")
 
 
 # ── smooth 모드 (큰 일러·영상 프레임) ───────────────────────────────

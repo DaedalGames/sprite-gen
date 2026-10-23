@@ -23,6 +23,10 @@ const BREATHE_MAX_ROW_STRAIN = 0.25;
 const BREATHE_DEPTH_MAX = 0.20;
 const BREATHE_BREATHS_MAX = 8;
 const BREATHE_LAG_MAX = 0.45;
+// 그림 자체의 테두리 — 파이썬 frames.extract.FRAME_SIDES·BORDER_MIN_FRACTION 미러 (거절 문구가 쓴다).
+const BREATHE_SIDES = ["top", "left", "right"];
+const BREATHE_SIDE_NAMES = { top: "위", left: "왼쪽", right: "오른쪽" };
+const BREATHE_BORDER_MIN_FRACTION = 0.02;
 
 // 굽기가 거부하는 프레임은 미리보기도 만들어 주지 않는다.
 // 파이썬은 셀 밖으로 나간 불투명 픽셀을 세어 SystemExit 으로 멈추고 행당 변형 상한도
@@ -168,6 +172,35 @@ function breatheSolidBox(data, w, h) {
     }
   }
   return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
+}
+
+// 파이썬 `own_border` 미러 — 바깥 줄을 그 변 길이의 BREATHE_BORDER_MIN_FRACTION 이상 덮는 변.
+function breatheOwnBorder(data, w, h) {
+  const outer = { top: 0, left: 0, right: 0 };
+  for (let x = 0; x < w; x++) if (data[x * 4 + 3]) outer.top += 1;
+  for (let y = 0; y < h; y++) {
+    if (data[y * w * 4 + 3]) outer.left += 1;
+    if (data[(y * w + w - 1) * 4 + 3]) outer.right += 1;
+  }
+  const length = { top: w, left: h, right: h };
+  return { outer, sides: BREATHE_SIDES.filter((s) => outer[s] && outer[s] >= BREATHE_BORDER_MIN_FRACTION * length[s]) };
+}
+
+// 파이썬 `_sides_off`·`_clip_advice` 미러 — 셀 밖으로 민 칸의 거절 문구. 나간 변이 그 칸 그림 자체의
+// 테두리면 원래 화면에 잘린 그림일 수 있어 smooth 를 말한다 (여백 0 도트 스프라이트와 가를 수 없어 둘 다).
+function breatheClipWording(off, data, w, h) {
+  const where = BREATHE_SIDES.filter((s) => off[s]).map((s) => `${BREATHE_SIDE_NAMES[s]} 변 밖 ${off[s]}`).join(", ");
+  const border = breatheOwnBorder(data, w, h);
+  const crossed = BREATHE_SIDES.filter((s) => off[s] && border.sides.includes(s));
+  if (!crossed.length) return { where, advice: "셀 여백을 늘리거나 depth 를 낮춰라." };
+  const covers = crossed.map((s) => `${BREATHE_SIDE_NAMES[s]} 변 바깥 줄 ${border.outer[s]} px`).join(", ");
+  return {
+    where,
+    advice: `그림이 ${covers} 를 덮는다 — 그 변 길이의 ${BREATHE_BORDER_MIN_FRACTION * 100} % 이상이라 그림 자체의 테두리로 `
+      + "읽힌다. 원래 화면에 잘린 그림(큰 일러·영상 칸)이면 mode smooth(`--mode smooth`)로 구워라 — 머리와 "
+      + "화면 변이 제자리에 있다. 여백을 붙여 굽고 잘라 내지 마라 — 밀려 나간 만큼 조용히 잃는다. 도트 "
+      + "스프라이트면 셀 여백을 늘리거나 depth 를 낮춰라.",
+  };
 }
 
 // 줄 단위 신선도 검사 — **기준 프레임 하나**에만 건다.
@@ -324,6 +357,7 @@ function breatheComposite(base, cfg, phase) {
   let yCursor = baseline - total;
   let prev = 0;
   let clipped = 0;
+  const off = { top: 0, left: 0, right: 0 };   // 변마다 밖으로 나간 불투명 (모서리 밖은 두 변 모두)
   let deformed = false;   // 이 위상에서 변형이 실제로 일어났나 (다듬기 게이트, 파이썬 미러)
   for (let j = 0; j < height; j++) {
     const u = 1 - j / Math.max(1, height - 1);
@@ -370,7 +404,13 @@ function breatheComposite(base, cfg, phase) {
       for (const [ox, si] of rowMap) {
         const s4 = ((by0 + j) * w + (bx0 + si)) * 4;
         if (!src[s4 + 3]) continue;
-        if (yy < 0 || yy >= h || ox < 0 || ox >= w) { clipped += 1; continue; }
+        if (yy < 0 || yy >= h || ox < 0 || ox >= w) {
+          clipped += 1;
+          if (yy < 0) off.top += 1;
+          if (ox < 0) off.left += 1;
+          if (ox >= w) off.right += 1;
+          continue;
+        }
         const d4 = (yy * w + ox) * 4;
         od[d4] = src[s4];
         od[d4 + 1] = src[s4 + 1];
@@ -381,9 +421,9 @@ function breatheComposite(base, cfg, phase) {
     yCursor += reps;
   }
   if (clipped) {
+    const { where, advice } = breatheClipWording(off, src, w, h);
     throw new BreatheRefused(
-      `늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 ${clipped}개가 잘린다 `
-      + `(셀 ${w}x${h}). 셀 여백을 늘리거나 depth 를 낮춰라.`);
+      `늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 ${clipped}개가 잘린다 — ${where} (셀 ${w}x${h}). ${advice}`);
   }
   if (deformed) breatheThinOutline(od, w, h);
   ctx.putImageData(outImg, 0, 0);
