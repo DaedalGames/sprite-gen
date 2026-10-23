@@ -19,8 +19,16 @@
      런 폴더 잡기는 그 락을 대며 거절된다. 주인이 런 폴더 커널 락 안에서 죽으면 그 사이 다른 스레드가 fork 한 자식이 살아
      있어도 writer 는 기다리지 않고, 주인이 살아 있으면 그 자식이 끝나도 커널 락은 주인의 것 그대로다. 자식들이 끝난 뒤에도
      부모는 자기 락에 다시 들어오고 놓거나 끝나며 지운다
+  7. fork 가 런 폴더 커널 락 fd 의 기록이 바뀌는 어느 자리에 끼어도 그 자식은 커널 락을 이어 쥐지 않는다 — 주 스레드의 시그널
+     처리기가 열기→기록, 기록→잠금, 풀기→빼기, 빼기→닫기 자리에서 fork 해도(신호를 막지 않는 다른 스레드가 있든 없든, 첫 풀기를
+     Ctrl-C 가 건너뛰었어도), 다른 스레드의 fork 가 runio 의 fork 훅에 들어간 뒤 그 fd 를 열 때 일어나도, 주인이 그 자리에서
+     죽으면 writer 는 그 자식을 기다리지 않는다. 다른 스레드의 fork 가 돌아오지 않으면 커널 락을 잡으려는 쪽은 한도까지 기다리고
+     크게 실패한다 — 잡기는 아무것도 남기지 않고 놓기는 쥔 그대로다. 그 fd 를 복사할 수 없는 fork 표시(fork 하는 스레드 자신의
+     것, C fork 자식이 물려받은 것)는 기다리지 않는다
 
-3–6 은 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다.
+3–7 은 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다. 3·6·7 은
+docs/run-contract.md §7 의 세 경계 밖에서다: C fork 자식이 끝나거나 exec 할 때까지의 커널 락, 시그널 처리기에서 fork 한 뒤 끊긴
+코드로 돌아가는 자식, runio 의 fork 훅을 끊는 예외.
 """
 
 from __future__ import annotations
@@ -282,6 +290,283 @@ print(json.dumps({"reentered": runio.acquire_run_dir_lock(run, "parent") == lock
 if finish == "release":
     runio.release_run_dir_lock(run)
     print(json.dumps({"left_after_release": os.path.lexists(lock)}), flush=True)
+"""
+
+# 주 스레드의 SIGUSR1 처리기가 런 폴더 커널 락(`_entry_guard`)의 fd 기록이 바뀌는 자리에서 fork 한다 — sys.settrace 는 신호를 넣을
+# 자리만 고르고 진짜 처리기가 os.fork 한다(종단 반려 netti-20261023-232602). 자리는 줄 번호가 아니라 실제로 실행되는 줄이다: 표시 줄
+# 이 돌기 직전(at)이나 그 줄이 돈 바로 다음 줄(after). 열기 쪽 표시 줄(기록하는 `_GUARD_FDS.add(fd)`, 잠그는 `_lock_fd(fd,
+# exclusive=True)`)은 첫 줄, 닫기 쪽 표시 줄(푸는 `_unlock_fd(fd)`, 기록에서 빼는 `_GUARD_FDS.discard(fd)`)은 마지막 줄이다. 열기
+# 쪽은 주인이 커널 락을 잡은 뒤 그 안에서 멈추고, 닫기 쪽은 첫 풀기를 KeyboardInterrupt 가 건너뛰고(Ctrl-C 가 `_unlock_fd` 가 시작될
+# 때 떨어진 자리) 부모가 fork 한 그 자리에서 멈춘다 — 둘 다 시험이 그 주인을 SIGKILL 한다. 자식은
+# 표시 파일 `go` 가 생기거나 6 s 가 지날 때까지 산다. helper-thread 면 신호를 막지 않는 빈 스레드가 하나 더 있다 — 신호는 그
+# 스레드가 받을 수 있고 파이썬 처리기는 늘 주 스레드에서, 다음 바이트코드 경계에서 돈다(파이썬이든 네이티브든 스레드가 둘인
+# 프로세스). 신호를 넣은 trace 는 처리기가 돌 때까지 기다린다.
+_HANDLER_FORK = r"""
+import inspect
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+from sprite_gen.spec import runio
+run, marks, mark, when, helper = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+guard = runio._entry_guard.__wrapped__
+source, first = inspect.getsourcelines(guard)
+marked = [first + i for i, text in enumerate(source) if text.strip() == mark]
+closing = mark in ("_unlock_fd(fd)", "_GUARD_FDS.discard(fd)")
+anchor = marked[-1] if closing else marked[0]
+if closing:
+    unlock, calls = runio._unlock_fd, []
+    def unlock_unless_interrupted(fd):
+        calls.append(fd)
+        if len(calls) == 1:
+            raise KeyboardInterrupt("Ctrl-C as _unlock_fd starts, before LOCK_UN")
+        unlock(fd)
+    runio._unlock_fd = unlock_unless_interrupted
+else:
+    lock = runio._lock_fd
+    def lock_and_stay(fd, **kwargs):
+        lock(fd, **kwargs)
+        (marks / "inside").touch()
+        time.sleep(60)
+    runio._lock_fd = lock_and_stay
+def fork_here(signum, frame):
+    while frame is not None and frame.f_code is not guard.__code__:
+        frame = frame.f_back
+    fd = frame.f_locals.get("fd") if frame is not None else None
+    (marks / "handler").write_text(json.dumps({"fd": fd, "recorded": fd in runio._GUARD_FDS,
+                                               "thread": threading.current_thread().name}))
+    if os.fork() == 0:
+        (marks / "child.tmp").write_text(str(os.getpid()))
+        os.replace(marks / "child.tmp", marks / "child")
+        deadline = time.monotonic() + 6
+        while not (marks / "go").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        os._exit(0)
+    if closing:
+        (marks / "inside").touch()
+        time.sleep(60)
+signal.signal(signal.SIGUSR1, fork_here)
+if helper == "helper-thread":
+    threading.Thread(target=time.sleep, args=(60,), daemon=True, name="helper").start()
+sent = passed = False
+def trace(frame, event, arg):
+    global sent, passed
+    if sent or event != "line" or frame.f_code is not guard.__code__:
+        return trace
+    if when == "at" and frame.f_lineno == anchor or when == "after" and passed:
+        sent = True
+        (marks / "injected").write_text(f"{frame.f_lineno}: {source[frame.f_lineno - first].strip()}")
+        os.kill(os.getpid(), signal.SIGUSR1)
+        deadline = time.monotonic() + 5
+        while not (marks / "handler").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+    elif frame.f_lineno == anchor:
+        passed = True
+    return trace
+sys.settrace(trace)
+runio.acquire_run_dir_lock(run, "signal-holder")
+"""
+
+# 다른 스레드(forker)가 fork 하는 동안 주 스레드가 런 폴더 커널 락을 잡으러 들어간다. forker 는 fork 시스템 호출 전에 GIL 을 놓고
+# 멈춘다 — past-the-hook 은 runio 의 before 훅을 다 지난 뒤(그 뒤에 도는 before 훅 — logging 의 모듈 락 — 이나 임포트 락이 막힌
+# 자리. 멈추는 훅은 runio 를 들이기 전에 등록해 등록의 역순으로 runio 의 훅 뒤에 돈다), inside-the-hook 은 runio 의 before 훅이
+# 진행 중 표시(`_FORKING.append(`)와 횟수(`_FORKS += 1`) 가운데 먼저 바꾸는 줄을 마친 자리(그다음 실제로 실행되는 줄, 없으면 훅이
+# 돌아갈 때). past-the-hook 은 주 스레드가 fork 횟수를 읽는 줄
+# (`forks = _FORKS` — 그런 줄이 없는 코드면 커널 락 헬퍼의 첫 줄)에 닿은 뒤에야 forker 를 띄우고, inside-the-hook 은 forker 가 멈춘
+# 뒤에 주 스레드가 들어간다. 주 스레드가 그 fd 를 열면 기록하기 직전에 fork 가 일어나게 하고(열지 않고 기다리면 fork 는 1.5 s 뒤에
+# 일어난다), 주인은 커널 락을 잡은 뒤 그 안에서 멈춘다 — 시험이 SIGKILL 한다. 자식은 표시 파일 `go` 가 생기거나 6 s 가 지날 때까지
+# 산다.
+_FORK_FROM_ANOTHER_THREAD = r"""
+import inspect
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+run, marks, where = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+stalled, opened, forked = threading.Event(), threading.Event(), threading.Event()
+def stall():
+    if not stalled.is_set():
+        stalled.set()
+        opened.wait(1.5)
+def after_runios_hook():
+    if where == "past-the-hook" and threading.current_thread().name == "forker":
+        stall()
+os.register_at_fork(before=after_runios_hook)
+from sprite_gen.spec import runio
+lock = runio._lock_fd
+def lock_and_stay(fd, **kwargs):
+    lock(fd, **kwargs)
+    (marks / "inside").touch()
+    time.sleep(60)
+runio._lock_fd = lock_and_stay
+hook = runio._before_fork.__code__
+hook_source, hook_first = inspect.getsourcelines(runio._before_fork)
+changes = {hook_first + i for i, said in enumerate(hook_source) if "_FORKING.append(" in said or "_FORKS += 1" in said}
+def inside_runios_hook(frame, event, arg):
+    if frame.f_code is not hook:
+        return None
+    changed = []
+    def step(frame, event, arg):
+        if changed or event == "return":
+            stall()
+        elif event == "line" and frame.f_lineno in changes:
+            changed.append(frame.f_lineno)
+        return step
+    return step
+def fork():
+    if where == "inside-the-hook":
+        sys.settrace(inside_runios_hook)
+    if os.fork() == 0:
+        (marks / "child.tmp").write_text(str(os.getpid()))
+        os.replace(marks / "child.tmp", marks / "child")
+        deadline = time.monotonic() + 6
+        while not (marks / "go").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        os._exit(0)
+    forked.set()
+forker = threading.Thread(target=fork, name="forker", daemon=True)
+def start_the_fork():
+    forker.start()
+    if not stalled.wait(10):
+        sys.exit("the forker never stalled")
+guard = runio._entry_guard.__wrapped__
+source, first = inspect.getsourcelines(guard)
+def line_of(text):
+    return next((first + i for i, said in enumerate(source) if said.strip() == text), None)
+record, count = line_of("_GUARD_FDS.add(fd)"), line_of("forks = _FORKS")
+def trace(frame, event, arg):
+    if event != "line" or frame.f_code is not guard.__code__:
+        return trace
+    if not stalled.is_set() and (count is None or frame.f_lineno == count):
+        start_the_fork()
+    elif frame.f_lineno == record and not opened.is_set():
+        (marks / "opened").write_text(json.dumps({"fork_returned_before_the_open": forked.is_set()}))
+        opened.set()
+        forked.wait(5)
+    return trace
+if where == "inside-the-hook":
+    start_the_fork()
+sys.settrace(trace)
+runio.acquire_run_dir_lock(run, "opening-holder")
+"""
+
+# 다른 스레드(forker)의 fork 가 runio 의 before 훅을 지난 뒤 돌아오지 않는다 — 그 뒤에 도는 before 훅이 8 s 동안 붙잡는다(runio 를
+# 들이기 전에 등록). 주 스레드는 진행 중 fork 를 기다리는 한도를 0.5 s 로 줄이고, fork 전에 잡아 둔 런 폴더를 놓으려 하고 다른 런
+# 폴더를 잡으려 해, 받은 것과 걸린 시간, 그때 커널 락 fd 기록과 다른 런 폴더의 락 항목, 놓지 못한 락을 아직 쥐었는지(재진입)를
+# JSON 으로 찍는다. 그 뒤 fork 를 놓아 주고(자식은 곧 끝난다) 다른 런 폴더를 잡고, 놓지 못했던 락을 다시 놓거나(release) 놓지 않은
+# 채 끝난다(exit — 종료 처리가 남아 있어야 지운다).
+_FORK_THAT_DOES_NOT_RETURN = r"""
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+run, other, finish = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+stalled, release = threading.Event(), threading.Event()
+def hold_the_fork():
+    if threading.current_thread().name == "forker":
+        stalled.set()
+        release.wait(8)
+os.register_at_fork(before=hold_the_fork)
+from sprite_gen.spec import runio
+runio._FORK_WAIT_SECONDS = 0.5
+lock = runio.acquire_run_dir_lock(run, "holder")
+def fork():
+    if os.fork() == 0:
+        os._exit(0)
+forker = threading.Thread(target=fork, name="forker")
+forker.start()
+if not stalled.wait(10):
+    sys.exit("the forker never stalled")
+def attempt(step, *args):
+    started = time.monotonic()
+    try:
+        step(*args)
+        said = "done"
+    except SystemExit as exc:
+        said = "refused: " + str(exc).splitlines()[0]
+    return {"said": said, "seconds": round(time.monotonic() - started, 2)}
+seen = {"release": attempt(runio.release_run_dir_lock, run),
+        "acquire": attempt(runio.acquire_run_dir_lock, other, "other-writer")}
+seen["recorded_fds"] = sorted(runio._GUARD_FDS)
+seen["other_entry_left"] = os.path.lexists(other / runio.LOCK_FILENAME)
+seen["re_entry"] = attempt(runio.acquire_run_dir_lock, run, "re-entry")
+seen["entry_owner"] = json.loads(lock.read_text(encoding="utf-8"))["owner"]
+release.set()
+forker.join(10)
+taken = runio.acquire_run_dir_lock(other, "after-the-fork")
+seen["other_owner_after_the_fork_returned"] = json.loads(taken.read_text(encoding="utf-8"))["owner"]
+if finish == "release":
+    runio.release_run_dir_lock(run)
+    seen["entry_left_after_release"] = os.path.lexists(lock)
+print(json.dumps(seen), flush=True)
+"""
+
+# 다른 스레드의 진행 중 fork 표시가 있는 동안 런 폴더 락을 잡고 놓는다 — 그 표시가 막지 않아야 하는 두 자리, 진행 중 fork 를 기다리는
+# 한도는 0.5 s. forking-thread: fork 하는 스레드 자신이 runio 의 before 훅을 지난 뒤(그 뒤에 도는 before 훅 — runio 를 들이기 전에
+# 등록 — 안에서. 그 스레드의 시그널 처리기가 fork 의 훅 사이에서 락을 잡는 자리) 잡고 놓는다. c-fork-child: 다른 스레드의 파이썬 fork 가
+# runio 의 훅을 지나 멈춘 동안 주 스레드가 파이썬 fork 훅을 거치지 않는 libc fork 로 띄운 자식이(부모의 표시를 물려받는다) 잡고 놓는다 —
+# 그 자식은 20 s 안에 끝난다(SIGALRM). 받은 것과 걸린 시간을 JSON 으로 찍는다.
+_LOCK_TAKEN_DURING_A_FORK = r"""
+import ctypes
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+run, mode = Path(sys.argv[1]), sys.argv[2]
+stalled, release = threading.Event(), threading.Event()
+seen = {}
+def take_and_let_go():
+    started = time.monotonic()
+    try:
+        runio.acquire_run_dir_lock(run, mode)
+        runio.release_run_dir_lock(run)
+        said = "held and released"
+    except SystemExit as exc:
+        said = "refused: " + str(exc).splitlines()[0]
+    return {"said": said, "seconds": round(time.monotonic() - started, 2)}
+def after_runios_hook():
+    if threading.current_thread().name != "forker":
+        return
+    if mode == "forking-thread":
+        seen.update(take_and_let_go())
+    else:
+        stalled.set()
+        release.wait(8)
+os.register_at_fork(before=after_runios_hook)
+from sprite_gen.spec import runio
+runio._FORK_WAIT_SECONDS = 0.5
+def fork():
+    if os.fork() == 0:
+        os._exit(0)
+forker = threading.Thread(target=fork, name="forker")
+forker.start()
+if mode == "c-fork-child":
+    if not stalled.wait(10):
+        sys.exit("the forker never stalled")
+    read_end, write_end = os.pipe()
+    child = ctypes.PyDLL(None).fork()
+    if child == 0:
+        signal.alarm(20)
+        os.write(write_end, json.dumps(take_and_let_go()).encode())
+        os._exit(0)
+    os.close(write_end)
+    with os.fdopen(read_end, "rb") as pipe:
+        said = pipe.read().decode()
+    os.waitpid(child, 0)
+    seen.update(json.loads(said) if said else {"said": "the child said nothing"})
+    release.set()
+forker.join(10)
+print(json.dumps(seen), flush=True)
 """
 
 _NO_FORK = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork and os.register_at_fork are Unix only (Availability: "
@@ -619,3 +904,120 @@ def test_a_parent_whose_forked_children_ended_still_takes_and_removes_its_own_lo
     if finish == "release":
         assert seen[1] == {"left_after_release": False}, "자식들이 끝난 뒤 부모가 놓았는데 자기 락이 남았다"
     assert not os.path.lexists(lock), "자식들이 끝난 뒤 부모가 끝나면서 자기 락을 남겼다"
+
+
+def _writer_after_the_holder_is_killed_with_a_child_alive(run: Path, marks: Path, code: str, *args: object):
+    """`code` 를 주인으로 띄워 그가 표시 파일 `inside`(멈출 자리에 닿음)와 `child`(fork 한 자식의 pid — 자식이 다른 이름에 써서
+    옮겨 놓아 쓰다 만 것을 읽지 않는다)를 남기면 SIGKILL 하고, 그 자식이 살아 있는 동안 락을 잡는 writer 를 끝까지 돌린다 —
+    (writer 결과, 주인이 남긴 표시 파일 내용)."""
+    # 주인의 출력은 파이프가 아니라 파일로 — 자식이 물려받은 파이프면 읽는 쪽이 자식이 끝날 때까지 기다린다
+    with open(marks / "holder.txt", "w", encoding="utf-8") as said:
+        holder = subprocess.Popen([sys.executable, "-c", code, *map(str, (run, marks, *args))], stdout=said, stderr=said)
+    child = None
+    try:
+        deadline = time.monotonic() + 20
+        while not ((marks / "inside").exists() and (marks / "child").exists()):
+            assert holder.poll() is None and time.monotonic() < deadline, (marks / "holder.txt").read_text(encoding="utf-8")
+            time.sleep(0.01)
+        child = int((marks / "child").read_text())
+        holder.kill()
+        holder.wait(timeout=10)
+        assert runio._pid_alive(child), "주인이 fork 한 자식이 writer 보다 먼저 끝났다"
+        writer = subprocess.run([sys.executable, "-c", _TIMED_WRITER, str(run)], capture_output=True, encoding="utf-8",
+                                timeout=60)
+    finally:
+        (marks / "go").touch()
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=10)
+        _wait_gone(child)
+    left = {path.name: path.read_text(encoding="utf-8") for path in sorted(marks.iterdir())
+            if path.name in ("injected", "handler", "opened")}
+    return writer, left
+
+
+_FD_RECORD_POINTS = {  # fd 기록이 바뀌는 자리 → (표시 줄, 그 줄이 돌기 직전 · 돈 바로 다음 줄)
+    "open-record": ("_GUARD_FDS.add(fd)", "at"),  # 열었고 아직 기록하지 않았다
+    "record-lock": ("_lock_fd(fd, exclusive=True)", "at"),  # 잠글 그 fd 를 기록했고 아직 잠그지 않았다
+    "locked-unlock": ("_unlock_fd(fd)", "at"),  # 첫 풀기를 건너뛰어 잠긴 채 기록돼 있고, 마지막 풀기 직전이다
+    "unlock-unrecord": ("_GUARD_FDS.discard(fd)", "at"),  # 마지막 풀기 뒤, 기록에서 빼기 직전
+    "unrecord-close": ("_GUARD_FDS.discard(fd)", "after"),  # 기록에서 뺐고 아직 닫지 않았다
+}
+
+
+@_NO_FORK
+@pytest.mark.parametrize("helper", ["no-helper", "helper-thread"])
+@pytest.mark.parametrize("point", list(_FD_RECORD_POINTS))
+def test_a_handler_fork_where_the_kernel_lock_fd_enters_or_leaves_the_record_leaves_that_lock_to_no_child(
+        tmp_path, point, helper) -> None:
+    """주 스레드의 시그널 처리기가 런 폴더 커널 락 fd 의 기록이 바뀌는 자리 — 열기→기록, 기록→잠금, 풀기(잠긴 채 마지막 풀기 직전과
+    그 뒤)→빼기, 빼기→닫기 — 에서 fork 하고 주인이 그 자리에서 SIGKILL 로 죽어도, 살아 있는 그 자식은 커널 락을 쥐지 않아 writer 가
+    기다리지 않는다. 닫기 쪽은 첫 풀기를 Ctrl-C 가 건너뛰었을 때다. 신호를 막지 않는 다른 스레드가 있어도 같다 (종단 반려
+    netti-20261023-232602, 설계 판정 kongkongi-20261023-233626 의 A1·A2)."""
+    run, marks = tmp_path / "run", tmp_path / "marks"
+    run.mkdir()
+    marks.mkdir()
+    writer, left = _writer_after_the_holder_is_killed_with_a_child_alive(run, marks, _HANDLER_FORK,
+                                                                         *_FD_RECORD_POINTS[point], helper)
+    print(json.dumps({"point": point, "helper": helper, **left, "writer_seconds": writer.stdout.strip()}), flush=True)
+    assert writer.returncode == 0, writer.stderr
+    assert float(writer.stdout) < 2.0, (f"주인이 {point} 자리에서 fork 한 자식이 쥔 커널 락을 writer 가 {writer.stdout.strip()} s "
+                                        f"기다렸다: {left}")
+
+
+@_NO_FORK
+@pytest.mark.parametrize("where", ["past-the-hook", "inside-the-hook"])
+def test_a_fork_from_another_thread_that_runs_runios_fork_hook_leaves_the_kernel_lock_to_no_child(tmp_path, where) -> None:
+    """다른 스레드의 fork 는 runio 의 before 훅에 들어간 뒤 fork 시스템 호출 전에 GIL 을 놓고 기다릴 수 있다 — 훅 안의 두 문장 사이,
+    또는 훅을 지나 뒤에 도는 logging 의 before 훅·임포트 락에서. 그동안 런 폴더 커널 락을 잡으러 들어간 스레드가 fd 를 열고
+    기록하기 전에 그 fork 가 일어나면 자식은 기록 밖 사본을 갖는다 — 그 설명을 잠그면 주인이 그 안에서 죽었을 때 writer 가 자식을
+    기다린다. fork 횟수만으로는 열기 전에 셈해진 fork 가 보이지 않는다. 주인은 그 fork 가 돌아올 때까지 열지 않고, writer 는
+    기다리지 않는다. 두 자리가 순서 둘을 잰다: 훅은 진행 중 표시를 넣고 나서 횟수를 올리고(inside-the-hook), 커널 락 헬퍼는
+    횟수를 읽고 나서 표시를 본다(past-the-hook — 횟수를 읽는 줄에 닿은 뒤 fork 가 시작한다)."""
+    run, marks = tmp_path / "run", tmp_path / "marks"
+    run.mkdir()
+    marks.mkdir()
+    writer, left = _writer_after_the_holder_is_killed_with_a_child_alive(run, marks, _FORK_FROM_ANOTHER_THREAD, where)
+    print(json.dumps({"where": where, **left, "writer_seconds": writer.stdout.strip()}), flush=True)
+    assert writer.returncode == 0, writer.stderr
+    assert float(writer.stdout) < 2.0, (f"다른 스레드의 fork({where}) 자식이 쥔 커널 락을 writer 가 {writer.stdout.strip()} s "
+                                        f"기다렸다: {left}")
+
+
+@_NO_FORK
+@pytest.mark.parametrize("finish", ["release", "exit"])
+def test_a_fork_from_another_thread_that_does_not_return_makes_the_writer_fail_loudly_and_leave_nothing(tmp_path,
+                                                                                                         finish) -> None:
+    """런 폴더 커널 락 헬퍼는 다른 스레드의 진행 중 fork 를 끝없이 기다리지 않는다 — 한도(여기서는 0.5 s) 안에 그 fork 가 돌아오지
+    않으면 커널 락 fd 를 열지 않은 채 그 까닭을 대며 크게 실패한다. 잡기는 아무것도 남기지 않고(기록도 락 항목도), 놓기는 쥔 그대로라
+    같은 프로세스가 다시 들어오고, 그 fork 가 돌아온 뒤 다시 놓거나 놓지 않은 채 끝나면(종료 처리) 자기 락을 지운다 — 놓다 실패한
+    writer 가 제 pid 의 락에 스스로 막히지 않는다. 그 fork 가 돌아온 뒤에는 다른 런 폴더도 잡는다."""
+    run, other = tmp_path / "run", tmp_path / "other"
+    run.mkdir()
+    other.mkdir()
+    [seen] = _seen(_FORK_THAT_DOES_NOT_RETURN, run, other, finish)
+    print(json.dumps({"finish": finish, **seen}), flush=True)
+    for step, folder in (("release", run), ("acquire", other)):
+        assert seen[step]["said"] == (
+            f"refused: run dir lock in {folder.resolve()}: another thread's fork is still marked in progress after 0.5s, and "
+            f"sprite-gen will not open its kernel lock on the run dir while a fork may copy it"), seen
+        assert 0.5 <= seen[step]["seconds"] < 3.0, seen
+    assert seen["recorded_fds"] == [] and not seen["other_entry_left"], seen
+    assert seen["re_entry"]["said"] == "done" and seen["entry_owner"] == "holder", ("놓다 실패한 락을 쥐지 않게 됐다", seen)
+    assert seen["other_owner_after_the_fork_returned"] == "after-the-fork", seen
+    if finish == "release":
+        assert not seen["entry_left_after_release"], ("fork 가 돌아온 뒤 놓았는데 자기 락이 남았다", seen)
+    assert not os.path.lexists(run / runio.LOCK_FILENAME), ("놓다 실패한 락을 다시 놓거나 끝나며 지우지 않았다", finish)
+
+
+@_NO_FORK
+@pytest.mark.parametrize("mode", ["forking-thread", "c-fork-child"])
+def test_a_fork_mark_that_cannot_copy_the_kernel_lock_fd_does_not_hold_up_a_writer(tmp_path, mode) -> None:
+    """런 폴더 커널 락 헬퍼가 다른 스레드의 진행 중 fork 를 기다리는 것은 그 fork 가 지금 여는 fd 를 복사할 수 있어서다 — 그럴 수 없는
+    표시에는 기다리지 않는다. fork 하는 스레드 자신의 표시(그 스레드가 락 헬퍼를 도는 동안 그 fork 는 일어나지 않는다)와, 훅을 거치지
+    않은 C fork 자식이 물려받은 부모 다른 스레드의 표시(그 fork 는 부모에서 일어난다)에는 곧바로 잡고 놓는다."""
+    run = tmp_path / "run"
+    run.mkdir()
+    [seen] = _seen(_LOCK_TAKEN_DURING_A_FORK, run, mode)
+    print(json.dumps({"mode": mode, **seen}), flush=True)
+    assert seen["said"] == "held and released", seen
