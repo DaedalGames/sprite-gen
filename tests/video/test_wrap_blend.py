@@ -422,11 +422,13 @@ def test_the_checkpoints_part_on_a_flat_figure_is_cut_as_filmed_with_a_warning(t
         x = 60 + round(16 * min(t / 6, 1))
         f[76:90, x:x + 14, :3] = 60
         frames.append(f)
-    report = cut(tmp_path, keyed(tmp_path, frames), "auto")
+    # The blend alone: the wrap the blend leaves jumps, so where RIFE is installed the seam bridge would make frames round
+    # it in both cuts (on a CPU Vulkan driver, longer than the test's time); `--repair off` keeps the bridge out of both.
+    report = cut(tmp_path, keyed(tmp_path, frames), "auto", repair="off")
     blend = report["wrap_blend"]
     assert blend["applied"] is False and blend["after_check"] == "refused" and blend["residual_ratio"] > SEAM_MAX
     assert "the wrap blend was not used" in capsys.readouterr().err
-    cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", wrap_blend="off")
+    cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", wrap_blend="off", repair="off")
     assert outputs(tmp_path / "auto") == outputs(tmp_path / "off")
 
 
@@ -519,9 +521,10 @@ def test_a_cut_that_is_not_pinned_is_not_touched(tmp_path: Path) -> None:
 
 def test_a_pinned_cut_the_body_anchor_moves_is_not_touched(tmp_path: Path) -> None:
     frames = character(**REDRAW)
-    report = cut(tmp_path, keyed(tmp_path, frames), "auto", anchor="body")
+    # The blend alone, as in section 1: `--repair off` keeps the seam bridge from making frames round the redraw's wrap.
+    report = cut(tmp_path, keyed(tmp_path, frames), "auto", anchor="body", repair="off")
     assert report["wrap_blend"]["applied"] is False and "--anchor body" in report["wrap_blend"]["why"]
-    cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", anchor="body", wrap_blend="off")
+    cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", anchor="body", wrap_blend="off", repair="off")
     assert outputs(tmp_path / "auto") == outputs(tmp_path / "off")
 
 
