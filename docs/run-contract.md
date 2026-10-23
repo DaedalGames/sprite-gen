@@ -569,7 +569,14 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   it — same device, inode and content, and `release_run_dir_lock` withdraws that lock's exit
   cleanup — while making, reclaiming and removing the entry queue on a kernel lock on the run dir
   itself, so among sprite-gen processes on one host, on a file system that locks folders, neither a
-  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. The pipeline's
+  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. Removing
+  and holding belong to the process that made the entry: a hold is bound to the pid that took it, so a
+  forked child never re-enters, releases or removes its parent's lock and is refused by it like any
+  other writer, and where `os.register_at_fork` exists a child forgets its parent's holds and exit
+  cleanups and closes its copies of the run dir's kernel-lock descriptors at the fork — a holder killed
+  inside that kernel lock leaves it to no child. The boundary is a child forked by C code that skips
+  Python's fork hooks: the pid check still keeps it from removing or re-entering the parent's lock, but it
+  keeps any kernel-lock descriptor it inherited until it ends, and a writer waits for it. The pipeline's
   **one worker owns one character folder** rule (§2, SKILL.md)
   is what excludes concurrent writers on the same run dir in the first place. Same-process
   re-entry is intentionally allowed so one interpreter can run prepare → extract → compose in

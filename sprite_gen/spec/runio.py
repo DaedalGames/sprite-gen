@@ -14,7 +14,8 @@ example Claude Code and the Codex app driving the skill in parallel):
   never followed, read or removed. A process removes only the very entry it made,
   or judged stale to reclaim, and only while it still holds it; making, reclaiming
   and removing the entry queue on a kernel lock on the run dir itself (per host,
-  where the file system locks folders).
+  where the file system locks folders). A lock belongs to the process that took
+  it: a child it forks neither removes nor holds it.
 - `atomic_write_text()` / `atomic_save_image()` — temp file in the target dir
   + `os.replace`, so a concurrent reader never observes a half-written
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
@@ -48,6 +49,7 @@ import secrets
 import stat
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path, PurePath
@@ -167,11 +169,49 @@ class _LockEntry(NamedTuple):
     content: bytes | None
 
 
-# Lock paths this process holds -> the entry it made there and the exit handler that
-# removes it. Re-entry from the same process (for example a long-lived MCP server
-# invoking prepare -> extract -> compose against one run dir) must succeed; the
-# single-writer rule is against other processes.
-_HELD_LOCKS: dict[Path, tuple[_LockEntry, Callable[[], None]]] = {}
+class _Held(NamedTuple):
+    """쥔 락 하나 — 만든 항목, 그것을 잡은 프로세스(fork 자식은 이 기록을 물려받아도 그 프로세스가 아니다), 그 잡기의 종료 처리."""
+
+    entry: _LockEntry
+    pid: int
+    at_exit: Callable[[], None]
+
+
+# Lock paths held -> the hold. Re-entry from the same process (for example a long-lived
+# MCP server invoking prepare -> extract -> compose against one run dir) must succeed;
+# the single-writer rule is against other processes, a forked child included.
+_HELD_LOCKS: dict[Path, _Held] = {}
+
+# 런 폴더 커널 락(`_entry_guard`)에 이 프로세스가 연 폴더 fd. 열기+기록, 기록 빼기+닫기는 `_FORK_MUTEX` 아래서 하고 fork 는
+# 그동안 기다리므로(`_before_fork`), fork 순간 열린 fd 는 모두 여기 있다 — fork 자식이 닫을 사본. flock 기다림은 뮤텍스 밖이다.
+_GUARD_FDS: set[int] = set()
+_FORK_MUTEX = threading.RLock()  # 같은 스레드의 시그널 처리기가 fork 해도 막히지 않게 (CPython logging 의 at-fork 락과 같은 꼴)
+
+
+def _before_fork() -> None:
+    _FORK_MUTEX.acquire()
+
+
+def _after_fork_in_parent() -> None:
+    _FORK_MUTEX.release()
+
+
+def _after_fork_in_child() -> None:
+    """fork 자식은 부모의 런 폴더 락을 하나도 쥐지 않는다 — 물려받은 보유 기록과 그 종료 처리를 버리고, 커널 락 fd 사본을
+    닫는다. 닫기는 이 프로세스의 참조만 놓는다: 부모가 쥔 flock 은 그대로다(LOCK_UN 이면 부모의 것까지 풀린다)."""
+    global _FORK_MUTEX
+    _FORK_MUTEX = threading.RLock()
+    for fd in _GUARD_FDS:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+    _GUARD_FDS.clear()
+    for held in _HELD_LOCKS.values():
+        atexit.unregister(held.at_exit)
+    _HELD_LOCKS.clear()
+
+
+if hasattr(os, "register_at_fork"):  # Unix — Windows 에는 fork 가 없다
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_in_parent, after_in_child=_after_fork_in_child)
 
 
 def relative_posix(path: PurePath, start: PurePath) -> str:
@@ -272,11 +312,15 @@ def _entry_guard(folder: Path):
     """런 폴더 자체에 거는 커널 락 — 락 항목을 만들고 지우는 일(만들기·회수·해제·종료 처리)이 모두 이 아래서 줄을 서서,
     판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다. 폴더에 아무것도 만들지 않고, 쥔 프로세스가
     죽으면 커널이 놓는다. 줄은 한 호스트 안의 프로세스들이 선다(주인이 살았는지도 이 호스트의 pid 로 본다).
-    macOS·리눅스는 폴더 fd 의 flock(`_lock_fd`). Windows 는 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스
+    macOS·리눅스는 폴더 fd 의 flock(`_lock_fd`) — 그 fd 는 `_GUARD_FDS` 에 있어 파이썬 fork 훅이 도는 fork 자식은 사본을
+    닫는다(쥔 프로세스가 그 안에서 죽어도 자식이 커널 락을 이어 쥐지 않는다. 훅을 거치지 않는 C fork 자식은 끝날 때까지
+    갖는다 — docs/run-contract.md §7). Windows 는 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스
     (`Global\\` 이름이라 로그온 세션이 달라도 한 줄 — LockFileEx 는 폴더를 잠그지 못한다). Windows 길은 아직 그 기기에서
     재지 않았다."""
     if fcntl is not None:
-        fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        with _FORK_MUTEX:
+            fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            _GUARD_FDS.add(fd)
         try:
             try:
                 _lock_fd(fd, exclusive=True)
@@ -288,7 +332,9 @@ def _entry_guard(folder: Path):
             finally:
                 _unlock_fd(fd)
         finally:
-            os.close(fd)
+            with _FORK_MUTEX:
+                _GUARD_FDS.discard(fd)
+                os.close(fd)
     elif _LOCK_IMPL == "LockFileEx":  # pragma: no cover - Windows-only backend
         found = os.stat(folder)
         mutex = _CreateMutexW(None, False, f"Global\\sprite-gen-run-dir-{found.st_dev:x}-{found.st_ino:x}")
@@ -339,10 +385,13 @@ def _read_entry(lock_path: Path) -> tuple[_LockEntry | None, float]:
     return _LockEntry(got.st_dev, got.st_ino, b"".join(chunks)), got.st_mtime
 
 
-def _remove_if_same(lock_path: Path, entry: _LockEntry) -> bool:
-    """락 이름에 있는 것이 `entry` — 이 프로세스가 만들었거나 회수하려고 판정한 바로 그 항목(일반 파일, 같은 장치·inode,
-    같은 내용)일 때만 지운다. 락 항목을 지우는 길은 이것 하나다(해제·종료 처리·회수). 부르는 쪽이 `_entry_guard` 를 쥐고
-    있어, 판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다."""
+def _remove_if_same(lock_path: Path, entry: _LockEntry, by: int) -> bool:
+    """락 이름에 있는 것이 `entry` — 프로세스 `by` 가 만들었거나 회수하려고 판정한 바로 그 항목(일반 파일, 같은 장치·inode,
+    같은 내용)이고 `by` 가 지금 이 프로세스일 때만 지운다. 부모의 기록을 물려받은 fork 자식은(파이썬 fork 훅을 거치지 않는
+    C fork 자식도) 같은 항목을 보아도 지우지 않는다. 락 항목을 지우는 길은 이것 하나다(해제·종료 처리·회수). 부르는 쪽이
+    `_entry_guard` 를 쥐고 있어, 판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다."""
+    if by != os.getpid():
+        return False
     try:
         if _read_entry(lock_path)[0] != entry:
             return False
@@ -352,17 +401,24 @@ def _remove_if_same(lock_path: Path, entry: _LockEntry) -> bool:
     return True
 
 
-def _let_go(lock_path: Path, at_exit: Callable[[], None]) -> None:
-    """쥔 락을 놓는다 — `at_exit` 를 단 그 잡기가 아직 쥐고 있을 때만(명시 해제 뒤 남은 종료 처리, 다시 잡은 뒤의 옛 종료
-    처리는 아무것도 하지 않는다). `_HELD_LOCKS` 에서 빼고, 이름에 있는 것이 만든 그 항목일 때만 지운다. 지우지 못해도(런
-    폴더가 사라졌거나 다른 것이 들어섰다) 놓은 것이다."""
+def _held_here(lock_path: Path) -> _Held | None:
+    """이 프로세스가 쥔 `lock_path` 의 보유 — 기록이 다른 프로세스의 것이면(파이썬 fork 훅을 거치지 않은 C fork 자식이 부모의
+    기록을 물려받았다) 쥔 것이 아니다."""
     held = _HELD_LOCKS.get(lock_path)
-    if held is None or held[1] is not at_exit:
+    return held if held is not None and held.pid == os.getpid() else None
+
+
+def _let_go(lock_path: Path, at_exit: Callable[[], None]) -> None:
+    """쥔 락을 놓는다 — `at_exit` 를 단 그 잡기를 이 프로세스가 아직 쥐고 있을 때만(명시 해제 뒤 남은 종료 처리, 다시 잡은
+    뒤의 옛 종료 처리, fork 자식이 물려받은 부모의 종료 처리는 아무것도 하지 않는다). `_HELD_LOCKS` 에서 빼고, 이름에 있는
+    것이 만든 그 항목일 때만 지운다. 지우지 못해도(런 폴더가 사라졌거나 다른 것이 들어섰다) 놓은 것이다."""
+    held = _held_here(lock_path)
+    if held is None or held.at_exit is not at_exit:
         return
     if _HELD_LOCKS.pop(lock_path, None) is not held:  # 같은 프로세스의 다른 스레드가 먼저 놓았다
         return
     with contextlib.suppress(OSError), _entry_guard(lock_path.parent):
-        _remove_if_same(lock_path, held[0])
+        _remove_if_same(lock_path, held.entry, held.pid)
 
 
 def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
@@ -386,7 +442,12 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
 
     Re-entry from the same process is allowed: the MCP server / freeze binary
     runs many pipeline steps in one interpreter against the same run dir, and a
-    writer must never block itself.
+    writer must never block itself. The same process is the pid that took the
+    lock: a child it forks is another writer, refused by the parent's live lock,
+    and never re-enters, releases or removes it — where os.register_at_fork
+    exists the child forgets its parent's holds and exit cleanups at the fork,
+    and a child forked by C code that skips Python's fork hooks still has a pid
+    of its own.
 
     Release runs via atexit (normal return, SystemExit, KeyboardInterrupt) while
     this process still holds the lock, and removes only the entry it made (same
@@ -394,8 +455,9 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     reclaim above.
     """
     lock_path = Path(run_dir).resolve() / LOCK_FILENAME
-    if lock_path in _HELD_LOCKS:
+    if _held_here(lock_path) is not None:
         return lock_path
+    me = os.getpid()
     with _entry_guard(lock_path.parent):
         for _ in range(_LOCK_ROUNDS):
             try:  # never follows a link at the name (open(2))
@@ -429,13 +491,13 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
                     f"  delete the lock file if no sprite-gen process is running"
                 )
             # dead pid, or unverifiable and old: reclaim the entry judged here, then retry the exclusive create
-            _remove_if_same(lock_path, found)
+            _remove_if_same(lock_path, found, me)
         else:
             raise SystemExit(
                 f"run dir lock {lock_path} kept changing while sprite-gen read it\n"
                 f"  something other than sprite-gen is replacing it; stop that before writing this run dir"
             )
-        content = json.dumps({"owner": owner, "pid": os.getpid(), "started": time.time()}).encode("utf-8")
+        content = json.dumps({"owner": owner, "pid": me, "started": time.time()}).encode("utf-8")
         made, written = None, 0
         try:
             made = os.fstat(fd)
@@ -445,14 +507,14 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
             os.close(fd)
             if made is not None:  # 다 쓰지 못했다(디스크가 찼다) — 만들다 만 그 항목을 거둔다, 남으면 다음 writer 를 막는다
                 with contextlib.suppress(OSError):
-                    _remove_if_same(lock_path, _LockEntry(made.st_dev, made.st_ino, content[:written]))
+                    _remove_if_same(lock_path, _LockEntry(made.st_dev, made.st_ino, content[:written]), me)
             raise
         os.close(fd)
 
     def at_exit() -> None:
         _let_go(lock_path, at_exit)
 
-    _HELD_LOCKS[lock_path] = (_LockEntry(made.st_dev, made.st_ino, content), at_exit)
+    _HELD_LOCKS[lock_path] = _Held(_LockEntry(made.st_dev, made.st_ino, content), me, at_exit)
     atexit.register(at_exit)
     return lock_path
 
@@ -466,13 +528,14 @@ def release_run_dir_lock(run_dir: Path) -> None:
     상호배제고, 원자성은 스테이징 통짜 스왑이 보장하므로 작업이 끝나면 놓는 게
     맞다. 놓으면서 그 잡기의 종료 처리를 거둔다 — 놓은 뒤 이름에 들어선 다음 writer 의
     락이나 링크를 이 프로세스가 끝날 때 지우지 않는다. 지우는 것은 이 프로세스가 만든
-    바로 그 항목뿐이다(`_remove_if_same`). 쥐지 않은 락이면 아무것도 하지 않는다."""
+    바로 그 항목뿐이다(`_remove_if_same`). 쥐지 않은 락이면 — fork 자식에게는 부모의 락도 —
+    아무것도 하지 않는다."""
     lock_path = Path(run_dir).resolve() / LOCK_FILENAME
-    held = _HELD_LOCKS.get(lock_path)
+    held = _held_here(lock_path)
     if held is None:
         return
-    atexit.unregister(held[1])
-    _let_go(lock_path, held[1])
+    atexit.unregister(held.at_exit)
+    _let_go(lock_path, held.at_exit)
 
 
 def _rwlock_path(run_dir: Path) -> Path:
