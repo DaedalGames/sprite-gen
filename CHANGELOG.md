@@ -4,7 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
-**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck. `video-sway-inspect` records use schema 3, and a cell whose every offset is 0 is now copied as it was, including colour under clear pixels with `--gain 0`; the other changes add options, and without them the strip, records and inspection stay as before.**
+**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck. `video-sway-inspect` records use schema 3, and a cell whose every offset is 0 is now copied as it was, including colour under clear pixels with `--gain 0`; the other changes add options, and without them the strip, records and inspection stay as before.** Smooth bakes that leave the in-breath share out keep their bytes. A smooth `breathe.json` config and a breath sway's `drive` record now carry `inhale`, Python callers of `smooth_wave` and `smooth_shoulder_wave` must pass the share, and `breathe.INHALE` is gone.
 
 The Breathe layer still supports `pixel` and `smooth`.
 
@@ -40,12 +40,27 @@ The Breathe layer still supports `pixel` and `smooth`.
 - **Changed: Inspection seams.** `video-sway-inspect` drops a pair's seam points covered by a third moving region.
   Its record uses `schema_version` 3.
 - **New: Breathe beat chosen to miss the hands.** In `smooth` mode, `--avoid-region` chooses a breath beat whose peaks keep the chest above the hands' own rise and records the choice in `breathe.json`.
+- **New: The in-breath share.** The smooth sidecar key `inhale` is the share of one breath the in-breath takes; the in-breath peaks at that phase and the rest of the breath is the out-breath.
+  Default 0.40, range 0.2 to 0.8 with both ends allowed; out-of-range values are refused, not clamped, and a pixel row refuses the key.
+  With the key left out or at 0.40 every bake is byte-identical to before.
+  With `breath_peaks`, the rest between peaks p and q is at p + (1 - inhale) x (q - p).
+  `sprite-gen breathe --inhale S` sets it, and the normalized smooth config in `breathe.json` always carries it.
+  `--avoid-region` scores every candidate on the row's own `inhale` curve, the curve the bake uses.
+  Sway `--breathe` takes the chest curve, the late curve and the phase check at the record's share, so `breath_peaks` phases written at another share are accepted when they match.
+  A record without the key reads as 0.40 and sways exactly as before, and a hand-written record for a breath made elsewhere can state its share.
+  The sway record's `drive` now also carries `inhale`.
+  The curator sidecar round trip keeps `inhale` as written and its range table mirrors 0.2 to 0.8.
+- **Changed: Breath curve functions.** `breathe.smooth_wave(t, inhale)` and `breathe.smooth_shoulder_wave(t, lag, inhale)` now require the share.
+  The module constant `breathe.INHALE` is removed; the default lives in `curation.BREATHE_SMOOTH_SHAPE["inhale"]`, and `breathe.smooth_inhale(cfg)` returns a row's share.
+  `breath_beat.choose(images, lift, inhale, avoid, anchor, frame_ms)` and `breath_beat.nudged(n, k, inhale)` take it as well.
 - **Tests:** `tests/effects/test_breathe.py` checks border counts, advice, smooth edge preservation, and the second face search.
   `tests/effects/test_breathe_js_mirror.py` checks curator refusal wording and byte identity with the pixel bake.
-  `tests/effects/test_breathe_smooth.py` checks pixel and smooth byte goldens and shared anatomy and strain measurements.
+  `tests/effects/test_breathe_smooth.py` checks pixel and smooth byte goldens and shared anatomy and strain measurements, and that the in-breath takes the row's share: at share 0.42 the cells at phases 0.21 and 0.42 are byte-identical to the default row's cells at 0.20 and 0.40, `breath_peaks` rests at the share, out-of-range and pixel values are refused, and the CLI flag is honoured.
+  `tests/effects/test_breathe_smooth_curator.py` checks that the sidecar round trip keeps `inhale`.
   `tests/effects/test_breathe_publish.py` checks that the stand-in bake accepts the new argument.
   `tests/video/test_sway_frames.py`, `tests/video/test_sway_breath.py`, `tests/video/test_sway_flat_across.py`, and `tests/video/test_sway_seams.py` check the Sway paths, drives, weights, gains and seams.
-  `tests/effects/test_breath_beat.py` checks beat choice and refusals.
+  `tests/video/test_sway_breath.py` also checks that the sway follows the share the record says for `breaths` and `breath_peaks`, that a record without the key sways as the default, and that the default breath sways the same bytes as before the change.
+  `tests/effects/test_breath_beat.py` checks beat choice and refusals, and that each beat candidate is read on the row's share.
   `tests/video/test_follow_stretch_floor.py` and `tests/video/test_follow_inspect.py` cover the changed inspection schema and frames options.
 
 ## v3.0.0 - Remove rig layer composition
