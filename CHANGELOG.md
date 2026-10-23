@@ -2,6 +2,25 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## v3.1.0 - Talking face layer
+
+**Upgrading from 3.0.0:** Existing runs and commands do not change. This release adds two verbs and a JavaScript player. The wheel now also carries `sprite_gen/video/*.mjs`.
+
+### Added
+
+- `sprite-gen video-face` builds a face pack from a reference, a keyed talking clip, and keyed body motions.
+- `sprite-gen face-bake` runs the pack's player through node to bake a voice onto body frames, with optional MP4 and beside video output.
+- Face request kind `sprite-gen-face-request`, version 1, records face geometry, clip placement, a rest loop, and optional own-mouth spans or timelines.
+- Face pack kind `sprite-gen-face-pack`, version 1, carries sprites, body cells, anchors, keeps, rules, a report, a copied player, and SHA-256 digests.
+- The lower-face layer covers the mouth, jaw line, cheeks, and chin. The body's own dark grey and black that reach in from the layer's boundary, such as a headset boom or a choker, the body's own lines in the layer's feather, and a hand that reaches over the face from outside the layer stay above it.
+- Each body frame receives a place, size, and tilt anchor. The pack records anchor residuals and corrects outlying readings against neighbouring frames.
+- Talking frames are assigned to smile or neutral sets by closed-mouth lift. Entry chooses a matching set and rest.
+- The player `sprite-gen-face-v1.mjs` contains the voice flap, face pick, scene plan, and live canvas playback rules.
+- A clip's own mouth and sound finish before a requested line starts. The voice and layer then wait together for the first frame whose switch to the chosen rest is within the 1.4 jump line. Layer exit also uses that jump line.
+- Bakes check pack digests, changed pixels outside the weight, and composite jumps. Refused bakes retain their frames for inspection.
+- See [docs/face-parts.md](docs/face-parts.md) for the request, pack, player, commands, and limits.
+- **Tests**: `tests/video/test_face_layer.py` uses `tests/talking_face.py` to check smile and neutral sets; clip entry set and rest; own-mouth timelines, including a close during voiced sound and refusal of a missing or never-closing timeline; a head 60 px from its place and tilted 3 degrees; hand, headset boom, and choker keeps; unchanged pixels outside the weight; synthetic cells keeping the key's colour under no coverage; digests and new-folder pack writes; the player flap against its original numpy rule and the pick against the draft Viterbi over every frame; a line waiting for a clip's own mouth and for a frame its layer can come on at; loop and post-greeting bakes with greeting frames unchanged byte for byte; and refusal of a changed pack.
+
 ## v3.0.0 - Remove rig layer composition
 
 **Upgrading from 2.46.0: `sprite-gen compose-layers` and its other launch forms are removed, and rig layer declarations are no longer read.** `compose-atlas` no longer writes a manifest `rig` block or `animation.rows.<state>.track` for a run that declared a rig. Runs that never declared `rig`, `layers` or a state `track` get the same manifest as before. Existing run files and `layers/` folders stay on disk.
