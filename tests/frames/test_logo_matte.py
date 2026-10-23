@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFilter
 
-from logo_lettering import BUTTER, GREEN_PAINTED, MAGENTA_PAINTED, MINT, SKY, key_excess, lettering, over, quilt, truth_over
+from logo_lettering import (BUTTER, GREEN_PAINTED, MAGENTA_PAINTED, MINT, SKY, key_excess, lettering, over, quilt,
+                            truth_over)
 from sprite_gen.frames import logo_matte
 
 

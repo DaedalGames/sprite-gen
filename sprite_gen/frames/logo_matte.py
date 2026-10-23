@@ -50,6 +50,11 @@ cast). A glow keeps the key's hue far longer on the key whose hue it shares more
 a yellow glow on green, an orange one on magenta; a white glow on either): `--chroma-key`
 picks it; the letters' own colours weigh more in that choice, since a letter in the key's
 hue is lost entirely.
+
+The other side of it: a letter's own colour in the key's hue (mint on green) is, by its
+pixels, a mix with the key, and is cut see-through. `choose_key` keeps such a key off the
+lettering, and `see_through_inside` finds what was cut see-through inside the letters, where
+no glow reaches.
 """
 
 from __future__ import annotations
@@ -59,7 +64,8 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.frames.decontam import _box_sum, learn_palette
+from sprite_gen.frames.decontam import _box_sum, _ring_depth, learn_palette
+from sprite_gen.frames.extract import _grow_into
 
 KEYS: dict[str, tuple[int, int, int]] = {"magenta": (255, 0, 255), "green": (0, 255, 0)}
 KEY_FAMILY_DIST = 64.0  # CbCr distance from the declared key that a background sample may sit at
@@ -97,6 +103,17 @@ PALETTE_MIN_PX = 32  # fewer solid pixels at a steep edge than this: no palette,
 FAINT_FLOOR = 4.0  # the background model's own error (levels): a faint mean below it is not lettering
 CHOICE_KEY_EXCESS = 240.0  # the key's own excess as a model paints it (#FF00FF a few levels off)
 CHOICE_HUED_WEIGHT = 4.0  # a lettering pixel in the key's hue costs this much more than a glow held less long
+# A key whose hue is this share of the title's box in the mood image is one of the title's colours, and is not chosen
+# (a letter in the key's hue comes out see-through on it); when the brief names a colour of the key's hue, this smaller
+# share already is (the box holds scenery too: a word alone never rules a key out)
+CLASH_HUED_PCT = 5.0
+NAMED_CLASH_HUED_PCT = 1.0
+INSIDE_ALPHA8 = 240  # coverage under this is see-through (`see_through_inside`)
+INSIDE_CHANNEL_PX = 2  # a channel this narrow or narrower between see-through pixels and the background is no way out
+INSIDE_EDGE_PX = 2  # see-through this close to the opaque lettering is its antialiased rim
+INSIDE_REACH_QUANTILE = 0.99  # how far a glow reaches beside the letters: this quantile of its distance from them
+INSIDE_MAX_REACH_PX = 64
+INSIDE_MAX_PCT = 1.0  # see-through inside the letters on this share of the visible lettering is wide: refused
 _LUMA = (0.299, 0.587, 0.114)
 
 
@@ -128,15 +145,18 @@ def _check_key(key: str) -> tuple[int, int, int]:
     return KEYS[key]
 
 
-def choose_key(mood: Image.Image, box: list[float] | None = None) -> dict[str, Any]:
+def choose_key(mood: Image.Image, box: list[float] | None = None,
+               named: dict[str, list[str]] | None = None) -> dict[str, Any]:
     """The key the lettering is redrawn on, from the colours of the mood image's lettering (`box`: left,
     top, right, bottom as shares of the image, where the text check found the title; the whole image
-    without one).
+    without one), or None when the title's colours carry both keys' hues.
 
-    The lettering keeps those colours on the key. A letter in the key's own hue is lost to it, so the
-    share of key-hued pixels counts hard against a key; and a glow's mix with the key keeps the key's
-    hue (and so its fade) up to a coverage that depends on the pair (`hold`): the key that keeps more
-    of it wins. Magenta on a tie: it is the engine's default key."""
+    The lettering keeps those colours on the key. A letter in the key's own hue is lost to it: a key
+    whose hue is CLASH_HUED_PCT of the box is one of the title's colours and is not chosen, and one the
+    brief names a colour of (`named`: the words, per key) already at NAMED_CLASH_HUED_PCT. Between the
+    keys left, the share of key-hued pixels counts hard against a key, and a glow's mix with the key
+    keeps the key's hue (and so its fade) up to a coverage that depends on the pair (`hold`): the key
+    that keeps more of it wins. Magenta on a tie: it is the engine's default key."""
     rgb = np.asarray(mood.convert("RGB"), dtype=np.float64)
     region = "image"
     if box is not None:
@@ -152,9 +172,13 @@ def choose_key(mood: Image.Image, box: list[float] | None = None) -> dict[str, A
         hold = np.where(excess < KEY_HUE_TOL,
                         np.clip((CHOICE_KEY_EXCESS - KEY_HUE_TOL) / np.maximum(CHOICE_KEY_EXCESS - excess, 1e-9), 0, 1),
                         0.0)
+        words = list((named or {}).get(key, []))
+        clash_at = NAMED_CLASH_HUED_PCT if words else CLASH_HUED_PCT
         scores[key] = {"hued_pct": round(hued * 100, 2), "hold": round(float(hold.mean()), 4),
-                       "score": round(float(hold.mean()) - CHOICE_HUED_WEIGHT * hued, 4)}
-    key = "green" if scores["green"]["score"] > scores["magenta"]["score"] else "magenta"
+                       "score": round(float(hold.mean()) - CHOICE_HUED_WEIGHT * hued, 4), "named": words,
+                       "clash_at_pct": clash_at, "clashes": hued * 100 >= clash_at}
+    left = [key for key in KEYS if not scores[key]["clashes"]]
+    key = max(left, key=lambda k: (scores[k]["score"], k == "magenta")) if left else None
     return {"key": key, "region": region, "scores": scores}
 
 
@@ -467,6 +491,32 @@ def key_hue_left(image: Image.Image, key: str) -> dict[str, Any]:
     seen = rgba[..., 3] >= 26
     hued = seen & (key_excess(rgba[..., :3], key) > KEY_HUE_TOL)
     return {"px": int(hued.sum()), "pct_of_visible": round(float(hued.sum()) / max(int(seen.sum()), 1) * 100, 3)}
+
+
+def see_through_inside(image: Image.Image) -> dict[str, Any]:
+    """See-through pixels inside the letters (coverage under INSIDE_ALPHA8): walled in by opaque lettering — no way
+    out to a transparent pixel but across opaque ones, a channel of INSIDE_CHANNEL_PX or less not counting as a way
+    out — and farther from the opaque lettering than its glow reaches beside it (`glow_reach_px`: the
+    INSIDE_REACH_QUANTILE of how far the see-through pixels with a way out lie from it, at least INSIDE_EDGE_PX for
+    a letter's antialiased rim). A glow fades out beside the letters and pools in a counter no farther than it
+    reaches there; a letter's own colour in the key's hue, cut as a mix with the key, is see-through inside the
+    letter. `wide` when that is INSIDE_MAX_PCT of the visible lettering or more."""
+    alpha = np.asarray(image.convert("RGBA"))[..., 3]
+    transparent = alpha == 0
+    not_opaque = alpha < 255
+    see = ~transparent & (alpha < INSIDE_ALPHA8)
+    r = INSIDE_CHANNEL_PX // 2  # a pixel of a wider channel has its whole (2r+1)^2 window in the channel
+    wide = not_opaque & (_box_sum(not_opaque.astype(np.float64), r) >= (2 * r + 1) ** 2)
+    way_out = _grow_into(transparent, wide | transparent)
+    way_out |= not_opaque & (_box_sum(way_out.astype(np.float64), INSIDE_CHANNEL_PX) > 0)
+    depth = _ring_depth(alpha == 255, INSIDE_MAX_REACH_PX)
+    beside = depth[see & way_out]
+    reach = max(INSIDE_EDGE_PX, int(np.quantile(beside, INSIDE_REACH_QUANTILE)) if len(beside) else 0)
+    inside = see & ~way_out & (depth > reach)
+    visible = int((~transparent).sum())
+    share = float(inside.sum()) / max(visible, 1) * 100
+    return {"px": int(inside.sum()), "pct_of_visible": round(share, 2), "glow_reach_px": reach,
+            "max_pct": INSIDE_MAX_PCT, "wide": share >= INSIDE_MAX_PCT}
 
 
 def preview(image: Image.Image, *, dark: tuple[int, int, int] = (22, 24, 32),
