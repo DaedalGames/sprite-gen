@@ -1291,7 +1291,9 @@ A clip model draws a walk's body moving, but a soft part hanging off it (a chest
 ```bash
 sprite-gen video-sway --loop-dir set/front-walk/loop --region 136,164,60,50 [--region ...] \
   [--gain 2.5] [--on-fold refuse|lower] [--freq 2.4] [--zeta 0.6] [--board follow.png] \
-  [--read-on <sha256>] [--stretch-floor D]
+  [--read-on <sha256>] [--stretch-floor D] [--gain-across G]
+sprite-gen video-sway --frames set/front-idle/loop/cycle --out swayed --region cx,cy,rx,ry[,flat] [--fps F] \
+  [--breathe breathed/breathe.json [--lag 0.15]] [--gain G] [--gain-across G] [--on-fold ...] [--stretch-floor D]
 ```
 
 - **The region** is an ellipse over the part in the strip's first cell, in cell pixels
@@ -1334,6 +1336,7 @@ sprite-gen video-sway --loop-dir set/front-walk/loop --region 136,164,60,50 [--r
   at the centre and 0 at the rim (cos²), sampled as premultiplied bilinear colour; outside it no
   pixel changes. A move so large that the weight's slope folds the picture over
   (offset × π / (2 · radius) ≥ 1) is refused: lower `--gain` or give the region larger radii.
+  A cell in which every region's offset is 0 is copied byte for byte, including colour under clear pixels; this holds for every sway, including `--gain 0`. A move clears that colour because the WebP check refuses it.
 - **`--on-fold lower`** lowers the gain for you instead of refusing, region by region. The move
   is the gain times the move at gain 1, so the gain at which a region folds is
   2 · radius / (π · move at gain 1), and a region that folds at `--gain` takes the largest gain
@@ -1437,6 +1440,39 @@ What carries a region into a cell is the lay of the body's outline (`carry_basis
 carried alike, whatever moved inside the outline; whose pixels are inside a carried ellipse is not
 read, and nothing here moves a region on a guess of it.
 
+#### A cycle's frames at their own size: `--frames <folder> --out <new folder>`
+
+A loop's strip holds at most 64 cells and 32,000 px across. Cells 960 px wide allow 33 of them, so a cycle of large frames must be cut down to fit. The strip stays the delivery format; `video-sway --frames <folder> --out <new folder> [--fps F]` sways the full cycle before that cut.
+
+- **The frames** are PNGs in name order, all one size, from a `video-loop` `cycle/` folder or the output of `sprite-gen breathe`. Regions are given in frame pixels. `--frames` and `--loop-dir` are alternatives, and one is required.
+- **The output** contains the moved frames under their original names and `sway.json` beside them. The folder checks and whole writing are the same as `sprite-gen breathe`: real paths rule out an output equal to, inside, or containing the frames folder; the output must be new or empty; and unequal frame sizes are refused before anything is made. The command writes in a staging folder beside the output and renames it into place when complete. A failed run leaves nothing, and the frames folder is only read.
+- **The move** uses `solve_cells` for both paths. A strip cut from these frames at scale 1, with no cell left out and each region moved by the crop origin `source_rect`, moves cell for cell exactly as the frames path does, byte for byte once cut back, at the frame time written in the strip meta. `--fps F` uses `round(1000 / F, 2)` milliseconds: 24 fps is 41.67 ms. The exact `1000/24` ms gives another sway.
+- **The time** comes from `--fps` or, for a whole `video-loop` `cycle/`, from the loop strip meta's `cycle_seconds` and `cycle_frames`. A conflicting `--fps` is refused. The damped mass requires a frame time, so other frames folders need `--fps` unless `--breathe` supplies the drive. `--read-on` is refused with `--frames`; `--frames` requires `--out`; `--out` and `--fps` are refused with `--loop-dir`.
+- **The record** in `sway.json` has `frames`, `frame_ms` (null on the breath), and the same record as the loop's `follow`, with `source` naming the frames folder. Body motion is read at the frames' full size by `body_motion`. Reducing them changes that reading and its offsets. On large frames, reading can take minutes. The old name `video-follow --frames ...` writes the same bytes.
+
+#### On the breath: `--breathe <breathe.json>`
+
+A breathing idle can move its body only a pixel or two while its head stays still. Reading the outline turns that motion into whole-pixel steps; the damped mass answers those steps, so the part barely moves at its default settings or sways to the steps when pushed further. `--breathe <breathe.json>` drives the part from the Breathe layer's breath instead.
+
+- **The record** is the `breathe.json` written beside breathed frames. It supplies config, phases and `resolved.anatomy`. Only `mode: smooth` is accepted; a pixel breath is refused because its travelling wave moves the first cell. The config passes `state_breathe` checks, `fit_breathe_pattern` recomputes the phases and compares them with the record, and `frames`, the phase count and the swayed cell count must agree. A hand-written record is checked the same way.
+- **The drive** uses the Breathe layer's own functions. Chest lift is `lift x w`, where `w` is `smooth_wave`, from 0 at rest to 1 at the in-breath peak, and `lift = depth x (anatomy height - basis_row)` is given by `breathe.smooth_lift`. The part follows the late curve `w_late = smooth_shoulder_wave`, whose time is warped by `t - lag x sin(π t)`. Its offset is `gain x lift x (w - w_late)`, against the chest's rise in the record's `chest_dir`; 0 points straight up, so that offset points straight down.
+- **The rest** has `w = w_late = 0`, so the first cell, rests between breaths and the close have zero offset. On a synthetic loop, the step across the close is 3-4% of the largest inner step. The body's outline still determines each cell's carried ellipse.
+- **The lag** is a share of one breath, above 0 and below `1/π`; its default is 0.15. At `1/π` warped time stops, and beyond it runs backwards. On a synthetic 144-cell loop at 24 fps with two breaths, lags 0.1, 0.15 and 0.2 reach 0.28, 0.44 and 0.59 of lift at gain 1. The part peaks 7, 11 and 14 cells late, or 0.29, 0.46 and 0.58 s. Reach depends on lag rather than breath length.
+- **The settings and record** use a default `--gain` of 1 on the breath, against 2.5 on body motion. `--freq` and `--zeta` are refused with `--breathe`; `--fps` is refused with `--breathe --frames`; `--lag` requires `--breathe`. The record's `drive` carries `kind: breath`, `breathe_sha256`, `lag`, `lift_px`, `heading_deg`, and `breaths` or `breath_peaks` in place of `freq_hz`, `zeta` and `harmonics`. Its way is `common-lay/breath-late/cos2-bilinear/1`. `--loop-dir` also accepts this drive when its strip has one cell per phase.
+
+```bash
+sprite-gen breathe <cycle> <breathed> --mode smooth --breaths 2
+sprite-gen video-sway --frames <breathed> --out <swayed> --breathe <breathed>/breathe.json --region <cx,cy,rx,ry>
+```
+
+#### A region moved whole, and across apart from down: `cx,cy,rx,ry,flat`, `--gain-across G`
+
+`--region cx,cy,rx,ry[,flat]` gives a region an optional fifth number, `flat`, from 0 to 0.9. It is the share of the way from centre to rim that moves in full. Over the remaining distance the weight falls from 1 to 0 by cos², using the Breathe layer's `breathe.flat_cos2`. A large region weighted by cos² alone presses its outer part inward; one flat region can move the part whole instead of laying many small circles over it. On a synthetic chest, one flat region gave a least part weight of 0.82 and a mean of 0.99, against 0.84 and 0.97 for 112 circles, at a fifth of the move time.
+
+The fold rule reads the radius left after the flat centre: the smaller radius x `(1 - flat)`. It folds at `offset x π / (2 x radius x (1 - flat)) >= 1`. `--stretch-floor` reads the least area as `1 - (π/2)/(1 - flat) x hypot(ox/rx, oy/ry)`. Both closed forms stay on the safe side of measured values by 0.004 to 0.013. The record's `fold.regions[i].radius_px` is that reduced radius. A `flat` of 0, or one left out, gives the four-number region's strip, record and inspection byte for byte. Values outside the range are refused.
+
+`--gain-across G` sets the gain across independently; `--gain` then sets the gain down. Without it, across uses `--gain` as before, byte for byte. When `--on-fold lower` or the floor lowers a region's gain, its across move falls in the same proportion. The existing area rule reads moves with different across and down components and stays on the safe side by 0.0004 to 0.008. `--gain 0` with non-zero `--gain-across` is refused. The record carries `gain_across`, the across gain the strip's `gain` moved by, and carries `gain_across_requested` only when given.
+
 ### Inspecting a sway — `video-sway-inspect`
 
 The ellipse is given in the first cell, where somebody looked. Into every other cell it is carried by the body's motion, and there nobody looked: an arm that swings across a chest is inside the chest's ellipse in those cells and moves with it, and so does a sleeve of the chest's own colour, which no count of colours finds. The Sway layer does not read what a pixel belongs to. `video-sway-inspect` (old name `video-follow-inspect`) writes what somebody needs in order to look, and moves nothing:
@@ -1444,7 +1480,7 @@ The ellipse is given in the first cell, where somebody looked. Into every other 
 ```bash
 sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,50 [--region …] \
   [--gain 2.5] [--on-fold refuse|lower] [--freq 2.4] [--zeta 0.6] [--read-on <sha256>] [--stretch-floor D] \
-  --out-dir inspect/front-run [--scale 2] [--columns 8]
+  [--breathe <breathe.json> [--lag 0.15]] [--gain-across G] --out-dir inspect/front-run [--scale 2] [--columns 8]
 ```
 
 - **Asked as `video-sway` is, answered by the same code.** It takes `video-sway`'s arguments
@@ -1453,6 +1489,7 @@ sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,
   (`follow.read_request`, `follow.solve`): the carry, each region's gain, the offsets and the
   moved cells are computed in one place, and both commands read them there. What `video-sway`
   refuses it refuses in the same words under its own name, and then writes nothing.
+  It takes `--breathe`, `--lag`, `--gain-across` and flat regions as `video-sway` does, and stays on a loop directory without `--frames`.
 - **The loop directory is read and never written**: not the strip, not its meta, and not the
   `follow.source.png` that `video-sway` keeps on its first run. An `--out-dir` at or under the
   loop directory is refused. Run before `video-sway`, it changes nothing `video-sway` writes.
@@ -1462,7 +1499,7 @@ sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,
   pixels they are. Saying which cells hold the part alone is for a person or a model that looks
   at the board of the cells as cut, and for a second reader apart from the first.
   `video-sway` takes no such list: it moves every cell.
-- **`follow-inspect.json`** (`kind: video-follow-inspection`, `schema_version: 2`):
+- **`follow-inspect.json`** (`kind: video-follow-inspection`, `schema_version: 3`):
 
   | key | what it holds |
   |---|---|
@@ -1470,14 +1507,14 @@ sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,
   | `inputs.strip` | `file`, `sha256`, `bytes`: the strip as cut that was read |
   | `inputs.meta` | `file`, `sha256`, `bytes`: `<name>.strip.json` as read; `cut_sha256`: its sha256 without the `follow` record `video-sway` adds (keys sorted, no spaces); `follow_recorded` |
   | `inputs.cut` | `frames`, `w`, `h`, `delay_ms`, as read from the meta |
-  | `inputs.regions`, `inputs.settings` | the ellipses in the order given; `gain`, `on_fold`, `freq_hz`, `zeta`, `read_on` and `stretch_floor` (null where not asked) |
-  | `inputs.policy`, `inputs.engine` | the way the motion is read and a region moved, by name (`follow.POLICY`) with the constants it is fixed by, and the ways a reading is carried (`transport`) and a floor kept (`stretch_floor`), by name; the engine's `name` and `version` |
+  | `inputs.regions`, `inputs.settings` | the ellipses in the order given, with five numbers when a region has a flat share; `gain`, `on_fold`, `freq_hz`, `zeta`, `read_on` and `stretch_floor` (null where not asked); `gain_across`, `breathe_sha256` and `lag` only when asked |
+  | `inputs.policy`, `inputs.engine` | the way the motion is read and a region moved, by name (`follow.POLICY`) with its constants, and the ways a reading is carried (`transport`) and a floor kept (`stretch_floor`), by name; `inputs.policy.name` follows the drive and is `common-lay/breath-late/cos2-bilinear/1` on the breath; the engine's `name` and `version` |
   | `follow` | the follow-through as `video-sway` records it in the strip's meta, without `gif` and `webp` |
   | `carry_basis` | `{"reading": "outline-lay", "region": "unverified"}`: what carries a region, and that whose pixels it holds is not read |
   | `regions[i]` | `index`, `ellipse` as given, `radius_px`, `gain` (0 when held), `held`, `gain_limit`; over all cells the largest `reach_px`, `fold_ratio`, `bend` and `bend_deg`, the least `jacobian_min`, the sum of `changed_px`; `ring`, its colour on the boards |
   | `seams` | per pair of moving regions that meet in some cell (`regions`: [i, j]), the largest seam: `jump`, `deg`, the `cell` and the point `at` (x, y) |
   | `cells[k]` | `index`, `carry_px` (across, down), `changed_px`, `jacobian_min`, `seams` (as above, per pair that meets in that cell), `box` (x0, y0, x1, y1: the cell's picture on both boards) and `regions[i]` |
-  | `cells[k].regions[i]` | `ellipse`: the region carried (centre plus `carry_px`, the radii as given); `offset_px` (across, down) and `reach_px`: the region's own move in that cell, 0 when held; `fold_ratio`; `jacobian_min` and `jacobian_min_at` (x, y); `bend` and `bend_deg`; `ellipse_px`, `solid_px`; `changed_px`; `ownership` |
+  | `cells[k].regions[i]` | `ellipse`: the region carried (centre plus `carry_px`, the radii as given, and a fifth value where the region has a flat share); `offset_px` (across, down) and `reach_px`: the region's own move in that cell, 0 when held; `fold_ratio`; `jacobian_min` and `jacobian_min_at` (x, y); `bend` and `bend_deg`; `ellipse_px`, `solid_px`; `changed_px`; `ownership` |
   | `boards` | `scale`, `columns`, `size`, `ground`; `source` and `moved`, each `file`, `sha256` (the PNG file) and `pixels_sha256` (its pixels) |
 
 - **`carry_px`** is how far the cell's body lies from the first cell's, in whole pixels: what
@@ -1503,12 +1540,15 @@ sprite-gen video-sway-inspect --loop-dir set/front-run/loop --region 136,164,60,
   region moving along its long axis keeps D high while G stays near 1, so neither stands for the
   other. And where two regions overlap, `video-sway` moves each pixel by the larger of their
   weighted moves (by the larger weight where they move by one gain), so across the curve where the
-  two are equal the move's gradient jumps from one region's to the other's and a straight line
-  bends there: `seams`, the largest jump on that curve — the norm of the difference of the two
-  gradients, each the offset times the weight's gradient — and its angle `deg`. It is looked for
-  along rows a quarter pixel apart, between points inside both ellipses where the larger move
-  changes hands, and found there by halving. A held region has no seam. Quality is read from these
-  three, not from `fold.ratio`; a floor lowers the bend and the seam only as it lowers the gain.
+  two are equal the move's gradient jumps from one region's to the other's and a straight line bends
+  there: `seams`, the largest jump on that curve, the norm of the difference of the two gradients,
+  each the offset times the weight's gradient, and its angle `deg`. It is looked for along rows a
+  quarter pixel apart, between points inside both ellipses where the larger move changes hands, and
+  found there by halving. A point is dropped if a third moving region has a weighted move, `|offset|
+  x weight`, larger than both of the pair's. The seam is the largest jump among the points left; if
+  none remain, that pair has no seam in that cell. With two regions, the values stay the same. A
+  held region has no seam. Quality is read from these three, not from `fold.ratio`; a floor lowers
+  the bend and the seam only as it lowers the gain.
 - **The record names what it was read from.** It holds no path, no time and nothing of the
   machine: the same loop asked the same way writes the same record, byte for byte, anywhere.
   `input_id` is the same before and after `video-sway` is run on the loop, and another after a

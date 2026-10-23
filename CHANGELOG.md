@@ -4,7 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
-**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck.**
+**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck. `video-sway-inspect` records use schema 3, and a cell whose every offset is 0 is now copied as it was, including colour under clear pixels with `--gain 0`; the other changes add options, and without them the strip, records and inspection stay as before.**
 
 The Breathe layer still supports `pixel` and `smooth`.
 
@@ -30,10 +30,23 @@ The Breathe layer still supports `pixel` and `smooth`.
   These measurements exclude PNG reading and writing.
   `bake_breathe_sequence(images, cfg, anat=None)` and `anatomy_report(images, cfg, anat=None)` accept measured anatomy.
   `protect(anat)` accepts one column or an array of columns.
+- **New: Sway on a cycle's frames.** `video-sway --frames` moves full-size frames and writes them with `sway.json` to a new folder.
+  A whole `cycle/` can supply its frame time; other damped-mass runs require `--fps`.
+- **New: Sway on the breath.** `--breathe` drives the move from a checked smooth `breathe.json`, with `--lag` setting how late the part follows.
+  The first cell, rests and close have zero offset.
+- **New: A region moved whole.** A fifth `--region` number, `flat`, keeps the centre at full weight before the weight falls to the rim.
+- **New: Across apart from down.** `--gain-across` sets the across gain separately from `--gain`, which sets the gain down.
+- **Changed: Zero-offset cells.** A cell where no region moves is copied byte for byte, including colour under clear pixels.
+- **Changed: Inspection seams.** `video-sway-inspect` drops a pair's seam points covered by a third moving region.
+  Its record uses `schema_version` 3.
+- **New: Breathe beat chosen to miss the hands.** In `smooth` mode, `--avoid-region` chooses a breath beat whose peaks keep the chest above the hands' own rise and records the choice in `breathe.json`.
 - **Tests:** `tests/effects/test_breathe.py` checks border counts, advice, smooth edge preservation, and the second face search.
   `tests/effects/test_breathe_js_mirror.py` checks curator refusal wording and byte identity with the pixel bake.
   `tests/effects/test_breathe_smooth.py` checks pixel and smooth byte goldens and shared anatomy and strain measurements.
   `tests/effects/test_breathe_publish.py` checks that the stand-in bake accepts the new argument.
+  `tests/video/test_sway_frames.py`, `tests/video/test_sway_breath.py`, `tests/video/test_sway_flat_across.py`, and `tests/video/test_sway_seams.py` check the Sway paths, drives, weights, gains and seams.
+  `tests/effects/test_breath_beat.py` checks beat choice and refusals.
+  `tests/video/test_follow_stretch_floor.py` and `tests/video/test_follow_inspect.py` cover the changed inspection schema and frames options.
 
 ## v3.0.0 - Remove rig layer composition
 
