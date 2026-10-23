@@ -242,8 +242,8 @@ function canvasTransform(m, k) {
 }
 
 // The live player: the loop runs on one frame clock (the audio context's), a body clip plays from its start when
-// asked (`play`), a line talks the face layer (`say`). Requests run one after another. After a line the layer stays at
-// its rest until a loop frame within the jump line of it, then goes off.
+// asked (`play`), a line talks the face layer (`say`). Requests run one after another, in the order they are made.
+// After a line the layer stays at its rest until a loop frame within the jump line of it, then goes off.
 export function createFacePlayer(canvas, pack, { audioContext } = {}) {
   const ctx = canvas.getContext("2d");
   const audio = audioContext ?? new AudioContext();
@@ -255,6 +255,7 @@ export function createFacePlayer(canvas, pack, { audioContext } = {}) {
   let scene = null;
   let resting = null;
   let queue = Promise.resolve();
+  let clip = null;
   let running = false;
   let shown = -1;
 
@@ -318,14 +319,35 @@ export function createFacePlayer(canvas, pack, { audioContext } = {}) {
     src.start(origin + t / fps, 0, seconds);
   }
 
-  function run(make) {
-    const job = queue.then(() => new Promise((resolve) => {
+  // One queue for every request, in the order they are made: a request's sound decodes at once (`ready`), and the
+  // request starts the frame after the one before it has ended. A line right behind a clip with its own mouth (`after`:
+  // that clip's scene once it starts, null if it failed) is planned with the clip instead when it is ready before the
+  // span ends, and the clip ends with it. Nothing is capped or dropped: a request that fails rejects, the next goes on.
+  function run(ready, make, after = null) {
+    const before = queue;
+    let open;
+    const started = new Promise((resolve) => { open = resolve; });
+    const turn = () => before.then(() => ready).then((r) => new Promise((resolve) => {
       const t0 = now() + 1;
-      const s = make(t0);
-      scene = { ...s, t0, resolve };
+      scene = { ...make(t0, r), t0, resolve };
+      open(scene);
     }));
-    queue = job.catch(() => {});
-    return job;
+    ready.catch(() => {});
+    const job = after
+      ? after.then((s) => s && ready.then((r) => join(s, r), () => null)).then((joined) => (joined ? joined.ended : turn()))
+      : turn();
+    job.catch(() => open(null));
+    queue = Promise.all([before, job.catch(() => {})]);
+    return { job, started };
+  }
+
+  // A line said while the clip before it still talks with its own mouth: the clip's plan again, with the line after
+  // that span. Null once the span is over; the line then waits for the clip to end.
+  function join(s, [data, levels]) {
+    if (scene !== s || now() >= s.t0 + body(pack, s.play).own_mouth.end_frame) return null;
+    s.plan = planScene(pack, { play: s.play, levels });
+    sound(data, s.t0 + s.plan.line_start);
+    return { ended: new Promise((resolve) => { const done = s.resolve; s.resolve = () => { done(); resolve(); }; }) };
   }
 
   async function decode(voice) {
@@ -337,32 +359,27 @@ export function createFacePlayer(canvas, pack, { audioContext } = {}) {
   return {
     start() { origin = audio.currentTime; loopPhase = 0; running = true; requestAnimationFrame(tick); },
     stop() { running = false; },
-    // A body clip from its start, with its own sound; a line said while its own mouth talks waits for its end.
+    // A body clip from its start, with its own sound; the line asked for right after it waits for its own mouth.
     async play(name) {
       const b = body(pack, name);
-      const own = b.sound ? await decode(pack.url(b.sound)) : null;
-      return run((t0) => {
+      const { job, started } = run(b.sound ? decode(pack.url(b.sound)) : Promise.resolve(null), (t0, own) => {
         resting = null;
         if (own) sound(own, t0, (b.own_mouth ? b.own_mouth.end_frame : b.cells.length) / fps);
         return { plan: planScene(pack, { play: name }), play: name };
       });
+      clip = b.own_mouth ? started : null;
+      return job;
     },
     // A line: the voice plays and the face layer talks to it.
     async say(voice, { tags = [] } = {}) {
-      const data = await decode(voice);
-      const { levels } = mouthTrack(mono(data), data.sampleRate, pack.rules, { fps, tags });
-      if (scene && scene.play && body(pack, scene.play).own_mouth && now() < scene.t0 + body(pack, scene.play).own_mouth.end_frame) {
-        // said while a clip talks with its own mouth: the clip's plan again with the line after its own mouth
-        const s = scene;
-        s.plan = planScene(pack, { play: s.play, levels });
-        sound(data, s.t0 + s.plan.line_start);
-        return new Promise((resolve) => { const done = s.resolve; s.resolve = () => { done(); resolve(); }; });
-      }
-      return run((t0) => {
+      const ready = decode(voice).then((data) => [data, mouthTrack(mono(data), data.sampleRate, pack.rules, { fps, tags }).levels]);
+      const after = clip;
+      clip = null;
+      return run(ready, (t0, [data, levels]) => {
         const plan = planScene(pack, { start: mod(t0 - loopPhase, loop.cells.length), levels, layer: resting });
         sound(data, t0 + plan.line_start);
         return { plan };
-      });
+      }, after).job;
     },
   };
 }
