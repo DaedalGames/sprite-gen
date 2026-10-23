@@ -437,8 +437,9 @@ def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
     cli.COMMANDS[cli.VERB_ALIASES['video-follow'][0]][1](parsers[0])
     add_arguments(parsers[1])
     followed, inspected = vars(parsers[0].parse_args(asked)), vars(parsers[1].parse_args([*asked, '--out-dir', str(out)]))
-    assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == {'board'}
-    assert {key: inspected[key] for key in followed if key != 'board'} == {key: value for key, value in followed.items() if key != 'board'}
+    own = {'board', 'frames', 'out', 'fps'}  # video-sway's own: its board, and the frames path beside the loop directory
+    assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == own
+    assert {key: inspected[key] for key in followed if key not in own} == {key: value for key, value in followed.items() if key not in own}
     capsys.readouterr()
     assert cli.main(['video-follow-inspect', *asked, '--out-dir', str(out), '--columns', '6']) == 0
     printed, said = capsys.readouterr()

@@ -4,7 +4,7 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
-**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck.**
+**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck. `video-sway-inspect` records use schema 3, and a cell whose every offset is 0 is now copied as it was, including colour under clear pixels with `--gain 0`; the other changes add options, and without them the strip, records and inspection stay as before.**
 
 The Breathe layer still supports `pixel` and `smooth`.
 
@@ -30,10 +30,23 @@ The Breathe layer still supports `pixel` and `smooth`.
   These measurements exclude PNG reading and writing.
   `bake_breathe_sequence(images, cfg, anat=None)` and `anatomy_report(images, cfg, anat=None)` accept measured anatomy.
   `protect(anat)` accepts one column or an array of columns.
+- **New: Sway on a cycle's frames.** `video-sway --frames` moves full-size frames and writes them with `sway.json` to a new folder.
+  A whole `cycle/` can supply its frame time; other damped-mass runs require `--fps`.
+- **New: Sway on the breath.** `--breathe` drives the move from a checked smooth `breathe.json`, with `--lag` setting how late the part follows.
+  The first cell, rests and close have zero offset.
+- **New: A region moved whole.** A fifth `--region` number, `flat`, keeps the centre at full weight before the weight falls to the rim.
+- **New: Across apart from down.** `--gain-across` sets the across gain separately from `--gain`, which sets the gain down.
+- **Changed: Zero-offset cells.** A cell where no region moves is copied byte for byte, including colour under clear pixels.
+- **Changed: Inspection seams.** `video-sway-inspect` drops a pair's seam points covered by a third moving region.
+  Its record uses `schema_version` 3.
+- **New: Breathe beat chosen to miss the hands.** In `smooth` mode, `--avoid-region` chooses a breath beat whose peaks keep the chest above the hands' own rise and records the choice in `breathe.json`.
 - **Tests:** `tests/effects/test_breathe.py` checks border counts, advice, smooth edge preservation, and the second face search.
   `tests/effects/test_breathe_js_mirror.py` checks curator refusal wording and byte identity with the pixel bake.
   `tests/effects/test_breathe_smooth.py` checks pixel and smooth byte goldens and shared anatomy and strain measurements.
   `tests/effects/test_breathe_publish.py` checks that the stand-in bake accepts the new argument.
+  `tests/video/test_sway_frames.py`, `tests/video/test_sway_breath.py`, `tests/video/test_sway_flat_across.py`, and `tests/video/test_sway_seams.py` check the Sway paths, drives, weights, gains and seams.
+  `tests/effects/test_breath_beat.py` checks beat choice and refusals.
+  `tests/video/test_follow_stretch_floor.py` and `tests/video/test_follow_inspect.py` cover the changed inspection schema and frames options.
 
 - **Tests**: A plain `pytest` runs a fast bundle: tests marked `slow` are deselected, the header points to `pytest --full`, and the summary counts deselections. `pytest --full` runs every test. The release lane, `scripts/linux_lane.sh`, passes `--full` to both `pytest` calls, including `-m real_rife`, so its gate still runs every test. `tests/release/test_fast_bundle.py` checks both calls and probes selection with and without `--full`. The `slow` rule in `pyproject.toml` is 1 s per case or 5 s across a function's cases on an 8-core M1 running the whole suite; marking a function marks every case. Five tests remain unmarked as the only fast callers of `video-stop`, `workflow`, `defaults`, `video-sway`, and `export-aseprite`. Three fixture-first tests remain unmarked because other fast tests build their fixtures. In `tests/frames/test_ui_kit.py`, the fast bundle keeps 16 of 512 scattered-drawing grid seeds, 8 of 256 full-size-frame band grid seeds, 9 of 256 missing-element sets, 2 of 17 counterexample sheets, and one placement and start in each publish sweep. `tests/curate/test_anchor_selection.py` extracts each run once per module instead of repeating 1.5 to 2.6 s of setup per test; 25 of 27 affected tests are now fast. Removed `tests/video/test_loop_overlap.py::test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cycle_apart[on]`; its wordless case makes the same call with the default "on". Removed `tests/video/test_walk_steps.py::test_cycle_align_takes_a_loop_cut_two_steps_as_one_cycle` and `tests/video/test_one_step_cut.py::test_cycle_align_takes_the_loop_cut_again_on_its_count`; `tests/video/test_loop_prop_seam_held.py::test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is` covers alignment from recorded `steps: 2`. Merged `tests/video/test_loop_overlap.py::test_the_cli_passes_overlap_wrap_off_and_on_is_its_default` into `tests/video/test_loop_overlap.py::test_with_the_overlapped_wrap_off_nothing_is_read_for_the_wrap_and_the_gate_refuses_the_cut_as_filmed`, retaining both sets of assertions on one CLI cut with `--overlap-wrap off`. In a new virtual environment, the former suite ran 7,881 tests (7,880 passed, 1 skipped) in 21 minutes 54 seconds; `pytest --full` now runs 7,881, including two new release tests, and the fast bundle runs 6,555 in about 6 minutes. Package code, commands, and outputs are unchanged.
 
