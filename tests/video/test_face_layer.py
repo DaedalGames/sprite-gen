@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The face layer (`sprite-gen video-face`, `face-bake`, the player `sprite-gen-face-v1.mjs`) on a synthetic talking
 character (tests/talking_face.py): the pack's sets, entries, own-mouth spans, anchors and what stays the body's; the
-player's mouth rule and pick against the rules they were moved from; a baked line.
+player's mouth rule and pick against the rules they were moved from; the live player's queue on a fake audio clock; a
+baked line.
 
 The pack is made once for the module. The player's tests run it with node and skip, saying so, where there is none.
 """
@@ -362,6 +363,227 @@ def test_a_line_waits_for_a_frame_the_layer_can_come_on_at(case, tmp_path):
     assert len(scene["frames"]) == tf.GREET_OWN_END + 3 + len(levels)
     assert all(f["face"] is None for f in scene["frames"][:tf.GREET_OWN_END + 3])
     assert scene["frames"][tf.GREET_OWN_END + 3]["face"] is not None
+
+
+# --- the live player ----------------------------------------------------------------------------------------------
+
+LIVE_RUN = r"""
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [player, inPath, outPath] = process.argv.slice(2);
+const { createFacePlayer, mouthTrack } = await import(pathToFileURL(player).href);
+const job = JSON.parse(readFileSync(inPath, "utf8"));
+const pack = JSON.parse(readFileSync(job.pack, "utf8"));
+const fps = pack.fps;
+let frame = 0;
+
+// A decoded voice, as an AudioBuffer holds it: a syllable every quarter second.
+class Voice {
+  constructor(id, seconds, rate = 48000) {
+    this.id = id;
+    this.sampleRate = rate;
+    this.numberOfChannels = 1;
+    this.length = Math.round(seconds * rate);
+    this.duration = this.length / rate;
+    this.data = new Float32Array(this.length);
+    for (let s = 0, at = 0.08; at < seconds - 0.15; s++, at += 0.25) {
+      const loud = [0.6, 1, 0.45, 0.8][s % 4];
+      for (let i = Math.floor(at * rate); i < Math.min(this.length, (at + 0.14) * rate); i++) {
+        const t = i / rate, w = (t - at) / 0.14;
+        const tone = Math.sin(2 * Math.PI * 220 * t) + 0.5 * Math.sin(2 * Math.PI * 440 * t);
+        if (w > 0) this.data[i] += 0.3 * loud * Math.sin(Math.PI * w) ** 2 * tone;
+      }
+    }
+  }
+  getChannelData() { return this.data; }
+}
+globalThis.AudioBuffer = Voice;
+
+// A sound by URL loads (or fails) at the frame the job names; a clip's own sound at once unless the job gives it one.
+const loads = new Map();
+const due = [];
+for (const b of pack.body) {
+  const s = job.sounds?.[b.name];
+  if (s) b.sound = `sound/${b.name}`;
+  if (b.sound) loads.set(b.sound, { voice: new Voice(b.name, s?.seconds ?? b.cells.length / fps), arrives: s?.arrives });
+}
+globalThis.fetch = (url) => new Promise((resolve, reject) => {
+  const v = loads.get(url);
+  const arrive = () => (v.fails ? reject(new Error(`${url} did not load`)) : resolve({ arrayBuffer: async () => url }));
+  due.push([v.arrives ?? frame, arrive]);
+});
+const sounds = [];
+const audio = {
+  currentTime: 0,
+  destination: {},
+  decodeAudioData: async (url) => loads.get(url).voice,
+  createBufferSource: () => ({
+    buffer: null,
+    connect() {},
+    start(at, offset = 0, seconds) {
+      sounds.push({ id: this.buffer.id, frame: Math.round(at * fps), frames: (seconds ?? this.buffer.duration - offset) * fps });
+    },
+  }),
+};
+
+// What each frame draws: the body cell, then the face over it.
+const cellOf = new Map(pack.body.flatMap((b) => b.cells.map((path, k) => [path, [b.name, k]])));
+const drawn = [];
+globalThis.Image = class { complete = true; };
+const ctx = {
+  setTransform() {},
+  clearRect() {},
+  drawImage(im) {
+    if (cellOf.has(im.src)) drawn[frame] = [...cellOf.get(im.src), null];
+    else if ("face" in im) drawn[frame][2] = im.face;
+  },
+};
+pack.url = (path) => path;
+pack.images = {
+  face: pack.face.frames.map((_, k) => ({ face: k })),
+  keep: Object.fromEntries(pack.body.map((b) => [b.name, b.keep.map((k) => k && { width: 1, height: 1 })])),
+};
+
+const ticks = [];
+globalThis.requestAnimationFrame = (tick) => ticks.push(tick);
+const p = createFacePlayer({ width: pack.size[0], height: pack.size[1], getContext: () => ctx }, pack, { audioContext: audio });
+const levels = {};
+const settled = {};
+function ask(r) {
+  if (r.play) return p.play(r.play);
+  const v = new Voice(r.say, r.seconds);
+  levels[r.say] = mouthTrack(v.data, v.sampleRate, pack.rules, { fps }).levels;
+  if (r.arrives === undefined && !r.fails) return p.say(v);
+  loads.set(`voice/${r.say}`, { voice: v, arrives: r.arrives, fails: r.fails });
+  return p.say(`voice/${r.say}`);
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+p.start();
+for (; frame < job.frames; frame++) {
+  audio.currentTime = (frame + 0.5) / fps;
+  for (const r of job.requests.filter((r) => r.frame === frame)) {
+    const id = r.play ?? r.say;
+    ask(r).then(() => { settled[id] = { frame, error: null }; }, (e) => { settled[id] = { frame, error: String(e.message) }; });
+  }
+  for (const d of due.filter((d) => d[0] <= frame)) due.splice(due.indexOf(d), 1)[0][1]();
+  await settle();
+  for (const tick of ticks.splice(0)) tick();
+  await settle();
+}
+p.stop();
+writeFileSync(outPath, JSON.stringify({ frames: drawn, sounds, levels, settled }));
+"""
+
+
+def live(root, job):
+    """The live player (`createFacePlayer`) run by node on a fake audio clock, one frame at a time, with requests made
+    at the frames the job names: what each frame drew (body, cell, face), each sound's start frame and length in
+    frames, each line's mouth levels and the frame each request settled on."""
+    (root / "live.mjs").write_text(LIVE_RUN, encoding="utf-8")
+    (root / "live.json").write_text(json.dumps({"pack": str(root / "pack" / "face-pack.json"), **job}), encoding="utf-8")
+    proc = subprocess.run([NODE, str(root / "live.mjs"), str(root / "pack" / "sprite-gen-face-v1.mjs"), str(root / "live.json"),
+                           str(root / "live-out.json")], capture_output=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads((root / "live-out.json").read_text(encoding="utf-8"))
+    ids = [s["id"] for s in out["sounds"]]
+    assert len(ids) == len(set(ids)), ids
+    out["sounds"] = {s["id"]: s for s in out["sounds"]}
+    return out
+
+
+def shown(plan):
+    return [[f["body"], f["cell"], f["face"]] for f in plan["frames"]]
+
+
+def talks(out, pack, line):
+    """Every frame of a line's voice shows the layer, in one expression set."""
+    at = out["sounds"][line]["frame"]
+    faces = [out["frames"][t][2] for t in range(at, at + len(out["levels"][line]))]
+    return None not in faces and any(set(faces) <= set(s["frames"]) for s in pack["face"]["sets"].values())
+
+
+@needs_node
+def test_two_lines_asked_for_during_a_clip_s_own_mouth_run_one_after_another(case):
+    """Two lines asked for while the greeting talks with its own mouth: the first is planned with the clip and starts
+    where the layer comes on after the span; the second waits until the first's voice has ended, and the first keeps
+    its own frames."""
+    root, pack = case
+    out = live(root, {"frames": 80, "requests": [{"frame": 0, "play": "greet"}, {"frame": 3, "say": "A", "seconds": 1.0},
+                                                 {"frame": 3, "say": "B", "seconds": 0.5}]})
+    a, b = out["sounds"]["A"], out["sounds"]["B"]
+    t0 = out["frames"].index(["greet", 0, None])
+    plan = player(root, {"scene": {"play": "greet", "levels": out["levels"]["A"]}})["scene"]
+    assert a["frame"] == t0 + plan["line_start"] == t0 + tf.GREET_OWN_END
+    assert b["frame"] >= a["frame"] + a["frames"], (a, b)
+    assert out["frames"][t0:t0 + len(plan["frames"])] == shown(plan)
+    assert talks(out, pack, "A") and talks(out, pack, "B")
+    assert sorted(out["settled"]) == ["A", "B", "greet"] and all(s["error"] is None for s in out["settled"].values())
+
+
+@needs_node
+def test_three_lines_asked_for_on_the_loop_run_one_after_another_in_the_order_asked(case):
+    root, pack = case
+    out = live(root, {"frames": 90, "requests": [{"frame": 2, "say": "A", "seconds": 0.8},
+                                                 {"frame": 2, "say": "B", "seconds": 0.5},
+                                                 {"frame": 5, "say": "C", "seconds": 0.6}]})
+    a, b, c = (out["sounds"][k] for k in "ABC")
+    assert b["frame"] >= a["frame"] + a["frames"] and c["frame"] >= b["frame"] + b["frames"], (a, b, c)
+    assert all(talks(out, pack, k) for k in "ABC")
+    settled = out["settled"]
+    assert sorted(settled) == ["A", "B", "C"] and all(s["error"] is None for s in settled.values())
+    assert settled["A"]["frame"] < settled["B"]["frame"] < settled["C"]["frame"]
+
+
+@needs_node
+def test_a_line_asked_for_after_the_own_mouth_waits_for_the_line_planned_with_the_clip(case):
+    """One line asked for during the greeting's own mouth, one after the span while the first still talks: the first
+    starts after the span with the clip, the second when the first's voice has ended."""
+    root, pack = case
+    out = live(root, {"frames": 80, "requests": [{"frame": 0, "play": "greet"}, {"frame": 4, "say": "A", "seconds": 1.0},
+                                                 {"frame": 14, "say": "B", "seconds": 0.5}]})
+    a, b = out["sounds"]["A"], out["sounds"]["B"]
+    t0 = out["frames"].index(["greet", 0, None])
+    assert t0 + tf.GREET_OWN_END < 14 < a["frame"] + a["frames"]
+    plan = player(root, {"scene": {"play": "greet", "levels": out["levels"]["A"]}})["scene"]
+    assert a["frame"] == t0 + plan["line_start"]
+    assert b["frame"] >= a["frame"] + a["frames"], (a, b)
+    assert out["frames"][t0:t0 + len(plan["frames"])] == shown(plan)
+    assert talks(out, pack, "A") and talks(out, pack, "B")
+
+
+@needs_node
+def test_a_line_whose_voice_loads_late_still_goes_before_the_line_asked_for_after_it(case):
+    """A request takes its place in the queue when it is made, not when its sound has loaded."""
+    root, pack = case
+    out = live(root, {"frames": 70, "requests": [{"frame": 1, "say": "A", "seconds": 0.6, "arrives": 6},
+                                                 {"frame": 2, "say": "B", "seconds": 0.5}]})
+    a, b = out["sounds"]["A"], out["sounds"]["B"]
+    assert a["frame"] > 6 and b["frame"] >= a["frame"] + a["frames"], (a, b)
+    assert talks(out, pack, "A") and talks(out, pack, "B")
+
+
+@needs_node
+def test_a_line_asked_for_right_after_a_clip_whose_sound_loads_late_is_said_after_its_own_mouth(case):
+    """As face-bake --play plans them: the clip and its own sound first, then the line where the layer comes on after
+    the span, though the line's voice was ready long before the clip's sound."""
+    root, pack = case
+    out = live(root, {"frames": 60, "sounds": {"greet": {"seconds": 0.5, "arrives": 5}},
+                      "requests": [{"frame": 0, "play": "greet"}, {"frame": 1, "say": "A", "seconds": 1.0}]})
+    t0 = out["frames"].index(["greet", 0, None])
+    plan = player(root, {"scene": {"play": "greet", "levels": out["levels"]["A"]}})["scene"]
+    assert out["sounds"]["greet"]["frame"] == t0 > 5
+    assert out["sounds"]["A"]["frame"] == t0 + plan["line_start"]
+    assert out["frames"][t0:t0 + len(plan["frames"])] == shown(plan)
+
+
+@needs_node
+def test_a_request_that_fails_rejects_and_the_next_goes_on(case):
+    """The queue drops nothing of its own accord: a line whose voice does not load rejects, and the line after it plays."""
+    root, pack = case
+    out = live(root, {"frames": 40, "requests": [{"frame": 1, "say": "A", "seconds": 0.5, "arrives": 3, "fails": True},
+                                                 {"frame": 2, "say": "B", "seconds": 0.5}]})
+    assert "A" not in out["sounds"] and "did not load" in out["settled"]["A"]["error"]
+    assert out["settled"]["B"]["error"] is None and talks(out, pack, "B")
 
 
 # --- the bake -----------------------------------------------------------------------------------------------------
