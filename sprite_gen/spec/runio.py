@@ -124,6 +124,12 @@ if fcntl is None and os.name == "nt":  # pragma: no cover - Windows-only backend
         _CloseHandle.restype = wintypes.BOOL
         _CloseHandle.argtypes = [wintypes.HANDLE]
         _WAIT_INFINITE, _WAIT_OWNED = 0xFFFFFFFF, (0x00000000, 0x00000080)  # WAIT_OBJECT_0, WAIT_ABANDONED
+        # 락 주인이 살았는지(`_pid_alive`)는 그 프로세스를 SYNCHRONIZE 로 열어 끝났는지 기다리지 않고 본다 — 신호를 보내지 않는다
+        _OpenProcess = _kernel32.OpenProcess
+        _OpenProcess.restype = wintypes.HANDLE
+        _OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        _SYNCHRONIZE, _WAIT_SIGNALED, _WAIT_TIMEOUT = 0x00100000, 0x00000000, 0x00000102
+        _ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER = 5, 87
         _LOCK_IMPL = "LockFileEx"
     except (ImportError, OSError, AttributeError):
         _LOCK_IMPL = None
@@ -333,6 +339,31 @@ def new_stage(out: Path, suffix: str) -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
+    """락 주인 `pid` 가 이 호스트에 살아 있나 — 그 프로세스에 아무것도 보내지 않고 본다. 있는지 알 수 없는 것을 죽었다고 읽지
+    않는다(거짓 '죽음'은 산 writer 의 락을 거둔다). POSIX 는 신호 0: 보내지 않고 찾기와 권한만 보며, 남의 프로세스(EPERM)는 살아
+    있다. Windows 의 os.kill 은 신호 0 을 CTRL_C_EVENT 로 GenerateConsoleCtrlEvent 에 넘긴다 — 같은 콘솔의 프로세스들에
+    Ctrl+C 가 가고(pid 0 이면 늘, 같은 콘솔의 다른 산 pid 면 늦게라도), 끝난 pid 에는 답 대신 OSError(WinError 87) 다. 그래서
+    쓰지 않고, 그 프로세스를 SYNCHRONIZE 로만 열어 끝났는지(신호 상태) 기다리지 않고 본다 — 없는 pid 는 열리지 않고
+    (ERROR_INVALID_PARAMETER) 죽은 것, 열 권한이 없는 것(시스템·남의 프로세스, ERROR_ACCESS_DENIED)은 살아 있는 것, 끝났지만
+    핸들이 남은 프로세스는 열려도 신호 상태라 죽은 것이다(docs/run-contract.md §7)."""
+    if os.name == "nt":  # pragma: no cover - Windows-only backend
+        if not 0 < pid <= 0xFFFFFFFF:  # Windows pid 는 DWORD 이고 0 은 유휴 프로세스다 — ctypes 는 그 밖의 값을 잘라 다른 pid 로 넘긴다
+            return False
+        handle = _OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == _ERROR_INVALID_PARAMETER:
+                return False
+            if error == _ERROR_ACCESS_DENIED:
+                return True
+            raise ctypes.WinError(error)
+        try:
+            state = _WaitForSingleObject(handle, 0)
+            if state not in (_WAIT_SIGNALED, _WAIT_TIMEOUT):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return state == _WAIT_TIMEOUT
+        finally:
+            _CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

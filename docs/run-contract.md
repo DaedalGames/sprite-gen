@@ -569,7 +569,11 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   it — same device, inode and content, and `release_run_dir_lock` withdraws that lock's exit
   cleanup — while making, reclaiming and removing the entry queue on a kernel lock on the run dir
   itself, so among sprite-gen processes on one host, on a file system that locks folders, neither a
-  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. Removing
+  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. A lock that
+  names its holder's pid is reclaimed only when that process has ended on this host, asked without
+  sending it anything: signal 0 on POSIX; on Windows, where `os.kill(pid, 0)` is `CTRL_C_EVENT` — a Ctrl+C to the
+  console — the process is opened only to see whether it has ended, and one that cannot be opened (a
+  system or another user's process) counts as alive, never as dead. Removing
   and holding belong to the process that made the entry: a hold is bound to the pid that took it, so a
   forked child never re-enters, releases or removes its parent's lock and is refused by it like any
   other writer. Where `os.register_at_fork` exists, a child forgets its parent's holds and exit
