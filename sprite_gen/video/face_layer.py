@@ -25,8 +25,9 @@ grown from (`Geometry`).
   meets it — the dark grey and black that reach in from the boundary (the headset's boom, the choker) and the lines
   drawn in the feather — its colour moved onto the reference's by the median over the feather.
 - **Keep** (`body_keep`): per body frame, what of the body stays on top of the layer: its own dark grey and black
-  reaching in from the boundary, its lines in the feather, and a hand (`hand_reach`): what differs from the reference
-  face and reaches in from outside the layer far into the face above the chin.
+  reaching in from the boundary (but not its own mouth, `own_mouth`, which a dark outline can join to the outside),
+  its lines in the feather, and a hand (`hand_reach`): what differs from the reference face and reaches in from
+  outside the layer far into the face above the chin.
 - **Lay** (`lay`): the body frame, the sprite over it through the frame's anchor (one `resample.transform_cell`,
   after one `resample.resize_cell` where the sprite is shrunk), then the keep over that. Both are plain source-over,
   so a live player draws the same with two `drawImage` calls; nothing outside the layer's weight changes.
@@ -330,16 +331,27 @@ def line_band(arr: np.ndarray, w: np.ndarray) -> np.ndarray:
     return soft_grow(m, LINE_GROW) if m.any() else np.zeros(w.shape, np.float32)
 
 
-def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom: Geometry) -> np.ndarray:
+def own_mouth(body_ref: np.ndarray, geom: Geometry) -> np.ndarray:
+    """A body frame's own mouth in reference coordinates: its mouth line or opening (`mouth_line`), filled (a tongue,
+    teeth) and grown 2 px. The layer replaces it: nothing of it stays on top but where a hand meets it."""
+    mouth = np.zeros(body_ref.shape[:2], bool)
+    line = mouth_line(body_ref, geom)
+    if line is not None:
+        x0, y0, x1, y1 = geom.mouth_box
+        mouth[y0:y1, x0:x1] = parts_mod._dilate(fill_holes(line), 2)
+    return mouth
+
+
+def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom: Geometry, mouth: np.ndarray) -> np.ndarray:
     """A hand over the face, in reference coordinates. What differs from the reference face (FOREIGN) is cut into
     pieces, and a piece that holds a pixel outside the layer reaches in from outside. The frame's own skin (light and
     warm: teeth and white streaks are not skin) is cut into pieces too, its drawn lines the walls: the piece that lies
     most on the reference's own lower face is the face; any other skin piece a reaching piece touches is the hand's (a
     palm, a finger, the sleeve under it), with the lines round it (HAND_GROW px of the reaching piece). It is a hand
     where HAND_MIN px or more of those skin pieces lie on the layer's flat part above the chin (`band_bottom`); grown
-    HAND_GROW px and feathered. A body's own mouth is not skin and is kept only where it meets a hand, and a skin piece
-    lying half or more in it (a tongue) is not a hand's; the face's own skin, however far its outline moves off the
-    reference's, is never a hand's."""
+    HAND_GROW px and feathered. A body's own mouth (`own_mouth`) is not skin and is kept only where it meets a hand,
+    and a skin piece lying half or more in it (a tongue) is not a hand's; the face's own skin, however far its outline
+    moves off the reference's, is never a hand's."""
     near = parts_mod._dilate(w0 > 0, HAND_GROW + FEATHER)
     ys, xs = np.nonzero(near)
     x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
@@ -358,13 +370,7 @@ def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom
         return np.zeros(w0.shape, np.float32)
     own = lower_face(reference, geom)[y0:y1, x0:x1]
     face = int(np.argmax(np.bincount(skin_lab[own & (skin_lab >= 0)], minlength=skin_sizes.size))) if (own & (skin_lab >= 0)).any() else -1
-    # the body's own mouth, filled: a tongue in it is light and warm too
-    mouth = np.zeros(w0.shape, bool)
-    line = mouth_line(body_ref, geom)
-    if line is not None:
-        mx0, my0, mx1, my1 = geom.mouth_box
-        mouth[my0:my1, mx0:mx1] = parts_mod._dilate(fill_holes(line), 2)
-    in_mouth = mouth[y0:y1, x0:x1]
+    in_mouth = mouth[y0:y1, x0:x1]  # a tongue is light and warm too
     touched = [j for j in np.unique(skin_lab[parts_mod._dilate(reaching, 2) & (skin_lab >= 0)])
                if j != face and (in_mouth & (skin_lab == j)).sum() * 2 < skin_sizes[j]]
     hand_skin = np.isin(skin_lab, touched)
@@ -626,10 +632,12 @@ def body_keep(body: np.ndarray, to_body: np.ndarray, w0: np.ndarray, reference: 
     back = np.linalg.inv(to_body)
     w_ell = warp(w0, back, size)
     w_ell[w_ell < 1e-4] = 0
-    held = dark_reach(body, w_ell)
-    lines = line_band(body, w_ell)
     body_ref = warp(body, to_body, (w0.shape[1], w0.shape[0]))
-    hand_ref = hand_reach(body_ref, reference, w0, geom)
+    mouth_ref = own_mouth(body_ref, geom)
+    mouth = warp(mouth_ref.astype(np.float32), back, size) if mouth_ref.any() else np.zeros(w_ell.shape, np.float32)
+    held = dark_reach(body, w_ell) * (1 - mouth)
+    lines = line_band(body, w_ell)
+    hand_ref = hand_reach(body_ref, reference, w0, geom, mouth_ref)
     hand = warp(hand_ref, back, size) if hand_ref.any() else np.zeros(w_ell.shape, np.float32)
     keep = np.maximum(np.maximum(held, lines), hand) * (w_ell > 0)
     return keep.astype(np.float32), {"dark_px": int((held > 0.5).sum()), "line_px": int((lines > 0.5).sum()),
