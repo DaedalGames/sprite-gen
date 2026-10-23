@@ -537,8 +537,7 @@ def _write_candidate(paths: dict[str, Path], out: Path, name: str, baseline: Loo
             indices, delay = playback.mapping(baseline)
             selected = [frames[k] for k in indices]
             save_clean_gif(selected, stage / names["gif"], duration_ms=delay, alpha_threshold=128)
-            write_webp(selected, stage / names["webp"], delay_ms=delay, workdir=stage / ".webp")
-            shutil.rmtree(stage / ".webp")
+            write_webp(selected, stage / names["webp"], delay_ms=delay)
         stage.rename(out)
     finally:
         if stage.exists():

@@ -25,6 +25,7 @@ from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, STRETCHES, con
                                      measure_insets)
 from sprite_gen._deps import np
 from sprite_gen.spec.assets import finite, load_asset, load_asset_states
+from sprite_gen.spec.runio import inside_folder, same_folder
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.util.console import utf8_streams
 
@@ -525,7 +526,7 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
         sources.update(paths)
     if not frames and not tile_files and not audio:
         raise ValueError("game pack request declares nothing to pack: give it an asset, a scene entry or a sound")
-    if any(path == out_dir or out_dir in path.parents for path in sources | {request}):
+    if any(same_folder(path, out_dir) or inside_folder(path, out_dir) for path in sources | {request}):
         raise ValueError("output directory must not contain any source file")
     result, payloads = _encode(_layout(frames, page_size) if frames else [], animations, max_bytes, sections, tile_files)
     if audio:

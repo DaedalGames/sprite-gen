@@ -312,9 +312,7 @@ def long_window(lo: int, n: int, fps: float) -> int:
 
 
 def write_frames(frames: list[Image.Image], names: list[str], work_dir: Path) -> list[Path]:
-    work_dir.mkdir(parents=True, exist_ok=True)
-    for old in work_dir.glob("*.png"):
-        old.unlink()
+    """`frames` saved under `names` into `work_dir`, a new empty folder of the run's own (video-loop's `_Scratch`)."""
     paths = []
     for name, frame in zip(names, frames):
         path = work_dir / name

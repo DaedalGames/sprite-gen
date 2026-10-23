@@ -45,7 +45,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
@@ -79,8 +79,9 @@ STEP_RATIO_MAX = 2.5
 # frame moved 2 px reads 0.057 drawn in colour and 0.021 drawn black.
 STEP_JITTER_PX = 1.5
 PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mean (flat profile = no repeat)
-# Where the gait fallback writes the frames it scaled back (removed once the strip is built).
-FALLBACK_FRAMES_DIR = ".gait-fallback-frames"
+# Where a size hold or the gait fallback writes the frames it scaled back: a folder of the run's own in the out dir,
+# `.gait-fallback-frames.<pid>-<random>` (`_Scratch`), removed however the run ends.
+FALLBACK_FRAMES = "gait-fallback-frames"
 GIF_FPS_DEFAULT = 24.0  # GIF/WebP playback density = the source rate: every cycle frame is kept, a fast action never looks slow (12 made a jump read sluggish, 2026-09-09)
 GIF_FRAMES_MIN = 4
 ONE_SHOT_MIN_CONTRAST = 3.0  # one-shot: the excursion peak must stand this far above the rest-pose noise (in MADs)
@@ -856,9 +857,11 @@ def img2webp_supports_exact(binary: str | None = None) -> bool:
     return "-exact" in (proc.stdout + proc.stderr)
 
 
-def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: Path, loop: int = 0) -> None:
+def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, loop: int = 0) -> None:
     """Animated WebP through libwebp's img2webp with -exact (Pillow's animated writer drops `exact`
-    and rewrites RGB under alpha 0 to white; measured 2026-09-08)."""
+    and rewrites RGB under alpha 0 to white; measured 2026-09-08). The frames reach img2webp as PNGs in a
+    folder of this call's own beside `out` (`runio.new_stage`: `.<out>.<pid>-<random>.frames`), removed once
+    it has run: a folder already there, an input's or another run's, is never written into or removed."""
     img2webp = shutil.which("img2webp")
     if not img2webp:
         raise SystemExit("video-loop: `img2webp` not found on PATH — install libwebp (brew install webp) for exact-alpha WebP")
@@ -867,13 +870,16 @@ def write_webp(frames: list[Image.Image], out: Path, *, delay_ms: int, workdir: 
             "video-loop: this img2webp has no `-exact` option (libwebp < 1.5; Ubuntu 24.04 ships 1.3.x) — "
             "install libwebp >= 1.5 (brew install webp, or the official binaries from storage.googleapis.com/downloads.webmproject.org)"
         )
-    workdir.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for k, im in enumerate(frames):
-        p = workdir / f"webp-{k:03d}.png"
-        im.save(p)
-        paths.append(str(p))
-    proc = subprocess.run([img2webp, "-loop", str(loop), "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
+    workdir = new_stage(out, ".frames")
+    try:
+        paths = []
+        for k, im in enumerate(frames):
+            p = workdir / f"webp-{k:03d}.png"
+            im.save(p)
+            paths.append(str(p))
+        proc = subprocess.run([img2webp, "-loop", str(loop), "-lossless", "-exact", "-d", str(delay_ms), *paths, "-o", str(out)], capture_output=True, text=True)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
     if proc.returncode != 0 or not out.is_file():
         raise SystemExit(f"video-loop: img2webp failed: {proc.stderr.strip()[:300]}")
 
@@ -933,7 +939,6 @@ def refuse(target: Path, out_dir: Path, name: str, report: dict[str, Any], *, cu
     read the exit code finds nothing to pass on, and write the report (`status: failed`). A cut this run wrote stays as
     `cycle.refused/`, in place of an earlier one."""
     out_dir = out_dir.expanduser().resolve()
-    shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
     shutil.rmtree(out_dir / CYCLE_REFUSED_DIR, ignore_errors=True)
     if cut_written:
         (out_dir / "cycle").rename(out_dir / CYCLE_REFUSED_DIR)
@@ -1636,10 +1641,52 @@ def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor:
     return wrap_blend_mod.apply(frames, pin, fps=fps, seam_max=seam_max)
 
 
-def run_loop(
+class _Scratch:
+    """The folders a run writes the frames a size hold or the gait fallback scaled back into: each a new one of the
+    run's own in the out dir (`runio.new_stage`: `.gait-fallback-frames.<pid>-<random>`), so a folder already there —
+    an input's, or another run's — is never written into or removed; `run_loop` removes them however the run ends."""
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = out_dir
+        self.made: list[Path] = []
+
+    def new(self) -> Path:
+        out = self.out_dir.expanduser().resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        self.made.append(new_stage(out / FALLBACK_FRAMES, ""))
+        return self.made[-1]
+
+    def remove(self) -> None:
+        for folder in self.made:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def _refuse_overlap(frames_dir: Path, files: list[Path], out_dir: Path, name: str, target: Path, report_given: bool) -> None:
+    """A cut never writes over, moves or deletes the frames it reads: `--frames-dir`, every frame found in it and every
+    link or folder their paths look up, against what the cut replaces in `--out-dir` (`handed_over`, `cycle.refused/`)
+    and its report (`runio.refuse_overlap`). Refused before a frame is read or anything is made. `--out-dir` itself is
+    not compared: a cut adds to it, and the clip's frames are often inside it (`video-frames`' `keyed/`)."""
+    out = out_dir.expanduser().resolve()
+    outputs = {f"{path.name} in --out-dir": path for path in (*handed_over(out, name), out / CYCLE_REFUSED_DIR)}
+    outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
+    refuse_overlap({"--frames-dir": frames_dir, **{f"{f.name} in --frames-dir": f for f in files}}, outputs, verb="video-loop")
+
+
+def run_loop(frames_dir: Path, out_dir: Path, **options: Any) -> dict[str, Any]:
+    """Cut the loop (`_cut_loop`, which takes the options). The frames a size hold or the gait fallback scales back
+    are written in folders of the run's own (`_Scratch`), removed however the run ends."""
+    scratch = _Scratch(out_dir)
+    try:
+        return _cut_loop(frames_dir, out_dir, scratch=scratch, **options)
+    finally:
+        scratch.remove()
+
+
+def _cut_loop(
     frames_dir: Path,
     out_dir: Path,
     *,
+    scratch: _Scratch,
     fps: float,
     state: str | None,
     min_len: int | None,
@@ -1717,10 +1764,13 @@ def run_loop(
         raise SystemExit("video-loop: --steps counts the steps in the cut --anchor motion-auto takes; pass --anchor motion-auto")
     if cycle_mode not in CYCLE_MODES:
         raise SystemExit(f"video-loop: unknown --cycle {cycle_mode!r}; expected one of {', '.join(CYCLE_MODES)}")
+    given = frames_dir
     frames_dir = frames_dir.expanduser().resolve()
     files = sorted(frames_dir.glob("*.png"))
     if len(files) < 6:
         raise SystemExit(f"video-loop: need at least 6 keyed frames in {frames_dir}, found {len(files)}")
+    target = (report_path or (out_dir / f"{name}.loop.report.json")).expanduser().resolve()
+    _refuse_overlap(given, files, out_dir, name, target, report_path is not None)
     prof = profile_for(state)
     n = len(files)
     # A walk or run may open on a lead-in (gait_fallback.lead_in): the video model reframing a small
@@ -1742,7 +1792,6 @@ def run_loop(
     clip_steps = [float(D[k, k + 1]) for k in range(n - 1)]
     masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
-    target = (report_path or (out_dir / f"{name}.loop.report.json")).expanduser().resolve()
     report_base = {
         "kind": "sprite-gen-video-loop-report", "frames_dir": str(frames_dir),
         "source": evidence_mod.source_identity(files, fps),
@@ -1781,7 +1830,7 @@ def run_loop(
                 if abs(measured["drift"]) >= gait_fallback.SIZE_HOLD_MIN:
                     pad = gait_fallback.undo_padding(source_frames, measured)
                     source_frames = gait_fallback.undo_scale(source_frames, measured, pad=pad)
-                    files = gait_fallback.write_frames(source_frames, [f.name for f in files], out_dir.expanduser().resolve() / FALLBACK_FRAMES_DIR)
+                    files = gait_fallback.write_frames(source_frames, [f.name for f in files], scratch.new())
                     hold.update(applied=True, padding_ltrb=list(pad))
                 report_base["size_hold"] = hold
             else:
@@ -1805,7 +1854,7 @@ def run_loop(
                 if abs(drift["drift"]) >= gait_fallback.SCALE_DRIFT_MIN:
                     fallback["padding_ltrb"] = list(gait_fallback.undo_padding(source_frames, drift))
                     source_frames = gait_fallback.undo_scale(source_frames, drift, pad=tuple(fallback["padding_ltrb"]))
-                    files = gait_fallback.write_frames(source_frames, [f.name for f in files], out_dir.expanduser().resolve() / FALLBACK_FRAMES_DIR)
+                    files = gait_fallback.write_frames(source_frames, [f.name for f in files], scratch.new())
                     D, trajectory, analysis = auto_motion.analyse(source_frames, fps=fps)
                     report_base["automatic_motion_analysis"] = analysis
                     fallback["scale_undone"] = True
@@ -2152,8 +2201,6 @@ def run_loop(
                                 "samples": [i + k for k in strip_meta["sample_indices"]]}
     if cycle["kind"] in nonloop.KINDS:
         strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"]))
-    # The scaled-back frames are read for the last time above; the cycle cells keep them.
-    shutil.rmtree(out_dir / FALLBACK_FRAMES_DIR, ignore_errors=True)
     if state:
         # `video-cycle-align` reads the gait floor of this state when it screens a loop for two cycles.
         strip_meta["state"] = str(state).strip().lower()
@@ -2312,8 +2359,7 @@ def run_loop(
     try:
         save_clean_gif(gif_pick, gif_path, duration_ms=delay_ms, loop=None if single_play else 0,
                        alpha_threshold=128, opaque=gif_background is not None)
-        write_webp(pick, webp_path, delay_ms=delay_ms, workdir=out_dir / ".webp-frames", **({"loop": 1} if single_play else {}))
-        shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
+        write_webp(pick, webp_path, delay_ms=delay_ms, **({"loop": 1} if single_play else {}))
         # A filmed ghost given way to the frame beside it is that frame shown twice in a row: one frame of the GIF or WebP
         shown = shown_runs(pick)
         gif_report = verify_animation(gif_path, expect_frames=shown_runs(gif_pick), check_stale=False,
@@ -2322,7 +2368,6 @@ def run_loop(
         webp_report = verify_animation(webp_path, expect_frames=shown, check_stale=True, **({"expected_loop": 1} if single_play else {}))
     except SystemExit as exc:
         # The GIF or WebP could not be written (no img2webp) or failed its verification: nothing of the cut is handed over.
-        shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
         refuse(target, out_dir, name, {**report_base, "status": "failed", "error": str(exc), "cycle": cycle}, cut_written=True)
         raise
 

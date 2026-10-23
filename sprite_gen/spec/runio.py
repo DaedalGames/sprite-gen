@@ -23,11 +23,12 @@ example Claude Code and the Codex app driving the skill in parallel):
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
   set of files that only makes sense published together (a sheet, its manifest,
   and the report naming it).
-- `same_folder()` / `inside_folder()` / `follow_path()` / `new_stage()` — a writer
-  never writes into, moves or deletes its inputs: inputs and outputs are compared
-  by real path and file identity before anything is made — an input by every
-  entry its path looks up, not only by where it ends — and a staging folder is a
-  new one of the run's own, the only thing beside the output a run deletes.
+- `same_folder()` / `inside_folder()` / `follow_path()` / `refuse_overlap()` /
+  `new_stage()` — a writer never writes into, moves or deletes its inputs: inputs
+  and outputs are compared by real path and file identity before anything is
+  made — an input by every entry its path looks up, not only by where it ends —
+  and a staging or working folder is a new one of the run's own, the only thing
+  beside the output a run deletes.
 
 `curation.json` is intentionally NOT under this pipeline write lock: the curation
 surface writes it with the same atomic replace, and the compose scripts read one
@@ -53,7 +54,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path, PurePath
 from typing import NamedTuple
 
@@ -316,6 +317,45 @@ def follow_path(path: Path) -> tuple[list[Path], Path]:
         else:
             todo.extend(reversed(target.parts))
     return looked, reached
+
+
+def follow_input(flag: str, given: Path, *, verb: str | None = None) -> tuple[list[Path], Path]:
+    """`follow_path` of an input named `flag`: a path that cannot be followed (a link loop) is refused by name
+    (SystemExit, prefixed with `verb`) before anything is made."""
+    try:
+        return follow_path(given)
+    except OSError as exc:
+        raise SystemExit(f"{verb + ': ' if verb else ''}{flag} cannot be followed: {exc.filename}: {exc.strerror}") from None
+
+
+def refuse_overlap(inputs: Mapping[str, Path | None], outputs: Mapping[str, Path], *, holds: Collection[str] = (),
+                   replaces: str = "the run replaces it", verb: str | None = None) -> None:
+    """입력을 쓰거나 옮기거나 지울 배치를 만들기 전에 거절한다(SystemExit, 문구 앞에 `verb`). `inputs` 는 이름 → 받은
+    경로(None 은 건너뜀), `outputs` 는 이름 → 이 실행이 갈아 끼우거나 지우는 항목(파일이나 폴더 — 출력이 더해지기만
+    하는 폴더는 넣지 않는다). 입력마다 `follow_path` 로 따라가, 닿은 실경로가 출력과 같거나(덮어씀), 출력 안에
+    들거나(지움), 찾아본 항목 가운데 하나가 출력 안에 들면(그 항목이 지워져 길이 끊기거나 링크 너머가 지워짐)
+    거절한다. `holds` 에 이름이 든 출력은 입력 안에 들어도 거절한다(입력 안에 씀). 실경로와 장치·inode 로 보므로
+    링크와 대소문자를 가리지 않는 볼륨의 다른 철자도 같은 항목이다. 한 번의 호출 안에서 이미 본 항목은 다시 재지
+    않는다(찾은 입력이 많아도 공통 조상은 한 번). 따라갈 수 없는 입력(링크 고리)은 이름을 대며 거절한다."""
+    say = f"{verb}: " if verb else ""
+    looked_at: set[Path] = set()
+    for flag, given in inputs.items():
+        if given is None:
+            continue
+        looked, path = follow_input(flag, Path(given).expanduser(), verb=verb)
+        fresh = [entry for entry in looked if entry not in looked_at]
+        looked_at.update(fresh)
+        for out, place in outputs.items():
+            if same_folder(path, place):
+                kind = "folder" if path.is_dir() else "file"
+                raise SystemExit(f"{say}{flag} and {out} are the same {kind}: {path} (an input is never overwritten)")
+            if inside_folder(path, place):
+                raise SystemExit(f"{say}{flag} lies inside {out}: {path} ({replaces}, never an input)")
+            through = next((entry for entry in fresh if inside_folder(entry, place)), None)
+            if through is not None:
+                raise SystemExit(f"{say}{flag} goes through {through}, inside {out} ({replaces}, never an input)")
+            if out in holds and inside_folder(place, path):
+                raise SystemExit(f"{say}{out} lies inside {flag}: {place} (a run is never written into its input)")
 
 
 def new_stage(out: Path, suffix: str) -> Path:

@@ -72,7 +72,7 @@ from sprite_gen.frames.decontam import palette_from_stats
 from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split, _painted_key_leans
 from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.console import utf8_streams
 
 EDGE_ROWS = 4  # rows/cols inspected at each edge
@@ -433,13 +433,25 @@ def refused_dir(keyed_dir: Path) -> Path:
 
 
 def _withdraw(keyed_dir: Path) -> Path:
-    """Take back what an earlier run handed over, and give this run an empty working folder (returned): until this
-    run passes, `keyed_dir` holds nothing."""
-    work = keyed_dir.with_name(f".{keyed_dir.name}.work")
+    """Take back what an earlier run handed over, and give this run an empty working folder of its own beside it
+    (`runio.new_stage`: `.keyed.<pid>-<random>.work`, returned; a folder already there, an input's or another
+    run's, is never touched): until this run passes, `keyed_dir` holds nothing."""
     shutil.rmtree(keyed_dir, ignore_errors=True)
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
-    return work
+    keyed_dir.parent.mkdir(parents=True, exist_ok=True)
+    return new_stage(keyed_dir, ".work")
+
+
+def _refuse_overlap(clip: Path, reference: Path | None, out_dir: Path, target: Path, report_given: bool,
+                    receipt: Path | None) -> None:
+    """A run never writes over, moves or deletes what it reads: `--clip` and `--reference`, each with every link or
+    folder its path looks up, against what it replaces in `--out-dir` (`raw/`'s frames, `keyed/`, `keyed.refused/`),
+    its report and its source manifest (`runio.refuse_overlap`). Refused before anything is made."""
+    out = out_dir.expanduser().resolve()
+    outputs = {f"{n.name} in --out-dir": n for n in (out / "raw", out / "keyed", refused_dir(out / "keyed"))}
+    outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
+    if receipt is not None:
+        outputs["--source-manifest"] = Path(receipt).expanduser().resolve()
+    refuse_overlap({"--clip": clip, "--reference": reference}, outputs, verb="video-frames")
 
 
 def key_frames(
@@ -681,11 +693,11 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if source_manifest is not None and reference is None:
         raise SystemExit("video-frames: --source-manifest needs --reference (the source canvas)")
+    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
     if source_manifest is not None:
-        target = (report_path or out_dir / "frames.report.json").expanduser().resolve()
+        # Two of the run's own outputs, new paths both: what an input may be is `_refuse_overlap`'s.
         receipt = Path(source_manifest).expanduser().resolve()
-        if (receipt in (target, clip.expanduser().resolve(), Path(reference).expanduser().resolve())
-                or receipt.is_relative_to((out_dir / "keyed").expanduser().resolve())
+        if (receipt == target or receipt.is_relative_to((out_dir / "keyed").expanduser().resolve())
                 or receipt.is_relative_to((out_dir / "raw").expanduser().resolve())):
             raise SystemExit("video-frames: source manifest cannot overwrite source files or report")
     if spill not in SPILL_MODES:
@@ -694,13 +706,14 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
         raise SystemExit("video-frames: --spill auto needs --reference (the still the clip was made from)")
     if decontam not in DECONTAM_MODES:
         raise SystemExit(f"video-frames: unknown --decontam {decontam!r}; expected one of {', '.join(DECONTAM_MODES)}")
+    given = clip
     clip = clip.expanduser().resolve()
     if not clip.is_file():
         raise SystemExit(f"video-frames: clip not found: {clip}")
+    _refuse_overlap(given, reference, out_dir, target, report_path is not None, source_manifest)
     out_dir = out_dir.expanduser().resolve()
     raw_dir = out_dir / "raw"
     keyed_dir = out_dir / "keyed"
-    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
     # From here the run reads the clip: an earlier run's keyed frames are no longer handed over (`key_frames`).
     shutil.rmtree(keyed_dir, ignore_errors=True)
     meta = probe(clip)

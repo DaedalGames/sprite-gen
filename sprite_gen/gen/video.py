@@ -58,7 +58,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import prompt_parts, refusal, retry
 from .base import announce_api_billing, print_json
@@ -817,6 +817,8 @@ def _validate_extend(request: ExtendRequest, *, probe: Callable[[Path], float]) 
         )
     clip = request.video.expanduser().resolve()
     _require_mp4_clip(clip, verb="video-extend")
+    # The result is published over `--out`: the clip it continues is never that file (it would be replaced).
+    refuse_overlap({"--video": request.video}, {"--out": request.out.expanduser().resolve()}, verb="video-extend")
     seconds = probe(clip)
     low, high = EXTEND_INPUT_SECONDS
     if not (low <= seconds <= high + EXTEND_INPUT_SLACK_SECONDS):
@@ -886,6 +888,8 @@ def _validate_edit(request: EditRequest, *, probe: Callable[[Path], float]) -> f
         raise SystemExit(f"video-edit: only the classic {CLASSIC_MODEL} supports editing (the API answers 400 for {request.model})")
     clip = request.video.expanduser().resolve()
     _require_mp4_clip(clip, verb="video-edit")
+    # The result is published over `--out`: the clip it edits is never that file (it would be replaced).
+    refuse_overlap({"--video": request.video}, {"--out": request.out.expanduser().resolve()}, verb="video-edit")
     seconds = probe(clip)
     if seconds > EDIT_INPUT_MAX_SECONDS:
         raise SystemExit(

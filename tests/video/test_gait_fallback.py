@@ -146,7 +146,7 @@ def test_a_clip_the_first_search_cuts_is_cut_without_the_fallback(tmp_path):
     assert code == 0
     assert report['cycle']['length'] == 24
     assert 'gait_fallback' not in report
-    assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
     # A clip that keeps its size is not held.
     assert report['size_hold']['applied'] is False
     assert abs(report['size_hold']['drift']) < gait_fallback.SIZE_HOLD_MIN
@@ -163,7 +163,7 @@ def test_a_cycle_longer_than_half_the_clip_is_found_by_the_fallback(tmp_path):
     assert 'no periodic cycle found' in fallback['reason']
     assert fallback['scale_undone'] is False
     assert fallback['window'] == [12, gait_fallback.long_window(12, 73, 24.0)]
-    assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
 
 
 @pytest.mark.slow
@@ -179,7 +179,7 @@ def test_a_walk_toward_the_camera_is_held_at_its_size_before_the_first_search(tm
     cells = sorted((output/'cycle').glob('frame-*.png'))
     heights = gait_fallback.subject_boxes([Image.open(p).convert('RGBA') for p in cells])
     assert np.ptp(heights[:, 3]-heights[:, 1]) <= 6
-    assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
 
 
 @pytest.mark.slow
@@ -315,7 +315,7 @@ def test_a_walk_toward_the_camera_is_scaled_back_before_the_second_search(tmp_pa
     heights = heights[:, 3]-heights[:, 1]
     # Filmed, the cycle grows by about 6 %; scaled back, it keeps the walker's own bob only.
     assert np.ptp(heights) <= 6
-    assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
 
 
 @pytest.mark.slow
@@ -325,7 +325,7 @@ def test_no_cycle_in_either_search_says_so_and_keeps_the_gate_line(tmp_path):
     assert str(code).startswith('video-loop: no periodic cycle found')
     assert 'also with the gait fallback' in str(code)
     assert report['status'] == 'failed' and report['gait_fallback']['scale_undone'] is False
-    assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
 
 
 @pytest.mark.parametrize('n, fps, expected', [(73, 24.0, 43), (145, 24.0, 48), (37, 24.0, 22)])

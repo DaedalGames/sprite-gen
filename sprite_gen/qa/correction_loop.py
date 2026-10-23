@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.qa import inspect as inspect_mod
 from sprite_gen.qa import score as score_mod
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import LOCK_FILENAME, atomic_write_text, refuse_overlap, relative_posix, same_folder
 from sprite_gen.util.console import utf8_streams
 
 
@@ -32,12 +34,41 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _copy_run_dir(source: Path, target: Path) -> None:
+def _skipped_by_copy(out_dir: Path) -> Callable[[Path], bool]:
+    """What the best candidate's copy of a run dir leaves out: its lock, `__pycache__`, and the loop's out dir where
+    it lies in the run dir, as the default one does (the copy would copy itself into itself). A link to the out dir
+    is not left out: it is an input that reaches the loop's own output, refused before the loop starts."""
+    return lambda path: (path.name in (LOCK_FILENAME, "__pycache__")
+                         or (not path.is_symlink() and same_folder(path, out_dir)))
+
+
+def _links_copied(source: Path, skipped: Callable[[Path], bool]) -> list[Path]:
+    """Every link in `source` the copy follows (`shutil.copytree` reads a linked file's bytes and a linked folder's
+    content), the linked folders walked too, as found there: what the copy reads beside the run dir's own entries."""
+    links: list[Path] = []
+    todo, walked = [source], set()
+    while todo:
+        with os.scandir(todo.pop()) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if skipped(path):
+                    continue
+                if entry.is_symlink():
+                    links.append(path)
+                if entry.is_dir():
+                    folder = entry.stat()
+                    if (folder.st_dev, folder.st_ino) not in walked:  # a folder linked twice, or a link loop, once
+                        walked.add((folder.st_dev, folder.st_ino))
+                        todo.append(path)
+    return links
+
+
+def _copy_run_dir(source: Path, target: Path, skipped: Callable[[Path], bool]) -> None:
     if target.exists():
         shutil.rmtree(target)
 
-    def ignore(_dir: str, names: list[str]) -> set[str]:
-        return {name for name in names if name == ".sprite-gen.lock" or name == "__pycache__"}
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        return {name for name in names if skipped(Path(folder) / name)}
 
     shutil.copytree(source, target, ignore=ignore)
 
@@ -63,8 +94,16 @@ def run_loop(
         raise SystemExit("--max-passes must be at least 1")
     if min_attempts < 1 or min_attempts > max_passes:
         raise SystemExit("--min-attempts must be between 1 and --max-passes")
+    given = run_dir
     run_dir = run_dir.expanduser().resolve()
     out_dir = (out_dir or (run_dir / "correction-loop")).expanduser().resolve()
+    # The loop never writes over, moves or deletes the run it reads: the run dir, and every link its copy follows
+    # (each with every link or folder its path looks up), is never the out dir or inside it. The out dir may lie in
+    # the run dir (the default does): it is added to it, and the copy leaves it out.
+    skipped = _skipped_by_copy(out_dir)
+    found = _links_copied(run_dir, skipped) if run_dir.is_dir() else []
+    refuse_overlap({"--run-dir": given, **{f"{relative_posix(p, run_dir)} in --run-dir": p for p in found}},
+                   {"--out-dir": out_dir}, replaces="the loop writes its attempts and best candidate there")
     out_dir.mkdir(parents=True, exist_ok=True)
     attempts: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None
@@ -125,7 +164,7 @@ def run_loop(
     preserved_best = None
     if preserve_best:
         preserved = out_dir / "best-candidate"
-        _copy_run_dir(Path(best["run_dir"]), preserved)
+        _copy_run_dir(Path(best["run_dir"]), preserved, skipped)
         preserved_best = str(preserved)
     result = {
         "ok": bool(attempts and attempts[-1]["ok"] and float(attempts[-1]["overall_score"]) >= pass_score),

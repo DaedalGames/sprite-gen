@@ -56,7 +56,7 @@ def damage(im, zoom=1):
 
 def exports(paths, fs, delay=42):
     save_clean_gif(fs, paths['gif'], duration_ms=delay, alpha_threshold=128)
-    loop.write_webp(fs, paths['webp'], delay_ms=delay, workdir=paths['webp'].parent/'webp-temp')
+    loop.write_webp(fs, paths['webp'], delay_ms=delay)
 
 
 def cleaned(frame):
@@ -276,7 +276,7 @@ def test_actual_playback_mismatch_and_byte_hashes(case,tmp_path):
     paths=outputs(r)
     # Same strip, differently timed WebP: even a rewritten receipt is rejected.
     c,_=restoration.read_loop(paths)
-    loop.write_webp(c.frames,paths['webp'],delay_ms=60,workdir=tmp_path/'bad-webp')
+    loop.write_webp(c.frames,paths['webp'],delay_ms=60)
     c,_=restoration.read_loop(paths); r['candidate_artifacts']=c.artifacts
     assert compare_result(case,r)['verdict']=='unknown'
     for key,p in paths.items(): assert c.artifacts[key]['sha256']==evidence.digest(p.read_bytes())

@@ -41,12 +41,11 @@ from sprite_gen.spec.runio import (
     acquire_run_dir_lock,
     atomic_save_image,
     atomic_write_text,
-    follow_path,
-    inside_folder,
+    follow_input,
     new_stage,
     publish_guard,
+    refuse_overlap,
     relative_posix,
-    same_folder,
 )
 from sprite_gen.frames.segment import mask_components
 from sprite_gen.util.console import utf8_streams
@@ -374,15 +373,6 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
             "base_source": base_out_name, "imported_refs": imported_refs_manifest}
 
 
-def _follow(flag: str, given: Path) -> tuple[list[Path], Path]:
-    """`runio.follow_path` of an input: every entry its path looks up and the real path it reaches. A path that
-    cannot be followed (a link loop) is refused by name before anything is made."""
-    try:
-        return follow_path(given)
-    except OSError as exc:
-        raise SystemExit(f"{flag} cannot be followed: {exc.filename}: {exc.strerror}") from None
-
-
 def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
     """An input is never written, moved or deleted. Refused before anything is made: an input that is
     the run dir (the run would replace it), lies inside it or goes through anything inside it (a --force
@@ -390,26 +380,9 @@ def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
     path through it breaks), or holds it (the run would be written into the input). An input is followed
     the way the system opens it (`runio.follow_path`): every link and folder its path looks up, a folder a
     later `..` leaves again included. Read by real path and file identity, so a link, or a second spelling
-    on a case-insensitive volume, is the same folder."""
-    looked_at: set[Path] = set()
-    for flag, given in inputs.items():
-        if given is None:
-            continue
-        looked, path = _follow(flag, Path(given).expanduser())
-        if same_folder(path, out_dir):
-            kind = "folder" if path.is_dir() else "file"
-            raise SystemExit(f"{flag} and --out-dir are the same {kind}: {path} (an input is never overwritten)")
-        if inside_folder(path, out_dir):
-            raise SystemExit(f"{flag} lies inside --out-dir: {path} "
-                             "(--force replaces the run dir's content, never an input)")
-        fresh = [entry for entry in looked if entry not in looked_at]
-        looked_at.update(fresh)
-        through = next((entry for entry in fresh if inside_folder(entry, out_dir)), None)
-        if through is not None:
-            raise SystemExit(f"{flag} goes through {through}, inside --out-dir "
-                             "(--force replaces the run dir's content, never an input)")
-        if inside_folder(out_dir, path):
-            raise SystemExit(f"--out-dir lies inside {flag}: {out_dir} (a run is never written into its input)")
+    on a case-insensitive volume, is the same folder (`runio.refuse_overlap`, the judgment every writer calls)."""
+    refuse_overlap(inputs, {"--out-dir": out_dir}, holds=("--out-dir",),
+                   replaces="--force replaces the run dir's content")
 
 
 def _found_inputs(src: Path, groups: list[dict[str, Any]], *files: Path | None) -> dict[str, Path]:
@@ -514,13 +487,13 @@ def _run(args: argparse.Namespace):
         out_dir = args.out_dir.expanduser().resolve()
     else:
         if args.pngs_dir:
-            _, base = _follow("--pngs-dir", args.pngs_dir.expanduser())
+            _, base = follow_input("--pngs-dir", args.pngs_dir.expanduser())
             out_dir = base.parent / f"{base.name}-curator"
         elif args.atlas:
-            _, base = _follow("--atlas", args.atlas.expanduser())
+            _, base = follow_input("--atlas", args.atlas.expanduser())
             out_dir = base.parent / f"{base.stem}-curator"
         elif args.manifest:
-            _, base = _follow("--manifest", args.manifest.expanduser())
+            _, base = follow_input("--manifest", args.manifest.expanduser())
             out_dir = base.parent / f"{base.stem}-curator"
         else:
             raise SystemExit("need one of --pngs-dir / --atlas / --manifest (or pass --out-dir)")
