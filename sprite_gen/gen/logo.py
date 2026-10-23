@@ -11,11 +11,13 @@ materials and light. So a logo is made in three steps:
 2. **lettering** — that picture as the reference of an edit asking for only its lettering,
    the same letterforms, materials and effects, on a flat chroma key (`gen --ref`). The key
    is chosen from the title's colours in the mood image (the box its text check finds) unless
-   `--chroma-key` names one.
+   `--chroma-key` names one: never a key whose hue is one of the title's colours, and a title
+   in both keys' hues is refused here, before the lettering is bought.
 3. **matte** — the key removed by the logo matte (`frames.logo_matte`: soft glows and partial
-   alpha kept, no key hue left), trimmed to the lettering. The logo's text is read again on a
-   plain backdrop; letters that differ from the text asked are refused and the cut is kept
-   aside as `logo.rejected.png`.
+   alpha kept, no key hue left), trimmed to the lettering. A cut see-through inside its
+   letters (a colour of theirs in the key's hue, cut as a mix with it) is refused. The logo's
+   text is read again on a plain backdrop; letters that differ from the text asked are refused.
+   A refused cut is kept aside as `logo.rejected.png`.
 
 Nothing in this path draws a font. A step that cannot be done fails; it is never replaced.
 Every call is listed in the report with the route it ran on (a subscription login, or a
@@ -67,6 +69,13 @@ MOOD_READ_PROMPT = READ_PROMPT[:-1] + (
     "of the image's width or height from 0 to 1."
 )
 REFUSED = ("mismatch", "no-text")  # the verdicts a text check refuses on
+# Colour words a brief may name, per key whose hue the colour is (`logo_matte.key_hued` of its usual value; teal, cyan
+# and lavender are not): a colour the style or scene names is looked for in the title's box at a smaller share
+# (`logo_matte.choose_key`).
+KEY_COLOUR_WORDS = {
+    "green": ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
+    "magenta": ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
+}
 # How many readings one text check may take: a reading that would refuse is read again, up to this many, and one
 # that spells the text passes (docs/logo.md, the text check).
 MAX_READS = 2
@@ -194,6 +203,17 @@ def parse_answer(answer: str) -> tuple[list[str] | None, list[float] | None]:
     return lines, [float(v) for v in box] if box else None
 
 
+def named_colours(*texts: str | None) -> dict[str, list[str]]:
+    """The colour words of each key's hue the brief names (`KEY_COLOUR_WORDS`, a plural or an -ish or -y
+    ending kept), in the order written."""
+    brief = " ".join(text for text in texts if text)
+    found = {}
+    for key, words in KEY_COLOUR_WORDS.items():
+        pattern = re.compile(rf"\b(?:{'|'.join(words)})(?:e?s|ish|y)?\b", re.IGNORECASE)
+        found[key] = list(dict.fromkeys(match.group(0).lower() for match in pattern.finditer(brief)))
+    return found
+
+
 def route_of(auth_source: str | None) -> str:
     """Which way a call was paid: on a subscription login, or a per-call API charge."""
     if auth_source in SUBSCRIPTION_AUTH:
@@ -248,6 +268,18 @@ def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | No
 def _reads(check: dict[str, Any]) -> str:
     """What a refused check's readings spelled, in order: "['IO']", or "['IO'] and then ['I0']"."""
     return " and then ".join(repr(reading["read"]) for reading in check["readings"] if "read" in reading)
+
+
+def _in_hue(choice: dict[str, Any], *keys: str) -> str:
+    """Where the key was chosen and how much of it is in each key's hue, with the brief's words for it: "the
+    title's box in the mood image is 8.0 % green-hued (the brief names mint)"."""
+    where = "the title's box in the mood image" if choice["region"] == "lettering-box" else "the mood image"
+    shares = []
+    for key in keys:
+        score = choice["scores"][key]
+        named = f" (the brief names {', '.join(score['named'])})" if score["named"] else ""
+        shares.append(f"{score['hued_pct']:.1f} % {key}-hued{named}")
+    return f"{where} is {' and '.join(shares)}"
 
 
 def _call(step: str, provider: str, details: dict[str, Any], elapsed: float | None = None) -> dict[str, Any]:
@@ -416,9 +448,18 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
 
     # 2. lettering
     with Image.open(files["mood.png"]) as mood_image:
-        choice = logo_matte.choose_key(mood_image, check.get("box"))
+        choice = logo_matte.choose_key(mood_image, check.get("box"), named_colours(style, scene))
     key = choice["key"] if chroma_key == "auto" else chroma_key
     report["steps"]["key"] = {**choice, "key": key, "source": "auto" if chroma_key == "auto" else "explicit"}
+    if key is None:
+        raise _Refusal("key", f"logo: the title's colours carry both keys' hues — "
+                       f"{_in_hue(choice, 'green', 'magenta')}; a letter in the key's hue comes out see-through on "
+                       "it, and there is no third key. Restyle the title without one of them, or name the key to lose "
+                       f"with --chroma-key (--mood {files['mood.png']} skips the mood image; the lettering was not "
+                       "bought)")
+    if chroma_key != "auto" and choice["scores"][key]["clashes"]:
+        warn(f"the {key} key named is one of the title's colours ({_in_hue(choice, key)}): its letters in that hue "
+             "come out see-through")
     prompt = lettering_prompt(text, subtitle=subtitle, composition=composition, language=language, key=key)
     result = gen_pkg.generate_image(provider, prompt, work / "lettering.png", refs=[files["mood.png"]],
                                     model=model, aspect_ratio=ratio, quality=quality, resolution=resolution,
@@ -450,13 +491,24 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
     report["steps"]["matte"] = stats
     report["steps"]["trim"] = trim_stats
     cover = logo_matte.coverage(logo)
-    report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key)}
+    inside = logo_matte.see_through_inside(logo)
+    report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key),
+                      "see_through_inside": inside}
+    other = "green" if key == "magenta" else "magenta"
     if cover["visible_opaque_share"] < logo_matte.SEE_THROUGH_WARN_SHARE:
-        other = "green" if key == "magenta" else "magenta"
         warn(f"only {cover['visible_opaque_share'] * 100:.0f}% of the visible lettering is opaque; if the letters "
              f"are drawn in the {key} key's colour, run again with --chroma-key {other}")
     _publish(logo_matte.preview(logo), files["logo.preview.png"])
     report["files"]["preview"] = str(files["logo.preview.png"])
+    if inside["wide"] and stats["method"] == "logo-unmix":
+        _publish(logo, files["logo.rejected.png"])
+        report["files"]["rejected"] = str(files["logo.rejected.png"])
+        again = f" --mood {files['mood.png']}" if files["mood.png"].is_file() else ""
+        raise _Refusal("matte", f"logo: the logo is see-through inside its letters ({inside['pct_of_visible']:.1f} % "
+                       "of the visible lettering, walled in by opaque letters) — a colour of the letters is in the "
+                       f"{key} key's hue and was cut as a mix with it; kept aside as {files['logo.rejected.png'].name} "
+                       f"(see {files['logo.preview.png'].name}). Generate the lettering again on the other key "
+                       f"(--chroma-key {other}{again}), or restyle the title without that colour")
     reading = work / "logo-read.png"
     _publish(logo_matte.reading_backdrop(logo), reading)
     check, calls = read_text(backend, reading, work, text, subtitle)
@@ -506,8 +558,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                                                        "again: nothing is generated (its text is still read)")
     parser.add_argument("--chroma-key", choices=KEY_CHOICES, default="auto",
                         help="the key the lettering is redrawn on; auto (default) picks it from the title's colours "
-                             "in the mood image (the box its text check finds): the key no letter shares and a glow "
-                             "keeps the hue of longest. With --lettering, auto reads the key off its border")
+                             "in the mood image (the box its text check finds): never a key whose hue is one of the "
+                             "title's colours (a title in both is refused before the lettering is bought), else the "
+                             "key a glow keeps the hue of longest. With --lettering, auto reads the key off its border")
     parser.add_argument("--provider", choices=gen_pkg.PROVIDERS, default=None,
                         help="generation backend for both images and both text checks; resolved as `gen` resolves "
                              "it (openai only when chosen: it bills per call)")
