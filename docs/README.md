@@ -26,7 +26,7 @@ flowchart LR
     end
     subgraph D["D · post-processing"]
         direction LR
-        d1[recolor] ~~~ d2[compose-layers] ~~~ d3["breathe (compose)"] ~~~ d4[export-*]
+        d1[recolor] ~~~ d2["breathe (compose)"] ~~~ d3[export-*]
     end
     subgraph E["E · asset tools (independent)"]
         e1[background-tile] ~~~ e2[shadow] ~~~ e3[inspect-motion]
@@ -42,7 +42,7 @@ flowchart LR
 | **A · atlas rows** — one still becomes a runtime sprite sheet | [run-contract.md](run-contract.md) | `prepare` → `gen` / `gen-set` → `extract` → `compose-atlas`; optional `curation` and recompose |
 | **B · video → loop** — one still becomes transparent motion loops | [video-pipeline.md](video-pipeline.md) | `video-canvas` → `video` (or `video-prompt` and a video MCP on your agent) → `video-frames` → `video-loop`, `video-set`, `video-cycle-align`, `video-sway`, the Sway layer (`video-sway-inspect` shows every cell of it and moves nothing; old names `video-follow`, `video-follow-inspect`), `video-set-sheet` (a set's directions on one sheet, on one ground line), `video-stop` (a walk or run that stops, from the clip's own start played backwards); `handed-check` for an item on one side |
 | **C · utilities** — imported images in, clean cuts out | [sheet-slicing.md](sheet-slicing.md) | `cutout`, `slice-sheet`, `ui-kit`, `unpack-atlas` |
-| **D · post-processing** — finished sheets, refined | [recolor.md](recolor.md) | `recolor`, `recolor-palette`, `compose-layers`, breathing (compose, or `breathe` on a folder of frames), `export-pngs`, `export-aseprite` |
+| **D · post-processing** — finished sheets, refined | [recolor.md](recolor.md) | `recolor`, `recolor-palette`, breathing (compose, or `breathe` on a folder of frames), `export-pngs`, `export-aseprite` |
 | **E · asset tools** — independent background, shadow and motion tools | [asset-tools.md](asset-tools.md) | `background-tile`, `shadow`, `inspect-motion` |
 | **S · scene** — optional composition of existing assets | [scene.md](scene.md) | `scene-render`, `scene-inspect` |
 
@@ -103,7 +103,6 @@ grouping is derived from `sprite_gen/_modules.py`, the one taxonomy table.
 | Doc | Owns |
 |---|---|
 | [recolor.md](recolor.md) | Deterministic palette-swap bake, colourway pick, `variants/` and its report |
-| [layer-tracks.md](layer-tracks.md) | Rig runs: `rig` / `track` / `layers` contract and `compose-layers` |
 | [engine-export.md](engine-export.md) | Aseprite-compatible export for Phaser and Flame |
 | [`game-pack`](game-pack.md) | Compile sprite assets into deterministic multi-page texture atlases and manifests. |
 
