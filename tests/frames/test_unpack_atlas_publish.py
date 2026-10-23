@@ -8,7 +8,8 @@
      `.<out>.sg-staging` 은 그대로 남는다
   3. 입력과 out 이 같거나 한쪽이 다른 쪽 안에 들면 `--force` 여도 아무것도 만들기 전에 거절한다 — 실경로와
      폴더 동일성 기준이라 링크로 돌아 들어와도, 대소문자만 다른 철자여도 같은 폴더로 읽는다. 매니페스트가
-     가리키는 아틀라스도 입력이다
+     가리키는 아틀라스도, `--pngs-dir` 안에서 찾아 읽는 것(칸 PNG, 그룹 폴더, `_base`, `_refs`, meta.json)도
+     입력이다 — 그것이 링크로 out 이나 그 하위 폴더에 닿아도, 링크의 링크로 닿아도
   4. 내놓다가 못 끝내면 옛 런은 한 바이트도 바뀌지 않고, 이 실행의 임시 폴더만 치운다
   5. out 이 빈 폴더로 가는 링크면 링크가 가리키는 자리에 내놓고 링크는 그대로 둔다
   6. 내놓은 런은 런 폴더의 이름을 단다 — 캐릭터 id 와 매니페스트의 run_dir 은 임시 폴더가 아니라 런 폴더다
@@ -19,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 from pathlib import Path
 
 import pytest
@@ -201,6 +203,13 @@ def _manifest_names_an_atlas_inside_out(root: Path) -> list[str]:
     return [*_manifest(root / "sheet.json", "run/sheet.png"), "--out-dir", str(root / "run")]
 
 
+def _out_inside_a_linked_group_folder(root: Path) -> list[str]:
+    argv = _pngs(root / "pngs")
+    _pngs(root / "elsewhere")
+    (root / "pngs" / "idle").symlink_to(root / "elsewhere", target_is_directory=True)
+    return [*argv, "--out-dir", str(root / "elsewhere" / "run")]
+
+
 OVERLAPS = [
     (_pngs_is_out, "--pngs-dir and --out-dir are the same"),
     (_out_inside_pngs, "--out-dir lies inside --pngs-dir"),
@@ -214,6 +223,7 @@ OVERLAPS = [
     (_out_is_the_atlas, "--atlas and --out-dir are the same"),
     (_manifest_inside_out, "--manifest lies inside --out-dir"),
     (_manifest_names_an_atlas_inside_out, "the atlas the manifest names lies inside --out-dir"),
+    (_out_inside_a_linked_group_folder, "--out-dir lies inside idle in --pngs-dir"),
 ]
 
 
@@ -224,6 +234,60 @@ def test_overlapping_inputs_are_refused_before_anything_is_made(tmp_path, layout
     with pytest.raises(SystemExit, match=why):
         _unpack(*argv, "--force")
     assert _tree(tmp_path) == before, "거절했는데 무엇이 생기거나 바뀌었다"
+
+
+# --pngs-dir 안에서 찾아 읽히는 자리 → 거기 둔 링크가 닿을 옛 런 안의 원본("" 은 원본이 든 폴더 — 그룹 폴더)
+FOUND = {
+    "frame": ("1.png", "original.png"),
+    "group": ("walk", ""),
+    "base": ("_base/identity.png", "original.png"),
+    "ref": ("_refs/anchor-source.png", "original.png"),
+    "group-frame": ("idle/1.png", "original.png"),
+    "group-ref": ("idle/_refs/anchor-source.png", "original.png"),
+    "meta": ("meta.json", "meta.json"),
+}
+# 링크가 원본에 닿는 길 — 곧장, out 의 하위 폴더로, 링크의 링크로, 대문자 철자로(대소문자를 가리지 않는 볼륨)
+ROUTES = ["straight", "subfolder", "chain", "capitals"]
+
+
+def _found_input_linked_into_out(root: Path, kind: str, route: str) -> tuple[list[str], str]:
+    """`--pngs-dir in`(칸 `0.png`, 그룹 `idle/0.png`)에서 찾아 읽힐 자리 하나가 링크로 옛 런 `run` 안의 원본 — 칸
+    PNG 나 meta.json, 그룹 폴더면 그 둘이 든 폴더 — 에 닿는 배치. argv 와 기대하는 거절 문구를 돌려준다."""
+    place, target = FOUND[kind]
+    prior = root / "run" / ("sub" if route == "subfolder" else "")
+    prior.mkdir(parents=True)
+    _cell(0).save(prior / "original.png")
+    (prior / "meta.json").write_text('{"items": {}}\n', encoding="utf-8")
+    src = root / "in"
+    (src / "idle").mkdir(parents=True)
+    _cell(1).save(src / "0.png")
+    _cell(1).save(src / "idle" / "0.png")
+    reach = prior / target
+    if route == "capitals":
+        reach = root / "RUN" / reach.relative_to(root / "run")
+        if not reach.exists():
+            pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 폴더다")
+    if route == "chain":
+        (root / "hop").symlink_to(reach, target_is_directory=not target)
+        reach = root / "hop"
+    link = src / place
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(reach, target_is_directory=not target)
+    why = f"{re.escape(place)} in --pngs-dir (lies inside|and) --out-dir"
+    return ["--pngs-dir", str(src), "--out-dir", str(root / "run")], why
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("kind", FOUND)
+def test_force_preserves_input_reached_through_a_link(tmp_path, kind, route) -> None:
+    argv, why = _found_input_linked_into_out(tmp_path, kind, route)
+    before = _tree(tmp_path)
+    try:
+        said = f"rc={_unpack(*argv, '--force')}"
+    except SystemExit as refusal:
+        said = str(refusal)
+    assert _tree(tmp_path) == before, f"--force 가 링크로 닿은 입력을 지웠다 ({said})"
+    assert re.search(why, said), f"링크로 out 에 닿은 입력을 거절하지 않았다 ({said})"
 
 
 # ── 4. 못 끝낸 내놓기 ───────────────────────────────────────────────
