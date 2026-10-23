@@ -21,6 +21,7 @@ from PIL import Image
 
 import talking_face as tf
 from sprite_gen.video import face_bake, face_layer as fl, face_pack
+from sprite_gen.video import parts as parts_mod
 
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not on PATH: the face player cannot run")
@@ -134,6 +135,17 @@ def test_a_hand_over_the_cheek_stays_on_top_of_the_layer(case):
         under = hand & (w_ell > 0.5)
         assert under.sum() > 400
         assert (np.abs(out[under].astype(int) - cell[under]).max(-1) <= 2).mean() > 0.97, k
+
+
+def test_a_tongue_in_the_body_s_own_open_mouth_is_not_a_hand_s(case):
+    """A finger at the corner of the body's own open mouth joins the mouth to the hand; the tongue in it is light and
+    warm like the hand's skin, but it is the mouth's: the layer covers it."""
+    root, pack = case
+    tongue = parts_mod._erode(tf.tongue_mask(3), 2)
+    assert tongue.sum() > 100
+    for k in tf.HAND_FRAMES:
+        out, cell, _ = laid(root, pack, "cheek", k, tf.TALK.index("neutral"))
+        assert (np.abs(out[tongue].astype(int) - cell[tongue]).max(-1) > 30).mean() > 0.9, k
 
 
 def test_the_boom_and_the_choker_stay_the_body_s_and_nothing_changes_outside_the_weight(case):

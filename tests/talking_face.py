@@ -4,8 +4,8 @@
 A cartoon head on a still body, drawn area-sampled on a transparent 480 px cell (the key's colour left under no
 coverage, as a keyer leaves it): a skin face in a dark outline, a hair cap and side locks, two eyes, a nose, a mouth, a
 headset boom that crosses the lower face to the mouth's corner, a neck with a dark grey choker, shoulders. The head moves by a similarity about the mouth (place, size, tilt); the body does
-not. A mouth is closed neutral (corners down), closed smiling (corners up) or open (an ellipse of `size` 1..4). A hand
-can be raised over the right cheek from a sleeve below. A view draws a square of the cell at another size: the talking
+not. A mouth is closed neutral (corners down), closed smiling (corners up) or open (an ellipse of `size` 1..4, a
+tongue in it). A hand can be raised over the right cheek from a sleeve below, a finger at the open mouth's corner. A view draws a square of the cell at another size: the talking
 clip is drawn at twice the size, as a face cut from the reference.
 
 `write_case(root)` writes the reference, a talking clip, four body clips (an idle loop, a greeting that talks with its
@@ -37,6 +37,7 @@ CHOKER = (40, 40, 44)
 CLOTH = (90, 110, 160)
 SLEEVE = (230, 225, 215)
 HAND = (245, 205, 190)
+TONGUE = (245, 160, 170)  # light and warm, as a hand's skin
 KEY = (0, 160, 70)  # left under no coverage, as a keyer leaves it
 GEOMETRY = {"mouth": [240, 262], "eyes": [[175, 174, 215, 206], [265, 174, 305, 206]],
             "lower_face": {"top": 228, "box": [120, 228, 360, 400], "seeds": [[195, 255], [285, 255], [240, 305], [215, 280]]},
@@ -119,17 +120,18 @@ def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False
         rim = _ellipse(hx, hy, 240, 262 + 2 * size, 11 + 3 * size, 3 + 4 * size)
         paint(rim < 1.25, OUTLINE)
         paint(rim < 1, MOUTH_IN)
+        paint((rim < 1) & (_ellipse(hx, hy, *_tongue(size)) < 1), TONGUE)
     # the headset's boom, from beside the head to the mouth's corner
     t = np.clip(((hx - 335) * (272 - 335) + (hy - 215) * (266 - 215)) / ((272 - 335) ** 2 + (266 - 215) ** 2), 0, 1)
     paint(np.hypot(hx - (335 + t * (272 - 335)), hy - (215 + t * (266 - 215))) < 2.2, BOOM)
-    if hand:
-        sleeve = (X > 282) & (X < 348) & (Y > 330)
-        paint(sleeve & ((X < 285) | (X > 345)), OUTLINE)
-        paint(sleeve & (X >= 285) & (X <= 345), SLEEVE)
-        palm = _ellipse(X, Y, 312, 305, 30, 34)
+    if hand:  # its first finger at the corner of a mouth open to size 3
+        sleeve = (X > 258) & (X < 324) & (Y > 330)
+        paint(sleeve & ((X < 261) | (X > 321)), OUTLINE)
+        paint(sleeve & (X >= 261) & (X <= 321), SLEEVE)
+        palm = _ellipse(X, Y, 288, 305, 30, 34)
         paint(palm < 1.12, OUTLINE)
         paint(palm < 1, HAND)
-        for fx in (292, 306, 320, 334):
+        for fx in (268, 282, 296, 310):
             finger = (np.abs(X - fx) < 6.5) & (Y > 248) & (Y < 300)
             paint(finger & ~((np.abs(X - fx) < 4.5) & (Y > 251)), OUTLINE)
             paint((np.abs(X - fx) < 4.5) & (Y > 251) & (Y < 302), HAND)
@@ -137,6 +139,17 @@ def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False
     alpha = pm[..., 3]
     colour = np.where(alpha[..., None] > 0, pm[..., :3] / np.maximum(alpha[..., None], 1e-6), KEY)
     return Image.fromarray(np.dstack([np.round(colour), np.round(alpha * 255)]).clip(0, 255).astype(np.uint8), "RGBA")
+
+
+def _tongue(size: int) -> tuple[float, float, float, float]:
+    ry = 3 + 4 * size
+    return 240.0, 262 + 2 * size + 0.45 * ry, 0.55 * (11 + 3 * size), 0.45 * ry
+
+
+def tongue_mask(size: int) -> np.ndarray:
+    """Where an open mouth's tongue is on a cell, the head at rest."""
+    yy, xx = np.mgrid[0:SIZE, 0:SIZE] + 0.5
+    return _ellipse(xx, yy, *_tongue(size)) < 1
 
 
 def hand_mask() -> np.ndarray:
@@ -165,7 +178,7 @@ def write_case(root: Path) -> Path:
         w = math.sin(math.pi * k / 15)
         greet.append(draw({"dx": -10 * w, "dy": -12 * w, "s": 1 + 0.02 * w, "th": 3 * w}, mouth))
     _clip(root / "greet", greet)
-    _clip(root / "cheek", [draw({"dy": 0.5 * math.sin(k)}, hand=k in HAND_FRAMES) for k in range(10)])
+    _clip(root / "cheek", [draw({"dy": 0.5 * math.sin(k)}, 3 if k in HAND_FRAMES else "neutral", hand=k in HAND_FRAMES) for k in range(10)])
     _clip(root / "jump", [draw({"dy": dy}) for dy in JUMP])
     rows = ["frame\tt_s\tstate\tsound"]
     for k, mouth in enumerate(GREET):
