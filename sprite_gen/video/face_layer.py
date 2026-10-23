@@ -15,7 +15,10 @@ grown from (`Geometry`).
   and again within twice that where the best sits on the search's rim; every size and tilt of a grid is then laid
   through it and the place read again near it, the least cost wins, a parabola through its neighbours refines size,
   tilt and place, and a best on the grid's rim is read again on a grid twice as wide. A reading further from its
-  window's median than three scaled MADs is a misreading and takes that median (`hampel`).
+  window's median than three scaled MADs is a misreading and takes that median (`hampel`). A body frame whose own
+  mouth is closed has its place read again on the ring of skin round the mouth (`Band.ring`, `place_on`), its size and
+  tilt the band's: a head that turns moves its hair, headset and cheeks further than its mouth. A frame whose mouth is
+  open takes the moves of the read frames round it (`on_ring`).
 - **Weight** (`weight`): the lower faces of the reference and of every frame of every clip, read into the reference
   through their anchors, joined (`union`; a frame adds nothing past `REACH` px of the reference's own lower face, so a
   hand or sleeve the skin grows into stays out), and holes filled; flat 1 over it grown by `MARGIN`, a cos² feather
