@@ -66,9 +66,7 @@ AI 개입 0 — 같은 입력이면 항상 같은 출력.
 from __future__ import annotations
 
 import argparse
-import json
 import math
-import shutil
 from pathlib import Path
 
 from PIL import Image
@@ -78,7 +76,7 @@ from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
-from sprite_gen.spec.runio import inside_folder, new_stage, same_folder
+from sprite_gen.frames.folder import open_frames, publish
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
 # 이 테이퍼가 이음매를 없앤다 — 경계에서 강도가 계단이 아니라 경사로 떨어진다.
@@ -526,6 +524,21 @@ def smooth_chest_peak(anat: Anatomy, cfg: dict) -> tuple[float, float]:
     return cx + along * cos_t - across * sin_t, cy + along * sin_t + across * cos_t
 
 
+def flat_cos2(r: np.ndarray, flat: float = 0.0) -> np.ndarray:
+    """가운데 1 에서 테두리 0 으로 떨어지는 cos² 무게 — `r` 은 가운데에서 테두리까지의 몫(0 가운데, 1 테두리, 넘으면
+    밖). `flat` 은 가운데 둘레에서 전량(1)인 몫이고, 남은 길 (r − flat)/(1 − flat) 에서 cos² 로 떨어진다. 가슴 무게
+    (chest_flat)와 Sway 레이어 영역의 무게(`video-sway --region` 의 다섯째 값)가 이 한 식이다. `r` 의 자료형을 지킨다."""
+    if flat > 0.0:
+        r = np.clip((r - flat) / (1.0 - flat), 0.0, None)
+    return np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+
+
+def smooth_lift(anat: Anatomy, cfg: dict) -> float:
+    """smooth 의 가슴이 들숨 꼭대기에서 오르는 px — depth × 기준 높이. Sway 레이어가 숨 박자를 받을 때(`video-sway
+    --breathe`) 같은 식으로 그 크기를 읽는다."""
+    return float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH) * anat.basis_rows
+
+
 def _smoothstep_array(a: float, b: float, x: np.ndarray) -> np.ndarray:
     if b <= a:
         return (x >= b).astype(np.float64)
@@ -570,17 +583,14 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
         pd = pu * du + pv * dv
         reach = (-pd + np.sqrt(pd * pd + dd * (1.0 - pu * pu - pv * pv)))
         r = np.where(dd > 0.0, dd / np.maximum(reach, 1e-300), 0.0)
-    flat = shape["chest_flat"]
-    if flat > 0.0:
-        r = np.clip((r - flat) / (1.0 - flat), 0.0, None)
-    w_chest = np.where(r < 1.0, np.cos(0.5 * np.pi * np.minimum(r, 1.0)) ** 2, 0.0)
+    w_chest = flat_cos2(r, shape["chest_flat"])
     px, py = smooth_chest_peak(anat, cfg)
     heading = math.radians(shape["chest_dir"])
     neckness = 1.0 - _smoothstep_array(neck_half, 1.5 * neck_half, np.abs(x - neck_x))
     across = np.minimum(1.0, np.abs(np.abs(x - axis) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
     down = np.minimum(1.0, np.abs(y - smooth_shoulder_row(anat)) / (1.4 * band))   # 양 어깨 높이가 달라도
     w_shoulder = np.cos(0.5 * np.pi * down) ** 2 * np.cos(0.5 * np.pi * across) ** 2
-    lift = float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH) * anat.basis_rows
+    lift = smooth_lift(anat, cfg)
     swell = float(cfg.get("depth_x") if cfg.get("depth_x") is not None else DEFAULT_SMOOTH_DEPTH_X)
     # 어깨가 켜지는 구간은 오르는 양의 8배 이상 — 더 짧으면 그 사이가 행당 상한 넘게 눌린다.
     quick = max(0.15 * band, 8.0 * shape["shoulder"] * lift)
@@ -1060,48 +1070,14 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         cfg = state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
     except SystemExit as exc:
         raise SystemExit(f"breathe: 사이드카와 같은 검사에서 거부됐다 — {exc}")
-    paths = sorted(src_dir.glob("*.png"))
-    if not paths:
-        raise SystemExit(f"breathe: {src_dir} 에 PNG 프레임이 없다")
-    # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다(링크, 철자).
-    src_real, out_real = src_dir.resolve(), out_dir.resolve()
-    if same_folder(out_real, src_real):
-        raise SystemExit("breathe: out 이 frames 와 같은 폴더다 — 원본 프레임 위에 덮어쓰지 않는다")
-    if inside_folder(out_real, src_real):
-        raise SystemExit(f"breathe: out 이 frames 안에 있다 ({out_real}) — 원본 폴더 안에는 쓰지 않는다")
-    if inside_folder(src_real, out_real):
-        raise SystemExit(f"breathe: frames 가 out 안에 있다 ({src_real}) — 원본이 든 폴더에 내놓지 않는다")
-    if out_real.exists() and not out_real.is_dir():
-        raise SystemExit(f"breathe: {out_dir} 는 폴더가 아니다")
-    if out_real.exists() and any(out_real.iterdir()):
-        raise SystemExit(f"breathe: {out_dir} 가 비어 있지 않다 — 새 폴더를 주라")
-    images = []
-    for path in paths:
-        with Image.open(path) as opened:
-            images.append(opened.convert("RGBA"))
-    if len({im.size for im in images}) != 1:
-        raise SystemExit(f"breathe: 프레임 크기가 서로 다르다 — {sorted({im.size for im in images})}")
+    folder = open_frames(src_dir, out_dir, "breathe")      # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다
+    images = folder.images
     anat = resolve_anatomy(images[0], cfg)        # 보고와 굽기가 같은 한 벌 — 큰 칸은 재는 데 0.5 초다
     resolved = anatomy_report(images, cfg, anat)
     baked, phases = bake_breathe_sequence(images, cfg, anat)
-    # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다. 같은 out 으로 도는
-    # 실행들은 각자의 임시 폴더에 쓰고, rename 이 먼저 닿은 쪽이 내놓는다(늦은 쪽은 차 있는 out 에서 멈춘다).
-    # 지우는 것은 이 실행의 임시 폴더뿐이고, 원본 폴더에는 아무것도 쓰지 않는다.
-    out_real.parent.mkdir(parents=True, exist_ok=True)
-    stage = new_stage(out_real, ".partial")
-    try:
-        for path, frame in zip(paths, baked):
-            frame.save(stage / path.name)
-        report = {"frames": len(paths), "source": str(src_dir), "config": cfg, "phases": phases,
-                  "resolved": resolved}
-        (stage / "breathe.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-                                            encoding="utf-8")
-        if out_real.exists():
-            out_real.rmdir()        # 위에서 빈 것을 봤다 — 그새 무엇이 들어왔으면 OSError 로 멈춘다
-        stage.rename(out_real)
-    finally:
-        if stage.exists():
-            shutil.rmtree(stage)
-    print(f"breathe: {len(paths)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
+    # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다(frames.folder.publish).
+    publish(folder, baked, "breathe.json", {"frames": len(images), "source": str(src_dir), "config": cfg,
+                                            "phases": phases, "resolved": resolved})
+    print(f"breathe: {len(images)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
           f"breaths {cfg['breaths']} -> {out_dir}")
     return 0
