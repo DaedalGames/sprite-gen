@@ -61,6 +61,10 @@ AI 개입 0 — 같은 입력이면 항상 같은 출력.
 바이트 같다. 가슴 무게가 몸통 안에서 0 으로 떨어져 화면 변에 닿은 그림도 밖으로 밀리지 않는다.
 줄 전체가 기준 칸(첫 칸)에서 잰 해부와 그 자리를 쓴다 — 영상 루프의 머리 윗선이 칸마다 흔들려도
 경계는 움직이지 않는다.
+
+루프 세트의 들어감·나옴 조각은 루프의 숨을 그 루프의 한 칸에서 잇는 토막이다 (`loop_cells`·`start_cell`): 칸 i 의
+위상은 루프 칸 (start_cell + i) mod loop_cells 의 위상이다. 토막의 첫 칸은 루프의 첫 칸이 아니라서 `sprite-gen breathe
+--reference` 로 루프의 첫 칸을 기준 칸으로 주면 해부와 그 자리가 루프의 것과 같다.
 """
 
 from __future__ import annotations
@@ -76,7 +80,7 @@ from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
-from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish
+from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish, reference_frame
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
 # 이 테이퍼가 이음매를 없앤다 — 경계에서 강도가 계단이 아니라 경사로 떨어진다.
@@ -890,13 +894,32 @@ def fit_breathe_pattern(seq_len: int, cfg: dict) -> list[float]:
     **정수 나머지를 먼저 취한다.** `(i*breaths/seq_len) % 1.0` 로 쓰면 수학적으로 같은
     위상이 서로 다른 double 이 되어(18슬롯 3호흡: 유니크 6 -> 14) 아틀라스 칸 재사용이
     표현 노이즈로 깨진다. 분자를 정수로 접고 한 번만 나누면 반복 위상이 비트 동일하다
-    (validator 검증 2026-07-25: 시트 1344x192 -> 576x192)."""
+    (validator 검증 2026-07-25: 시트 1344x192 -> 576x192).
+
+    줄이 루프의 한 토막이면 (smooth `start_cell`·`loop_cells` — 루프 세트의 들어감·나옴 조각) 칸 i 의 위상은 그 루프
+    (`breathe_loop`)의 칸 (start_cell + i) mod loop_cells 의 위상, 같은 double 이다. 그래서 토막은 루프의 숨을 그 칸에서
+    위상 그대로 잇는다. 둘 다 생략이면 줄이 곧 루프다."""
     if seq_len <= 0:
         return []
+    loop = breathe_loop(seq_len, cfg)
+    start = int(cfg.get("start_cell") or 0)
+    if start >= len(loop):
+        raise SystemExit(f"breathe: start_cell {start} 가 {len(loop)}칸 루프 밖이다 — 줄이 루프의 몇째 칸에서 시작하나다 "
+                         f"(0 부터 {len(loop) - 1} 까지). 루프가 이 칸들보다 길면 loop_cells 로 그 칸 수를 주라.")
+    if start == 0 and len(loop) == seq_len:
+        return loop
+    return [loop[(start + i) % len(loop)] for i in range(seq_len)]
+
+
+def breathe_loop(seq_len: int, cfg: dict) -> list[float]:
+    """줄의 숨이 놓인 루프 한 바퀴의 위상 — `loop_cells` 칸(생략이면 줄의 `seq_len` 칸)에 숨 박자(`breaths` 회, 또는
+    `breath_peaks` 칸의 꼭대기)를 놓은 것. 줄이 곧 루프면 줄의 위상(`fit_breathe_pattern`)과 같고, 루프의 한 토막이면
+    토막의 위상이 이 안에서 읽힌다. Sway 의 접힘 규칙이 토막을 루프의 숨 전체로 재는 것도 이것이다."""
+    n = int(cfg.get("loop_cells") or seq_len)
     if cfg.get("breath_peaks"):
-        return _peaked_phases(seq_len, list(cfg["breath_peaks"]), smooth_inhale(cfg))
+        return _peaked_phases(n, list(cfg["breath_peaks"]), smooth_inhale(cfg))
     breaths = max(1, int(cfg.get("breaths", 1)))
-    return [((i * breaths) % seq_len) / seq_len for i in range(seq_len)]
+    return [((i * breaths) % n) / n for i in range(n)]
 
 
 def _peaked_phases(seq_len: int, peaks: list[int], inhale: float) -> list[float]:
@@ -1037,6 +1060,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lag", type=float, default=None, help=f"pixel only: travelling-wave lag (default {DEFAULT_LAG})")
     parser.add_argument("--rigid-row", type=int, default=None,
                         help="the row the head starts below, counted from the top of the figure (default: measured)")
+    parser.add_argument("--reference", default=None, metavar="FRAME.png",
+                        help="the frame the row's anatomy is measured on, when it is not the first of these frames — a loop "
+                             "set's first cell, for a way in or out of the loop that starts elsewhere: the head line, the chest and "
+                             "its rise are the loop's (one size with the frames; default the first frame)")
+    stretch = parser.add_argument_group("a stretch of a loop (smooth; default the frames are the loop)")
+    stretch.add_argument("--loop-cells", type=int, default=None, metavar="N",
+                         help="the frames carry on the breath of an N-cell loop — a way in or out of a loop set: the beat "
+                              "(--breaths, --breath-peaks) is that loop's")
+    stretch.add_argument("--start-cell", type=int, default=None, metavar="K",
+                         help="the loop's cell the frames start at, 0 to N - 1 (default 0): frame i breathes as the loop's "
+                              "cell (K + i) mod N, the very phase")
     shape = parser.add_argument_group("smooth shape (defaults in parentheses)")
     shape.add_argument("--chest-y", type=float, default=None,
                        help=f"chest centre height, a share of the body below the neck ({SMOOTH_SHAPE['chest_y']})")
@@ -1095,29 +1129,37 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         chest_x: float | None = None, chest_bias_y: float | None = None, chest_flat: float | None = None,
         inhale: float | None = None, breath_peaks: list[int] | None = None,
         avoid_region: tuple[float, float, float, float] | None = None,
-        avoid_anchor: tuple[float, float, float, float] | None = None, fps: float | None = None) -> int:
+        avoid_anchor: tuple[float, float, float, float] | None = None, fps: float | None = None,
+        reference: str | None = None, loop_cells: int | None = None, start_cell: int | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
     같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다.
 
-    `avoid_region` 이면 숨 박자를 칸에서 고른다(`breath_beat`) — 고른 박자도 사이드카와 같은 검사를 다시 지난다."""
+    `avoid_region` 이면 숨 박자를 칸에서 고른다(`breath_beat`) — 고른 박자도 사이드카와 같은 검사를 다시 지난다.
+    `loop_cells`·`start_cell` 이면 칸들이 그 루프의 숨을 그 칸에서 잇는 토막이고(`fit_breathe_pattern`), `reference` 면
+    해부를 첫 칸 대신 그 칸에서 잰다 — 루프 세트의 첫 칸에서 재면 토막의 머리선·가슴·오르는 양이 루프의 것과 같다."""
     src_dir, out_dir = Path(frames), Path(out)
     raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
                              ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
                              ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag),
                              ("chest_tilt", chest_tilt), ("chest_bias", chest_bias), ("chest_dir", chest_dir),
                              ("chest_x", chest_x), ("chest_bias_y", chest_bias_y), ("chest_flat", chest_flat),
-                             ("inhale", inhale), ("breath_peaks", breath_peaks))
+                             ("inhale", inhale), ("breath_peaks", breath_peaks), ("loop_cells", loop_cells),
+                             ("start_cell", start_cell))
            if v is not None}
     if avoid_region is None and (avoid_anchor is not None or fps is not None):
         raise SystemExit("breathe: --avoid-anchor 와 --fps 는 --avoid-region 의 것이다 — 손 상자 없이는 읽지 않는다")
     if avoid_region is not None and (breaths is not None or breath_peaks is not None):
         raise SystemExit("breathe: --avoid-region 은 숨 박자를 칸에서 고른다 — --breaths·--breath-peaks 와 같이 주지 마라")
+    if avoid_region is not None and (loop_cells is not None or start_cell is not None):
+        raise SystemExit("breathe: --avoid-region 은 숨 박자를 이 칸들에서 고른다 — 루프의 한 토막(--loop-cells·--start-cell)은 "
+                         "그 루프의 박자를 잇는다. 박자는 루프의 칸에서 골라 그 값을 주라")
     cfg = _cli_breathe(raw)
     if avoid_region is not None and breathe_mode(cfg) != "smooth":
         raise SystemExit("breathe: --avoid-region 은 smooth 의 것이다 (--mode smooth) — pixel 숨은 진행파라 첫 칸이 쉼이 아니다")
     folder = open_frames(src_dir, out_dir, "breathe")      # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다
     images = folder.images
-    anat = resolve_anatomy(images[0], cfg)        # 보고와 굽기가 같은 한 벌 — 큰 칸은 재는 데 0.5 초다
+    basis, held = reference_frame(reference, folder, "breathe")
+    anat = resolve_anatomy(basis, cfg)            # 보고와 굽기가 같은 한 벌 — 큰 칸은 재는 데 0.5 초다
     beat = None
     if avoid_region is not None:
         from sprite_gen.effects import breath_beat      # 박자 고르기가 이 모듈을 읽는다 — 돌아 들어오지 않게 여기서
@@ -1132,7 +1174,8 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
     baked, phases = bake_breathe_sequence(images, cfg, anat)
     # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다(frames.folder.publish).
     publish(folder, baked, "breathe.json", {"frames": len(images), "source": str(src_dir), "config": cfg,
-                                            "phases": phases, "resolved": resolved} | ({} if beat is None else {"beat": beat}))
+                                            "phases": phases, "resolved": resolved} | ({} if beat is None else {"beat": beat})
+                                           | ({} if held is None else {"reference": held}))
     print(f"breathe: {len(images)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
           f"breaths {cfg['breaths']} -> {out_dir}")
     return 0

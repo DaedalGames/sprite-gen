@@ -575,6 +575,66 @@ def test_breath_peaks_split_the_breaths_at_the_rows_inhale_share() -> None:
     assert [B.smooth_wave(phases[p], 0.42) for p in (10, 40, 52)] == pytest.approx([1.0, 1.0, 1.0])
 
 
+# ── 루프의 한 토막: 루프 세트의 들어감·나옴 조각이 루프의 숨을 그 칸에서 잇는다 ──────────
+
+@pytest.mark.parametrize("beat", [{"breaths": 2}, {"breath_peaks": [10, 34], "breaths": None}], ids=["breaths", "peaks"])
+@pytest.mark.parametrize("start,count", [(13, 17), (40, 20), (0, 48), (5, 48)],
+                         ids=["inside", "past-the-close", "whole", "turned"])
+def test_a_stretch_breathes_each_cell_at_its_loop_cells_phase(beat, start, count) -> None:
+    """`loop_cells`·`start_cell` 이면 줄은 그 루프의 한 토막이다 — 칸 i 의 위상은 루프 칸 (start_cell + i) mod
+    loop_cells 의 위상, 같은 double 이다. 루프 끝을 넘으면 루프 처음(쉼)으로 돈다. 숨 박자는 루프의 것이다."""
+    loop = B.fit_breathe_pattern(48, _cfg(_smooth(**beat)))
+    cfg = _cfg(_smooth(**beat, loop_cells=48, start_cell=start))
+    assert cfg["loop_cells"] == 48 and cfg["start_cell"] == start
+    assert B.breathe_loop(count, cfg) == loop
+    assert B.fit_breathe_pattern(count, cfg) == [loop[(start + i) % 48] for i in range(count)]
+
+
+@pytest.mark.parametrize("start,count", [(31, 20), (0, 16), (8, 16), (40, 16), (0, 96)],
+                         ids=["way-in", "way-out-0", "way-out-8", "way-out-40", "loop"])
+def test_a_stretch_has_the_phases_the_pad_laid_it_at(start, count) -> None:
+    """토막의 위상은 손 단계(pad)가 내던 위상과 같은 double 이다 — 조각을 48칸 숨 m 번인 48m 칸 열의 제 위상 칸에
+    깔고(앞뒤는 기준 칸, 위상 0 이면 둘째 숨 첫 칸) 그 열에 숨을 넣어 조각 칸만 읽던 것. 48칸 숨 둘인 96칸 루프의 한
+    토막으로 말하면 엔진이 같은 위상을 낸다."""
+    p = start or 48
+    m = -(-(p + count) // 48)
+    padded = B.fit_breathe_pattern(48 * m, _cfg(_smooth(breaths=m)))
+    stretch = B.fit_breathe_pattern(count, _cfg(_smooth(breaths=2, loop_cells=96, start_cell=start)))
+    assert stretch == padded[p:p + count]
+
+
+def test_a_row_without_the_stretch_is_its_own_loop() -> None:
+    """생략은 줄이 곧 루프다 — 정규화가 start_cell 0, loop_cells None 을 싣고 위상이 이전 식 그대로(같은 double)다.
+    start_cell 만 주면 제 루프를 그 칸부터 돈다."""
+    for raw in (_smooth(), _smooth(breath_peaks=[10, 34], breaths=None)):
+        cfg = _cfg(raw)
+        assert cfg["start_cell"] == 0 and cfg["loop_cells"] is None
+    cfg = _cfg(_smooth(breaths=3))
+    own = B.fit_breathe_pattern(30, cfg)
+    assert own == [((i * 3) % 30) / 30 for i in range(30)] == B.breathe_loop(30, cfg)
+    assert B.fit_breathe_pattern(30, _cfg(_smooth(breaths=3, start_cell=7))) == [own[(7 + i) % 30] for i in range(30)]
+
+
+@pytest.mark.parametrize("raw,why", [
+    (_smooth(loop_cells=24, start_cell=24), "start_cell"), (_smooth(start_cell=-1), "start_cell"),
+    (_smooth(start_cell=2.5), "start_cell"), (_smooth(loop_cells=1), "loop_cells"),
+    (_smooth(loop_cells="many"), "loop_cells"),
+    ({"depth": 0.06, "breaths": 2, "start_cell": 3}, "start_cell"), ({"depth": 0.06, "breaths": 2, "loop_cells": 48}, "loop_cells"),
+], ids=["past-the-loop", "negative", "not-int", "one-cell", "not-a-number", "start-on-pixel", "loop-on-pixel"])
+def test_a_stretch_that_cannot_be_kept_is_refused(raw, why) -> None:
+    with pytest.raises(SystemExit, match=why):
+        _cfg(raw)
+
+
+def test_a_start_past_the_rows_own_loop_is_refused_at_the_bake() -> None:
+    """loop_cells 를 생략하면 루프는 줄의 칸 수라 start_cell 의 끝은 굽기가 본다 — 조용히 접지 않는다. 루프의 꼭대기 칸도
+    그 루프 안에 들어야 한다."""
+    with pytest.raises(SystemExit, match="start_cell"):
+        B.fit_breathe_pattern(30, _cfg(_smooth(start_cell=30)))
+    with pytest.raises(SystemExit, match="breath_peaks"):
+        B.fit_breathe_pattern(30, _cfg(_smooth(breath_peaks=[10, 40], breaths=None, loop_cells=41)))
+
+
 @pytest.mark.parametrize("angle", [-30.0, 20.0])
 def test_the_chest_moves_along_its_direction(angle) -> None:
     """가슴 가운데는 `chest_dir` 쪽으로 간다 — 0 이 바로 위, 음수가 왼쪽 위. 크기는 그대로
@@ -698,9 +758,11 @@ def _blinking(h: int = 120, count: int = 12) -> list[Image.Image]:
       "--chest-bias", "-0.4", "--chest-dir", "-25", "--chest-x", "-0.1", "--chest-bias-y", "0.2",
       "--chest-flat", "0.25", "--inhale", "0.42"]),
     (_smooth(breath_peaks=[3, 9], breaths=None), ["--mode", "smooth", "--depth", "0.025", "--breath-peaks", "3,9"]),
+    (_smooth(loop_cells=30, start_cell=23),
+     ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--loop-cells", "30", "--start-cell", "23"]),
     ({"depth": 0.06, "breaths": 2, "lag": 0.1},
      ["--depth", "0.06", "--breaths", "2", "--lag", "0.1"]),
-], ids=["smooth", "smooth-shape", "smooth-peaks", "pixel"])
+], ids=["smooth", "smooth-shape", "smooth-peaks", "smooth-stretch", "pixel"])
 def test_the_cli_bakes_what_the_curation_bake_bakes(tmp_path, raw, flags) -> None:
     from sprite_gen import cli
 
@@ -759,3 +821,47 @@ def test_the_cli_refuses_what_the_sidecar_refuses(tmp_path) -> None:
         cli.main(["breathe", str(src), str(tmp_path / "c"), "--chest-y", "0.3"])     # pixel 에 모양 값
     with pytest.raises(SystemExit):
         cli.main(["breathe", str(src), str(src), "--mode", "smooth"])   # 원본 위에 덮어쓰지 않는다
+    with pytest.raises(SystemExit, match="start_cell"):
+        cli.main(["breathe", str(src), str(tmp_path / "d"), "--start-cell", "3"])     # pixel 에 토막
+
+
+def _raised(image: Image.Image, rows: int) -> Image.Image:
+    """그림을 `rows` 행 위로 올린 칸 — 화면 아래 변에 닿은 몸통은 맨 아래 행을 이어 붙여 그대로 닿는다 (고개를 든 칸처럼
+    콘텐츠가 위로 길어진다)."""
+    a = np.asarray(image.convert("RGBA"))
+    return Image.fromarray(np.concatenate([a[rows:], np.repeat(a[-1:], rows, axis=0)]), "RGBA")
+
+
+def test_the_reference_is_the_frame_the_rows_anatomy_is_measured_on(tmp_path) -> None:
+    """`--reference` 면 해부를 첫 칸 대신 그 칸에서 잰다 — 루프 세트의 첫 칸에서 재면 첫 칸이 다른(고개를 든) 토막도
+    머리선·가슴·오르는 양이 루프의 것이다. 굽기는 그 한 벌로 굽고, 기록에 그 칸의 경로와 sha256 이 남는다."""
+    from sprite_gen import cli
+
+    base = _bust()
+    frames = [_raised(base, 4), *[base] * 7]
+    src = tmp_path / "piece"
+    src.mkdir()
+    for i, im in enumerate(frames):
+        im.save(src / f"frame-{i:03d}.png")
+    base.save(tmp_path / "base.png")
+    flags = ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--loop-cells", "24", "--start-cell", "9"]
+    assert cli.main(["breathe", str(src), str(tmp_path / "own"), *flags]) == 0
+    assert cli.main(["breathe", str(src), str(tmp_path / "out"), *flags, "--reference", str(tmp_path / "base.png")]) == 0
+    own = json.loads((tmp_path / "own" / "breathe.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "out" / "breathe.json").read_text(encoding="utf-8"))
+    assert report["resolved"]["anatomy"] == analyze(base).as_dict() != own["resolved"]["anatomy"]
+    assert own["resolved"]["anatomy"]["height"] == report["resolved"]["anatomy"]["height"] + 4 and "reference" not in own
+    assert report["reference"] == {"path": str(tmp_path / "base.png"),
+                                   "sha256": hashlib.sha256((tmp_path / "base.png").read_bytes()).hexdigest()}
+    expect, phases = B.bake_breathe_sequence(frames, _cfg(_smooth(loop_cells=24, start_cell=9)), analyze(base))
+    assert report["phases"] == phases == own["phases"]
+    for i, want in enumerate(expect):
+        with Image.open(tmp_path / "out" / f"frame-{i:03d}.png") as im:
+            assert im.convert("RGBA").tobytes() == want.tobytes(), f"{i}번 칸이 기준 칸의 해부로 구운 칸이 아니다"
+    Image.new("RGBA", (base.width + 2, base.height)).save(tmp_path / "wide.png")
+    with pytest.raises(SystemExit, match="--reference"):
+        cli.main(["breathe", str(src), str(tmp_path / "wide"), *flags, "--reference", str(tmp_path / "wide.png")])
+    with pytest.raises(SystemExit, match="--avoid-region"):
+        cli.main(["breathe", str(src), str(tmp_path / "beat"), "--mode", "smooth", "--avoid-region", "0.3,0.7,0.7,0.9",
+                  "--fps", "24", "--loop-cells", "24", "--start-cell", "9"])
+    assert not any((tmp_path / name).exists() for name in ("wide", "beat"))

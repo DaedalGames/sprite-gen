@@ -62,7 +62,9 @@ def test_the_mirror_refuses_a_smooth_row_instead_of_drawing_pixel(tmp_path) -> N
      "shoulder": 0.6, "shoulder_lag": 0.1, "chest_tilt": -20, "chest_bias": -0.4, "chest_dir": -30,
      "chest_x": -0.1, "chest_bias_y": 0.3, "chest_flat": 0.25, "inhale": 0.45},
     {"mode": "smooth", "breath_peaks": [21, 69, 118]},
-], ids=["smooth", "depth-omitted", "with-overrides", "with-shape", "with-peaks"])
+    {"mode": "smooth", "breaths": 2, "loop_cells": 96, "start_cell": 31},
+    {"mode": "smooth", "breaths": 2, "loop_cells": None, "start_cell": 5},
+], ids=["smooth", "depth-omitted", "with-overrides", "with-shape", "with-peaks", "with-stretch", "turned-own-loop"])
 def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> None:
     got = _roundtrip(_run(sidecar), tmp_path)
     saved = got["payload"]["states"]["idle"].get("breathe")
@@ -82,8 +84,14 @@ def test_the_round_trip_keeps_a_smooth_sidecar_as_written(tmp_path, sidecar) -> 
     {"depth": 0.06, "breaths": 2, "chest_tilt": 10},
     {"depth": 0.06, "breath_peaks": [5, 15]},
     {"mode": "smooth", "breath_peaks": [15, 5]},
+    {"depth": 0.06, "breaths": 2, "start_cell": 3},
+    {"depth": 0.06, "breaths": 2, "loop_cells": None},
+    {"mode": "smooth", "breaths": 2, "loop_cells": 24, "start_cell": 24},
+    {"mode": "smooth", "breaths": 2, "loop_cells": 1},
+    {"mode": "smooth", "breaths": 2, "start_cell": 2.5},
 ], ids=["unknown-mode", "smooth-with-lag", "shape-on-pixel", "shape-out-of-range", "dir-out-of-range",
-        "tilt-on-pixel", "peaks-on-pixel", "peaks-unsorted"])
+        "tilt-on-pixel", "peaks-on-pixel", "peaks-unsorted", "start-on-pixel", "loop-on-pixel", "start-past-loop",
+        "one-cell-loop", "start-not-int"])
 def test_a_sidecar_the_bake_refuses_is_kept_and_reported(tmp_path, sidecar) -> None:
     with pytest.raises(SystemExit):
         state_breathe({"states": {"idle": {"breathe": sidecar}}}, "idle")

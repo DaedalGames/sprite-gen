@@ -40,6 +40,19 @@ function breatheRangeProblems(raw) {
       && (raw.breaths == null || Number(raw.breaths) === p.length);
     if (!ok) bad.push(`breath_peaks=${JSON.stringify(p)}`);
   }
+  // 루프의 한 토막(smooth): 루프 칸 수 loop_cells 는 2 이상 정수, start_cell 은 0 이상이고 그보다 작은 정수 — 파이썬
+  // state_breathe 미러 (curation.BREATHE_STRETCH_KEYS).
+  const intAt = (v) => isNumericScalar(v) && Number.isInteger(Number(v));
+  // null 은 생략과 같다(줄이 곧 루프) — 단 pixel 줄에서는 키가 있는 것만으로 굽기가 거부한다.
+  if (raw.loop_cells !== undefined && (raw.mode !== "smooth"
+      || (raw.loop_cells !== null && (!intAt(raw.loop_cells) || Number(raw.loop_cells) < 2)))) {
+    bad.push(`loop_cells=${JSON.stringify(raw.loop_cells)}`);
+  }
+  if (raw.start_cell !== undefined) {
+    const loop = intAt(raw.loop_cells) ? Number(raw.loop_cells) : Infinity;
+    const ok = raw.mode === "smooth" && intAt(raw.start_cell) && Number(raw.start_cell) >= 0 && Number(raw.start_cell) < loop;
+    if (!ok) bad.push(`start_cell=${JSON.stringify(raw.start_cell)}`);
+  }
   for (const [key, lo, hi, dflt] of bounds) {
     // 생략(undefined)은 기본값. 명시적 null 은 굽기가 `float(None)` 으로 거부하므로
     // **키와 무관하게** 여기서도 문제로 본다 — `Number(null) = 0` 이라 하한이 0 인 `lag`

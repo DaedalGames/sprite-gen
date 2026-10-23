@@ -79,6 +79,14 @@ breath (the time warp the Breathe layer's shoulders are late by), and lies the d
 offset = gain × lift × (w − w late), against the way the chest rises. Where the breath rests the offset is 0 — the first
 cell, and where the loop closes — and a cell whose every offset is 0 is the cell as it was, byte for byte.
 
+A loop set's way in or out of its loop carries on the loop's breath from a cell of it: its record says the loop's
+length and the cell it starts at (`sprite-gen breathe --loop-cells N --start-cell K`), and its cell i has the phase of
+the loop's cell (K + i) mod N. An offset is its phase's alone, so that cell is offset as the loop's cell is, from the
+stretch's first cell on — there is nothing to wind up. The fold rule and the floor read the loop's whole breath, every
+cell of it, so the stretch moves by the gain the loop moves by and the record's reach is the loop's. Its regions were
+read on the loop's first cell, which is not one of its frames: `--reference` names that cell, the body is read from it
+and the regions are carried from there, as on the loop's own cells.
+
 A region's fifth number, flat, is the share of the way from its centre to its rim that moves in full — the Breathe
 layer's chest weight (`breathe.flat_cos2`) — so a large part moves as one piece instead of pressed in at its middle;
 the fold rule and the floor read it by the radius left (1 − flat of it). `--gain-across` moves across by a gain of its
@@ -592,28 +600,42 @@ class Breath:
     heading: float  # degrees from straight up the chest rises toward (its chest_dir)
     inhale: float  # share of one breath the in-breath takes (its inhale): the phase the chest peaks at
     lag: float  # of one breath
+    start_cell: int = 0  # the loop's cell the cells start at (its start_cell)
+    loop_cells: int | None = None  # the cells of the loop they are a stretch of (its loop_cells); None: they are the loop
+    loop: list[float] | None = None  # the loop's phases (breathe.breathe_loop); None: the cells' own
 
-    def unit(self) -> tuple[np.ndarray, np.ndarray]:
-        """Per cell, the part's offset from where the breath carries it at gain 1, across and down: the chest rises
-        `lift` × w (breathe.smooth_wave, of the record's in-breath share), the part as far late by `lag` (the time warp
-        the Breathe layer's shoulders are late by, breathe.smooth_shoulder_wave), and the part lies the difference
-        behind, against the way the chest rises. 0 where the breath rests — its first cell, and where the loop closes."""
+    def unit(self, phases: list[float] | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Per cell (or per phase of `phases`), the part's offset from where the breath carries it at gain 1, across and
+        down: the chest rises `lift` × w (breathe.smooth_wave, of the record's in-breath share), the part as far late by
+        `lag` (the time warp the Breathe layer's shoulders are late by, breathe.smooth_shoulder_wave), and the part lies
+        the difference behind, against the way the chest rises. 0 where the breath rests — the loop's first cell, and
+        where it closes. A phase's offset is the phase's alone, so a stretch's cell is offset as the loop's cell of its
+        phase is, from its first cell on: nothing is wound up before it."""
         wave, late = breathe_mod.smooth_wave, breathe_mod.smooth_shoulder_wave
-        share = np.asarray([wave(p, self.inhale) - late(p, self.lag, self.inhale) for p in self.phases])
+        share = np.asarray([wave(p, self.inhale) - late(p, self.lag, self.inhale)
+                            for p in (self.phases if phases is None else phases)])
         heading = math.radians(self.heading)
         return self.lift * share * -math.sin(heading) + 0.0, self.lift * share * math.cos(heading)
 
+    def whole(self) -> tuple[np.ndarray, np.ndarray]:
+        """The offset at gain 1 over the whole breath the cells are swayed on, per phase: the loop's every cell for a
+        stretch of a loop, so the fold rule and the floor read the stretch as they read its loop; else the cells'."""
+        return self.unit(self.loop)
+
     def record(self) -> dict[str, Any]:
         return {"kind": "breath", "breathe_sha256": self.sha256, "lag": self.lag, "lift_px": round(self.lift, 4),
-                "heading_deg": self.heading, "inhale": self.inhale, **self.beat}
+                "heading_deg": self.heading, "inhale": self.inhale, **self.beat, "start_cell": self.start_cell,
+                "loop_cells": self.loop_cells}
 
 
 def read_breath(path: Path, lag: float | None, *, verb: str = VERB) -> Breath:
     """The breath of a Breathe layer's record (breathe.json): a smooth breath, whose phases are the ones its config
     gives after the sidecar's checks (`state_breathe`, `breathe.fit_breathe_pattern`), whose chest rises as the anatomy it
     was baked with says, on the curve of its in-breath share (`inhale`; a record written before the key was there says
-    the default by leaving it out, as the sidecar does). A record written by hand for a breath made elsewhere is read
-    alike and must say the same — its in-breath share among it."""
+    the default by leaving it out, as the sidecar does). A record of a stretch of a loop says the loop's length and the
+    cell it starts at (`loop_cells`, `start_cell`; one written before the keys were there is the loop itself from its
+    first cell). A record written by hand for a breath made elsewhere is read alike and must say the same — its in-breath
+    share and its place in the loop among it."""
     lag = LAG_DEFAULT if lag is None else float(lag)
     if not 0 < lag < LAG_MAX:  # a NaN is not
         raise SystemExit(f"{verb}: --lag is the share of a breath the part is late by, above 0 and under 1/π ({LAG_MAX:.4f}): at "
@@ -647,8 +669,10 @@ def read_breath(path: Path, lag: float | None, *, verb: str = VERB) -> Breath:
     except (KeyError, TypeError) as exc:
         raise SystemExit(f"{verb}: --breathe {path}: its resolved.anatomy is not one sprite-gen breathe writes ({exc})") from exc
     beat = {"breath_peaks": list(cfg["breath_peaks"])} if cfg.get("breath_peaks") else {"breaths": cfg["breaths"]}
+    loop = breathe_mod.breathe_loop(len(phases), cfg)
     return Breath(path, hashlib.sha256(data).hexdigest(), [float(p) for p in phases], beat,
-                  breathe_mod.smooth_lift(anatomy, cfg), float(cfg["chest_dir"]), float(cfg["inhale"]), lag)
+                  breathe_mod.smooth_lift(anatomy, cfg), float(cfg["chest_dir"]), float(cfg["inhale"]), lag,
+                  cfg["start_cell"], cfg["loop_cells"], None if loop == phases else loop)
 
 
 @dataclass(frozen=True, eq=False)
@@ -769,7 +793,7 @@ class Answer:
 
     ask: Ask
     cells: list[Image.Image]
-    cols: np.ndarray  # per cell, how far its body lies from cell 0's: across
+    cols: np.ndarray  # per cell, how far its body lies from cell 0's (or the reference frame's): across
     rows: np.ndarray  # and down
     height0: int
     worn: list[int]
@@ -789,11 +813,13 @@ class Answer:
     groups: list[tuple[list[tuple[float, ...]], tuple[np.ndarray, np.ndarray]]]
     read_on: dict[str, Any] | None = None  # how the strip the regions were read on stands to this one (`--read-on`)
     stretch: dict[str, Any] | None = None  # the floor asked, and what it did to each region (`--stretch-floor`)
+    reference: dict[str, Any] | None = None  # the frame the regions were read on, when not cell 0 (`--reference`)
 
     def carry(self, k: int) -> tuple[float, float]:
         """How far cell k's body lies from cell 0's, across and down: every region's ellipse is carried by it. Carried
-        from the cut, the cells' motion is already from the cut's cell 0, where the regions were read."""
-        if self.read_on is not None and self.read_on["relation"] == "transported":
+        from the cut, the cells' motion is already from the cut's cell 0, where the regions were read; read from a
+        reference frame, it is already from that frame."""
+        if self.reference is not None or (self.read_on is not None and self.read_on["relation"] == "transported"):
             return self.cols[k], self.rows[k]
         return self.cols[k] - self.cols[0], self.rows[k] - self.rows[0]
 
@@ -812,10 +838,12 @@ class Answer:
                  else {"drive": ask.breath.record()})
         across = ({} if ask.gain_across is None else
                   {"gain_across": round(self.gain * ask.across, 4), "gain_across_requested": ask.gain_across})
+        # Read from a reference frame, the body's bob spans that frame too (at 0): it is where the regions were read.
+        cols, rows = (self.cols, self.rows) if self.reference is None else (np.append(self.cols, 0.0), np.append(self.rows, 0.0))
         return {
             "regions": [list(r) for r in ask.regions], "gain": self.gain, **across, **drive,
             "source": source, "body_px": self.height0, "body_worn_px": self.worn,
-            "body_bob_px": [round(float(np.ptp(self.cols)), 2), round(float(np.ptp(self.rows)), 2)],
+            "body_bob_px": [round(float(np.ptp(cols)), 2), round(float(np.ptp(rows)), 2)],
             "dx_px": np.round(self.dx, 2).tolist(), "dy_px": np.round(self.dy, 2).tolist(),
             "reach_px": round(self.reach, 2),
             "gain_requested": requested, "on_fold": ask.on_fold,
@@ -830,7 +858,8 @@ class Answer:
                             for radius, ratio, g, hold in zip(self.radii, self.ratios, self.gains, self.held)],
             },
         } | ({} if self.read_on is None else {"read_on": self.read_on}) | ({} if self.stretch is None else {"stretch": self.stretch}) \
-          | ({} if self.read_on is None and self.stretch is None else {"carry_basis": dict(CARRY_BASIS)})
+          | ({} if self.read_on is None and self.stretch is None else {"carry_basis": dict(CARRY_BASIS)}) \
+          | ({} if self.reference is None else {"reference": self.reference})
 
 
 def solve(request: Request, strip: Image.Image, *, strip_name: str, verb: str = VERB,
@@ -876,12 +905,25 @@ def _unit_move(ask: Ask, rows: np.ndarray, cols: np.ndarray, frame_ms: float | N
     return ask.across * across, down
 
 
+def _whole_move(ask: Ask, move: tuple[np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """The move at gain 1 the fold rule and the floor read: on the breath of a stretch of a loop (the record's
+    start_cell and loop_cells — a loop set's way in or out), the loop's whole breath (`Breath.whole`), so the stretch
+    moves by the gain its loop moves by and their seams do not jump; else the cells' own `move`."""
+    if ask.breath is None or ask.breath.loop is None:
+        return move
+    across, down = ask.breath.whole()
+    return ask.across * across, down
+
+
 def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, verb: str = VERB,
-                read_on: dict[str, Any] | None = None, read_body: Any = None) -> Answer:
+                read_on: dict[str, Any] | None = None, read_body: Any = None,
+                reference: tuple[Image.Image, dict[str, Any]] | None = None) -> Answer:
     """The answer to `ask` on a cycle's cells (RGBA pictures of one size, in order; `frame_ms` one frame's time, which
     the damped mass alone reads): a loop's strip cut into its cells (`solve`), or a folder of the cycle's frames
     (`sway_frames`) — one answer, whatever the cells came from. The body's motion is read on the cells (`body_motion`)
-    unless `read_body` gives it (a reading carried from the cut, `--read-on`). Reads nothing else and writes nothing."""
+    unless `read_body` gives it (a reading carried from the cut, `--read-on`); with a `reference` (the frame the regions
+    were read on and its record, `--reference`) it is read from that frame, laid first. Reads nothing else and writes
+    nothing."""
     regions, gain, on_fold = ask.regions, ask.gain, ask.on_fold
     w, h = cells[0].size
     for cx, cy, *_ in regions:
@@ -894,22 +936,28 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
         rows, cols, height0, worn = read_body()
     else:
         try:
-            rows, cols, height0, worn = body_motion(cells)
+            rows, cols, height0, worn = body_motion(cells if reference is None else [reference[0], *cells])
         except ValueError as exc:
             raise SystemExit(f"{verb}: {exc}") from exc
+        if reference is not None:  # each cell from the reference, which is not swayed
+            rows, cols = rows[1:], cols[1:]
     across, down = _unit_move(ask, rows, cols, frame_ms)
+    whole_across, whole_down = _whole_move(ask, (across, down))
 
     def move(g: float) -> tuple[np.ndarray, np.ndarray]:
         """The offset per cell at gain g, across and down: g times the move at gain 1."""
         return g * across, g * down
 
-    dx, dy = move(gain)
-    reach = float(np.max(np.hypot(dx, dy)))
+    def reach_at(g: float) -> float:
+        """The largest offset at gain g over the whole move the fold rule reads (`_whole_move`)."""
+        return float(np.max(np.hypot(g * whole_across, g * whole_down)))
+
+    reach = reach_at(gain)
     radii = [region_radius(region) for region in regions]
     smallest = min(radii)
     requested, reach_requested = gain, reach
     # The offset is the gain times the answer at gain 1, so one move decides every gain.
-    reach_per_gain = float(np.max(np.hypot(across, down)))
+    reach_per_gain = float(np.max(np.hypot(whole_across, whole_down)))
     gains, held = [requested] * len(regions), [False] * len(regions)
     if fold_ratio(reach, smallest) >= 1:
         if on_fold == "refuse":
@@ -932,18 +980,20 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
         gains = [0.0 if hold else g for g, hold in zip(gains, held)]
     stretch = None
     if ask.stretch_floor is not None:
-        gains, held, stretch = _keep_floor(ask, radii, gains, held, (across, down), verb)
+        gains, held, stretch = _keep_floor(ask, radii, gains, held, (whole_across, whole_down), verb)
     # One move per gain: a region's offset is its gain times the answer at gain 1. The strip's `gain`
-    # is the largest any region moves by, and `dx_px`/`dy_px` and `reach_px` are that gain's.
+    # is the largest any region moves by, and `dx_px`/`dy_px` and `reach_px` are that gain's (the reach,
+    # like the fold, over the whole move the fold rule reads).
     moves = {g: move(g) for g, hold in zip(gains, held) if not hold}
-    reaches = {g: float(np.max(np.hypot(*offset))) for g, offset in moves.items()}
+    reaches = {g: reach_at(g) for g in moves}
     gain = max(moves)
     dx, dy = moves[gain]
     reach = reaches[gain]
     ratios = [0.0 if hold else fold_ratio(reaches[g], radius) for radius, g, hold in zip(radii, gains, held)]
     groups = [([r for r, rg, hold in zip(regions, gains, held) if rg == g and not hold], offset) for g, offset in moves.items()]
     return Answer(ask, cells, cols, rows, height0, worn, requested, reach_requested, reach_per_gain, radii, gains, held,
-                  ratios, moves, reaches, gain, dx, dy, reach, groups, read_on, stretch)
+                  ratios, moves, reaches, gain, dx, dy, reach, groups, read_on, stretch,
+                  None if reference is None else reference[1])
 
 
 def _keep_floor(ask: Ask, radii: list[float], gains: list[float], held: list[bool],
@@ -1033,13 +1083,17 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                 gain: float | None = None, freq: float | None = None, zeta: float | None = None,
                 board: Path | None = None, on_fold: str = "refuse", read_on: str | None = None,
                 stretch_floor: float | None = None, breathe: Path | None = None, lag: float | None = None,
-                gain_across: float | None = None, verb: str = VERB) -> dict[str, Any]:
+                gain_across: float | None = None, reference: Path | None = None, verb: str = VERB) -> dict[str, Any]:
     """The sway of a folder of a cycle's frames — a loop's `cycle/`, or what `sprite-gen breathe` wrote from it — at their
     own size and count, past the strip's caps on cells and width: the same frames under the same names, the regions
     (in frame pixels) moved, and `sway.json` beside them, written whole into a new folder (`frames.folder`); the frames
     folder is read and not written. Cell for cell it is the strip's sway (`solve_cells`): a strip cut from these frames
     at scale 1, none left out, its regions moved by its crop origin, at the frame time its meta writes (`frame_ms` of
-    `--fps`), moves its cells as these are moved."""
+    `--fps`), moves its cells as these are moved.
+
+    With `reference` (a loop set's first cell, for a stretch of the loop whose regions were read on that cell) the
+    regions are read on it and not on the first frame: each frame's body is read from it and the regions carried
+    from there, as they are on the loop's own cells."""
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
                    breathe=breathe, lag=lag, gain_across=gain_across, verb=verb)
     if ask.read_on is not None:
@@ -1055,7 +1109,8 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
         if frame_ms is None:
             raise SystemExit(f"{verb}: --frames {frames}: the damped mass answers the body's motion in time — give --fps (a "
                              "video-loop cycle/ folder has its own in the loop's strip meta), or sway on the breath (--breathe)")
-    answer = solve_cells(ask, cells, frame_ms, verb=verb)
+    basis, held = folder_mod.reference_frame(reference, folder, verb)
+    answer = solve_cells(ask, cells, frame_ms, verb=verb, reference=None if held is None else (basis, held))
     moved = [answer.moved(k) for k in range(len(cells))]
     record = {"frames": len(cells), "frame_ms": frame_ms, **answer.record(source=str(frames))}
     folder_mod.publish(folder, moved, FRAMES_RECORD, record)
@@ -1109,8 +1164,9 @@ def add_request_arguments(parser: argparse.ArgumentParser, *, loop_dir: bool = T
                         help="sway on the breath: the record sprite-gen breathe writes beside the frames it breathed (smooth). The part "
                              "follows the chest's rise late by --lag instead of answering the body's motion as a damped mass: its offset is "
                              "gain x the chest's rise x (w - w late), w the breath of the record's in-breath share (its config's "
-                             "inhale), against the way the chest rises, 0 where the breath rests (the first cell). The record's phases "
-                             "must be the ones its config gives, one for each cell swayed")
+                             "inhale), against the way the chest rises, 0 where the breath rests (the loop's first cell). The record's "
+                             "phases must be the ones its config gives, one for each cell swayed; a stretch of a loop (its loop_cells, "
+                             "start_cell) is folded as its whole loop is")
     parser.add_argument("--lag", type=float, default=None,
                         help=f"on the breath: the share of a breath the part peaks after the chest, above 0 and under 1/π (default {LAG_DEFAULT:g})")
     parser.add_argument("--read-on", type=parse_read_on, default=None, metavar="SHA256",
@@ -1136,6 +1192,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fps", type=float, default=None,
                         help="with --frames: their rate, for the damped mass (a video-loop cycle/ folder has its own in the loop's strip "
                              "meta); a frame's time is rounded to hundredths of a ms, as a strip's meta writes it")
+    parser.add_argument("--reference", type=Path, default=None, metavar="FRAME.png",
+                        help="with --frames: the frame the regions were read on, when it is not the first of them — a loop set's "
+                             "first cell, for a way in or out of the loop (sprite-gen breathe --loop-cells --start-cell): each "
+                             "frame's body is read from it and the regions carried from there (one size with the frames)")
     add_request_arguments(parser, loop_dir=False)
     parser.add_argument("--board", type=Path, help="write a before/after picture at the frames where the part sits lowest and highest")
 
@@ -1180,9 +1240,9 @@ def run(**kwargs: object) -> int:
         if kwargs.get("out") is None:
             raise SystemExit(f"{verb}: --frames needs --out, a new folder for the swayed frames")
         result = sway_frames(Path(str(kwargs["frames"])), Path(str(kwargs["out"])), list(kwargs["region"]),  # type: ignore[arg-type]
-                             fps=kwargs.get("fps"), verb=verb, **asked)  # type: ignore[arg-type]
+                             fps=kwargs.get("fps"), reference=kwargs.get("reference"), verb=verb, **asked)  # type: ignore[arg-type]
     else:
-        for flag in ("out", "fps"):
+        for flag in ("out", "fps", "reference"):
             if kwargs.get(flag) is not None:
                 raise SystemExit(f"{verb}: --{flag} goes with --frames; a loop directory is swayed where it is")
         result = sway_loop(Path(str(kwargs["loop_dir"])), list(kwargs["region"]), verb=verb, **asked)  # type: ignore[arg-type]
