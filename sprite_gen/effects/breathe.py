@@ -77,7 +77,7 @@ from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
-from sprite_gen.frames.extract import solid_alpha_bbox
+from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
 from sprite_gen.spec.runio import inside_folder, new_stage, same_folder
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
@@ -139,7 +139,8 @@ def envelope(anat: Anatomy, taper: float = TAPER, foot: float = FOOT):
 
 
 def protect(anat: Anatomy):
-    """부속 보호 가중 p(x) — 1 이면 그 열은 가로로 안 늘어난다 (콘텐츠 bbox 상대 x).
+    """부속 보호 가중 p(x) — 1 이면 그 열은 가로로 안 늘어난다 (콘텐츠 bbox 상대 x, 열 하나 또는 열 배열).
+    값은 열에만 달려 있어 굽기는 칸마다 열 배열로 한 번 잰다.
 
     자동 검출 밴드는 부속(날개·긴 팔)이 실재할 때만 켜지고 램프 끝을 max_half 에
     앵커한다. **수동 밴드(큐레이터 영역 UI)는 무조건 켜지고 램프를 밴드 자체에
@@ -151,12 +152,12 @@ def protect(anat: Anatomy):
     if anat.torso_source == "manual":
         t0 = float(anat.torso_half)
         t1 = t0 + 2.0
-        return lambda x: smoothstep(t0, t1, abs(x - cx))
+        return lambda x: _smoothstep_array(t0, t1, np.abs(np.asarray(x) - cx))
     if not anat.has_appendage:
-        return lambda x: 0.0
+        return lambda x: np.zeros(np.shape(x))
     t0 = anat.torso_half * 1.15
     t1 = max(t0 + 1.0, anat.max_half * 0.95)
-    return lambda x: smoothstep(t0, t1, abs(x - cx))
+    return lambda x: _smoothstep_array(t0, t1, np.abs(np.asarray(x) - cx))
 
 
 def row_strain(anat: Anatomy, depth: float) -> float:
@@ -168,27 +169,27 @@ def row_strain(anat: Anatomy, depth: float) -> float:
 
 # ── 외곽선 1px 다듬기 ───────────────────────────────────────────────
 
-def _dark(p) -> bool:
-    """다듬기의 '외곽선 어두움' 판정 — 외곽선과 어두운 음영을 갈라야 한다.
+def _dark(rgba: np.ndarray) -> np.ndarray:
+    """다듬기의 '외곽선 어두움' 판정 (화소마다) — 외곽선과 어두운 음영을 갈라야 한다.
 
     실측(문어 idle 왼쪽 볼, 2026-07-30): 외곽선 lum 0~13, 어두운 음영 73~92, 내부 112+.
     구 문턱 96 은 음영까지 외곽선으로 세어 (외곽,외곽,음영) 3연속이 '전부 어두움' 이
     되니 다듬기 패턴이 발화하지 않아 볼의 바깥 검은 열이 잔존했다. 60 이 두 군집
     사이를 가른다."""
-    return bool(p[3]) and (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]) < 60.0
+    return (rgba[..., 3] != 0) & (0.299 * rgba[..., 0] + 0.587 * rgba[..., 1] + 0.114 * rgba[..., 2] < 60.0)
 
 
-def _thin_outline_1px(out: Image.Image) -> None:
+def _thin_outline_1px(rgba: np.ndarray) -> None:
     """안쪽점 기준 다듬기를 고정점까지 반복 — 한 패스의 제거가 새 돌출점을 만들 수 있다.
 
     실측(문어 idle 위상 0): 2점 패턴의 바깥점 (2,13) 을 지우면 남은 (3,13) 이 이웃 행보다
     1px 튀어나온 새 돌출점이 되는데, 단일 패스 스냅샷은 그걸 못 본다. 각 패스가 불투명
-    픽셀을 단조 감소시키므로 종료가 보장된다 (JS 미러 동일)."""
-    while _thin_outline_pass(out):
+    픽셀을 단조 감소시키므로 종료가 보장된다 (JS 미러 동일). `rgba` (h, w, 4) 를 그 자리에서 고친다."""
+    while _thin_outline_pass(rgba):
         pass
 
 
-def _thin_outline_pass(out: Image.Image) -> int:
+def _thin_outline_pass(rgba: np.ndarray) -> int:
     """워프된 프레임의 실루엣 외곽선 2px 를 **안쪽점 기준** 1px 로 정규화하는 1패스.
 
     세로 스쿼시&스트레치는 정수 행 복제/삭제라, 가파른 대각선 외곽선이 국소적으로 2px
@@ -204,89 +205,97 @@ def _thin_outline_pass(out: Image.Image) -> int:
         실루엣 끝에 내부색이 노출된다 → 제외.
       · 이웃 양쪽이 제거되지 않는 어두운 픽셀이면 어두운 선 **중간에 구멍**이 난다 → 제외.
       · 이웃이 같은 패스에서 같이 제거되는 후보면 안전(돌출 열/행이 통째로 사라짐).
-      제외가 다른 후보의 안전성을 바꾸므로 고정점까지 반복한다(결정론 — 정렬 순회).
+      제외가 다른 후보의 안전성을 바꾸므로 고정점까지 반복한다. 제외는 단조다 — 후보가 빠질수록
+      이웃의 '남는 어두움' 만 늘어 제외가 늘 뿐 풀리지 않는다 — 그래서 하나씩 빼든 한꺼번에 빼든
+      같은 집합(가장 큰 안전 집합)에 닿는다. 여기서는 패스마다 실패한 후보를 한꺼번에 뺀다.
 
     호출자는 **변형이 실제로 일어난 프레임에만** 부른다(_warp 의 deformed 게이트). 변형 0
     프레임은 이 함수를 타지 않아 "변형 0 = 원본 동일" 계약이 유지된다. 원본 스냅샷에서만
-    읽고 한 번에 적용하므로 순회 순서와 무관하게 결과가 같다(JS 미러 바이트 동일 성질)."""
-    src = out.load()
-    w, h = out.size
-    op = lambda x, y: 0 <= x < w and 0 <= y < h and bool(src[x, y][3])
-    dark = lambda x, y: op(x, y) and _dark(src[x, y])
-    # 후보 수집: (바깥픽셀 좌표) -> 패턴 축 ('h' = 행 끝 패턴, 'v' = 열 끝 패턴)
-    cand: dict[tuple[int, int], str] = {}
-    for x in range(w):
-        ys = [y for y in range(h) if op(x, y)]
-        if not ys:
-            continue
-        t0, b0 = ys[0], ys[-1]
-        if t0 + 2 <= b0 and dark(x, t0) and dark(x, t0 + 1) and op(x, t0 + 2) and not dark(x, t0 + 2):
-            cand[(x, t0)] = "v"
-        if b0 - 2 >= t0 and dark(x, b0) and dark(x, b0 - 1) and op(x, b0 - 2) and not dark(x, b0 - 2):
-            cand[(x, b0)] = "v"
-    # 행 끝 좌표 맵 (돌출점 판정용)
-    row_lo: dict[int, int] = {}
-    row_hi: dict[int, int] = {}
-    for y in range(h):
-        xs = [x for x in range(w) if op(x, y)]
-        if not xs:
-            continue
-        row_lo[y], row_hi[y] = xs[0], xs[-1]
-        l0, r0 = xs[0], xs[-1]
-        if l0 + 2 <= r0 and dark(l0, y) and dark(l0 + 1, y) and op(l0 + 2, y) and not dark(l0 + 2, y):
-            cand.setdefault((l0, y), "h")
-        if r0 - 2 >= l0 and dark(r0, y) and dark(r0 - 1, y) and op(r0 - 2, y) and not dark(r0 - 2, y):
-            cand.setdefault((r0, y), "h")
+    읽고 한 번에 적용하므로 순회 순서와 무관하게 결과가 같다(JS 미러 바이트 동일 성질).
+    화소 순회 대신 배열로 읽는다 — 큰 칸에서는 굽기 시간의 대부분이 이 다듬기다."""
+    h, w = rgba.shape[:2]
+    op = rgba[..., 3] != 0
+    dark = _dark(rgba)
+    kind = np.zeros((h, w), np.int8)            # 후보: 1 = 열 끝 패턴('v'), 2 = 행 끝 패턴('h')
+    # 열 끝 패턴 — 그 열의 맨 위·맨 아래 불투명에서 '어두움-어두움-내부색'
+    cols = np.flatnonzero(op.any(axis=0))
+    if cols.size == 0:
+        return 0
+    t0 = op[:, cols].argmax(axis=0)
+    b0 = h - 1 - op[::-1, cols].argmax(axis=0)
+    three = t0 + 2 <= b0
+    y1, y2 = np.minimum(t0 + 1, h - 1), np.minimum(t0 + 2, h - 1)
+    top = three & dark[t0, cols] & dark[y1, cols] & op[y2, cols] & ~dark[y2, cols]
+    y1, y2 = np.maximum(b0 - 1, 0), np.maximum(b0 - 2, 0)
+    bottom = three & dark[b0, cols] & dark[y1, cols] & op[y2, cols] & ~dark[y2, cols]
+    kind[t0[top], cols[top]] = 1
+    kind[b0[bottom], cols[bottom]] = 1
+    # 행 끝 패턴 — 열 끝 후보가 이미 잡은 자리는 그대로 둔다 (먼저 잡은 축이 이긴다)
+    has = op.any(axis=1)
+    rows = np.flatnonzero(has)
+    lo = np.full(h, -1, np.int64)
+    hi = np.full(h, -1, np.int64)
+    lo[rows] = op[rows].argmax(axis=1)
+    hi[rows] = w - 1 - op[rows, ::-1].argmax(axis=1)
+    l0, r0 = lo[rows], hi[rows]
+    three = l0 + 2 <= r0
+    x1, x2 = np.minimum(l0 + 1, w - 1), np.minimum(l0 + 2, w - 1)
+    left = three & dark[rows, l0] & dark[rows, x1] & op[rows, x2] & ~dark[rows, x2]
+    x1, x2 = np.maximum(r0 - 1, 0), np.maximum(r0 - 2, 0)
+    right = three & dark[rows, r0] & dark[rows, x1] & op[rows, x2] & ~dark[rows, x2]
+    for ys, xs in ((rows[left], l0[left]), (rows[right], r0[right])):
+        free = kind[ys, xs] == 0
+        kind[ys[free], xs[free]] = 2
     # 1px 단독 돌출점 — 그 행의 어두운 끝점이 위아래 행 끝보다 정확히 1px 바깥으로 튀어나온
     # 경우(가로 매핑 반올림이 행마다 갈린 아티팩트). 2점 패턴이 아니라 위 후보에 안 잡힌다.
     # 점을 지우고 **안쪽 자리에 그 색을 그대로 그린다** — 이웃 행들과 정렬된 안쪽 선이 된다.
     # 안전: 돌출 정의상 (x, y±1) 은 투명이라(이웃 행 끝이 더 안쪽) 제거로 노출·구멍이 없다.
     # 가로(좌우) 한정 — 세로(정수리) 1px 계단은 작가 의도(머리카락 스파이크류)와 구분이
     # 안 돼 건드리지 않는다.
-    moves: dict[tuple[int, int], tuple[int, int, int, int]] = {}   # 안쪽좌표 -> 칠할 색
-    for y in sorted(row_lo):
-        up_lo, dn_lo = row_lo.get(y - 1), row_lo.get(y + 1)
-        m = row_lo[y]
-        if (up_lo is not None and dn_lo is not None and min(up_lo, dn_lo) - m == 1
-                and dark(m, y) and op(m + 1, y)):
-            cand.setdefault((m, y), "h")
-            if not dark(m + 1, y):
-                moves[(m + 1, y)] = src[m, y]
-        up_hi, dn_hi = row_hi.get(y - 1), row_hi.get(y + 1)
-        r = row_hi[y]
-        if (up_hi is not None and dn_hi is not None and r - max(up_hi, dn_hi) == 1
-                and dark(r, y) and op(r - 1, y)):
-            cand.setdefault((r, y), "h")
-            if not dark(r - 1, y):
-                moves[(r - 1, y)] = src[r, y]
-    # 안전 필터 고정점: 제거 대상에서 빠진 픽셀은 이웃 후보의 kept-dark 가 되므로 반복.
-    drop = set(cand)
-    changed = True
-    while changed:
-        changed = False
-        for p in sorted(drop):
-            x, y = p
-            neigh = ((x, y - 1), (x, y + 1)) if cand[p] == "h" else ((x - 1, y), (x + 1, y))
-            kept_dark = 0
-            ok = True
-            for nx, ny in neigh:
-                if not op(nx, ny) or (nx, ny) in drop:
-                    continue
-                if dark(nx, ny):
-                    kept_dark += 1
-                else:
-                    ok = False        # 내부색이 실루엣 끝으로 노출된다
-                    break
-            if not ok or kept_dark >= 2:  # 어두운 선 중간 구멍
-                drop.discard(p)
-                changed = True
-                break
-    for x, y in drop:
-        out.putpixel((x, y), (0, 0, 0, 0))
-    applied = len(drop)
-    for (x, y), color in moves.items():
-        if (x, y) not in drop:
-            out.putpixel((x, y), color)
+    mid = rows[(rows >= 1) & (rows <= h - 2)]
+    mid = mid[has[mid - 1] & has[mid + 1]]
+    moves: dict[tuple[int, int], np.ndarray] = {}   # 안쪽좌표 (y, x) -> 칠할 색 (같은 행이면 오른쪽이 덮는다)
+    m = lo[mid]
+    inner = np.minimum(m + 1, w - 1)
+    jut = (np.minimum(lo[mid - 1], lo[mid + 1]) - m == 1) & dark[mid, m] & (m + 1 < w) & op[mid, inner]
+    r = hi[mid]
+    inner_r = np.maximum(r - 1, 0)
+    jut_r = (r - np.maximum(hi[mid - 1], hi[mid + 1]) == 1) & dark[mid, r] & (r >= 1) & op[mid, inner_r]
+    for ys, xs, into in ((mid[jut], m[jut], inner[jut]), (mid[jut_r], r[jut_r], inner_r[jut_r])):
+        free = kind[ys, xs] == 0
+        kind[ys[free], xs[free]] = 2
+        paint = ~dark[ys, into]
+        for y, x, ix in zip(ys[paint].tolist(), xs[paint].tolist(), into[paint].tolist()):
+            moves[(y, ix)] = rgba[y, x].copy()
+    # 안전 필터 고정점
+    cy, cx = np.nonzero(kind)
+    row_pattern = kind[cy, cx] == 2
+    near = []                                   # 두 이웃 (가로 패턴은 위·아래, 세로 패턴은 왼·오른)
+    for step in (-1, 1):
+        ny = np.where(row_pattern, cy + step, cy)
+        nx = np.where(row_pattern, cx, cx + step)
+        inside = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+        ny, nx = np.clip(ny, 0, h - 1), np.clip(nx, 0, w - 1)
+        near.append((ny, nx, inside & op[ny, nx], inside & dark[ny, nx]))
+    drop = kind != 0
+    alive = np.ones(cy.size, bool)
+    while True:
+        bad = np.zeros(cy.size, bool)
+        kept_dark = np.ones(cy.size, bool)
+        for ny, nx, n_op, n_dark in near:
+            kept = n_op & ~drop[ny, nx]
+            bad |= kept & ~n_dark               # 내부색이 실루엣 끝으로 노출된다
+            kept_dark &= kept & n_dark          # 어두운 선 중간 구멍
+        failing = alive & (bad | kept_dark)
+        if not failing.any():
+            break
+        alive &= ~failing
+        drop[cy[failing], cx[failing]] = False
+    rgba[cy[alive], cx[alive]] = 0
+    applied = int(alive.sum())
+    for (y, x), color in moves.items():
+        if not drop[y, x]:
+            rgba[y, x] = color
             applied += 1
     return applied
 
@@ -299,7 +308,8 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
 
     세로는 행 국소 배율을 누적해 각 원본 행이 출력에서 몇 행을 차지하는지 정하고,
     가로는 행 안에서 위치마다 다른 밀도를 적분해 단조 사상을 만든다. 둘 다 정수
-    연산이라 출력이 정수 도트다.
+    연산이라 출력이 정수 도트다. 한 행의 사상은 배열 하나로 만든다 — 밀도 누적합은 차례대로
+    더하고(`np.cumsum`), 출력 열마다의 원본 열은 축 기준 경계를 넘은 개수다(`searchsorted`).
 
     `depth_x` 는 가로 성분의 독립 진폭이다 (maintainer 요청 2026-07-30 — 가로/세로 분리).
     None 이면 depth 를 따른다(레거시와 바이트 동일), 0 이면 가로 사상이 전 위상
@@ -307,15 +317,14 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
     box = solid_alpha_bbox(frame)
     if not box:
         return frame.copy()
-    body = frame.convert("RGBA").crop(box)
-    src = body.load()
-    width, height = body.size
+    body = np.asarray(frame.convert("RGBA").crop(box))
+    height, width = body.shape[:2]
     canvas_w, canvas_h = frame.size
     anchor_x = box[0] + anat.axis_x
     baseline = box[3]
 
     env, norm = envelope(anat)
-    p_of = protect(anat)
+    keep_cols = 1.0 - protect(anat)(np.arange(width))   # 열마다 늘어나는 몫 — 행마다 같다
     ru = anat.rigid_u
     dx_amp = depth if depth_x is None else depth_x
 
@@ -334,11 +343,12 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
         heights.append(acc)
     total = max(1, math.floor(acc + 0.5))
 
-    out = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-    dst = out.load()
+    out = np.zeros((canvas_h, canvas_w, 4), np.uint8)
+    opaque = body[..., 3] != 0
     y_cursor = baseline - total
     prev = 0
     clipped = 0
+    off = dict.fromkeys(FRAME_SIDES, 0)   # 변마다 밖으로 나간 불투명 (모서리 밖은 두 변 모두에 센다)
     deformed = False   # 이 위상에서 변형이 실제로 일어났나 (다듬기 게이트)
     for j in range(height):
         u = 1.0 - j / max(1, height - 1)
@@ -352,24 +362,20 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
             deformed = True                  # 행 복제/삭제 = 세로 변형이 실재
         if g == 0.0:
             # 변형 없음 = 원본 위치 그대로. 축 고정점 사상의 g->0 극한과 정확히 같다.
-            row_map = [(box[0] + i, i) for i in range(width)]
+            out_x = box[0] + np.arange(width)
+            src_x = np.arange(width)
         else:
             deformed = True                  # 가로 사상 변형이 실재
-            dens = [max(0.05, 1.0 + g * (1.0 - p_of(i))) for i in range(width)]
-            edge = [0.0]
-            for d in dens:
-                edge.append(edge[-1] + d)
+            dens = np.maximum(0.05, 1.0 + g * keep_cols)
+            edge = np.concatenate(([0.0], np.cumsum(dens)))
             origin = edge[anat.axis_x]       # 축을 고정점으로 — 여기가 anchor_x 에 박힌다
             # half-up 반올림: 파이썬 기본 round() 는 은행가 반올림(round(0.5)==0)이라
             # JS Math.round(half-up) 미러와 .5 경계에서 갈린다. 규칙을 명시해 고정한다.
             lo = math.floor(edge[0] - origin + 0.5)
             hi = math.floor(edge[width] - origin + 0.5)
-            row_map = []
-            i = 0
-            for ox in range(lo, hi):
-                while i < width - 1 and (edge[i + 1] - origin) <= ox:
-                    i += 1
-                row_map.append((anchor_x + ox, i))
+            ox = np.arange(lo, hi)
+            src_x = np.searchsorted(edge[1:width] - origin, ox, side="right")
+            out_x = anchor_x + ox
             # 외곽선 보존: 가로 축소 위상에서 forward 밀도매핑이 실루엣 양끝 열을 통째로
             # 떨궈 1px 외곽선이 사라진다(발끝 플리커, 실측 2026-07-30: 문어 idle y25~y28
             # 이 날숨 위상마다 소실). 이 행의 최말단 불투명 소스 열(= 외곽선)을 출력의
@@ -377,38 +383,60 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
             # 픽셀을 복사하므로 색·밝기가 정확히 보존되고(재도색 아님) 위상 간 잔여
             # 깜빡임이 없다. g==0 항등 분기(위)는 손대지 않아 "변형 0 = 원본 동일" 계약이
             # 그대로 산다. 축소가 아니면(양끝이 이미 외곽선을 실으면) no-op 이다.
-            op = [k for k in range(width) if src[k, j][3]]
-            if op and row_map:
-                op_lo, op_hi = op[0], op[-1]
-                for k in range(len(row_map) - 1, -1, -1):
-                    if src[row_map[k][1], j][3]:
-                        row_map[k] = (row_map[k][0], op_hi)
-                        break
-                for k in range(len(row_map)):
-                    if src[row_map[k][1], j][3]:
-                        row_map[k] = (row_map[k][0], op_lo)
-                        break
+            row_op = np.flatnonzero(opaque[j])
+            ends = np.flatnonzero(opaque[j, src_x])
+            if row_op.size and ends.size:
+                src_x[ends[-1]] = row_op[-1]
+                src_x[ends[0]] = row_op[0]
+        pixels = body[j, src_x]
+        shown = pixels[:, 3] != 0
+        left = int(np.count_nonzero(shown & (out_x < 0)))
+        right = int(np.count_nonzero(shown & (out_x >= canvas_w)))
+        inside = shown & (out_x >= 0) & (out_x < canvas_w)
+        n_shown, n_inside = int(np.count_nonzero(shown)), int(np.count_nonzero(inside))
         for r in range(reps):
             yy = y_cursor + r
-            for ox, si in row_map:
-                pixel = src[si, j]
-                if not pixel[3]:
-                    continue
-                if 0 <= yy < canvas_h and 0 <= ox < canvas_w:
-                    dst[ox, yy] = pixel
-                else:
-                    clipped += 1
+            if 0 <= yy < canvas_h:
+                out[yy, out_x[inside]] = pixels[inside]
+                clipped += n_shown - n_inside
+            else:
+                clipped += n_shown
+                off["top"] += n_shown if yy < 0 else 0
+            off["left"] += left
+            off["right"] += right
         y_cursor += reps
     if clipped:
         # 조용히 자르지 않는다 — 정수리나 옆구리가 셀 밖으로 나가면 스프라이트가
         # 망가지고, 그건 여백이나 진폭을 사람이 정해야 하는 문제다 (No Silent Fallback).
         raise SystemExit(
-            f"breathe: 늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 {clipped}개가 잘린다 "
-            f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). "
-            f"셀 여백을 늘리거나 depth 를 낮춰라.")
+            f"breathe: 늘어난 프레임이 셀 밖으로 나가 불투명 픽셀 {clipped}개가 잘린다 — {_sides_off(off)} "
+            f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). {_clip_advice(frame, off)}")
     if deformed:
         _thin_outline_1px(out)
-    return out
+    return Image.fromarray(out, "RGBA")
+
+
+SIDE_NAMES = {"top": "위", "left": "왼쪽", "right": "오른쪽"}
+
+
+def _sides_off(off: dict[str, int]) -> str:
+    return ", ".join(f"{SIDE_NAMES[s]} 변 밖 {off[s]}" for s in FRAME_SIDES if off[s])
+
+
+def _clip_advice(frame: Image.Image, off: dict[str, int]) -> str:
+    """pixel 이 셀 밖으로 민 칸의 거절 문구 끝 — 무엇을 하라는지. 밀려 나간 변이 그 칸 그림 자체의 테두리면
+    (`own_border`, video-frames 와 같은 판정) 그림이 원래 화면에 잘린 것일 수 있다 — 큰 일러·영상 칸은 smooth 가
+    머리와 화면 변을 제자리에 둔다. 여백 0 으로 자른 도트 스프라이트도 같은 판정에 걸려 둘을 가를 수 없으니 두
+    길을 다 말한다. 여백을 붙여 굽고 잘라 내는 우회는 밀려 나간 만큼을 조용히 잃는다."""
+    sides, outer = own_border(np.asarray(frame.convert("RGBA"))[..., 3] != 0)
+    crossed = [s for s in FRAME_SIDES if off[s] and s in sides]
+    if not crossed:
+        return "셀 여백을 늘리거나 depth 를 낮춰라."
+    covers = ", ".join(f"{SIDE_NAMES[s]} 변 바깥 줄 {outer[s]} px" for s in crossed)
+    return (f"그림이 {covers} 를 덮는다 — 그 변 길이의 {BORDER_MIN_FRACTION * 100:g} % 이상이라 그림 자체의 테두리로 "
+            f"읽힌다. 원래 화면에 잘린 그림(큰 일러·영상 칸)이면 mode smooth(`--mode smooth`)로 구워라 — 머리와 "
+            f"화면 변이 제자리에 있다. 여백을 붙여 굽고 잘라 내지 마라 — 밀려 나간 만큼 조용히 잃는다. 도트 "
+            f"스프라이트면 셀 여백을 늘리거나 depth 를 낮춰라.")
 
 
 # ── smooth 모드 (큰 일러·영상 프레임) ───────────────────────────────
@@ -590,7 +618,11 @@ def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float) -> Imag
     정사상(원본 점 p 의 내용이 p + D(p) 로 간다)의 역을 고정점 반복(q = o - D(q))으로 풀고, 그
     자리를 곱한 알파에서 쌍선형으로 뜬다. 변위가 행당 상한(MAX_ROW_STRAIN) 아래라 반복은
     수축이다. 움직이지 않는 픽셀(경계 위, 무게 밖)은 원본 바이트를 그대로 둔다 — 곱하고 나누는
-    왕복조차 거치지 않는다."""
+    왕복조차 거치지 않는다.
+
+    반복의 첫걸음은 밀림 검사가 이미 잰 D(o) 다. 첫걸음에 제자리(q = o)인 픽셀은 다음 걸음도 D(o) 라
+    끝까지 제자리이므로, 둘째 걸음부터는 첫걸음에 움직인 픽셀(무게 띠 안)만 다시 푼다 — 같은 식을
+    같은 점에서 재므로 결과가 같다."""
     rgba = frame.convert("RGBA")
     chest = smooth_wave(t)
     shoulders = smooth_shoulder_wave(t, _shape(cfg)["shoulder_lag"])
@@ -626,10 +658,14 @@ def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float) -> Imag
             f"breathe(smooth): 가슴 부풂이 불투명 픽셀 {clipped}개를 셀 밖으로 민다 "
             f"(셀 {canvas_w}x{canvas_h}, 콘텐츠 {box[0]},{box[1]}-{box[2]},{box[3]}). "
             f"chest_rx 나 depth_x 를 줄여라 — 기본 모양은 가슴 무게가 몸통 안에서 0 이 된다.")
-    qx, qy = ox.copy(), oy.copy()
-    for _ in range(8):
-        dx, dy = field(qx, qy)
-        qx, qy = ox - dx, oy - dy
+    qx, qy = ox - fx, oy - fy                        # 첫걸음: q = o - D(o)
+    going = (qx != ox) | (qy != oy)
+    gx, gy = ox[going], oy[going]
+    wx, wy = qx[going], qy[going]
+    for _ in range(7):
+        dx, dy = field(wx, wy)
+        wx, wy = gx - dx, gy - dy
+    qx[going], qy[going] = wx, wy
     moved = (qx != ox) | (qy != oy)
     if not moved.any():
         return rgba
@@ -651,7 +687,8 @@ def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float) -> Imag
     return Image.fromarray(out, "RGBA")
 
 
-def _smooth_phase_frame(frame: Image.Image, cfg: dict, phase: float, anat: Anatomy) -> Image.Image:
+def _smooth_refusals(cfg: dict, anat: Anatomy) -> None:
+    """smooth 줄이 굽기 전에 거부되는 까닭 — 해부와 설정에만 달려 줄에 한 번 본다."""
     lag = cfg.get("lag")
     if lag is not None and float(lag) != 0.0:
         # 진행파는 윗행 위상을 늦춰 위상 0 인 칸도 움직인다 — 조용히 버리지 않는다.
@@ -663,7 +700,6 @@ def _smooth_phase_frame(frame: Image.Image, cfg: dict, phase: float, anat: Anato
             f"breathe(smooth): 행당 변형 {strain:.3f}·최소 면적비 {area:.3f} — 상한 {MAX_ROW_STRAIN} 을 넘는다. "
             f"가슴·어깨가 오르는 만큼을 목 밴드와 가슴 무게가 못 받는다 (강체 경계 {anat.rigid_row}/{anat.height}, "
             f"기준 {anat.basis_rows}행). depth·depth_x 를 낮추거나 chest_rx·chest_ry 를 넓혀라. 조용히 깎지 않는다.")
-    return _smooth_warp(frame, anat, cfg, phase)
 
 
 # ── 해부 결과 얼리기 / 자가 복구 ────────────────────────────────────
@@ -790,15 +826,17 @@ def resolve_anatomy(reference: Image.Image, cfg: dict) -> Anatomy:
                    axis_x=cfg.get("axis_x"), torso_half=cfg.get("torso_half"))
 
 
-def anatomy_report(images: list[Image.Image], cfg: dict) -> dict:
+def anatomy_report(images: list[Image.Image], cfg: dict, anat: Anatomy | None = None) -> dict:
     """굽기가 실제로 쓴 해부를 manifest 에 실을 형태로 — 자가 복구를 관측 가능하게.
 
     줄 전체가 **한 벌**을 쓰므로 보고도 한 벌이다. 예전엔 프레임별로 재서
     `rigid_row_varies` 를 실어 보냈는데, 그건 관측이 아니라 결함의 증상이었다 —
-    경계가 프레임마다 움직이면 강체 구간이 프레임 간 같은 구간이 아니다."""
+    경계가 프레임마다 움직이면 강체 구간이 프레임 간 같은 구간이 아니다. 굽기에 넘길
+    해부를 이미 쟀으면 `anat` 로 받는다 (같은 칸을 두 번 재지 않는다)."""
     if not images:
         return {"anatomy": None, "matches_sidecar": True, "warnings": []}
-    anat = resolve_anatomy(images[0], cfg)
+    if anat is None:
+        anat = resolve_anatomy(images[0], cfg)
     baked = anat.as_dict()
     frozen = cfg.get("anatomy")
     # 사이드카가 들고 있던 캐시와 실제로 구운 값의 **대조**. 캐시가 없으면 대조할 게 없다.
@@ -899,11 +937,21 @@ def phase_frame(frame: Image.Image, cfg: dict, phase: float,
     `cfg["mode"]` 가 smooth 면 smooth 로 굽는다 — GIF·아틀라스·레이어·CLI 가 모두 여기를 탄다."""
     if anat is None:
         anat = resolve_anatomy(frame, cfg)
-    if breathe_mode(cfg) == "smooth":
-        return _smooth_phase_frame(frame, cfg, phase, anat)
-    depth = float(cfg.get("depth", DEFAULT_DEPTH))
+    _row_refusals(cfg, anat)
+    return _bake_phase(frame, cfg, phase, anat)
+
+
+def _pixel_depths(cfg: dict) -> tuple[float, float | None]:
     raw_dx = cfg.get("depth_x")
-    depth_x = None if raw_dx is None else float(raw_dx)
+    return float(cfg.get("depth", DEFAULT_DEPTH)), None if raw_dx is None else float(raw_dx)
+
+
+def _row_refusals(cfg: dict, anat: Anatomy) -> None:
+    """줄이 굽기 전에 거부되는 까닭 — 해부와 설정에만 달려 있어 줄에 한 번 본다 (칸마다 다시 재지 않는다)."""
+    if breathe_mode(cfg) == "smooth":
+        _smooth_refusals(cfg, anat)
+        return
+    depth, depth_x = _pixel_depths(cfg)
     for axis, d in (("depth", depth), ("depth_x", depth_x)):
         if d is None:
             continue
@@ -913,19 +961,29 @@ def phase_frame(frame: Image.Image, cfg: dict, phase: float,
                 f"breathe: 행당 변형({axis}) {strain:.3f} > 상한 {MAX_ROW_STRAIN} — 변형 구간이 너무 "
                 f"좁다 (강체 경계 {anat.rigid_row}/{anat.height}, 정규화 기준 {anat.basis_row}). "
                 f"{axis} 를 낮추거나 rigid_row 를 올려라. 조용히 깎지 않는다.")
+
+
+def _bake_phase(frame: Image.Image, cfg: dict, phase: float, anat: Anatomy) -> Image.Image:
+    """거부 검사(`_row_refusals`)를 마친 줄의 한 칸."""
+    if breathe_mode(cfg) == "smooth":
+        return _smooth_warp(frame, anat, cfg, phase)
+    depth, depth_x = _pixel_depths(cfg)
     return _warp(frame, anat, depth, float(cfg.get("lag", DEFAULT_LAG)), phase, depth_x=depth_x)
 
 
-def bake_breathe_sequence(images: list[Image.Image], cfg: dict) -> tuple[list[Image.Image], list[float]]:
+def bake_breathe_sequence(images: list[Image.Image], cfg: dict,
+                          anat: Anatomy | None = None) -> tuple[list[Image.Image], list[float]]:
     """재생 시퀀스에 호흡 레이어를 굽는다 -> (프레임들, 적용 위상들).
 
     출력 길이 = 입력 길이 (루프 불변 — 루프는 기존 프레임 그대로, 호흡이 그 안에서
-    breaths 회 딱 떨어진다)."""
+    breaths 회 딱 떨어진다). `anat` 는 줄의 해부 한 벌 — 생략하면 첫 칸에서 잰다."""
     if not images:
         return images, []
     phases = fit_breathe_pattern(len(images), cfg)
-    anat = resolve_anatomy(images[0], cfg)        # 줄 전체가 한 벌을 공유한다
-    return [phase_frame(images[i], cfg, phases[i], anat) for i in range(len(images))], phases
+    if anat is None:
+        anat = resolve_anatomy(images[0], cfg)    # 줄 전체가 한 벌을 공유한다
+    _row_refusals(cfg, anat)
+    return [_bake_phase(images[i], cfg, phases[i], anat) for i in range(len(images))], phases
 
 
 # ── CLI: 프레임 폴더에 굽기 (`sprite-gen breathe`) ─────────────────
@@ -1023,8 +1081,9 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
             images.append(opened.convert("RGBA"))
     if len({im.size for im in images}) != 1:
         raise SystemExit(f"breathe: 프레임 크기가 서로 다르다 — {sorted({im.size for im in images})}")
-    resolved = anatomy_report(images, cfg)
-    baked, phases = bake_breathe_sequence(images, cfg)
+    anat = resolve_anatomy(images[0], cfg)        # 보고와 굽기가 같은 한 벌 — 큰 칸은 재는 데 0.5 초다
+    resolved = anatomy_report(images, cfg, anat)
+    baked, phases = bake_breathe_sequence(images, cfg, anat)
     # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다. 같은 out 으로 도는
     # 실행들은 각자의 임시 폴더에 쓰고, rename 이 먼저 닿은 쪽이 내놓는다(늦은 쪽은 차 있는 out 에서 멈춘다).
     # 지우는 것은 이 실행의 임시 폴더뿐이고, 원본 폴더에는 아무것도 쓰지 않는다.

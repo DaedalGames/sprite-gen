@@ -36,7 +36,7 @@ from sprite_gen.effects import breathe as B
 from sprite_gen.effects.anatomy import analyze
 from sprite_gen.frames.extract import solid_alpha_bbox
 
-from tests.effects.test_breathe import _dome, _humanoid, _winged
+from tests.effects.test_breathe import _dome, _humanoid, _outlined_figure, _winged
 
 SKIN = (222, 184, 150, 255)
 BODY = (170, 120, 96, 255)
@@ -279,15 +279,17 @@ def test_no_seam_or_tear_between_the_head_and_the_body(h: int) -> None:
 # ── 7. pixel 기본은 바이트 같다 ─────────────────────────────────────
 
 # 이 플랜 전(59b2738)의 굽기 결과 — breaths 2, 12칸. 기본 경로가 한 바이트라도 바뀌면 깨진다.
+# `_outlined_figure` 는 굽기를 numpy 로 바꾸기 전(17f7490)에 잰 값이다 — 다듬기가 실제로 지우고 옮기는 큰 그림.
 PIXEL_GOLDEN = {
     "_humanoid": "4f212002c8cec96f4b207b56eec5195b2549069bbc066511385e3a92c74c1fcc",
     "_winged": "5bdf0c0997cf799bc7e3a82374dce16fb65db3545fb3a5f1f1df7b249fcbaf0d",
     "_dome": "492db9827109db3cf48d655437d102f22b1db4843d7121c4f4c65ea3a9fee443",
+    "_outlined_figure": "3dbc6bb827eb3d7b2fdbe96e3f1a7a2c094cbb99e1880a523341ce1cbc627c63",
 }
 PIXEL_KEYS = ["anatomy", "axis_x", "breaths", "depth", "depth_x", "lag", "rigid_row", "torso_half"]
 
 
-@pytest.mark.parametrize("build", [_humanoid, _winged, _dome], ids=lambda b: b.__name__)
+@pytest.mark.parametrize("build", [_humanoid, _winged, _dome, _outlined_figure], ids=lambda b: b.__name__)
 @pytest.mark.parametrize("mode", [None, "pixel"], ids=["mode-omitted", "mode-pixel"])
 def test_the_default_pixel_mode_is_byte_identical_to_before(build, mode) -> None:
     raw = {"depth": 0.06, "breaths": 2, "lag": 0.1}
@@ -384,6 +386,23 @@ def test_neutral_facing_values_bake_the_same_bytes(h, raw, digest, neutral) -> N
     frames, _ = B.bake_breathe_sequence([_bust(h)] * 12, _cfg({**raw, **neutral}))
     assert hashlib.sha256(b"".join(f.tobytes() for f in frames)).hexdigest() == digest, \
         "몸 방향 값이 중립인데 smooth 굽기가 바뀌었다"
+
+
+# 굽기를 빠르게 하기 전(17f7490)의 smooth 굽기 — 12칸. 몸 방향 값을 다 쓴 가슴과, 양옆 변에 닿은 흉상.
+# 변위장을 움직이는 화소에서만 다시 풀어도 같은 바이트여야 한다.
+SMOOTH_SPEEDUP_GOLDEN = [
+    (dict(h=400), {"mode": "smooth", "breaths": 2, "chest_tilt": 20, "chest_bias": 0.4, "chest_dir": -15,
+                   "chest_x": 0.1, "chest_bias_y": 0.2, "chest_flat": 0.2},
+     "48e6f8f1d976efceca3fb73857375dd1db232c62302de8768ade505008bf7c10"),
+    (dict(h=300, margin=0.0), {"mode": "smooth", "breaths": 1, "depth": 0.02},
+     "c233ec9c948663308bfe70f1b5e5affc5229c0ef2be4f982c9f5168b45389186"),
+]
+
+
+@pytest.mark.parametrize("bust,raw,digest", SMOOTH_SPEEDUP_GOLDEN, ids=["facing", "cut-at-the-sides"])
+def test_the_smooth_bake_keeps_its_bytes(bust, raw, digest) -> None:
+    frames, _ = B.bake_breathe_sequence([_bust(**bust)] * 12, _cfg(raw))
+    assert hashlib.sha256(b"".join(f.tobytes() for f in frames)).hexdigest() == digest, "smooth 굽기가 바뀌었다"
 
 
 def _field(anat, cfg, x, y):
@@ -672,6 +691,28 @@ def test_the_cli_bakes_what_the_curation_bake_bakes(tmp_path, raw, flags) -> Non
     assert report["config"] == json.loads(json.dumps(_cfg(raw)))
     assert report["phases"] == phases
     assert report["resolved"]["anatomy"]["rigid_row"] == analyze(frames[0]).rigid_row
+
+
+def test_the_cli_measures_the_row_once(tmp_path, monkeypatch) -> None:
+    """`sprite-gen breathe` 는 기준 칸을 한 번 잰다 — 보고와 굽기가 같은 해부를 쓴다. 행당 변형도 줄에 한 번
+    잰다 — 해부와 설정에만 달린 값이다. 960 칸 하나에 해부가 약 0.5 초, 행당 변형이 약 0.03 초다."""
+    from sprite_gen import cli
+
+    calls = {"analyze": 0, "smooth_strain": 0}
+    for name in calls:
+        real = getattr(B, name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            calls[_name] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(B, name, counted)
+    src = tmp_path / "loop"
+    src.mkdir()
+    for i, im in enumerate(_blinking()):
+        im.save(src / f"frame-{i:03d}.png")
+    assert cli.main(["breathe", str(src), str(tmp_path / "out"), "--mode", "smooth", "--breaths", "2"]) == 0
+    assert calls == {"analyze": 1, "smooth_strain": 1}
 
 
 def test_the_cli_refuses_what_the_sidecar_refuses(tmp_path) -> None:

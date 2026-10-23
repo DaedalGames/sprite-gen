@@ -174,8 +174,8 @@ def test_a_publication_that_cannot_finish_clears_only_its_own_staging(tmp_path, 
     before = _tree(src)
     bake = B.bake_breathe_sequence
 
-    def bake_while_another_writer_fills_out(images, cfg):
-        baked = bake(images, cfg)
+    def bake_while_another_writer_fills_out(*args, **kwargs):
+        baked = bake(*args, **kwargs)
         (out / "other.txt").write_bytes(b"another writer's\n")     # 확인 뒤, 내놓기 전에 남이 out 에 썼다
         return baked
 

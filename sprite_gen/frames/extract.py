@@ -53,6 +53,24 @@ def edge_alpha_count(image: Image.Image, margin: int) -> int:
     return total
 
 
+# The sides a subject can leave its frame by — the bottom is the floor it stands on, contact there is expected.
+FRAME_SIDES = ("top", "left", "right")
+# The drawing's own border (`own_border`): a side the subject covers on its outermost row or column for this share of
+# its length. A drawing cut there (a sleeve, hair off the top) covers far more; a strand's tip grazing the edge covers less.
+BORDER_MIN_FRACTION = 0.02
+
+
+def own_border(subject: np.ndarray) -> tuple[list[str], dict[str, int]]:
+    """The drawing's own border — (sides, outer_px): the `FRAME_SIDES` whose outermost row or column `subject`, an
+    (h, w) bool mask of the subject's pixels, covers for at least BORDER_MIN_FRACTION of the side's length, and the
+    pixels it covers on each. `video-frames` accepts subject contact there in every frame of a clip; Breathe's pixel mode
+    names it when it refuses a frame pushed off the cell. The rule: docs/video-pipeline.md section 3."""
+    h, w = subject.shape
+    outer = {"top": int(subject[0].sum()), "left": int(subject[:, 0].sum()), "right": int(subject[:, -1].sum())}
+    length = {"top": w, "left": h, "right": h}
+    return [s for s in FRAME_SIDES if outer[s] and outer[s] >= BORDER_MIN_FRACTION * length[s]], outer
+
+
 _KEY_CHANNEL_LIT = 192  # a channel the key saturates
 _KEY_CHANNEL_DARK = 64  # a channel the key leaves dark — the one bar `is_key_family` / `is_border_key_candidate` reuse
 

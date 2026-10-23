@@ -71,6 +71,7 @@ from sprite_gen.frames.cutout import cutout
 from sprite_gen.frames.decontam import palette_from_stats
 from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split, _painted_key_leans
 from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
+from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.console import utf8_streams
 
@@ -94,11 +95,7 @@ SPILL_REFERENCE_MAX = 0.005  # the still's own key material ≤ the engine's sma
 SPILL_REFERENCE_MARGIN = 1
 SPILL_REFERENCE_MAX_PIXELS = 6_000_000
 EDGE_MAX_PIXELS = 0  # any opaque pixel on the top/left/right edge band = contact
-SIDES = ("top", "left", "right")
-# The drawing's own border (`edge_border`): a side the first frame's subject covers on its outermost row or
-# column for this share of its length. A drawing cut there (a sleeve, hair off the top) covers far more; a
-# strand's tip grazing the edge covers less.
-BORDER_MIN_FRACTION = 0.02
+SIDES = FRAME_SIDES  # the top/left/right edge bands; the floor edge is expected contact
 # The body's rim the matte cut loose: on a border side, a key-only piece is accepted when it lies wholly within
 # RIM_REACH px of the frame's body (each way and diagonally) and holds fewer than SPECK_MIN_PX pixels — a few
 # pixels of a thin outline the key was blended into, left at the edge between strands. Anything larger or farther
@@ -331,17 +328,14 @@ def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tupl
     return {"subject": int(pixels["contact"].sum()) - residual, "residual": residual, "rim": int(pixels["rim"].sum())}
 
 
-def _border(pixels: dict[str, np.ndarray] | None, size: tuple[int, int], frame: str) -> dict[str, Any]:
-    """The drawing's own border, read on the first frame's edge pixels (`_edge_pixels`; None: it touches no edge),
-    `size` (w, h): `edge_border` in the report."""
-    w, h = size
-    outer = {side: 0 for side in SIDES}
+def _border(pixels: dict[str, np.ndarray] | None, frame: str) -> dict[str, Any]:
+    """The drawing's own border (`extract.own_border`), read on the first frame's edge pixels that are the subject
+    (`_edge_pixels`; None: it touches no edge): `edge_border` in the report."""
+    sides, outer = [], {side: 0 for side in SIDES}
     if pixels is not None:
-        subject = pixels["contact"] & ~pixels["residual"]
-        outer = {"top": int(subject[0].sum()), "left": int(subject[:, 0].sum()), "right": int(subject[:, -1].sum())}
-    length = {"top": w, "left": h, "right": h}
-    return {"frame": frame, "sides": [s for s in SIDES if outer[s] and outer[s] >= BORDER_MIN_FRACTION * length[s]],
-            "outer_px": outer, "min_fraction": BORDER_MIN_FRACTION, "rim_reach": RIM_REACH, "rim_under_px": SPECK_MIN_PX}
+        sides, outer = own_border(pixels["contact"] & ~pixels["residual"])
+    return {"frame": frame, "sides": sides, "outer_px": outer, "min_fraction": BORDER_MIN_FRACTION,
+            "rim_reach": RIM_REACH, "rim_under_px": SPECK_MIN_PX}
 
 
 def _taken(pixels: dict[str, np.ndarray], sides: list[str]) -> np.ndarray:
@@ -558,7 +552,7 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
                 contact.update(subject=int(pixels["contact"].sum()) - residual, residual=residual, rim=int(pixels["rim"].sum()))
                 contact["key_painted"] = stats.get("chroma_key_painted")
             if policy == "border" and k == 0:
-                border = _border(pixels, (w, h), src.name)
+                border = _border(pixels, src.name)
                 if border["sides"]:
                     print(f"video-frames: the first frame's subject runs off the {_sides(border['sides'])} — read as the "
                           "drawing's own border, where contact is accepted in every frame (`edge_border` in the report)",
