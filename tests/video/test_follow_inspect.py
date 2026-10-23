@@ -235,6 +235,7 @@ def test_each_region_has_its_gain_and_one_held_is_still_carried(tmp_path):
     assert [int(c.sum()) for c in changed] == [cell['changed_px'] for cell in record['cells']]
 
 
+@pytest.mark.slow
 def test_regions_are_recorded_in_the_order_given_and_cells_in_the_strips(tmp_path):
     reach = unit(tmp_path)
     crown = (66.0, 20.0, folding_at(1.755, reach), folding_at(1.755, reach))
@@ -259,6 +260,7 @@ def test_regions_are_recorded_in_the_order_given_and_cells_in_the_strips(tmp_pat
     assert len({tuple(box) for box in boxes}) == N and boxes[0][0] < boxes[1][0] and boxes[0][1] == boxes[1][1] < boxes[one['boards']['columns']][1]
 
 
+@pytest.mark.slow
 def test_what_was_read_names_the_evidence_and_another_cut_is_another(tmp_path):
     loop_dir = strip_dir(tmp_path/'loop')
     first = inspect(loop_dir, [CHEST], tmp_path/'a')
@@ -294,6 +296,7 @@ def test_what_was_read_names_the_evidence_and_another_cut_is_another(tmp_path):
     assert noted['cells'] == first['cells'] and slower['follow']['dy_px'] != first['follow']['dy_px']
 
 
+@pytest.mark.slow
 def test_what_the_answer_is_asked_with_is_in_the_id_and_how_the_boards_are_drawn_is_not(tmp_path):
     loop_dir = strip_dir(tmp_path/'loop')
     base = inspect(loop_dir, [CHEST], tmp_path/'base')

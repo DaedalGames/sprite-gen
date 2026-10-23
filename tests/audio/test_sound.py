@@ -78,6 +78,7 @@ def bundle(tmp_path, monkeypatch, name, seconds):
                           cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('name', HITS)
 def test_short_hits_pass_the_one_loudness_rule(tmp_path, monkeypatch, name):
     result = bundle(tmp_path, monkeypatch, name, HITS[name]['seconds'])
@@ -262,6 +263,7 @@ def test_cache_serializes_paid_requests_and_survives_uncertain_results(tmp_path)
         cache.obtain(db, {'a':2}, lambda: pytest.fail('ambiguous POST resent'))
 
 
+@pytest.mark.slow
 def test_actual_exports_are_normalized_and_reused(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(provider, 'generate', lambda req: (called.append(req) or wav_bytes(), {}))
@@ -291,6 +293,7 @@ def test_processing_failure_reuses_paid_audio(tmp_path, monkeypatch):
     assert sound.generate(**kw)['cache_hit'] and len(called) == 1
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('kind,duration,loop', [('sfx', .5, False), ('bgm', 3, True)])
 def test_short_effect_and_loop_encoded_playback(tmp_path, monkeypatch, kind, duration, loop):
     monkeypatch.setattr(provider, 'generate', lambda req: (wav_bytes(duration), {}))
@@ -403,6 +406,7 @@ def test_export_reserves_overlap_for_minimum_playback_rate(tmp_path, monkeypatch
             processing.export(tmp_path/'source', tmp_path, target_lufs=-20, loop=True, crossfade=overlap/48000)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('millisecond_timescale', [False, True])
 def test_m4a_container_preserves_declared_frames(tmp_path, monkeypatch, millisecond_timescale):
     frames = 144003
@@ -437,6 +441,7 @@ def test_missing_ffprobe_preflights_before_generation(tmp_path, monkeypatch):
                        cache_dir=tmp_path/'cache', out_dir=tmp_path/'out')
 
 
+@pytest.mark.slow
 def test_old_processed_output_is_rejected_but_raw_cache_survives(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(provider, 'generate', lambda req: (calls.append(req) or wav_bytes(), {}))

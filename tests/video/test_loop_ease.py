@@ -153,6 +153,7 @@ def _legs_off(frames: list[Image.Image], loop: list[Image.Image]) -> float:
     return max(float((np.abs(played[p] - filmed[p]) / np.median(filmed[p][filmed[p] > 0])).max()) for p in LEGS)
 
 
+@pytest.mark.slow
 def test_a_tail_that_rushes_on_at_the_wrap_is_spread_over_the_frames_either_side_and_refused_for_the_legs_beat():
     # 2.45.0 took this stretch. Its frames made spread the tail and keep the feet, the torso, the ground line and the rest
     # of the body within the stretch's own steps, and stop the legs where the tail is given its time: refused for the
@@ -197,6 +198,7 @@ def test_a_tail_that_rushes_on_at_the_wrap_is_spread_over_the_frames_either_side
     assert _legs_off(frames, out) <= BEAT
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("n, lag, hold", [(WRAP, LAG, 1), (SHORT, SHORT_LAG, 1), (14, 0.15, 1), (48, LAG, 2)])
 def test_whatever_spreads_a_rush_the_legs_keep_their_own_beat(n, lag, hold):
     # Every frame of the stretch is made whole, the legs with the tail: a time that gives the tail's rush more steps gives
@@ -216,6 +218,7 @@ def test_whatever_spreads_a_rush_the_legs_keep_their_own_beat(n, lag, hold):
             assert off.max() <= BEAT, f"{name}, {part}: step {int(off.argmax())} is {off.max():.2f} of an ordinary step off"
 
 
+@pytest.mark.slow
 def test_a_rush_the_flow_reading_lets_pass_is_read_too_and_refused_for_the_legs_beat():
     # A tail 15 % of a cycle short over 16 frames reads under the flow's limit: no frame is taken out, and it still rushes.
     # 2.45.0 took its stretch; the frames made spread the rush and stop the legs where the tail is given its time.
@@ -233,6 +236,7 @@ def test_a_rush_the_flow_reading_lets_pass_is_read_too_and_refused_for_the_legs_
     assert all(o is f for o, f in zip(out, frames)) and record["replaced"] == []
 
 
+@pytest.mark.slow
 def test_with_the_beat_bound_lifted_a_stretch_that_keeps_every_other_reading_is_played_as_made(monkeypatch):
     # The delivery itself. Lifted, the beat refuses nothing: the same stretch is taken, every frame of it shown as it was
     # made, every frame outside it the video's own, and no rush is left.
@@ -247,6 +251,7 @@ def test_with_the_beat_bound_lifted_a_stretch_that_keeps_every_other_reading_is_
     assert record["replaced"] == round_["replaced"] and round_["replaced"]
 
 
+@pytest.mark.slow
 def test_a_stretch_whose_frames_made_hurry_the_rest_of_the_body_is_refused():
     # Over 36 frames, easing a tail a tenth of a cycle short gives the rush more time and the steps around it less; the
     # search reads the rest of the body on the line between the frames as filmed and finds times that keep it, and the
@@ -264,6 +269,7 @@ def test_a_stretch_whose_frames_made_hurry_the_rest_of_the_body_is_refused():
     assert record["surge_after"] is not None and "replaced" not in round_
 
 
+@pytest.mark.slow
 def test_an_ordinary_walk_has_no_rush_and_nothing_is_made():
     for frames in (_loop(), _loop(hold=2), _walk(), _walk(hold=2)):
         assert repair.surges(frames) == []
@@ -277,6 +283,7 @@ def test_a_frame_flung_against_the_way_is_not_a_rush():
     assert repair.surges(_loop(flung={12: 12})) == [] and repair.surges(_walk(flung={12: 12})) == []
 
 
+@pytest.mark.slow
 def test_on_twos_each_drawing_is_made_once_for_both_its_frames_and_the_stretch_refused_for_the_legs_beat():
     # 2.45.0 took this stretch; read on its drawings, the frames made stop the legs where the tail is given its time.
     n = 48  # 24 drawings on twos
@@ -294,6 +301,7 @@ def test_on_twos_each_drawing_is_made_once_for_both_its_frames_and_the_stretch_r
     assert [f.tobytes() for f in out] == [f.tobytes() for f in flow_only]
 
 
+@pytest.mark.slow
 def test_a_made_frame_that_moves_the_body_further_than_the_stretch_did_refuses_the_ease():
     n = WRAP
     frames = _walk(n, lag=LAG)
@@ -315,6 +323,7 @@ def test_a_made_frame_that_moves_the_body_further_than_the_stretch_did_refuses_t
     assert set(record["replaced"]) == set(record["rounds"][0]["frames"])
 
 
+@pytest.mark.slow
 def test_a_made_frame_at_fault_refuses_the_ease_and_the_loop_stays_as_the_flow_left_it():
     n = WRAP
     frames = _walk(n, lag=LAG)
@@ -336,6 +345,7 @@ def test_a_made_frame_at_fault_refuses_the_ease_and_the_loop_stays_as_the_flow_l
     assert [f.tobytes() for f in out] == [f.tobytes() for f in flow_only]
 
 
+@pytest.mark.slow
 def test_without_an_interpolator_a_rush_is_named_and_nothing_is_made():
     frames = _walk(lag=0.1)
     out, record = repair.repair_jumps(frames, None)
@@ -343,6 +353,7 @@ def test_without_an_interpolator_a_rush_is_named_and_nothing_is_made():
     assert all(o is f for o, f in zip(out, frames)) and record["replaced"] == []
 
 
+@pytest.mark.slow
 def test_it_reads_the_same_stretch_and_refuses_it_alike_whichever_way_the_body_faces():
     # 2.45.0 took the same stretch either way; either way the frames made stop the legs where the tail is given its time.
     frames = _walk(SHORT, lag=SHORT_LAG)
@@ -413,6 +424,7 @@ def _cut(tmp_path, frames: list[Image.Image], **kw):
                              start=0, length=len(frames), anchor="none", **kw)
 
 
+@pytest.mark.slow
 def test_video_loop_reads_the_rush_refuses_the_stretch_for_the_legs_beat_and_plays_the_frames_as_cut(tmp_path, capsys):
     # 2.45.0 played this stretch's frames made; their legs stop where the tail is given its time. The stretch is made and
     # recorded, and the cells are the frames as cut.
@@ -434,6 +446,7 @@ def test_video_loop_reads_the_rush_refuses_the_stretch_for_the_legs_beat_and_pla
     assert written["why"] == "ease" and written["rejected_for"] == ["the body off its beat"]
 
 
+@pytest.mark.slow
 def test_a_rush_without_rife_is_cut_as_filmed_with_a_warning(tmp_path, monkeypatch, capsys):
     _no_rife(monkeypatch, tmp_path)
     frames = _walk(lag=0.1)
@@ -445,12 +458,14 @@ def test_a_rush_without_rife_is_cut_as_filmed_with_a_warning(tmp_path, monkeypat
     assert len(warning) == 1 and "sprite-gen rife install" in warning[0] and "not eased" in warning[0]
 
 
+@pytest.mark.slow
 def test_repair_on_without_rife_refuses_a_rush(tmp_path, monkeypatch):
     _no_rife(monkeypatch, tmp_path)
     with pytest.raises(SystemExit, match=r"for a part that rushes.*sprite-gen rife install"):
         _cut(tmp_path, _walk(lag=0.1), repair="on")
 
 
+@pytest.mark.slow
 def test_a_stretch_never_takes_more_than_half_the_loop_and_is_refused_for_the_legs_beat(monkeypatch):
     # Fourteen frames: four drawings a side would remake eight, more than the seven video-loop-compare reads back as the
     # repair's; three a side remakes six. 2.45.0 took the six; their legs stop where the tail is given its time.

@@ -226,6 +226,7 @@ def _bytes(frames) -> list[bytes]:
     return [np.asarray(f).tobytes() for f in frames]
 
 
+@pytest.mark.slow
 def test_a_tail_behind_the_body_is_read_where_it_is_drawn_on_every_frame():
     # Every frame of the clip, and frames made between two read at the time they show: none left out of the bounds.
     masker = _masker("side")
@@ -239,6 +240,7 @@ def test_a_tail_behind_the_body_is_read_where_it_is_drawn_on_every_frame():
     assert sum(_crossed(t) for t in range(N)) >= 4
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("reading", ["clip", "wrap"])
 @pytest.mark.parametrize("walker, rare", [("side", parts.RARE), ("back", parts.RARE), ("back_bushy", parts.RARE),
                                           ("side", parts.RARE / 2), ("side", 2 * parts.RARE),
@@ -255,6 +257,7 @@ def test_in_front_of_the_body_or_behind_it_is_read_from_the_clip(walker, rare, r
         assert read["order"] == "front" and read["front_share"] > parts.FRONT + 0.05, read
 
 
+@pytest.mark.slow
 def test_a_lay_reads_the_order_from_the_frames_beside_the_wrap_alone(monkeypatch):
     # A lay reads the rims of the clip's frames within WRAP of the wrap, on either side and in every cycle, and of no
     # other frame.

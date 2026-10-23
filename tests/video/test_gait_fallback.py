@@ -116,6 +116,7 @@ def test_a_body_that_keeps_its_place_and_size_reads_them_exactly():
     assert np.all(measured['height'] == y1-y0) and measured['drift'] == 0
 
 
+@pytest.mark.slow
 def test_the_size_hold_is_the_same_whatever_the_lapack_rounding(monkeypatch):
     """Feet that stand on the frame's bottom edge in every frame: the hold scales about them, so
     nothing reaches past that edge and no room is added below. The foot point is read off a fitted
@@ -139,6 +140,7 @@ def test_the_size_hold_is_the_same_whatever_the_lapack_rounding(monkeypatch):
     assert next(iter(seen))[0][3] == 0
 
 
+@pytest.mark.slow
 def test_a_clip_the_first_search_cuts_is_cut_without_the_fallback(tmp_path):
     code, report, output = run(tmp_path, [walker(k) for k in range(73)])
     assert code == 0
@@ -151,6 +153,7 @@ def test_a_clip_the_first_search_cuts_is_cut_without_the_fallback(tmp_path):
     assert 'padding_ltrb' not in report['size_hold']
 
 
+@pytest.mark.slow
 def test_a_cycle_longer_than_half_the_clip_is_found_by_the_fallback(tmp_path):
     frames = [walker(k, period=40) for k in range(73)]
     code, report, output = run(tmp_path, frames)
@@ -163,6 +166,7 @@ def test_a_cycle_longer_than_half_the_clip_is_found_by_the_fallback(tmp_path):
     assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
 
 
+@pytest.mark.slow
 def test_a_walk_toward_the_camera_is_held_at_its_size_before_the_first_search(tmp_path):
     frames = [walker(k, grow=0.2) for k in range(73)]
     code, report, output = run(tmp_path, frames)
@@ -178,6 +182,7 @@ def test_a_walk_toward_the_camera_is_held_at_its_size_before_the_first_search(tm
     assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
 
 
+@pytest.mark.slow
 def test_a_small_change_of_size_is_held_too(tmp_path):
     # Under the fallback's 3 %, over the hold's 1 %: held, the walker loops at its size; searched as
     # filmed, the growing walker never matches itself and the fallback does not scale it back.
@@ -209,6 +214,7 @@ def test_the_size_is_read_one_cycle_on():
     assert short['lag'] is None and short['drift'] == 0.0
 
 
+@pytest.mark.slow
 def test_a_first_pose_that_settles_into_the_walk_is_not_held(tmp_path):
     # Stood tall, then walking: a line through every frame reads a body that shrinks; one cycle on,
     # every pose is the size it was.
@@ -226,6 +232,7 @@ def test_a_first_pose_that_settles_into_the_walk_is_not_held(tmp_path):
     assert (output/'loop.strip.png').read_bytes() == (output_off/'loop.strip.png').read_bytes()
 
 
+@pytest.mark.slow
 def test_a_settle_does_not_hide_a_walk_that_grows(tmp_path):
     # The settle pulls the fitted line down by as much as the walk grows: a line reads under 1 %.
     frames = [settling(k, grow=0.025) for k in range(73)]
@@ -249,6 +256,7 @@ def walking_away(k, frames=73):
     return out
 
 
+@pytest.mark.slow
 def test_scaling_back_up_keeps_a_crown_carried_past_the_top():
     # Scaled back up about feet that have risen, the late frames' crown lands above the frame.
     # Widened first, nothing is cut.
@@ -279,6 +287,7 @@ def test_no_room_is_added_when_nothing_reaches_out():
     assert all(f.size == frames[0].size for f in undone)
 
 
+@pytest.mark.slow
 def test_the_held_loop_of_a_shrinking_walk_keeps_its_crown(tmp_path):
     frames = [walking_away(k) for k in range(73)]
     code, report, output = run(tmp_path, frames)
@@ -291,6 +300,7 @@ def test_the_held_loop_of_a_shrinking_walk_keeps_its_crown(tmp_path):
     assert np.all(np.abs((boxes[:, 3]-boxes[:, 1])-(first[3]-first[1])) <= 6)
 
 
+@pytest.mark.slow
 def test_a_walk_toward_the_camera_is_scaled_back_before_the_second_search(tmp_path):
     frames = [walker(k, grow=0.2) for k in range(73)]
     code, report, output = run(tmp_path, frames, '--size-hold', 'off')
@@ -308,6 +318,7 @@ def test_a_walk_toward_the_camera_is_scaled_back_before_the_second_search(tmp_pa
     assert not (output/loop.FALLBACK_FRAMES_DIR).exists()
 
 
+@pytest.mark.slow
 def test_no_cycle_in_either_search_says_so_and_keeps_the_gate_line(tmp_path):
     frames = [walker(0) for _ in range(73)]
     code, report, output = run(tmp_path, frames)

@@ -163,6 +163,7 @@ def repaint_source(case, index, paint):
     return frame
 
 
+@pytest.mark.slow
 def test_source_restoration_preserves_normal_motion_and_timing(case,tmp_path):
     result=repair(case,tmp_path)
     assert result['status']=='candidate' and result['schema_version']==REPAIR_SCHEMA
@@ -193,6 +194,7 @@ def test_source_restoration_preserves_normal_motion_and_timing(case,tmp_path):
     assert receipt['applied'][0]['proposal_id']==result['proposal_id']==comparison['restoration']['proposal_id']
 
 
+@pytest.mark.slow
 def test_next_independent_proposal_and_budget(case,tmp_path):
     first,second=repair(case,tmp_path,1),repair(case,tmp_path,2)
     assert first['target']!=second['target'] and first['proposal_id']!=second['proposal_id']
@@ -238,6 +240,7 @@ def test_missing_source_is_error_and_follow_is_shared_unknown(case,tmp_path):
     with pytest.raises(FileNotFoundError): source.Source.read(**inputs)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('mutation',['freeze','colour','alpha','duration','crop','report','receipt'])
 def test_tampered_final_artifacts_are_not_accepted(case,tmp_path,mutation):
     r=repair(case,tmp_path)
@@ -308,6 +311,7 @@ def test_cli_real_json_needs_the_origin(case,tmp_path,capsys):
     assert c['origin']['artifacts']==r['origin_artifacts']
 
 
+@pytest.mark.slow
 def test_key_spill_stays_out_and_the_rest_of_the_cell_is_restored(case,tmp_path):
     # A real source pixel can still be bad: copying it would bring key tint the delivered cell lacks.
     # Those places keep the delivered pixel; every other differing place is the source's.
@@ -364,6 +368,7 @@ def test_colours_beside_the_key_hue_are_copied_and_a_key_accent_is_left(case,tmp
     assert r['partial']['protected']['count']==1
 
 
+@pytest.mark.slow
 def test_less_total_key_spill_cannot_hide_new_local_key_spill(case,tmp_path):
     paths,inputs,_=case
     # More green is removed at one location than the source would bring at a different one.
@@ -541,6 +546,7 @@ def recolour_outline(colour):
     return paint
 
 
+@pytest.mark.slow
 def test_protected_outline_leaves_the_fault_and_is_not_adopted(case,tmp_path):
     # The source's outline is dark and key tinted: every outline pixel is protected, with the same coverage.
     # The copy then restores too little to clear the fault, and nothing else makes it an improvement.
@@ -627,6 +633,7 @@ def adopted(case,tmp_path):
     return origin,first,outputs(first)
 
 
+@pytest.mark.slow
 def test_later_request_rebuilds_the_new_baseline_from_the_origin(case,tmp_path,adopted):
     origin,first,current=adopted
     # The restored cell is not the source's whole cell, and is still verified: it is rebuilt from the origin.
@@ -664,6 +671,7 @@ REBUILT='not reproduced by the origin'; PIXELS='pixels differ from the origin re
 OUTSIDE='differs from the origin outside its restoration receipt'
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('tamper,refusal',[
     ('mask_run',REBUILT),('protected_pixel',PIXELS),
     ('list_emptied','lists no applied cell'),('receipt_removed','carries no restoration receipt'),
@@ -730,6 +738,7 @@ def test_other_policy_receipt_is_not_read_as_this_one(case,tmp_path,adopted):
         assert not (tmp_path/'other-policy').exists()
 
 
+@pytest.mark.slow
 def test_old_proposal_cannot_be_compared_on_the_new_baseline(case,tmp_path,adopted):
     origin,first,current=adopted
     second=repair(case,tmp_path,baseline=current,origin=origin,out='next-request')
@@ -781,6 +790,7 @@ def test_the_jump_around_a_restored_cell_is_the_jump_repairs_own_score(tmp_path,
     assert axis['cells'][0]['candidate']<=axis['cells'][0]['baseline'] and axis['status']!='regressed'
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('facing',['right'])
 def test_a_restored_cell_that_brings_its_jump_back_is_not_improved(tmp_path,facing):
     # The source frame under the melted cell is the jump the repair took out: its whole drawing stands
@@ -818,6 +828,7 @@ def test_a_jump_repair_record_without_its_facing_is_shared_unknown(case,tmp_path
     assert noop['comparison']['axes']['jump']=={'facing':None,'cells':[],'status':'non_regressing','reason':'no-jump-repaired-cell'}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('scaled,left,right,mixed,capped',[
     ('green',WARM,COOL,(105,114,105,255),(105,113,105,255))],indirect=['scaled'])
 def test_cli_restores_a_resampled_cell_with_its_made_excess_capped(scaled,tmp_path,left,right,mixed,capped):
@@ -877,6 +888,7 @@ def capped_baseline(scaled,tmp_path):
     return scaled[0],first,outputs(first)
 
 
+@pytest.mark.slow
 def test_capped_cell_is_rebuilt_from_the_origin_by_later_requests(scaled,tmp_path,capped_baseline):
     origin,first,current=capped_baseline
     second=repair(scaled,tmp_path,baseline=current,origin=origin,out='next-request')
@@ -895,6 +907,7 @@ def test_capped_cell_is_rebuilt_from_the_origin_by_later_requests(scaled,tmp_pat
     assert all(outputs(third)[k].read_bytes()==final[k].read_bytes() for k in final)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('tamper,refusal',[('capped_mask',REBUILT),('uncapped_pixel',PIXELS)])
 def test_changed_capped_cell_or_its_receipt_is_error(scaled,tmp_path,capped_baseline,tamper,refusal):
     origin,first,current=capped_baseline

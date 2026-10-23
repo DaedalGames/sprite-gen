@@ -126,6 +126,7 @@ def test_a_front_walk_carries_its_mid_step_redraw() -> None:
     assert "start_still" not in clip_prompt.plan_prompt(direction="side", state="walk", last_frame=False)
 
 
+@pytest.mark.slow
 def test_the_cli_prints_the_prompt_alone_or_the_record() -> None:
     args = [sys.executable, "-m", "sprite_gen.cli", "video-prompt", "--direction", "side", "--state", "walk", "--no-last-frame"]
     plain = subprocess.run(args, capture_output=True, encoding="utf-8")

@@ -94,6 +94,7 @@ def test_the_loop_cut_reads_its_loose_pieces_as_before():
     assert kept == 0 and keyed is image
 
 
+@pytest.mark.slow
 def test_a_motion_auto_loop_of_a_clip_with_a_fleck_is_cut_without_it(tmp_path):
     # The fleck drifts across the background far from the walker, never into the edge band: keyed and cut
     # with `--anchor motion-auto`, which never cleans a frame, the cells are only as wide as the walker.
@@ -187,6 +188,7 @@ def zoomed(k: int, *, period: int = 24, frames: int = 9, start: float = 0.63) ->
                                            resample=Image.Resampling.BICUBIC).convert("RGBA")
 
 
+@pytest.mark.slow
 def test_a_lead_in_is_the_first_frames_off_the_walks_size():
     lead = gait_fallback.lead_in([zoomed(k) for k in range(73)], min_lag=12, max_lag=36)
     assert 4 <= lead["frames"] <= 7 and lead["first_off"] < -0.3 and 0.45 < lead["height_change"] < 0.65
@@ -209,6 +211,7 @@ def test_a_lead_in_is_the_first_frames_off_the_walks_size():
     assert short["frames"] == 0 and "too short" in short["why"]
 
 
+@pytest.mark.slow
 def test_the_search_reads_the_walk_after_its_lead_in(tmp_path):
     # Searched as filmed, the reframing hides the walk's repeat and the gait fallback fails too.
     code, report, _ = walks.run(tmp_path, [zoomed(k) for k in range(73)], "--size-hold", "off")
@@ -222,6 +225,7 @@ def test_the_search_reads_the_walk_after_its_lead_in(tmp_path):
     assert report["window"] == list(loop.profile_for("walk").window(73 - lead["frames"], 24.0))
 
 
+@pytest.mark.slow
 def test_a_refusal_after_a_lead_in_names_windows_in_the_clips_frames(tmp_path):
     # Too slow a walk to repeat: refused, with the windows measured — every one after the lead-in, numbered
     # as the clip is, which `--cycle fixed --start` cuts on.
@@ -233,6 +237,7 @@ def test_a_refusal_after_a_lead_in_names_windows_in_the_clips_frames(tmp_path):
     assert lead >= 4 and min(starts) >= lead
 
 
+@pytest.mark.slow
 def test_the_gait_fallback_scales_back_by_the_size_read_one_cycle_on(tmp_path):
     # A walker that settles from its standing first pose and grows 5 %: a line through every frame reads
     # under 3 % and the frames were searched as filmed; one cycle on, the growth is read and scaled back.
@@ -264,6 +269,7 @@ def _fixed(tmp_path: Path, clip: list[Image.Image], start: int) -> tuple[dict, d
     return out, json.loads((tmp_path / "out" / "w.strip.json").read_text()), keyed
 
 
+@pytest.mark.slow
 def test_a_cut_after_a_lead_in_reads_the_standing_height_on_its_own_first_frame(tmp_path):
     # Read on the first frame, filmed small, the standing height scaled the walk up by half again.
     out, meta, keyed = _fixed(tmp_path, [zoomed(k) for k in range(73)], 12)

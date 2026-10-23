@@ -171,24 +171,22 @@ def _keyed(root: Path) -> Path:
     return keyed
 
 
-def _cut(root: Path, keyed: Path, *, repair_mode: str = "auto", interpolate=None, overlap: str | None = None) -> dict:
-    """The walker cut as `video-loop --state walk --anchor motion-auto` cuts it (with `--overlap-wrap overlap` where one is
-    given); the report, whether it passed or not."""
-    asked = {} if overlap is None else {"overlap_wrap": overlap}
+def _cut(root: Path, keyed: Path, *, repair_mode: str = "auto", interpolate=None) -> dict:
+    """The walker cut as `video-loop --state walk --anchor motion-auto` cuts it; the report, whether it passed or not."""
     try:
         loop.run_loop(keyed, root / "out", fps=24.0, state="walk", min_len=None, max_len=None, n_out=None,
                       seam_max=loop.SEAM_RATIO_MAX, name="loop", report_path=root / "loop.json", anchor="motion-auto",
-                      repair=repair_mode, interpolate=interpolate, **asked)
+                      repair=repair_mode, interpolate=interpolate)
     except SystemExit:
         pass
     return json.loads((root / "loop.json").read_text())
 
 
-@pytest.mark.parametrize("overlap", [None, "on"])
-def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cycle_apart(tmp_path, overlap):
+@pytest.mark.slow
+def test_a_tail_on_its_own_beat_is_closed_at_the_wrap_with_the_clips_frames_a_cycle_apart(tmp_path):
     keyed = _keyed(tmp_path)
     between = Between()
-    report = _cut(tmp_path, keyed, interpolate=between, overlap=overlap)
+    report = _cut(tmp_path, keyed, interpolate=between)
     c = report["cycle"]
     s, L = c["start"], c["length"]
     assert c["steps"] == {"count": 2, "by": "crossings"} and abs(L - CYCLE) <= 1
@@ -249,6 +247,7 @@ def test_the_drift_bound_is_the_stretch_as_the_loop_plays_it_never_the_clips_fra
         assert tried["drift"]["body_mass"]["bound"] == pytest.approx(_mass_step(stretch), abs=1e-3)
 
 
+@pytest.mark.slow
 def test_a_torso_that_slides_is_refused_however_the_tail_swings():
     """(b) The second walker whose frames a cycle on stand SLID px aside as well as carrying the tuft over: the clip walked
     on over the cycle, and a frame made near those frames slides the torso. Read on the torso, no run moves the walker
@@ -284,40 +283,13 @@ def test_a_tail_carried_over_alone_is_taken_the_torso_within_its_pixel():
                                                          "moved": _mass_step([new[q] for q in stretch])}, abs=1e-3)
 
 
-class Reads(Between):
-    """The stand-in, counting the frames the overlapped wrap asks it to read apart from those it is only asked to make."""
-
-    def __init__(self):
-        super().__init__()
-        self.reads = 0
-
-    def read(self, a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, np.ndarray]:
-        self.reads += 1
-        return super().read(a, b, t)
-
-
-def test_with_the_overlapped_wrap_off_nothing_is_read_for_the_wrap_and_the_gate_refuses_the_cut_as_filmed(tmp_path, capsys):
-    """`--overlap-wrap off` (a host whose RIFE runs on a CPU, where one frame of the wrap takes minutes): the wrap the gate
-    refuses is not made again. The interpolator reads no frame for it, the record says it was turned off, and the gate
-    refuses the cut as filmed — the loop fails on its seam, as it does where every run is refused."""
-    reads = Reads()
-    report = _cut(tmp_path, _keyed(tmp_path), interpolate=reads, overlap="off")
-    assert report["status"] == "failed" and report["error"].startswith("video-loop: loop seam ratio")
-    assert report["cycle"]["steps"] == {"count": 2, "by": "crossings"}
-    overlap = report["wrap_overlap"]
-    assert overlap["seam"] > loop.SEAM_RATIO_MAX and overlap["seam_max"] == loop.SEAM_RATIO_MAX
-    assert (overlap["skipped"], overlap["tries"], overlap["frames"], overlap["calls"]) == ("turned off (--overlap-wrap off)", [], [], 0)
-    assert reads.reads == 0 and "interpolator" not in overlap and "torso" not in overlap
-    assert "overlapped" not in report["jump_repair"]
-    err = capsys.readouterr().err
-    assert ("video-loop: warning: the cut's wrap does not close (seam " in err
-            and "the overlapped wrap was not made: turned off (--overlap-wrap off) (docs/loop-repair.md section 2)" in err)
-
-
-def test_the_cli_passes_overlap_wrap_off_and_on_is_its_default(tmp_path, monkeypatch, capsys):
-    """`sprite-gen video-loop --overlap-wrap off`, as a caller on a CPU passes it, reaches the cut: no RIFE is installed
-    here, and the record says the wrap was turned off, not that RIFE is missing. Without the flag the wrap is on; another
-    word is refused."""
+@pytest.mark.slow
+def test_with_the_overlapped_wrap_off_nothing_is_read_for_the_wrap_and_the_gate_refuses_the_cut_as_filmed(tmp_path, monkeypatch, capsys):
+    """`sprite-gen video-loop --overlap-wrap off`, as a caller passes it on a host whose RIFE runs on a CPU, where one frame
+    of the wrap takes minutes: the wrap the gate refuses is not made again. Nothing is read for it — no RIFE is installed
+    here, and the record says the wrap was turned off, not that RIFE is missing — and the gate refuses the cut as filmed:
+    the loop fails on its seam, as it does where every run is refused. Without the flag the wrap is on; another word is
+    refused."""
     parser = argparse.ArgumentParser()
     loop.add_arguments(parser)
     assert parser.parse_args(["--frames-dir", "k", "--out-dir", "o"]).overlap_wrap == "on"
@@ -328,19 +300,31 @@ def test_the_cli_passes_overlap_wrap_off_and_on_is_its_default(tmp_path, monkeyp
     with pytest.raises(SystemExit, match="^video-loop: loop seam ratio"):
         loop.main(["--frames-dir", str(keyed), "--out-dir", str(tmp_path / "out"), "--fps", "24.0", "--state", "walk",
                    "--anchor", "motion-auto", "--report", str(tmp_path / "loop.json"), "--overlap-wrap", "off"])
-    overlap = json.loads((tmp_path / "loop.json").read_text())["wrap_overlap"]
-    assert overlap["skipped"] == "turned off (--overlap-wrap off)" and overlap["calls"] == 0 and "rife" not in overlap
+    report = json.loads((tmp_path / "loop.json").read_text())
+    assert report["status"] == "failed" and report["error"].startswith("video-loop: loop seam ratio")
+    assert report["cycle"]["steps"] == {"count": 2, "by": "crossings"}
+    overlap = report["wrap_overlap"]
+    assert overlap["seam"] > loop.SEAM_RATIO_MAX and overlap["seam_max"] == loop.SEAM_RATIO_MAX
+    assert (overlap["skipped"], overlap["tries"], overlap["frames"], overlap["calls"]) == ("turned off (--overlap-wrap off)", [], [], 0)
+    # a frame read for the wrap looks for RIFE first, and where none is installed the record names it missing
+    assert "rife" not in overlap and "interpolator" not in overlap and "torso" not in overlap
+    assert "overlapped" not in report["jump_repair"]
+    err = capsys.readouterr().err
+    assert ("video-loop: warning: the cut's wrap does not close (seam " in err
+            and "the overlapped wrap was not made: turned off (--overlap-wrap off) (docs/loop-repair.md section 2)" in err)
     with pytest.raises(SystemExit, match="unknown --overlap-wrap 'auto'"):
         loop.run_loop(keyed, tmp_path / "again", fps=24.0, state="walk", min_len=None, max_len=None, n_out=None,
                       seam_max=loop.SEAM_RATIO_MAX, name="loop", report_path=None, anchor="motion-auto", overlap_wrap="auto")
 
 
+@pytest.mark.slow
 def test_the_cut_as_filmed_is_refused_at_the_seam_with_the_repair_off(tmp_path):
     report = _cut(tmp_path, _keyed(tmp_path), repair_mode="off")
     assert report["status"] == "failed" and report["error"].startswith("video-loop: loop seam ratio")
     assert report["cycle"]["steps"] == {"count": 2, "by": "crossings"} and "wrap_overlap" not in report
 
 
+@pytest.mark.slow
 def test_without_rife_the_wrap_is_cut_as_filmed_and_says_so(tmp_path, monkeypatch, capsys):
     _no_rife(monkeypatch, tmp_path)
     report = _cut(tmp_path, _keyed(tmp_path))
@@ -350,6 +334,7 @@ def test_without_rife_the_wrap_is_cut_as_filmed_and_says_so(tmp_path, monkeypatc
     assert "the overlapped wrap was not made" in capsys.readouterr().err
 
 
+@pytest.mark.slow
 def test_without_rife_and_the_repair_on_the_loop_fails_asking_for_it(tmp_path, monkeypatch):
     _no_rife(monkeypatch, tmp_path)
     report = _cut(tmp_path, _keyed(tmp_path), repair_mode="on")
@@ -366,6 +351,7 @@ def _stopped(tried: dict) -> dict:
     return stopped
 
 
+@pytest.mark.slow
 def test_a_made_frame_with_a_fault_ends_its_run_and_the_wrap_is_cut_as_filmed(tmp_path, capsys):
     """A stand-in that returns nothing: each run ends at the first frame it makes (`fault`), the rest of it not made, each
     width tried once, and the gate refuses the cut as filmed."""
@@ -406,6 +392,7 @@ class Torn(Between):
         return frame, apart
 
 
+@pytest.mark.slow
 def test_a_frame_its_passes_disagree_on_ends_its_run_and_the_wrap_is_cut_as_filmed(tmp_path, capsys):
     """The first walker with a stand-in whose passes disagree over a patch of its body on a frame made far from both of its
     two: each run makes the frame nearest a half first, reads it torn, and ends there, the rest of it not made; every
@@ -479,6 +466,7 @@ def _painted(tail: float) -> Image.Image:
     return Image.fromarray(np.uint8(np.clip(f, 0, 1) * 255 + 0.5), "RGBA")
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 @pytest.mark.timeout(900)  # 102 calls of the binary at 480 x 640: over a minute on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_a_frame_made_across_a_hand_is_torn_and_refused_and_a_short_swing_is_kept():

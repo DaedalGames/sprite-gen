@@ -14,6 +14,7 @@ detect_pixel_grid 는 정수 씨앗 ±0.75 창 안에서만 소수 피치를 정
 import json
 import random
 
+import pytest
 from PIL import Image
 
 import sprite_gen.frames.extract as extract_module
@@ -156,6 +157,7 @@ def _build_pixel_perfect_run(root):
     return run_dir
 
 
+@pytest.mark.slow
 def test_pipeline_reports_crosscheck_warning_without_touching_snap(tmp_path, monkeypatch, capsys):
     """통합 계약 두 가지를 한 픽스처로 고정한다.
 

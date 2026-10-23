@@ -122,10 +122,12 @@ def _check_made_time(report: dict) -> None:
                for w in report["warnings"])
 
 
+@pytest.mark.slow
 def test_a_ghost_kept_at_a_made_time_is_a_take_to_film_again_and_its_fault_line_says_so(tmp_path):
     _check_made_time(_made_time(tmp_path, tg._follow))
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_a_ghost_kept_at_a_made_time_is_a_take_to_film_again(tmp_path):
     """A2 through the real RIFE: its frame between the two ghosts carries them, and the cell keeps the ghost.

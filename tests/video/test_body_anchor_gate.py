@@ -91,6 +91,7 @@ def _refused(root: Path, keyed: Path, name: str, **kw) -> tuple[str, dict]:
     return str(exc.value), json.loads((root / f"{name}.json").read_text())
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("start", [0, 3, 6, 12])
 def test_a_walk_that_slides_sideways_passes_on_the_cells_the_ramp_plays(tmp_path: Path, start: int):
     """A cut of one stride, from wherever it starts: the source frames read its wrap about three times an ordinary
@@ -109,6 +110,7 @@ def test_a_walk_that_slides_sideways_passes_on_the_cells_the_ramp_plays(tmp_path
     assert refused["seam_measurement"] == "source-frames" and "seam_after_anchor" not in refused
 
 
+@pytest.mark.slow
 def test_the_walk_passes_as_cut_again_by_hand_with_the_repair_on_and_as_found(tmp_path: Path, monkeypatch):
     """The walk cut again by hand with the repair as it runs by default, and the stride the search finds: the repair
     makes no frame (none is off the flow), so the gate's reading of the cells that play is what passes them."""
@@ -148,6 +150,7 @@ REFUSED = {
 }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("case", list(REFUSED))
 def test_a_wrap_the_ramp_does_not_close_is_refused_as_the_source_frames_refuse_it(tmp_path: Path, case: str):
     at, spoil, kw = REFUSED[case]
@@ -160,6 +163,7 @@ def test_a_wrap_the_ramp_does_not_close_is_refused_as_the_source_frames_refuse_i
     assert message == _refused(tmp_path, keyed, "none", anchor="none", **kw)[0]
 
 
+@pytest.mark.slow
 def test_a_cut_the_source_frames_pass_is_not_read_again(tmp_path: Path):
     """The walk with no slide (the anchor moves nothing), the sliding walk under a limit its source frames pass, and a
     walk whose first frame moved 3 px, which the source frames pass: the gate's reading is the source frames', the
@@ -180,6 +184,7 @@ def test_a_cut_the_source_frames_pass_is_not_read_again(tmp_path: Path):
     assert reports[sliding]["resampled_seam_ratio"] > loop_mod.SEAM_RATIO_MAX
 
 
+@pytest.mark.slow
 def test_a_pinned_walk_is_gated_by_its_pin_and_read_on_its_source_frames(tmp_path: Path):
     """A clip pinned to end on its first frame: the cut is every frame but the last, and the gate is the pin. The
     sliding walk's wrap reads over the seam limit on the source frames and the ramp moves its cells, but nothing is

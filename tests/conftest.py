@@ -80,11 +80,30 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="the RIFE-less run of scripts/linux_lane.sh: a skip fails unless its test is marked real_rife "
         "or named in NOT_RIFE_SKIPS (tests/conftest.py)",
     )
+    parser.addoption(
+        "--full",
+        action="store_true",
+        help="run every test; without it a run is the fast bundle, the tests marked slow deselected. "
+        "The release lane (scripts/linux_lane.sh) runs with it",
+    )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """A test marked `real_rife` runs the real binary: skipped where `rife.locate()` finds none, and run
+def pytest_report_header(config: pytest.Config) -> str | None:
+    if not config.getoption("full"):
+        return "fast bundle: the tests marked slow are deselected; `pytest --full` runs every test"
+    return None
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Without `--full` the tests marked `slow` are deselected: a plain `pytest` is the fast bundle.
+
+    A test marked `real_rife` runs the real binary: skipped where `rife.locate()` finds none, and run
     by `scripts/linux_lane.sh --rife-only` (`-m real_rife`)."""
+    if not config.getoption("full"):
+        slow = [item for item in items if item.get_closest_marker("slow")]
+        if slow:
+            config.hook.pytest_deselected(items=slow)
+            items[:] = [item for item in items if not item.get_closest_marker("slow")]
     marked = [item for item in items if item.get_closest_marker("real_rife")]
     if not marked:
         return

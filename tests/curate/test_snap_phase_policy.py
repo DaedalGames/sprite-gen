@@ -17,6 +17,7 @@ import random
 import shutil
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from conftest import run_script
@@ -76,6 +77,7 @@ def _build_run(run_dir: Path, frames: int = 2) -> Image.Image:
     return art
 
 
+@pytest.mark.slow
 def test_extraction_keeps_every_logical_cell_when_the_true_phase_is_offset(tmp_path: Path) -> None:
     """위상이 비영인 판을 추출해도 논리 칸 수가 한 칸도 줄지 않아야 한다.
 
