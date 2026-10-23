@@ -437,7 +437,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     # The Breathe layer for frames that are not a curation run (a video loop's cells): the sidecar's values, its
     # normalization and its bake, so the same values give the same bytes either way.
     "breathe": (
-        "Lay the Breathe layer over a folder of loop frames: pixel (default) or smooth (large illustrations, video frames).",
+        "Lay the Breathe layer over a folder of loop frames: pixel (default) or smooth (large illustrations, video frames); smooth can choose its beat to miss the hands (--avoid-region).",
         breathe.add_arguments,
         breathe.run,
     ),

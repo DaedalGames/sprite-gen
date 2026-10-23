@@ -76,7 +76,7 @@ from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
-from sprite_gen.frames.folder import open_frames, publish
+from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
 # 이 테이퍼가 이음매를 없앤다 — 경계에서 강도가 계단이 아니라 경사로 떨어진다.
@@ -1005,6 +1005,17 @@ def _cells(text: str) -> list[int]:
         raise argparse.ArgumentTypeError(f"cell numbers separated by commas, not {text!r}")
 
 
+def _box(text: str) -> tuple[float, float, float, float]:
+    try:
+        x0, y0, x1, y1 = (float(part) for part in text.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"x0,y0,x1,y1 as shares of the picture (0..1), not {text!r}")
+    if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+        raise argparse.ArgumentTypeError(f"x0,y0,x1,y1 as shares of the picture, 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1, "
+                                         f"not {text!r}")
+    return x0, y0, x1, y1
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("frames", help="folder of the loop's frames (*.png, played in name order)")
     parser.add_argument("out", help="new folder for the breathing frames (same names) and breathe.json")
@@ -1047,6 +1058,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     shape.add_argument("--breath-peaks", type=_cells, default=None, metavar="CELL,CELL,...",
                        help="smooth: the cells where each in-breath peaks (the breath count is how many); the first "
                             "cell stays at rest and the loop closes at rest")
+    beat = parser.add_argument_group("the beat chosen to miss the hands (smooth; off by default)")
+    beat.add_argument("--avoid-region", type=_box, default=None, metavar="X0,Y0,X1,Y1",
+                      help="the hands in front of the chest, as shares of the picture: the breath count (or each in-breath "
+                           "peak) is chosen from the frames so the in-breath peaks miss the hands' own rise and the chest stays "
+                           "above them; the choice and every candidate go into breathe.json `beat`. Not with --breaths or "
+                           "--breath-peaks")
+    beat.add_argument("--avoid-anchor", type=_box, default=None, metavar="X0,Y0,X1,Y1",
+                      help="the body the hands' own move is read against, as shares of the picture (default: the band just "
+                           "above the hands, in their columns)")
+    beat.add_argument("--fps", type=float, default=None,
+                      help="the frames' rate, for the length of a breath (a video-loop cycle/ folder has its own in the "
+                           "loop's strip meta)")
+
+
+def _cli_breathe(raw: dict) -> dict:
+    try:
+        return state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
+    except SystemExit as exc:
+        raise SystemExit(f"breathe: 사이드카와 같은 검사에서 거부됐다 — {exc}")
 
 
 def run(*, frames: str, out: str, mode: str | None = None, depth: float | None = None,
@@ -1055,9 +1085,12 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None,
         chest_tilt: float | None = None, chest_bias: float | None = None, chest_dir: float | None = None,
         chest_x: float | None = None, chest_bias_y: float | None = None, chest_flat: float | None = None,
-        breath_peaks: list[int] | None = None) -> int:
+        breath_peaks: list[int] | None = None, avoid_region: tuple[float, float, float, float] | None = None,
+        avoid_anchor: tuple[float, float, float, float] | None = None, fps: float | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
-    같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다."""
+    같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다.
+
+    `avoid_region` 이면 숨 박자를 칸에서 고른다(`breath_beat`) — 고른 박자도 사이드카와 같은 검사를 다시 지난다."""
     src_dir, out_dir = Path(frames), Path(out)
     raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
                              ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
@@ -1066,18 +1099,30 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
                              ("chest_x", chest_x), ("chest_bias_y", chest_bias_y), ("chest_flat", chest_flat),
                              ("breath_peaks", breath_peaks))
            if v is not None}
-    try:
-        cfg = state_breathe({"states": {"frames": {"breathe": raw}}}, "frames")
-    except SystemExit as exc:
-        raise SystemExit(f"breathe: 사이드카와 같은 검사에서 거부됐다 — {exc}")
+    if avoid_region is None and (avoid_anchor is not None or fps is not None):
+        raise SystemExit("breathe: --avoid-anchor 와 --fps 는 --avoid-region 의 것이다 — 손 상자 없이는 읽지 않는다")
+    if avoid_region is not None and (breaths is not None or breath_peaks is not None):
+        raise SystemExit("breathe: --avoid-region 은 숨 박자를 칸에서 고른다 — --breaths·--breath-peaks 와 같이 주지 마라")
+    cfg = _cli_breathe(raw)
+    if avoid_region is not None and breathe_mode(cfg) != "smooth":
+        raise SystemExit("breathe: --avoid-region 은 smooth 의 것이다 (--mode smooth) — pixel 숨은 진행파라 첫 칸이 쉼이 아니다")
     folder = open_frames(src_dir, out_dir, "breathe")      # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다
     images = folder.images
     anat = resolve_anatomy(images[0], cfg)        # 보고와 굽기가 같은 한 벌 — 큰 칸은 재는 데 0.5 초다
+    beat = None
+    if avoid_region is not None:
+        from sprite_gen.effects import breath_beat      # 박자 고르기가 이 모듈을 읽는다 — 돌아 들어오지 않게 여기서
+        frame_ms = cycle_frame_ms(src_dir, len(images), fps, "breathe")
+        if frame_ms is None:
+            raise SystemExit("breathe: --avoid-region 은 한 숨의 길이를 초로 본다 — --fps 를 주라 (video-loop 의 cycle/ "
+                             "폴더면 루프의 strip meta 에서 읽는다)")
+        chosen, beat = breath_beat.choose(images, smooth_lift(anat, cfg), avoid_region, avoid_anchor, frame_ms)
+        cfg = _cli_breathe(raw | chosen)
     resolved = anatomy_report(images, cfg, anat)
     baked, phases = bake_breathe_sequence(images, cfg, anat)
     # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다(frames.folder.publish).
     publish(folder, baked, "breathe.json", {"frames": len(images), "source": str(src_dir), "config": cfg,
-                                            "phases": phases, "resolved": resolved})
+                                            "phases": phases, "resolved": resolved} | ({} if beat is None else {"beat": beat}))
     print(f"breathe: {len(images)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
           f"breaths {cfg['breaths']} -> {out_dir}")
     return 0
