@@ -61,7 +61,6 @@ def chest_region(loop_dir):
     return ((xs.min()+xs.max())/2, (ys.min()+ys.max())/2, (xs.max()-xs.min())/2+4, (ys.max()-ys.min())/2+4)
 
 
-@pytest.mark.slow
 def test_the_region_moves_with_the_bob_and_nothing_else_does(loop_dir):
     before = json.loads((loop_dir/'walk.strip.json').read_text())
     old = cells(loop_dir/'walk.strip.png', before)

@@ -95,7 +95,6 @@ def _first_difference(name: str, was: str, now: str) -> str:
     return f"{name}:\n" + "\n".join(diff)
 
 
-@pytest.mark.slow
 def test_the_table_is_the_one_the_fixture_was_drawn_from(frozen, drawn) -> None:
     assert sorted(drawn) == sorted(frozen)
     assert {name.split("/")[0] for name in frozen} == set(GROUPS)
