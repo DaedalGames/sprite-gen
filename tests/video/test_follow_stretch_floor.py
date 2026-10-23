@@ -164,7 +164,7 @@ def test_the_floor_is_read_between_0_and_1(probes, tmp_path):
 def test_q1_the_bend_is_the_moves_steepest_tilt_and_a_lowered_region_moves_just_under_45_degrees(probes, tmp_path):
     _, region = X1
     record = follow_inspect.inspect_loop(probes['X1'], [region], tmp_path/'out', on_fold='lower')
-    assert record['schema_version'] == 2
+    assert record['schema_version'] == 3
     radius = min(region[2:])
     for cell in record['cells']:
         entry = cell['regions'][0]
