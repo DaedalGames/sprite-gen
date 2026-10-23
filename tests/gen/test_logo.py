@@ -63,7 +63,8 @@ class FakeProvider:
         lines = self.reads.pop(0)
         if isinstance(lines, Exception):
             raise lines
-        return json.dumps({"lines": lines}), {"model": "fake-vision", "auth_source": self.auth, "transport": "fake"}
+        return json.dumps({"lines": lines}), {"model": "fake-vision", "effort": "fake-effort", "auth_source": self.auth,
+                                              "transport": "fake"}
 
     def inspect_facing(self, path: Path, workdir: Path):  # pragma: no cover - not used by logo
         raise AssertionError("logo never asks for a facing")
@@ -135,7 +136,7 @@ def test_empty_text_is_refused_before_anything_is_bought(tmp_path, fake) -> None
 
 
 def test_a_title_the_mood_image_dropped_is_refused_before_the_lettering_is_bought(tmp_path, fake) -> None:
-    provider = fake(reads=(["IO"],))
+    provider = fake(reads=(["IO"], ["IO"]))
     with pytest.raises(SystemExit, match="mood image"):
         _run(tmp_path)
     assert len(provider.requests) == 1
@@ -148,7 +149,7 @@ def test_a_title_the_mood_image_dropped_is_refused_before_the_lettering_is_bough
 
 
 def test_a_logo_whose_letters_differ_from_the_text_is_refused_and_kept_aside(tmp_path, fake) -> None:
-    fake(reads=(["ION"], ["I0N"]))
+    fake(reads=(["ION"], ["I0N"], ["I0N"]))
     with pytest.raises(SystemExit, match="logo reads"):
         _run(tmp_path)
     out = tmp_path / "logo"
@@ -159,7 +160,7 @@ def test_a_logo_whose_letters_differ_from_the_text_is_refused_and_kept_aside(tmp
 
 
 def test_no_text_read_at_all_is_refused(tmp_path, fake) -> None:
-    fake(reads=(["ION"], []))
+    fake(reads=(["ION"], [], []))
     with pytest.raises(SystemExit, match="logo reads"):
         _run(tmp_path)
     assert _report(tmp_path)["text_check"]["logo"]["verdict"] == "no-text"
@@ -176,6 +177,108 @@ def test_a_check_that_could_not_run_is_said_not_passed(tmp_path, fake, capsys) -
     assert (tmp_path / "logo" / "logo.png").is_file()
 
 
+# A text check reads the image again while it reads other letters (docs/logo.md, the text check): one reading that
+# spells the text passes, and only readings that all differ refuse, up to `logo.MAX_READS` readings.
+def _readings(check: dict) -> list[tuple]:
+    return [(r["reading"], r["verdict"], r.get("read")) for r in check["readings"]]
+
+
+def test_one_reading_that_matches_is_the_whole_check(tmp_path, fake) -> None:
+    provider = fake(reads=(["ION"], ["ION"]))
+    assert _run(tmp_path) == 0
+    assert len(provider.looked) == 2  # one reading at each check
+    report = _report(tmp_path)
+    for step in ("mood", "logo"):
+        check = report["text_check"][step]
+        assert check["verdict"] == "match" and check["max_reads"] == logo.MAX_READS
+        assert _readings(check) == [(1, "match", ["ION"])]
+    assert [(c["step"], c.get("reading")) for c in report["calls"]] == [
+        ("mood", None), ("mood-check", 1), ("lettering", None), ("logo-check", 1)]
+
+
+def test_a_misreading_read_again_as_asked_passes_at_either_check(tmp_path, fake) -> None:
+    provider = fake(reads=(["I0N"], ["ION"], ["IDN"], ["ION"]))
+    assert _run(tmp_path) == 0
+    assert len(provider.looked) == 4
+    report = _report(tmp_path)
+    assert report["status"] == "ok" and (tmp_path / "logo" / "logo.png").is_file()
+    for step, first in (("mood", ["I0N"]), ("logo", ["IDN"])):
+        check = report["text_check"][step]
+        assert check["verdict"] == "match" and check["read"] == ["ION"]
+        assert _readings(check) == [(1, "mismatch", first), (2, "match", ["ION"])]
+    assert [(c["step"], c.get("reading")) for c in report["calls"]] == [
+        ("mood", None), ("mood-check", 1), ("mood-check", 2), ("lettering", None), ("logo-check", 1), ("logo-check", 2)]
+
+
+def test_two_misreadings_refuse_the_mood_image_and_name_both(tmp_path, fake) -> None:
+    provider = fake(reads=(["IO"], ["I0"]))
+    with pytest.raises(SystemExit, match=r"mood image reads \['IO'\] and then \['I0'\], not"):
+        _run(tmp_path)
+    assert len(provider.requests) == 1 and len(provider.looked) == 2  # the lettering was not bought
+    check = _report(tmp_path)["text_check"]["mood"]
+    assert check["verdict"] == "mismatch"
+    assert _readings(check) == [(1, "mismatch", ["IO"]), (2, "mismatch", ["I0"])]
+
+
+def test_two_misreadings_refuse_the_logo_and_keep_it_aside(tmp_path, fake) -> None:
+    fake(reads=(["ION"], ["I0N"], ["IDN"]))
+    with pytest.raises(SystemExit, match=r"logo reads \['I0N'\] and then \['IDN'\], not"):
+        _run(tmp_path)
+    out = tmp_path / "logo"
+    assert not (out / "logo.png").exists() and (out / "logo.rejected.png").is_file()
+    check = _report(tmp_path)["text_check"]["logo"]
+    assert check["verdict"] == "mismatch"
+    assert _readings(check) == [(1, "mismatch", ["I0N"]), (2, "mismatch", ["IDN"])]
+
+
+def test_a_check_reads_no_more_than_max_reads(tmp_path, fake, monkeypatch) -> None:
+    provider = fake(reads=(["IO"], ["I0"], ["ION"]))
+    with pytest.raises(SystemExit, match="mood image"):
+        _run(tmp_path)
+    assert logo.MAX_READS == 2 and len(provider.looked) == 2
+    assert provider.reads == [["ION"]]  # the third answer was never asked for
+    monkeypatch.setattr(logo, "MAX_READS", 3)  # the limit is the name, not a number written in the check
+    provider = fake(reads=(["IO"], ["I0"], ["ION"], ["ION"]))
+    assert _run(tmp_path) == 0
+    check = _report(tmp_path)["text_check"]["mood"]
+    assert check["max_reads"] == 3
+    assert _readings(check) == [(1, "mismatch", ["IO"]), (2, "mismatch", ["I0"]), (3, "match", ["ION"])]
+
+
+def test_a_call_that_failed_is_not_asked_again(tmp_path, fake) -> None:
+    provider = fake(reads=(["ION"], RuntimeError("vision down"), ["ION"]))
+    assert _run(tmp_path) == 0
+    assert len(provider.looked) == 2 and provider.reads == [["ION"]]
+    check = _report(tmp_path)["text_check"]["logo"]
+    assert check["verdict"] == "unverified" and _readings(check) == [(1, "unverified", None)]
+    assert check["readings"][0]["reason"] == "vision-call-failed:RuntimeError"
+
+
+def test_a_misreading_stands_when_the_second_call_failed(tmp_path, fake) -> None:
+    provider = fake(reads=(["IO"], RuntimeError("vision down")))
+    with pytest.raises(SystemExit, match=r"mood image reads \['IO'\], not"):
+        _run(tmp_path)
+    assert len(provider.requests) == 1  # refused as one misreading was before: the lettering was not bought
+    check = _report(tmp_path)["text_check"]["mood"]
+    assert check["verdict"] == "mismatch" and check["read"] == ["IO"]
+    assert _readings(check) == [(1, "mismatch", ["IO"]), (2, "unverified", None)]
+    assert check["readings"][1]["reason"] == "vision-call-failed:RuntimeError"
+
+
+def test_the_report_names_the_reader_model_and_effort_of_every_reading(tmp_path, fake) -> None:
+    fake(reads=(["I0N"], ["ION"], ["ION"]))
+    assert _run(tmp_path) == 0
+    report = _report(tmp_path)
+    checks = [c for c in report["calls"] if c["step"].endswith("-check")]
+    assert [(c["step"], c["reading"], c["model"], c["effort"]) for c in checks] == [
+        ("mood-check", 1, "fake-vision", "fake-effort"), ("mood-check", 2, "fake-vision", "fake-effort"),
+        ("logo-check", 1, "fake-vision", "fake-effort")]
+    for step in ("mood", "logo"):
+        assert report["text_check"][step]["model"] == "fake-vision"
+        assert report["text_check"][step]["effort"] == "fake-effort"
+    assert "effort" not in report["calls"][0]  # an image call names no reading effort
+
+
 def test_subtitle_and_language_reach_the_prompts_and_the_check(tmp_path, fake) -> None:
     provider = fake(reads=(["ION", "Chapter One"], ["ION", "CHAPTER ONE"]))
     assert _run(tmp_path, subtitle="Chapter One", language="Korean") == 0
@@ -186,19 +289,19 @@ def test_subtitle_and_language_reach_the_prompts_and_the_check(tmp_path, fake) -
 
 
 def test_a_dropped_subtitle_is_a_mismatch(tmp_path, fake) -> None:
-    fake(reads=(["ION", "Chapter One"], ["ION"]))
+    fake(reads=(["ION", "Chapter One"], ["ION"], ["ION"]))
     with pytest.raises(SystemExit, match="logo reads"):
         _run(tmp_path, subtitle="Chapter One")
 
 
 def test_a_vowel_sign_the_model_dropped_is_refused_at_either_check(tmp_path, fake) -> None:
     asked, read = "\u0915\u093f\u0932\u093e", "\u0915\u0932\u093e"  # किला read as कला: the vowel sign ि dropped
-    provider = fake(reads=([read],))
+    provider = fake(reads=([read], [read]))
     with pytest.raises(SystemExit, match="mood image"):
         _run(tmp_path, text=asked, language="Hindi")
     assert len(provider.requests) == 1  # the lettering was not bought
     assert _report(tmp_path)["text_check"]["mood"]["verdict"] == "mismatch"
-    fake(reads=([asked], [read]))
+    fake(reads=([asked], [read], [read]))
     with pytest.raises(SystemExit, match="logo reads"):
         _run(tmp_path, text=asked, language="Hindi")
     out = tmp_path / "logo"
