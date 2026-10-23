@@ -11,7 +11,7 @@ from sprite_gen import _modules, gen
 from sprite_gen.audio import sound
 from sprite_gen.background import tile
 from sprite_gen.curate import anchor
-from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compose_layers, export_aseprite, export_pngs
+from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, export_aseprite, export_pngs
 from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
@@ -240,13 +240,6 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         compose_cycle.run,
     ),
     "compose-gif": ("Compose selected sprite frames into a clean transparent GIF.", _add_compose_gif, compose_gif.run),
-    # Same rule as `curation` / `recolor`: the subcommand reuses the module's own
-    # argument declaration, so the three launch forms cannot drift apart.
-    "compose-layers": (
-        "Bake a rig run's declared composite stacks into <run-dir>/layers/.",
-        compose_layers.add_arguments,
-        compose_layers.run,
-    ),
     "unpack-atlas": (
         "Unpack a composed sprite sheet back into a curator-ready run directory.",
         _add_unpack_atlas,
@@ -272,7 +265,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     # and everything through it) normalize retired keys in memory and leave the file byte
     # for byte — a query must never rewrite a canonical run.
     "migrate-request": (
-        "Migrate a run's retired sprite-request fit keys to the current schema.",
+        "Migrate a run's retired sprite-request keys to the current schema.",
         migrate_request.add_arguments,
         migrate_request.run,
     ),

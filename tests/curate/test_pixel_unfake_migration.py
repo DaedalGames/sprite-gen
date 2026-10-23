@@ -57,15 +57,15 @@ def test_explicit_migration_rewrites_the_request(tmp_path, capsys) -> None:
         (run_dir / "sprite-request.json").read_text(encoding="utf-8"))["fit"]
 
     # dry run 은 옮길 것이 있다고만 답한다
-    assert migrate_request_file(run_dir) is True
+    assert migrate_request_file(run_dir) == ["fit.pixel_perfect -> fit.pixel_unfake"]
     assert "pixel_perfect" in json.loads(
         (run_dir / "sprite-request.json").read_text(encoding="utf-8"))["fit"]
 
-    assert migrate_request_file(run_dir, apply=True) is True
+    assert migrate_request_file(run_dir, apply=True) == ["fit.pixel_perfect -> fit.pixel_unfake"]
     on_disk = json.loads((run_dir / "sprite-request.json").read_text(encoding="utf-8"))
     assert on_disk["fit"] == {"pixel_unfake": True, "logical_height": 48}
     # 멱등: 두 번째 이관은 옮길 것이 없다
-    assert migrate_request_file(run_dir, apply=True) is False
+    assert migrate_request_file(run_dir, apply=True) == []
 
 
 def test_both_request_keys_present_fails_loud(tmp_path) -> None:

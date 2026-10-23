@@ -2,6 +2,27 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## v3.0.0 - Remove rig layer composition
+
+**Upgrading from 2.46.0: `sprite-gen compose-layers` and its other launch forms are removed, and rig layer declarations are no longer read.** `compose-atlas` no longer writes a manifest `rig` block or `animation.rows.<state>.track` for a run that declared a rig. Runs that never declared `rig`, `layers` or a state `track` get the same manifest as before. Existing run files and `layers/` folders stay on disk.
+
+### Breaking
+
+The rig layer feature has no replacement in 3.0.0:
+
+| Removed | Use |
+|---|---|
+| `sprite-gen compose-layers`, `python -m sprite_gen.compose.compose_layers`, `scripts/compose_layers.py` | No replacement. The CLI verb now ends as an unknown command with argparse exit code 2. |
+| `sprite_gen/compose/layers.py` (declaration checks for rig profiles, row tracks and composite stacks), `sprite_gen/compose/compose_layers.py` (baking declared stacks into `<run>/layers/`) | No replacement. |
+| `sprite-request.json` keys `rig`, `layers` and `states.<state>.track` | Remove them with `sprite-gen migrate-request <run> --apply`. |
+| `sprite_gen.spec.runio.normalize_retired_fit_keys` | `normalize_retired_keys`, which returns a list of keys moved or left out, or an empty list. |
+| `docs/layer-tracks.md` | No replacement. Its links are gone from the other docs, READMEs and `SKILL.md`; the skill description no longer lists "rig layers". |
+
+- `prepare` drops the retired keys from `--request` and `--request-json`, naming them in its existing stderr note. Code no longer reads them. On the first read of an old run's request, the process prints one stderr line naming the keys, treats them as absent in memory and leaves the file byte for byte unchanged. Unrelated request rewrites, including reroll and interpolate takes and curation fps edits, preserve those keys as they were.
+- `sprite-gen migrate-request <run>` lists the keys it would remove without writing. `--apply` removes them from the file; a second apply has nothing to move. The changed bytes move `run_revision`, and the command names the curation rows it will drop before writing. The command also retains its existing `fit.pixel_perfect` to `fit.pixel_unfake` migration. `runio.migrate_request_file` now returns the list of keys moved or left out instead of a boolean.
+- Talking face parts are planned as a new feature in a later 3.x minor release.
+- **Tests**: Added `tests/spec/test_request_retired_rig_keys.py` to check the one-time stderr note and unchanged old request bytes, migration dry runs and repeated applies, preservation on unrelated edits, and named drops in `prepare`. Removed `tests/compose/test_layer_compose.py`, `tests/compose/test_layer_contract.py` and `tests/packaging/test_layer_cli_entrypoint.py` with the feature.
+
 ## v2.46.0 - Changed loop and framing defaults, recognition of cyan or yellow leaning green border keys, Breathe smooth mode and Sway commands
 
 **Upgrading from 2.45.3: Some existing runs produce different bytes because defaults changed.**
