@@ -711,7 +711,7 @@ def run_item(
     prepare_side: Callable[[Path], tuple[Path, dict]] | None = None,
     body_height: int | None = None,
     fit: str = "state",
-    decontam: str = "off",
+    decontam: str = frames_mod.DECONTAM_DEFAULT,
     walk_start: str = "redraw",
     redraw_runner: Callable[..., int] = run_redraw_cli,
     still_provider: str | None = None,
@@ -840,14 +840,16 @@ def run_item(
                 generated["end_frame_sha256"] = end_digest
                 atomic_write_text(clip_report, json.dumps(generated, ensure_ascii=False, indent=2) + "\n")
 
-        # a tight frame is clipped on purpose; leftover key background still fails. The default
-        # call keeps its pre-decontam signature, so a stand-in for run_frames still fits
-        extra = {} if decontam == "off" else {"decontam": decontam}
-        if lifetime:
-            extra["alpha_mode"] = "brightness"
-        fr = frames_mod.run_frames(clip, item_dir / "frames", key=key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", **extra)
+        # a tight frame is clipped on purpose; leftover key background still fails. `decontam` is passed
+        # whatever its value: run_frames defaults to auto, so leaving it out would not mean off
+        extra = {"alpha_mode": "brightness"} if lifetime else {}
+        fr = frames_mod.run_frames(clip, item_dir / "frames", key=key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", decontam=decontam, **extra)
         result["frames"] = {k: fr[k] for k in ("fps", "frames", "alpha_zero_pct_min", "alpha_zero_pct_max")}
         result["frames"]["spill"] = fr.get("spill", {}).get("mode")
+        decontam_note = frames_mod.decontam_warning(fr.get("decontam") or {})
+        if decontam_note:
+            # the set report lists it under `warnings`
+            result["frames"]["decontam_warning"] = decontam_note
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
                                cycle_mode=cycle_for(state, direction, play, pinned=pins),
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right")
@@ -1069,7 +1071,7 @@ def run_set(
     facing_fix: str = "none",
     body_height: int | None = None,
     fit: str = "state",
-    decontam: str = "off",
+    decontam: str = frames_mod.DECONTAM_DEFAULT,
     align_cycles: str = "auto",
     align_between: str = align_mod.DEFAULT_BETWEEN,
     interpolate: Any = None,
@@ -1163,6 +1165,8 @@ def run_set(
                  f"(the loops under `suspects` in {a['report']}, docs/loop-repair.md section 4)"
                  for st, a in aligned.items() if a.get("reason") == "cycle-suspects"]
     warnings += [f"cycle-align:{st}: {line}" for st, a in aligned.items() for line in a.get("warnings", [])]
+    warnings += [f"{r['item']}: {r['frames']['decontam_warning']}" for r in results
+                 if r.get("ok") and "decontam_warning" in r.get("frames", {})]
     warnings += [f"cycle-align:{st}: --align-foot {item}={foot} not applied ({a.get('why') or a.get('error') or 'the item failed'})"
                  for st, a in aligned.items() for item, foot in a.get("feet_unused", {}).items()]
     # A start still `gen` asked about instead of drawing (codex cannot run, and the choice is to ask): the set ends
@@ -1259,7 +1263,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--spill", choices=frames_mod.SPILL_MODES, default="auto", help="auto: judge key reflections from each item's canvas still (default); small / full: force")
     parser.add_argument("--fit", choices=canvas_mod.FITS, default="state", help="state: each state's room for the motion (default); tight: no room, the subject fills the frame and a motion that leaves it is clipped (use with --body-height at a low --resolution)")
     parser.add_argument("--body-height", type=int, default=None, help="scale every state's loop so the standing height is this many px (video-loop --body-height): one value for the whole set keeps the character the same size across states")
-    parser.add_argument("--decontam", choices=frames_mod.DECONTAM_MODES, default="off", help="passed to video-frames: palette re-explains key-tinted edges with the subject's own colours (default off)")
+    parser.add_argument("--decontam", choices=frames_mod.DECONTAM_MODES, default=frames_mod.DECONTAM_DEFAULT, help="passed to video-frames: auto (default) re-explains key-tinted edges with the subject's own colours where it applies; palette demands it; off keeps the matte as it is")
     parser.add_argument("--walk-start", choices=WALK_START_MODES, default="redraw", help="redraw (default): a front or back walk films from its base still redrawn mid-step (one image generation, `sprite-gen gen --ref base`, kept as walk-start.png) — from a standing still the clip model walks askew; as-given: film from the base still itself")
     parser.add_argument("--still-provider", help="image provider for the mid-step redraw (default: sprite-gen gen's own default; "
                         "a codex that cannot run there asks, and the set stops with the question)")
@@ -1283,7 +1287,7 @@ def run(**kwargs: object) -> int:
         facing=str(kwargs.get("facing") or "right"), facing_fix=str(kwargs.get("facing_fix") or "none"),
         shape=(str(kwargs["shape"]) if kwargs.get("shape") else None), anchor=str(kwargs.get("anchor") or "none"), spill=str(kwargs.get("spill") or "auto"),
         body_height=(int(kwargs["body_height"]) if kwargs.get("body_height") else None), fit=str(kwargs.get("fit") or "state"),
-        decontam=str(kwargs.get("decontam") or "off"), align_cycles=str(kwargs.get("align_cycles") or "auto"),
+        decontam=str(kwargs.get("decontam") or frames_mod.DECONTAM_DEFAULT), align_cycles=str(kwargs.get("align_cycles") or "auto"),
         align_between=str(kwargs.get("align_between") or align_mod.DEFAULT_BETWEEN),
         walk_start=str(kwargs.get("walk_start") or "redraw"), still_provider=kwargs.get("still_provider"),  # type: ignore[arg-type]
         handed=handed_mod.parse_all(list(kwargs.get("handed") or [])) or None,  # type: ignore[arg-type]

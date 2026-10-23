@@ -661,6 +661,7 @@ def remove_chroma_background(
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
     decontam_edge_band: int = 0,
+    decontam_history: dict[str, Any] | None = None,
 ) -> Image.Image:
     """Key `chroma_key` out of `image` (hard cut + soft-alpha fringe unmix + trapped-spill despill).
 
@@ -673,8 +674,9 @@ def remove_chroma_background(
     `decontam="palette"` re-explains the edge afterwards with the subject's own
     colours (`sprite_gen.frames.decontam`; "auto" does so where it applies and reports
     why not elsewhere); "off" (the default) returns exactly what the passes above produce. `decontam_stats`, when given, receives what
-    that pass did; `decontam_palette` reuses a palette learned elsewhere, and
-    `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`).
+    that pass did; `decontam_palette` reuses a palette learned elsewhere,
+    `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`),
+    and `decontam_history` is a clip's record of its last frame for the video fit (`decontaminate`'s `history`).
     """
     if decontam != "off":
         from sprite_gen.frames import decontam as decontam_module
@@ -841,7 +843,8 @@ def remove_chroma_background(
     if decontam != "off":
         data, stats = decontam_module.decontaminate(source_rgb, data, keyed_mask, chroma_key, fit=decontam_fit,
                                                     alpha_depth=unmix_reach, palette=decontam_palette, mode=decontam,
-                                                    source_alpha=source_alpha, edge_band=decontam_edge_band)
+                                                    source_alpha=source_alpha, edge_band=decontam_edge_band,
+                                                    history=decontam_history)
         if decontam_stats is not None:
             decontam_stats.update(stats)
     # Back into the converted copy rather than a fresh Image.fromarray, so the

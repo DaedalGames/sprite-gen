@@ -309,16 +309,11 @@ The still the clip was made from settles it. `video-frames --spill` takes:
 with `--spill small|full`), so a green-free character loses the reflections while a
 character that *is* green keeps its colour. Tiny accents or dark, edge-only material can fall below that reference test; use `--spill small` when preserving those is essential.
 
-### Edges: `--decontam palette`
+### Edges: `--decontam`
 
-`--spill` fixes key colour painted *into* the subject. The strands and outlines at its
-edge are a different problem. H.264 4:2:0 has already averaged the key into the chroma of
-anything one or two pixels wide, and despilling what is left turns thin red strands
-orange. `video-frames --decontam palette` (also `video-set --decontam palette`) re-explains
-each edge pixel as a blend of the local key background with one colour the subject owns,
-and writes that colour at the pixel's observed luma. The
-default `off` keeps frames byte-identical. Method, guards and measurements:
-[chroma-alpha.md](chroma-alpha.md#decontam--give-the-edge-the-subjects-own-colour-back).
+`--spill` fixes key colour painted into the subject, but strands and outlines at its edge are a different problem: H.264 4:2:0 chroma mixes the key into anything one to three pixels wide, leaving an olive rim on red hair or turning it orange under despill. In this release, `video-frames` and `video-set` default to `--decontam auto` (before: `off`), which re-explains each edge pixel as a blend of the local key background with colours the subject owns and writes that colour at the pixel's observed luma, using the video fit and one palette per clip learned on the first frame. The video fit recovers no coverage on keyed pixels, examining band pixels only; across frames in a clip, near-threshold choices are held, changes of call are blended over frames, and still pixels are settled toward the fit to eliminate edge sparkle. Where `auto` cannot run (a white key or a subject with no interior deeper than 6 px) and under `--alpha-mode brightness`, it leaves frames exactly as keyed and records the reason in the report. On stderr, `video-frames` prints a one-line warning (and `video-set` lists it under `warnings`) when `auto` did not run on any frame, skipped frames, found key-coloured subject material, or triggered the key-coloured part guard.
+
+Two video guards keep the matte's bytes for edge pixels beside small key-coloured parts and for pixels matching the material right behind them. Pass `--decontam off` to keep the matte as it is and return 2.45.3 bytes exactly. Keying time rises from 1.14 s to 3.36 s a frame on an Intel i5-7500 at 1080x1920, and peak memory rises from about 400 MB to 1155 MB, about 365 MB more than `off` per megapixel of frame. Method, guards and measurements: [chroma-alpha.md](chroma-alpha.md#decontam--give-the-edge-the-subjects-own-colour-back).
 
 ## 3b. Canvas shape for raised limbs and wide costumes
 
