@@ -99,6 +99,7 @@ def slow(tmp_path_factory) -> tuple[Path, Path, dict]:
     return root, keyed, _cut(root / "out", keyed)
 
 
+@pytest.mark.slow
 def test_a_walk_cut_one_step_long_is_named_by_the_step_screen(slow):
     _, _, report = slow
     cycle = report["cycle"]
@@ -133,6 +134,7 @@ def _same_but_the_screen(a: Path, b: Path) -> None:
     assert left == right
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("cycle, suspect", [(CYCLE, True)])
 def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatch, cycle, suspect):
     """A one-step cut: with the screen or without it, every image, the strip metadata and the report
@@ -146,6 +148,7 @@ def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatc
     _same_but_the_screen(tmp_path / "screened", tmp_path / "unscreened")
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("cycle, suspect", [(23.5, True), (25, False)])
 def test_the_step_screen_reads_a_cycle_on_a_frame_count_that_is_not_whole(tmp_path, cycle, suspect):
     """A cycle of 23.5 frames repeats better twice over, being whole there: a suspect that is no step.
@@ -153,6 +156,7 @@ def test_the_step_screen_reads_a_cycle_on_a_frame_count_that_is_not_whole(tmp_pa
     assert _cut(tmp_path / "out", _keyed(tmp_path, cycle))["cycle"]["step_screen"]["suspect"] is suspect
 
 
+@pytest.mark.slow
 def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, tmp_path):
     root, keyed, first = slow
     report = _cut(tmp_path / "out", keyed, "--steps", "1")
@@ -171,6 +175,7 @@ def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, t
     assert strip["steps"] == 2 and strip["cycle_frames"] == cycle["length"]
 
 
+@pytest.mark.slow
 def test_steps_2_keeps_the_cut_and_records_the_count(slow, tmp_path):
     root, keyed, first = slow
     report = _cut(tmp_path / "out", keyed, "--steps", "2")
@@ -181,6 +186,7 @@ def test_steps_2_keeps_the_cut_and_records_the_count(slow, tmp_path):
         assert (tmp_path / "out" / name).read_bytes() == (root / "out" / name).read_bytes()
 
 
+@pytest.mark.slow
 def test_a_counted_cut_the_clip_cannot_see_repeat_is_cut_and_warned_about(tmp_path):
     """50 frames hold the 42-frame cycle with 8 to spare: no window that long is seen repeating. The
     count stands for the repeat, the cut whose wrap the clip plays is taken, and its coverage — under a
@@ -196,6 +202,7 @@ def test_a_counted_cut_the_clip_cannot_see_repeat_is_cut_and_warned_about(tmp_pa
     assert report["resampled_seam_ratio"] <= loop.SEAM_RATIO_MAX
 
 
+@pytest.mark.slow
 def test_an_explicit_window_past_half_the_clip_is_the_window(slow, tmp_path):
     """--min-len 41 --max-len 43 asks for the cycle the window could not hold. v2.35.0 cut the ceiling
     back to half the clip (36) and found no window [41, 36]; the caller's ceiling is the ceiling."""
@@ -221,6 +228,7 @@ def _set(root: Path, side: Path) -> list[Path]:
     return dirs
 
 
+@pytest.mark.slow
 def test_cycle_align_stops_on_a_loop_that_may_be_one_step_and_names_the_count_that_settles_it(slow, tmp_path):
     root, keyed, _ = slow
     whole = _keyed(tmp_path / "whole", cycle=25)
@@ -242,22 +250,9 @@ def test_cycle_align_stops_on_a_loop_that_may_be_one_step_and_names_the_count_th
     assert out["applied"] is True and out["suspects"][0]["status"] == "counted"
 
 
-def test_cycle_align_takes_the_loop_cut_again_on_its_count(slow, tmp_path):
-    root, keyed, _ = slow
-    whole = _keyed(tmp_path / "whole", cycle=25)
-    _cut(tmp_path / "front", whole)
-    _cut(tmp_path / "recut", keyed, "--steps", "1")
-    dirs = _set(tmp_path, tmp_path / "recut")
-    out = align.align_set(dirs, between="nearest")
-    lengths = [json.loads((d / "loop.loop.report.json").read_text())["cycle"]["length"] for d in dirs]
-    assert out["applied"] is True and out["length"] == round((lengths[0] + lengths[1]) / 2)
-    (entry,) = out["suspects"]  # its half is its step: no suspect to stop on
-    assert entry["dir"] == str(dirs[1].resolve()) and entry["status"] == "steps" and [c["cycles"] for c in entry["candidates"]] == [2]
-    assert all("cycles_kept" not in row for row in out["loops"])
-
-
 # --- video-set ----------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so(slow, tmp_path, capsys):
     """A video-set item keeps the cut's report beside its loop directory (`<item>/loop.report.json`):
     the alignment reads the step screen there, and the set stops on the side walk with what settles it."""

@@ -43,6 +43,7 @@ def _noop_report(run_dir):
     return {"healed": [], "kept_stale": [], "failed": [], "notes": []}
 
 
+@pytest.mark.slow
 def test_progress_poll_never_steals_the_heal_report(tmp_path: Path, monkeypatch) -> None:
     """validator validator 재현 결함의 회귀 가드: 장기 heal 완료 직후
     /api/progress(또는 다운로드) 역할의 maybe_heal 이 먼저 호출돼도 리포트는

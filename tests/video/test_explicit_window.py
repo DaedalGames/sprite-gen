@@ -77,6 +77,7 @@ def _bound(args: tuple[str, ...], flag: str) -> int | None:
     return int(args[args.index(flag) + 1]) if flag in args else None
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("path, clip, args, ran, cut", ROWS, ids=[f"{r[0]}{''.join(r[2][-2:])}" for r in ROWS])
 def test_an_explicit_window_holds_on_every_path(tmp_path, path, clip, args, ran, cut):
     keyed = clip(tmp_path / "clip")

@@ -61,6 +61,7 @@ def chest_region(loop_dir):
     return ((xs.min()+xs.max())/2, (ys.min()+ys.max())/2, (xs.max()-xs.min())/2+4, (ys.max()-ys.min())/2+4)
 
 
+@pytest.mark.slow
 def test_the_region_moves_with_the_bob_and_nothing_else_does(loop_dir):
     before = json.loads((loop_dir/'walk.strip.json').read_text())
     old = cells(loop_dir/'walk.strip.png', before)
@@ -163,6 +164,7 @@ def bunny(k, ears, period=24):
     return im
 
 
+@pytest.mark.slow
 def test_ears_as_thick_as_the_body_do_not_move_it(tmp_path):
     # Ears this thick outlast the wearing, and a cell laid on cell 0 alone lies ears on ears: in the cells where
     # the ears had swung less than their own thickness from where cell 0 has them the body was read as dropping
@@ -231,6 +233,7 @@ def test_an_alignment_clears_the_follow_through_and_says_so(loop_dir):
     assert not (loop_dir/follow.SOURCE).exists()
 
 
+@pytest.mark.slow
 def test_a_new_cut_removes_the_old_follow_source(loop_dir, tmp_path):
     follow.follow_loop(loop_dir, [chest_region(loop_dir)])
     code = loop.main(['--frames-dir', str(tmp_path/'keyed'), '--out-dir', str(loop_dir), '--state', 'walk', '--anchor', 'motion-auto',
@@ -287,6 +290,7 @@ def folds_nowhere(rec, meta):
     return worst < 1, worst
 
 
+@pytest.mark.slow
 def test_lower_takes_the_largest_gain_that_does_not_fold(loop_dir):
     region = small_region(loop_dir, 0.7)  # folds at 0.7 of the default gain: 1.75
     with pytest.raises(SystemExit, match='folds a region'):
@@ -324,6 +328,7 @@ def moved_alone(loop_dir, region, **kw):
     return strip, (strip != source).any(axis=-1), meta['follow']
 
 
+@pytest.mark.slow
 def test_each_region_takes_its_own_gain(loop_dir):
     small = head_region(loop_dir, 0.7)  # folds at 1.75
     chest = chest_region(loop_dir)  # does not fold at the default gain
@@ -366,6 +371,7 @@ def test_overlapping_regions_of_different_gains_fold_nowhere(loop_dir):
     assert ok, worst
 
 
+@pytest.mark.slow
 def test_a_region_too_small_to_move_is_held_and_the_rest_move(loop_dir):
     # One gain for the strip, set by its smallest region, refused the whole strip for a region under the
     # mass as measured: the chest did not move because of an ear.
@@ -404,6 +410,7 @@ def test_a_strip_whose_every_region_is_held_is_refused(loop_dir):
     assert (loop_dir/'walk.strip.json').read_text() == meta
 
 
+@pytest.mark.slow
 def test_regions_that_take_one_gain_are_written_as_one_gain(loop_dir):
     # Two regions of the same smaller radius fold at the same gain: the record is the one-gain record,
     # with no gain of its own per region, and the strip is the one that gain asked for gives.
@@ -480,6 +487,7 @@ def outputs(loop_dir):
     return {name: (loop_dir/name).read_bytes() for name in ('walk.strip.png', 'walk.gif', 'walk.webp', 'walk.strip.json')}
 
 
+@pytest.mark.slow
 def test_numpy_numbers_write_what_the_command_line_writes(loop_dir):
     # The command line gives floats. Numpy numbers from a caller wrote the strip, the GIF and the WebP and then
     # failed on the record (an int64 has no JSON form): a moved strip beside a record that does not say so.
@@ -533,6 +541,7 @@ def test_bad_regions_are_refused(loop_dir):
         follow.parse_region('1,2,0,3')
 
 
+@pytest.mark.slow
 def test_a_region_over_the_soft_outline_leaves_no_colour_under_clear_pixels(tmp_path):
     # The part on the outline: its edge is partly transparent, and moving it must not leave colour
     # where the coverage rounds to nothing (the WebP check refuses that).

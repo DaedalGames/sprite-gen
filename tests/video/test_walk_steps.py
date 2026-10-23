@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +30,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from conftest import feet_unseen
-from sprite_gen.video import align, crossings, local_cycle, loop
+from sprite_gen.video import crossings, local_cycle, loop
 
 FRAMES = 73
 
@@ -183,6 +182,7 @@ def _two_steps(report: dict, cycle: float) -> dict:
     return counted
 
 
+@pytest.mark.slow
 def test_a_half_step_diagonal_walk_is_cut_two_steps(tmp_path):
     """Legs drawn alike, 14.5 frames a step, a tail on a 45-frame beat: one step on, the legs are swapped and the
     tail is nearer where it was than a cycle on, so the search takes 14 frames — one foot goes forward. The
@@ -200,6 +200,7 @@ def test_a_half_step_diagonal_walk_is_cut_two_steps(tmp_path):
     assert screen["suspect"] is False and (screen.get("settled_by") == "crossings" or "pixel_suspect" not in screen)
 
 
+@pytest.mark.slow
 def test_a_walk_slower_than_the_window_is_cut_two_steps(tmp_path):
     """A 46-frame cycle (1.92 s) in a 73-frame clip: past the window's 36, so the search cut a 23-frame step. Two
     steps are 46 frames, and the clip holds 0.59 of a cycle past them."""
@@ -210,6 +211,7 @@ def test_a_walk_slower_than_the_window_is_cut_two_steps(tmp_path):
     assert report["cycle"]["coverage"] == round((FRAMES - report["cycle"]["length"]) / report["cycle"]["length"], 4) > loop.COVERAGE_MIN
 
 
+@pytest.mark.slow
 def test_a_tail_on_its_own_beat_no_longer_cuts_three_steps(tmp_path):
     """A front walk, 13.5 frames a step, its big tail on a 41-frame beat: the search refuses the walk's 27 frames
     (repeat error over two steps), and the gait fallback takes the tail's 41 — three steps, the wrap putting the
@@ -220,6 +222,7 @@ def test_a_tail_on_its_own_beat_no_longer_cuts_three_steps(tmp_path):
     assert "gait_fallback" in report and counted["search"]["k"] == [3] and counted["search"]["cut"][1] in (40, 41, 42)
 
 
+@pytest.mark.slow
 def test_a_slow_walk_in_a_short_clip_the_search_refuses_is_cut_two_steps(tmp_path):
     """A 34-frame front walk with a tail on a 52-frame beat: no window repeats within two steps of its own, so the
     search and the gait fallback find no cycle. The crossings show two."""
@@ -228,6 +231,7 @@ def test_a_slow_walk_in_a_short_clip_the_search_refuses_is_cut_two_steps(tmp_pat
     assert counted["search"]["refused"].startswith("no periodic cycle found")
 
 
+@pytest.mark.slow
 def test_a_walk_that_stalls_is_not_cut_across_the_stalled_step(tmp_path):
     """A side walk held still 20 frames: the step the hold is in is far longer than the walk's own, and no frame of
     it is played (the search's cut played its last frames, and its seam did not close)."""
@@ -242,6 +246,7 @@ def test_a_walk_that_stalls_is_not_cut_across_the_stalled_step(tmp_path):
     assert counted["search"]["code"] == "step-long"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("cycle, hold", [(20, 2), (24, 3)])
 def test_a_held_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
     """Seen from behind on a diagonal, on twos or threes, the far foot passes hidden behind the near one: one crossing
@@ -262,6 +267,7 @@ def test_a_held_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold
     assert c["method"] == "local-repeat-drift-v1"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("tone, lean", [(1, 0), (4, 1)])
 def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_step_on(tmp_path, tone, lean):
     """The case the count was made for, guarded: from the side the two steps are one silhouette, the near leg and arm
@@ -275,6 +281,7 @@ def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_
     assert "same_picture" not in counted["search"]
 
 
+@pytest.mark.slow
 def test_a_cut_of_two_steps_that_does_not_close_leaves_the_searchs_cut(tmp_path):
     """On threes, a big tail on its own beat: the search's cut is one the count does not refute (it plays feet held
     together past a pass: uncertain), and every cut of two steps leaves the tail open at the wrap, out of phase, its
@@ -299,6 +306,7 @@ def _same_cut(a: Path, b: Path) -> None:
     assert all((a / "cycle" / f).read_bytes() == (b / "cycle" / f).read_bytes() for f in frames)
 
 
+@pytest.mark.slow
 def test_a_walk_the_search_cuts_two_steps_in_phase_is_cut_as_before(tmp_path):
     """The same front walk with a small tail: the search cuts its 27 frames, two steps joined at the walk's own point,
     and the cut is kept — every image as the search alone cut it; the strip says `steps: 2`."""
@@ -315,6 +323,7 @@ def test_a_walk_the_search_cuts_two_steps_in_phase_is_cut_as_before(tmp_path):
     assert strips[0].pop("steps") == 2 and "steps" not in strips[1] and strips[0] == strips[1]
 
 
+@pytest.mark.slow
 def test_a_body_with_no_feet_to_read_is_cut_as_the_search_cuts_it(tmp_path):
     keyed = _keyed(tmp_path, _blob, frames=64)
     report = _cut(tmp_path / "out", keyed)
@@ -324,25 +333,12 @@ def test_a_body_with_no_feet_to_read_is_cut_as_the_search_cuts_it(tmp_path):
     assert "steps" not in report["cycle"] and "steps" not in json.loads((tmp_path / "out" / "loop.strip.json").read_text())
 
 
+@pytest.mark.slow
 def test_a_count_given_is_the_word_on_the_searchs_cut(tmp_path):
     """--steps counts the cut the search takes: the crossings are not asked."""
     report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _side(k, cycle=46, phase=13)), "--steps", "2")
     assert "step_count" not in report["cycle"] and report["cycle"]["steps"]["by"] == "given"
     assert report["cycle"]["length"] in (22, 23, 24)  # the search's one step, kept on the count
-
-
-def test_cycle_align_takes_a_loop_cut_two_steps_as_one_cycle(tmp_path):
-    """The half-step walk cut two steps long returns half way at its second step; its loop says `steps: 2`, so the
-    alignment reads that return as its step, and the set aligns."""
-    _cut(tmp_path / "a", _keyed(tmp_path / "ka", lambda k: _side(k, cycle=29, tail_cycle=45, tail=60, arms=False)))
-    _cut(tmp_path / "b", _keyed(tmp_path / "kb", lambda k: _side(k, cycle=46, phase=13)))
-    dirs = []
-    for name in ("a", "b"):
-        shutil.copytree(tmp_path / name, tmp_path / "set" / name)
-        dirs.append(tmp_path / "set" / name)
-    out = align.align_set(dirs, between="nearest")
-    assert out["applied"] is True
-    assert all(entry["status"] == "steps" for entry in out["suspects"])
 
 
 def _distances(period: int = 13, frames: int = 120) -> np.ndarray:

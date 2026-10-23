@@ -72,6 +72,7 @@ def test_a_loop_whose_foot_is_not_named_is_listed_with_its_two_strike_frames(tmp
     assert json.loads((dirs[2] / "walk.strip.json").read_text())["cycle_align"]["start_foot_source"] is None
 
 
+@pytest.mark.slow
 def test_the_foot_given_for_one_loop_turns_that_loop_alone_half_a_cycle(tmp_path):
     """Its left foot lands on the first strike: the loop starts half a cycle on, where its right
     lands. The other two loops come out byte for byte as they were. (A loop named by its directory

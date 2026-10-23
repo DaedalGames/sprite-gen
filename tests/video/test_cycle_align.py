@@ -221,6 +221,7 @@ def _cut(tmp_path: Path, name: str, length: int) -> Path:
     return out
 
 
+@pytest.mark.slow
 def test_a_set_is_aligned_to_its_median_length_and_a_second_run_reads_the_source(tmp_path):
     dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24), ("N", 28))]
     rec = Recorder()
@@ -247,6 +248,7 @@ def test_a_set_is_aligned_to_its_median_length_and_a_second_run_reads_the_source
     assert json.loads((tmp_path / "align.json").read_text())["kind"] == "sprite-gen-video-cycle-align-report"
 
 
+@pytest.mark.slow
 def test_each_loop_records_its_view_and_start_foot_and_a_view_per_loop_is_required(tmp_path):
     dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24))]
     with pytest.raises(SystemExit, match="1 --view for 2 --loop-dir"):
@@ -296,6 +298,7 @@ def test_a_loop_whose_strip_as_cut_is_missing_is_refused_by_name_and_the_set_lef
     assert not (tmp_path / "align.json").exists()
 
 
+@pytest.mark.slow
 def test_a_loop_aligned_before_is_aligned_again_without_its_strip(tmp_path):
     """Only a first alignment reads the strip as cut; a later one keeps the origin the first recorded."""
     dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24))]
@@ -307,6 +310,7 @@ def test_a_loop_aligned_before_is_aligned_again_without_its_strip(tmp_path):
     assert meta["cycle_align"]["origin"] == origin and (dirs[0] / "walk.strip.png").is_file()
 
 
+@pytest.mark.slow
 def test_video_set_aligns_each_gait_filmed_in_two_or_more_directions(tmp_path):
     from sprite_gen.video import batch
 
@@ -347,6 +351,7 @@ def test_video_cycle_align_without_rife_fails_and_leaves_the_set_as_cut(tmp_path
     assert [(d / "walk.strip.png").read_bytes() for d in dirs] == before
 
 
+@pytest.mark.slow
 def test_video_cycle_align_between_nearest_needs_no_rife(tmp_path, monkeypatch):
     dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24), ("N", 28))]
     _no_rife(monkeypatch, tmp_path)
@@ -357,6 +362,7 @@ def test_video_cycle_align_between_nearest_needs_no_rife(tmp_path, monkeypatch):
     assert all(json.loads((d / "walk.strip.json").read_text())["frames"] == 24 for d in dirs)
 
 
+@pytest.mark.slow
 def test_a_made_frame_darker_than_both_neighbours_is_named_in_the_warnings(tmp_path):
     def smudge(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         made = np.asarray(Image.blend(a, b, t)).copy()
@@ -381,6 +387,7 @@ def _melt(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
     return Image.fromarray(made, "RGBA")
 
 
+@pytest.mark.slow
 def test_a_made_frame_that_lost_its_outline_is_replaced_by_the_nearer_source_frame_and_named(tmp_path):
     """--between auto (the default): every made frame is measured, and one that lost its outline
     takes the nearer source frame instead, named in the warnings and in its row (`method`
@@ -425,6 +432,7 @@ def test_video_set_without_rife_skips_the_alignment_with_a_warning(tmp_path, mon
     assert "video-set: warning: walk: cycles not aligned" in err and "sprite-gen rife install" in err
 
 
+@pytest.mark.slow
 def test_cutting_a_loop_again_drops_the_kept_source(tmp_path):
     """Once RIFE is installed a loop is cut again; the next alignment must read that cut."""
     dirs = [_cut(tmp_path, n, L) for n, L in (("S", 20), ("E", 24))]

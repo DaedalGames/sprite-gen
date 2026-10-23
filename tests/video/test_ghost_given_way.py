@@ -382,6 +382,7 @@ def _app_ghost_given_way(report: dict, out: Path) -> None:
     _delivered_clean(out)
 
 
+@pytest.mark.slow
 def test_the_applications_walk_gives_a_small_filmed_ghost_way(tmp_path):
     """B1b with a stand-in RIFE that takes the frame after: the band, 13 times the limit, is no jump, so before it was
     delivered in the strip and the WebP of a walk cut with the application's flags."""
@@ -389,6 +390,7 @@ def test_the_applications_walk_gives_a_small_filmed_ghost_way(tmp_path):
     _app_ghost_given_way(report, tmp_path / "E")
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_the_applications_walk_gives_a_small_filmed_ghost_way(tmp_path):
     """B1b through the real RIFE, located as `video-loop` locates it."""
@@ -400,6 +402,7 @@ def test_real_rife_the_applications_walk_gives_a_small_filmed_ghost_way(tmp_path
 # --- the source projection and the restoration ------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_a_cell_given_way_is_a_repair_hint_and_the_restoration_does_not_bring_the_ghost_back(tmp_path, monkeypatch):
     """The cut's source projection proves every other cell exactly and lists the cell given way among the jump
     repair's (`repair_hints`); a restoration request on the loop reads its playback, the GIF and WebP holding the

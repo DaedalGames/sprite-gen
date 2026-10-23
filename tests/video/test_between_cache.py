@@ -79,6 +79,7 @@ def _pass(root: Path, names: list[str], made: Blend, **kw) -> dict:
     return align.align_set([root / n for n in names], interpolate=made, views=VIEWS, feet=feet or None, **kw)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("between", ["rife", "auto"])
 def test_the_foot_pass_takes_every_frame_the_first_pass_made_and_delivers_the_same_bytes(tmp_path, between):
     """The app's two passes: the set aligned, then aligned again on a copy with the feet told. The
@@ -104,6 +105,7 @@ def test_the_foot_pass_takes_every_frame_the_first_pass_made_and_delivers_the_sa
     assert _said(taken, tmp_path / "loops.foot", tmp_path / "loops.plain") == _said(plain, tmp_path / "loops.plain", tmp_path / "loops.plain")
 
 
+@pytest.mark.slow
 def test_a_frame_whose_inputs_changed_is_made_again_and_never_taken(tmp_path):
     """A source frame changed by one pixel: every frame made from it is made again, every other is
     taken, and the loops come out as a pass with no directory makes them. Another length is other
@@ -243,6 +245,7 @@ def _dot(cx: int, colour: tuple[int, int, int]) -> Image.Image:
     return Image.fromarray(im, "RGBA")
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(sys.platform == "win32", reason="a shebang script cannot stand in for rife-ncnn-vulkan.exe")
 def test_the_same_rife_makes_its_frame_again_once_a_file_it_runs_from_changed(tmp_path):
     """One Rife makes and keeps a frame, then its model's bytes are written over: the next pass makes the frame
@@ -355,6 +358,7 @@ def _png(image: Image.Image) -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.slow
 def test_nothing_is_kept_without_a_directory_and_a_stand_in_that_names_nothing_is_refused(tmp_path):
     root, names = _set(tmp_path)
     before = sorted(p.name for p in tmp_path.iterdir())
@@ -370,6 +374,7 @@ def test_nothing_is_kept_without_a_directory_and_a_stand_in_that_names_nothing_i
     assert _hashes(root) == files and not (tmp_path / "kept").exists()
 
 
+@pytest.mark.slow
 def test_video_cycle_align_between_cache_reports_hits_and_misses(tmp_path, monkeypatch, capsys):
     """The command line: `--between-cache` names the directory; the summary and the report carry the
     hits and misses. RIFE is the stand-in, found as `rife.Rife` is."""
@@ -390,6 +395,7 @@ def test_video_cycle_align_between_cache_reports_hits_and_misses(tmp_path, monke
         assert made > 0 and said["hits"] == (made if k else 0)
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_a_kept_frame_is_the_frame_made_again(tmp_path):
     """The real binary makes the same bytes for the same frames, so a frame taken from the

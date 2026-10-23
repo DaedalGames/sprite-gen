@@ -45,6 +45,7 @@ def pixels(out, result, animation):
     return found
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("scale,resample", [(0.16, None), (0.5, "lanczos")])
 def test_scaled_cutout_carries_no_colour_its_source_did_not_have(tmp_path, scale, resample):
     src = figure()

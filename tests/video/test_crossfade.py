@@ -125,6 +125,7 @@ def test_a_clean_drawing_between_far_drawings_outlined_in_grey_reads_over_the_li
     assert faults({**rife.smear(drawn, a, b), "ghost": rife.ghost(drawn)}) == []
 
 
+@pytest.mark.slow
 def test_auto_keeps_a_crossfaded_frame_and_names_it_to_look_at():
     sa, sb = (10, -10), (5, -5)
     a, b, _, there = _inside(sa, sb, 0.5)
@@ -154,6 +155,7 @@ def _keyed(tmp_path: Path, name: str, length: int) -> Path:
     return keyed
 
 
+@pytest.mark.slow
 def test_alignment_warns_on_a_crossfaded_frame_it_keeps(tmp_path, capsys):
     """Resampled 8 to 12 through a RIFE whose colour run blends and whose coverage run is the union:
     the frames it makes across the legs' long steps are kept, each named in a warning line."""
@@ -179,6 +181,7 @@ def test_jump_repair_takes_a_crossfaded_proposal_and_names_it(monkeypatch):
     assert first["made"][0]["proposal"]["crossfade"] > CROSSFADE_LOOK and out[1] is made
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 @pytest.mark.timeout(900)  # 12 calls of the binary at 384 x 576, each run 16 ways (-x -z): seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_through_a_short_step_reads_no_crossfade():
@@ -199,6 +202,7 @@ def _keyed_cape(tmp_path: Path, name: str, length: int) -> Path:
     return keyed
 
 
+@pytest.mark.slow
 def test_a_loop_the_ghost_screen_does_not_read_is_named_on_stderr_not_only_in_the_report(tmp_path, capsys):
     """A cut drawn part-covered in every frame is not judged by the screen (`reads` false) — and says
     so on stderr in video-loop, and in the alignment's warnings, which video-cycle-align prints."""

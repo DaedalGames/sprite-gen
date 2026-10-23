@@ -286,6 +286,7 @@ def test_border_candidate_rule_still_rejects_subject_colours_and_non_keys() -> N
         assert detect_background_key_rgb(make_flat_key_still(colour), GREEN) == GREEN
 
 
+@pytest.mark.slow
 def test_the_lean_green_widens_only_the_green_key_and_only_toward_green() -> None:
     """The colours the leaning-green branch adds, over the whole RGB cube: none for magenta (a key with
     one unkeyed channel keeps that channel dark — hot pink's 77 included), none dropped for either key,

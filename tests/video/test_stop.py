@@ -152,6 +152,7 @@ def test_stop_plays_the_start_backwards_from_the_loop_to_the_first_frame(tmp_pat
     assert report["status"] == "passed" and report["shown"] == shown
 
 
+@pytest.mark.slow
 def test_stop_does_not_slide_when_the_body_drifts_as_it_sets_off(tmp_path):
     """A clip whose body moves 36 px across and 18 px up while it sets off, beside the same clip filmed in place: played
     back as filmed, the first would slide that far into the still. Its stop is the in-place clip's, the drift taken out
@@ -200,6 +201,7 @@ def test_stop_refuses_a_short_other_motion(tmp_path, other):
     assert not (tmp_path / "stop" / "stop.strip.png").exists()
 
 
+@pytest.mark.slow
 def test_stop_refuses_a_start_that_holds_another_motion(tmp_path):
     """Two and a half cycles of another motion between the still and the run: it turns back again and again, and the
     run-up is past the run-up bound too. Refused as another motion, the report written; the run-up bound, which only
@@ -216,6 +218,7 @@ def test_stop_refuses_a_start_that_holds_another_motion(tmp_path):
         make(tmp_path, keyed, meta, run_up_max=4.0)
 
 
+@pytest.mark.slow
 def test_stop_refuses_a_run_up_longer_than_a_setting_off(tmp_path):
     """A start whose stride grows over two and a half cycles goes one way into the run — nothing in it turns back — and
     plays strides unlike the loop's for longer than a setting-off: refused by its length, not as another motion, the
@@ -243,6 +246,7 @@ def test_stop_refuses_a_seam_past_the_jump_line(tmp_path):
     assert report["status"] == "failed" and report["seam"]["steps"] > stop.SEAM_MAX
 
 
+@pytest.mark.slow
 def test_stop_leaves_an_aligned_loop_from_the_cell_nearest_the_entry(tmp_path):
     """A loop turned to start elsewhere (as video-cycle-align turns one): the cell left from follows the pose, not the index."""
     keyed, run_from = clip(tmp_path)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import random
 
+import pytest
 from PIL import Image
 
 import sprite_gen.frames.extract as extract_module
@@ -113,6 +114,7 @@ def test_twin_footprint_matches_the_final_frame_exactly(tmp_path) -> None:
     assert checked, "쌍둥이를 한 장도 검사하지 못했다"
 
 
+@pytest.mark.slow
 def test_grid_record_stays_exact_across_pitches_and_cells(tmp_path) -> None:
     """정수/비정수 피치·여러 셀 크기에서 두 불변식이 함께 성립한다.
 

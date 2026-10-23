@@ -124,6 +124,7 @@ def test_a_cell_at_phase_zero_is_byte_identical_to_its_source() -> None:
 
 # ── 2. 머리 자리·바이트 고정 ───────────────────────────────────────
 
+@pytest.mark.slow
 @pytest.mark.parametrize("h", [120, 1000], ids=["small", "1000px"])
 def test_the_head_stays_in_place_byte_for_byte(h: int) -> None:
     src = _bust(h)
@@ -178,6 +179,7 @@ def _rise(src, got, row, col, reach) -> float:
     return _mark_row(src, row, col, reach) - _mark_row(got, row, col, reach)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("h", [120, 1000], ids=["small", "1000px"])
 def test_the_chest_rises_by_depth_and_settles_back(h: int) -> None:
     src, anat, cfg, rows, cols = _marked(h)

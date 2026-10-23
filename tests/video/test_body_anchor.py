@@ -58,6 +58,7 @@ def test_zero_offset_leaves_frames_untouched():
     assert loop.ramp_frames(frames, 0) is frames
 
 
+@pytest.mark.slow
 def test_run_loop_defaults_to_body_for_gaits_and_none_otherwise(tmp_path: Path):
     keyed = tmp_path / "keyed"
     keyed.mkdir()

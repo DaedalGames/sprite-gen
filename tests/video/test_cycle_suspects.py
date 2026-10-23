@@ -292,6 +292,7 @@ def _set(tmp_path: Path) -> list[Path]:
     return [_cut(tmp_path, "S", 24, 24), _cut(tmp_path, "E", 24, 24), _cut(tmp_path, "NE", 15, 30, twos=True)]
 
 
+@pytest.mark.slow
 def test_a_set_with_a_suspect_is_stopped_before_anything_is_rewritten(tmp_path):
     dirs = _set(tmp_path)
     before = [(d / "walk.strip.png").read_bytes() for d in dirs]
@@ -313,6 +314,7 @@ def test_a_set_with_a_suspect_is_stopped_before_anything_is_rewritten(tmp_path):
     assert stopped.value.suspects == report["suspects"]
 
 
+@pytest.mark.slow
 def test_cycles_two_takes_one_cycle_out_of_the_loop_as_filmed(tmp_path):
     """`--cycles NE=2`: 15 frames out of NE's 30 — from where the frame 15 on is most like the first
     — and the set aligned to its median, 24. Run again, it reads the same 30 filmed frames."""
@@ -329,6 +331,7 @@ def test_cycles_two_takes_one_cycle_out_of_the_loop_as_filmed(tmp_path):
     assert {Path(r["dir"]).name: r["cycle_taken"]["start"] for r in again["loops"] if "cycle_taken" in r} == {"NE": taken["start"]}
 
 
+@pytest.mark.slow
 def test_multi_cycle_warn_aligns_the_set_as_it_is_and_names_the_loop(tmp_path):
     dirs = _set(tmp_path)
     report = align.align_set(dirs, interpolate=_Blend(), multi_cycle="warn")
@@ -337,6 +340,7 @@ def test_multi_cycle_warn_aligns_the_set_as_it_is_and_names_the_loop(tmp_path):
     assert report["suspects"][0]["status"] == "warned"
 
 
+@pytest.mark.slow
 def test_the_number_of_cycles_in_a_loop_changes_only_with_cycles(tmp_path, monkeypatch):
     """Every way of aligning a set but `--cycles k>1` resamples each loop from all of its filmed
     frames: take_cycle is never reached."""
@@ -356,6 +360,7 @@ def test_the_number_of_cycles_in_a_loop_changes_only_with_cycles(tmp_path, monke
         align.align_set(dirs, interpolate=_Blend(), cycles={"NE": 2})
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("strides, odd, state, kw", [
     ((18, 18, 20), 0, "run", dict(far=170)),  # rejected round 1's set: one loop's far leg shaded like the near one
 ])
@@ -374,6 +379,7 @@ def test_the_counter_example_sets_stop_and_align_as_before_once_counted(tmp_path
     assert all(e["status"] == "counted" for e in report["suspects"]) and not any("may hold" in w for w in report["warnings"])
 
 
+@pytest.mark.slow
 def test_cycles_names_one_loop_or_is_refused(tmp_path):
     dirs = [_cut(tmp_path / "a", "loop", 24, 24), _cut(tmp_path / "b", "loop", 20, 20)]
     with pytest.raises(SystemExit, match="names 2 of the --loop-dir"):
@@ -389,6 +395,7 @@ def test_cycles_names_one_loop_or_is_refused(tmp_path):
         align.parse_cycles(["NE"])
 
 
+@pytest.mark.slow
 def test_the_command_takes_cycles(tmp_path, monkeypatch, capsys):
     dirs = _set(tmp_path)
     monkeypatch.setattr(align.rife_mod, "Rife", _Blend)
@@ -402,6 +409,7 @@ def test_the_command_takes_cycles(tmp_path, monkeypatch, capsys):
 
 # --- video-set ----------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_video_set_skips_a_suspect_state_with_a_warning(tmp_path, capsys):
     rows = []
     for direction, stride, length, twos in (("front", 24, 24, False), ("side", 24, 24, False), ("back", 15, 30, True)):
