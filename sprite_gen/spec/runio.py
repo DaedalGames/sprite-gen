@@ -9,15 +9,18 @@ example Claude Code and the Codex app driving the skill in parallel):
   two workers writing one character folder; this makes the rule enforced
   instead of documentation-only. Writers (extract / compose / export / unpack,
   and the webview's compose/export subprocesses through them) fail loudly with
-  the holder's pid instead of silently interleaving output files.
+  the holder's pid instead of silently interleaving output files. The lock is
+  the entry `.sprite-gen.lock` itself: a link or a folder at that name is refused,
+  never followed, read or removed.
 - `atomic_write_text()` / `atomic_save_image()` — temp file in the target dir
   + `os.replace`, so a concurrent reader never observes a half-written
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
   set of files that only makes sense published together (a sheet, its manifest,
   and the report naming it).
-- `same_folder()` / `inside_folder()` / `new_stage()` — a writer never writes
-  into, moves or deletes its inputs: inputs and outputs are compared by real
-  path and file identity before anything is made, and a staging folder is a
+- `same_folder()` / `inside_folder()` / `follow_path()` / `new_stage()` — a writer
+  never writes into, moves or deletes its inputs: inputs and outputs are compared
+  by real path and file identity before anything is made — an input by every
+  entry its path looks up, not only by where it ends — and a staging folder is a
   new one of the run's own, the only thing beside the output a run deletes.
 
 `curation.json` is intentionally NOT under this pipeline write lock: the curation
@@ -35,9 +38,11 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import errno
 import json
 import os
 import secrets
+import stat
 import sys
 import tempfile
 import time
@@ -153,6 +158,58 @@ def inside_folder(path: Path, folder: Path) -> bool:
     return any(same_folder(parent, folder) for parent in path.parents)
 
 
+_MAX_LINKS = 40  # 이보다 많은 링크를 지나면 고리다 (리눅스 커널의 한도, macOS 는 32)
+# Windows 디렉터리 junction 의 표시 — os.lstat 은 3.8 부터 symlink 와 junction 을 따라가지 않고 그 자체를 열고,
+# os.readlink 는 3.8 부터 junction 이 가리키는 경로를 돌려준다. 그래서 junction 도 링크로 따라간다.
+_JUNCTION = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+
+
+def _is_link(entry: os.stat_result) -> bool:
+    return stat.S_ISLNK(entry.st_mode) or (
+        _JUNCTION is not None and getattr(entry, "st_reparse_tag", None) == _JUNCTION)
+
+
+def follow_path(path: Path) -> tuple[list[Path], Path]:
+    """`path` 를 운영체제가 열 때처럼 한 칸씩 따라간다. 찾아본 항목 전부(링크와 폴더, 각각 실경로 부모 + 이름 —
+    뒤의 `..` 로 다시 나오는 폴더도)와 닿은 실경로를 돌려준다. 받은 경로는 절대화만 한다(resolve·normpath 로 `..`
+    를 글자째 접으면 링크 뒤의 `..` 가 다른 폴더를 가리킨다). 상대 링크는 링크가 놓인 실폴더에서 읽고, `..` 는
+    지금까지 닿은 실폴더의 부모로 간다. 없는 칸에서 멈추면 남은 칸을 붙여 돌려준다 — 읽는 쪽이 그 자리에서
+    실패한다. 링크를 `_MAX_LINKS` 번 넘게 지나면 고리라 OSError(ELOOP)."""
+    path = Path(path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    reached = Path(path.anchor)
+    todo = list(reversed(path.parts[1:]))
+    looked: list[Path] = []
+    links = 0
+    while todo:
+        name = todo.pop()
+        if name in ("", "."):
+            continue
+        if name == "..":
+            reached = reached.parent
+            continue
+        entry = reached / name
+        looked.append(entry)
+        try:
+            found = os.lstat(entry)
+        except OSError:
+            return looked, entry.joinpath(*reversed(todo))
+        if not _is_link(found):
+            reached = entry
+            continue
+        links += 1
+        if links > _MAX_LINKS:
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+        target = Path(os.readlink(entry))
+        if target.is_absolute():
+            reached = Path(target.anchor)
+            todo.extend(reversed(target.parts[1:]))
+        else:
+            todo.extend(reversed(target.parts))
+    return looked, reached
+
+
 def new_stage(out: Path, suffix: str) -> Path:
     """`out` 옆에 이 실행만의 빈 임시 폴더 `.<out>.<pid>-<random><suffix>` — 같은 볼륨이라 다 쓴 뒤 rename 으로
     내놓는다. 이름이 이미 있으면(입력이든 다른 실행의 것이든) 그 폴더는 건드리지 않고 다른 이름을 고른다.
@@ -185,6 +242,10 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     A lock whose pid is dead — or unreadable and older than STALE_LOCK_SECONDS —
     is reclaimed, so a killed run never wedges the run dir.
 
+    The lock is the entry at that name in the run dir itself, never resolved:
+    a link or a folder there is refused before anything is read, and is never
+    followed or removed — reclaiming it would delete whatever it points to.
+
     Re-entry from the same process is allowed: the MCP server / freeze binary
     runs many pipeline steps in one interpreter against the same run dir, and a
     writer must never block itself.
@@ -192,14 +253,23 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     Release runs via atexit (normal return, SystemExit, KeyboardInterrupt).
     A SIGKILL'd holder is covered by the dead-pid reclaim above.
     """
-    lock_path = (run_dir / LOCK_FILENAME).resolve()
+    lock_path = Path(run_dir).resolve() / LOCK_FILENAME
     if lock_path in _HELD_LOCKS:
         return lock_path
     while True:
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # never follows a link at the name (open(2))
             break
         except FileExistsError:
+            try:
+                regular = stat.S_ISREG(os.lstat(lock_path).st_mode)
+            except FileNotFoundError:
+                continue  # holder released it between our checks; retry the create
+            if not regular:
+                raise SystemExit(
+                    f"run dir lock {lock_path} is not a lock file (a link or a folder)\n"
+                    f"  sprite-gen never follows or removes it; move it away if no sprite-gen process is running"
+                )
             holder: dict = {}
             try:
                 holder = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -253,7 +323,7 @@ def release_run_dir_lock(run_dir: Path) -> None:
     재추출이 산 pid 락에 막힌다. 락은 세션 리스가 아니라 작업 단위 writer-writer
     상호배제고, 원자성은 스테이징 통짜 스왑이 보장하므로 작업이 끝나면 놓는 게
     맞다. atexit 핸들러는 남아 있어도 멱등이다 (unlink 실패 무시 + discard)."""
-    lock_path = (Path(run_dir).resolve() / LOCK_FILENAME).resolve()
+    lock_path = Path(run_dir).resolve() / LOCK_FILENAME
     if lock_path not in _HELD_LOCKS:
         return
     try:

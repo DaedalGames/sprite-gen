@@ -396,9 +396,16 @@ throughout, so a concurrent **writer** cannot preempt (writer Isolation).
 **An import never touches its inputs.** An input — `--pngs-dir`, `--atlas`, `--manifest`, the
 atlas a manifest names, and what the import reads in `--pngs-dir` (every frame, `_base` image,
 `_refs` PNG and `meta.json`, and every folder it reads one from), any of which may be a link — that
-is the run dir, lies inside it, or holds it is refused before anything is made, with or without
-`--force`: a publish replaces the run dir's whole prior content, and the run would otherwise be
-written into its input. What is found in `--pngs-dir` is checked once all of it is found and is
+is the run dir, lies inside it, goes through anything inside it, or holds it is refused before
+anything is made, with or without `--force`: a publish replaces the run dir's whole prior content
+entry by entry — a link as a link, so a path that goes through one breaks — and the run would
+otherwise be written into its input. An input is followed the way the system opens it
+(`runio.follow_path`): its path as given, made absolute but never resolved or folded, one entry at
+a time — every link (a Windows directory junction counts as one) and every folder it looks up,
+including a folder that a later `..` leaves again. The refusal names the first entry it goes
+through inside the run dir, and a link loop is refused by name. A path that only passes through the
+run dir itself (`run/../incoming`) is not refused: the run dir stays where it is while its content
+is replaced. What is found in `--pngs-dir` is checked once all of it is found and is
 named in the refusal by where it was found. Folders are compared by real path and file
 identity (`runio.same_folder`, `runio.inside_folder`), so a link or a second spelling on a
 case-insensitive volume is the same folder. The run is built in a staging folder of its own beside
@@ -406,8 +413,11 @@ the run dir and the prior content is moved aside into a backup folder of its own
 (`runio.new_stage`: `.<name>.<pid>-<random>.sg-staging`, `.sg-backup.<pid>-<random>`). A folder
 that already has a staging or backup name, an input's or anyone else's, is never reused or removed:
 besides those two folders the run deletes only the prior content it replaces, and a failed publish
-puts every prior file back. The run carries the run dir's name (`character.id`) and path
-(`frames-manifest.json` `run_dir`), never the staging folder's.
+puts every prior file back. The run dir's single-writer lock is the entry `.sprite-gen.lock` itself
+(`runio.acquire_run_dir_lock`, every writer): a link or a folder at that name is refused by name and
+never followed, read or removed, so reclaiming a stale lock deletes only a stale lock file. The run
+carries the run dir's name (`character.id`) and path (`frames-manifest.json` `run_dir`), never the
+staging folder's.
 
 > **Reader isolation (named strategy: reader/writer locking).** Every operation that
 > republishes frames — a `--force` re-import **and** a re-extract (`extract` builds into a
@@ -554,7 +564,8 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   A consumer that only calls the manifest gate once but then reads the frame tree unguarded would
   leave a TOCTOU window; the full read must be inside the strategy.
 - **Cross-process single-writer.** `.sprite-gen.lock` blocks a second **process** from writing
-  the same run dir; the pipeline's **one worker owns one character folder** rule (§2, SKILL.md)
+  the same run dir (a link or a folder at that name is refused, never followed: §4); the pipeline's
+  **one worker owns one character folder** rule (§2, SKILL.md)
   is what excludes concurrent writers on the same run dir in the first place. Same-process
   re-entry is intentionally allowed so one interpreter can run prepare → extract → compose in
   sequence.

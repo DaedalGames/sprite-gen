@@ -41,6 +41,7 @@ from sprite_gen.spec.runio import (
     acquire_run_dir_lock,
     atomic_save_image,
     atomic_write_text,
+    follow_path,
     inside_folder,
     new_stage,
     publish_guard,
@@ -373,21 +374,39 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
             "base_source": base_out_name, "imported_refs": imported_refs_manifest}
 
 
+def _follow(flag: str, given: Path) -> tuple[list[Path], Path]:
+    """`runio.follow_path` of an input: every entry its path looks up and the real path it reaches. A path that
+    cannot be followed (a link loop) is refused by name before anything is made."""
+    try:
+        return follow_path(given)
+    except OSError as exc:
+        raise SystemExit(f"{flag} cannot be followed: {exc.filename}: {exc.strerror}") from None
+
+
 def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
     """An input is never written, moved or deleted. Refused before anything is made: an input that is
-    the run dir (the run would replace it), lies inside it (a --force publish moves the run dir's prior
-    content aside and deletes it), or holds it (the run would be written into the input). Read by real
-    path and file identity, so a link, or a second spelling on a case-insensitive volume, is the same
-    folder."""
+    the run dir (the run would replace it), lies inside it or goes through anything inside it (a --force
+    publish moves the run dir's prior content aside and deletes it entry by entry — a link as a link, so a
+    path through it breaks), or holds it (the run would be written into the input). An input is followed
+    the way the system opens it (`runio.follow_path`): every link and folder its path looks up, a folder a
+    later `..` leaves again included. Read by real path and file identity, so a link, or a second spelling
+    on a case-insensitive volume, is the same folder."""
+    looked_at: set[Path] = set()
     for flag, given in inputs.items():
         if given is None:
             continue
-        path = Path(given).expanduser().resolve()
+        looked, path = _follow(flag, Path(given).expanduser())
         if same_folder(path, out_dir):
             kind = "folder" if path.is_dir() else "file"
             raise SystemExit(f"{flag} and --out-dir are the same {kind}: {path} (an input is never overwritten)")
         if inside_folder(path, out_dir):
             raise SystemExit(f"{flag} lies inside --out-dir: {path} "
+                             "(--force replaces the run dir's content, never an input)")
+        fresh = [entry for entry in looked if entry not in looked_at]
+        looked_at.update(fresh)
+        through = next((entry for entry in fresh if inside_folder(entry, out_dir)), None)
+        if through is not None:
+            raise SystemExit(f"{flag} goes through {through}, inside --out-dir "
                              "(--force replaces the run dir's content, never an input)")
         if inside_folder(out_dir, path):
             raise SystemExit(f"--out-dir lies inside {flag}: {out_dir} (a run is never written into its input)")
@@ -396,7 +415,8 @@ def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
 def _found_inputs(src: Path, groups: list[dict[str, Any]], *files: Path | None) -> dict[str, Path]:
     """What an import reads in its --pngs-dir `src`, named by where it was found there: every folder it reads a file
     from (a group folder, `_base`, `_refs`), then every file it reads (a frame, a `_refs` PNG, and `files`: the
-    `_base` image and meta.json when it reads them). Any of them may be a link, and lead into the run dir."""
+    `_base` image and meta.json when it reads them). Any of them may be a link, and lead into the run dir or
+    through it."""
     read = [p for g in groups for p in (*g["paths"], *g["refs"])] + [p for p in files if p is not None]
     folders = [f for f in dict.fromkeys(p.parent for p in read) if f != src]
     return {f"{relative_posix(p, src)} in --pngs-dir": p for p in (*folders, *read)}
@@ -494,13 +514,13 @@ def _run(args: argparse.Namespace):
         out_dir = args.out_dir.expanduser().resolve()
     else:
         if args.pngs_dir:
-            base = args.pngs_dir.expanduser().resolve()
+            _, base = _follow("--pngs-dir", args.pngs_dir.expanduser())
             out_dir = base.parent / f"{base.name}-curator"
         elif args.atlas:
-            base = args.atlas.expanduser().resolve()
+            _, base = _follow("--atlas", args.atlas.expanduser())
             out_dir = base.parent / f"{base.stem}-curator"
         elif args.manifest:
-            base = args.manifest.expanduser().resolve()
+            _, base = _follow("--manifest", args.manifest.expanduser())
             out_dir = base.parent / f"{base.stem}-curator"
         else:
             raise SystemExit("need one of --pngs-dir / --atlas / --manifest (or pass --out-dir)")
@@ -578,8 +598,9 @@ def _run(args: argparse.Namespace):
         if bad_refs:
             raise SystemExit("invalid _refs role prefix — expected anchor-/basis-/guide-<name>.png, got: "
                              + ", ".join(bad_refs))
-        # what the import found in --pngs-dir is an input too: a link there may lead into --out-dir, whose prior
-        # content --force deletes. Compared with the run dir once all of it is found, before the run dir is made.
+        # what the import found in --pngs-dir is an input too: a link there may lead into --out-dir or through it,
+        # whose prior content --force deletes. Compared with the run dir once all of it is found, before the run dir
+        # is made.
         _refuse_overlap(_found_inputs(src, groups, base_src, meta_path if meta_path.is_file() else None), out_dir)
         # atomic rebuild: all validation above ran before any mutation; build into a
         # staging dir, then publish over out_dir. A --force re-import that fails (or is
