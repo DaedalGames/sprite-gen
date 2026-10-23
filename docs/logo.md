@@ -57,8 +57,14 @@ sprite-gen logo --provider codex --text "STARFALL" --lettering logo/lettering.pn
 | `logo.preview.png` | the logo on a dark and on a light backdrop, side by side: where a halo or a hard edge would show |
 | `logo.report.json` | the report |
 
-A run removes an earlier run's `lettering.png`, `logo*.png` from its folder first, so a
-file there is always this run's (an input named with `--mood` or `--lettering` is kept).
+A run still removes an earlier run's `lettering.png` and `logo*.png` from its folder
+first, so a file there is always this run's. A `--lettering` given as the folder's own
+`lettering.png` (cut again in place) is kept, and `--mood` may be the folder's own
+`mood.png`. An input given as any other file the run removes or writes, or as the report,
+is refused before anything is made
+([run-contract.md §2-b-3](run-contract.md#2-b-3-a-run-never-writes-over-moves-or-deletes-its-inputs)).
+The run's working folder is a new one of its own (`.logo-work.<pid>-<random>`); a
+`.logo-work` folder already there is never touched.
 
 ## The report
 
