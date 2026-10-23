@@ -25,8 +25,11 @@
      죽으면 writer 는 그 자식을 기다리지 않는다. 다른 스레드의 fork 가 돌아오지 않으면 커널 락을 잡으려는 쪽은 한도까지 기다리고
      크게 실패한다 — 잡기는 아무것도 남기지 않고 놓기는 쥔 그대로다. 그 fd 를 복사할 수 없는 fork 표시(fork 하는 스레드 자신의
      것, C fork 자식이 물려받은 것)는 기다리지 않는다
+  8. 락 주인이 살았는지는 그 프로세스에 아무것도 보내지 않고 본다 — POSIX 는 이 계약 전과 같은 신호 0 이고, Windows 는
+     콘솔에 Ctrl+C 를 보내지 않는다(거기서 os.kill(pid, 0) 은 CTRL_C_EVENT 다). 살아 있는 프로세스와 열 수 없는 남의
+     프로세스는 살아 있고, 끝난 프로세스는 아니다
 
-3–7 은 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다. 3·6·7 은
+3–8 은 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다. 3·6·7 은
 docs/run-contract.md §7 의 세 경계 밖에서다: C fork 자식이 끝나거나 exec 할 때까지의 커널 락, 시그널 처리기에서 fork 한 뒤 끊긴
 코드로 돌아가는 자식, runio 의 fork 훅을 끊는 예외.
 """
@@ -569,6 +572,54 @@ forker.join(10)
 print(json.dumps(seen), flush=True)
 """
 
+# 콘솔 하나를 나눠 쓰는 두 프로세스 — 이 탐침과 그가 띄운 대상 — 가 받은 Ctrl+C 를 센다(물려받았을 수 있는 'Ctrl+C 무시'는
+# 둘 다 끈다). 탐침은 runio._pid_alive 로 대상·자신·끝난 프로세스·System(pid 4)·0 을 차례로 묻고, 물을 때마다 콘솔 신호가
+# 닿을 틈을 둔 뒤 그 사이 둘이 받은 Ctrl+C 를 적는다. Windows 만.
+_CONSOLE_PROBE = r"""
+import ctypes
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from sprite_gen.spec import runio
+TARGET = '''
+import ctypes, os, signal, sys, threading, time
+ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(None, False)
+signal.signal(signal.SIGINT, lambda *_: print("ctrl-c", flush=True))
+print(os.getpid(), flush=True)
+threading.Thread(target=lambda: (sys.stdin.read(), os._exit(0)), daemon=True).start()
+while True:
+    time.sleep(0.05)
+'''
+ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(None, False)
+here, there = [], []
+signal.signal(signal.SIGINT, lambda *_: here.append("ctrl-c"))
+target = subprocess.Popen([sys.executable, "-c", TARGET], stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding="utf-8")
+target_pid = int(target.stdout.readline())
+def pump():
+    for line in target.stdout:
+        there.append(line.strip())
+threading.Thread(target=pump, daemon=True).start()
+ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, encoding="utf-8",
+                       check=True)
+seen = {}
+for name, pid in (("live", target_pid), ("self", os.getpid()), ("ended", int(ended.stdout)), ("system", 4), ("zero", 0)):
+    before = len(here), there.count("ctrl-c")
+    try:
+        alive = runio._pid_alive(pid)
+    except Exception as exc:
+        alive = repr(exc)
+    time.sleep(0.5)  # 콘솔 신호는 따로 도착한다 — 그 처리기가 돌 틈
+    seen[name] = {"pid": pid, "alive": alive, "ctrl_c_here": len(here) - before[0],
+                  "ctrl_c_target": there.count("ctrl-c") - before[1]}
+target.stdin.close()
+target.wait(10)
+print(json.dumps(seen), flush=True)
+"""
+
 _NO_FORK = pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork and os.register_at_fork are Unix only (Availability: "
                                                             "Unix, not Emscripten, not WASI) — Windows makes no fork child")
 
@@ -764,8 +815,6 @@ def test_a_writer_that_still_holds_its_lock_removes_it_when_it_exits(tmp_path, s
     assert not os.path.lexists(lock), "쥔 락을 남기고 끝났다"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runio._pid_alive cannot tell a dead pid on Windows: os.kill(pid, 0) "
-                                                    "sends CTRL_C_EVENT there (an existing defect outside this test)")
 def test_a_late_reclaimer_and_another_writer_queue_so_only_one_of_them_holds_the_run_dir(tmp_path, start) -> None:
     """죽은 주인의 락을 회수하는 일과 새 락을 만드는 일은 줄을 선다 (회수 경합, 설계 판정 eve-20261023-135225).
 
@@ -799,6 +848,53 @@ def test_a_late_reclaimer_and_another_writer_queue_so_only_one_of_them_holds_the
     assert f"run dir is locked by slow-reclaimer (pid {slow.pid})" in writer.stderr()
     assert slow.finish() == 0, slow.stderr()
     assert not os.path.lexists(lock)
+
+
+def _signal_zero(pid: int) -> bool:
+    """이 계약 전의 runio._pid_alive 그대로(main 7404145) — POSIX 판정은 이것과 같은 답이다."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 의 신호 0 판정 — Windows 는 콘솔 Ctrl+C 시험")
+def test_a_lock_holders_pid_is_judged_on_posix_by_signal_zero_as_before(tmp_path, start, monkeypatch) -> None:
+    """POSIX 의 락 주인 판정은 이 계약 전과 같다 — 살아 있는 자식·자신·끝난 프로세스·남의 프로세스(pid 1)에 같은 답이고,
+    그 사이 부르는 것은 os.kill(pid, 0) 하나다."""
+    live = start(_STEPS, tmp_path, "wait")
+    pids = {"live": live.pid, "self": os.getpid(), "ended": _dead_pid(), "another user's": 1}
+    before = {name: _signal_zero(pid) for name, pid in pids.items()}
+    sent: list[tuple[int, int]] = []
+    real_kill = os.kill
+
+    def kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", kill)
+    now = {name: runio._pid_alive(pid) for name, pid in pids.items()}
+    monkeypatch.undo()
+    assert now == before == {"live": True, "self": True, "ended": False, "another user's": True}
+    assert sent == [(pid, 0) for pid in pids.values()]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 의 콘솔 Ctrl+C — POSIX 는 신호 0 시험")
+def test_a_lock_holders_pid_is_judged_on_windows_without_a_ctrl_c_to_its_console() -> None:
+    """Windows 의 락 주인 판정은 콘솔에 Ctrl+C 를 보내지 않는다 — 거기서 os.kill(pid, 0) 은 CTRL_C_EVENT 라 같은 콘솔의
+    프로세스들에 Ctrl+C 를 보낸다. 살아 있는 대상·자신·System(pid 4, 열 수 없는 남의 프로세스)은 살아 있고, 끝난 프로세스와 0
+    은 아니다. 그 사이 같은 콘솔의 탐침도 대상도 Ctrl+C 를 받지 않는다."""
+    hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=0)  # 새 콘솔 창을 띄우지 않는다
+    got = subprocess.run([sys.executable, "-c", _CONSOLE_PROBE], capture_output=True, encoding="utf-8", timeout=60,
+                         creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=hidden)
+    assert got.returncode == 0, got.stderr
+    seen = json.loads(got.stdout.splitlines()[-1])
+    assert {name: case["alive"] for name, case in seen.items()} == {
+        "live": True, "self": True, "ended": False, "system": True, "zero": False}, seen
+    assert all(case["ctrl_c_here"] == case["ctrl_c_target"] == 0 for case in seen.values()), seen
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE and SIGXFSZ are POSIX")
