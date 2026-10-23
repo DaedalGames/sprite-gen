@@ -337,8 +337,9 @@ def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom
     most on the reference's own lower face is the face; any other skin piece a reaching piece touches is the hand's (a
     palm, a finger, the sleeve under it), with the lines round it (HAND_GROW px of the reaching piece). It is a hand
     where HAND_MIN px or more of those skin pieces lie on the layer's flat part above the chin (`band_bottom`); grown
-    HAND_GROW px and feathered. A body's own mouth is not skin and is kept only where it meets a hand; the face's own
-    skin, however far its outline moves off the reference's, is never a hand's."""
+    HAND_GROW px and feathered. A body's own mouth is not skin and is kept only where it meets a hand, and a skin piece
+    lying half or more in it (a tongue) is not a hand's; the face's own skin, however far its outline moves off the
+    reference's, is never a hand's."""
     near = parts_mod._dilate(w0 > 0, HAND_GROW + FEATHER)
     ys, xs = np.nonzero(near)
     x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
@@ -357,8 +358,16 @@ def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom
         return np.zeros(w0.shape, np.float32)
     own = lower_face(reference, geom)[y0:y1, x0:x1]
     face = int(np.argmax(np.bincount(skin_lab[own & (skin_lab >= 0)], minlength=skin_sizes.size))) if (own & (skin_lab >= 0)).any() else -1
-    touched = np.unique(skin_lab[parts_mod._dilate(reaching, 2) & (skin_lab >= 0)])
-    hand_skin = np.isin(skin_lab, touched[touched != face])
+    # the body's own mouth, filled: a tongue in it is light and warm too
+    mouth = np.zeros(w0.shape, bool)
+    line = mouth_line(body_ref, geom)
+    if line is not None:
+        mx0, my0, mx1, my1 = geom.mouth_box
+        mouth[my0:my1, mx0:mx1] = parts_mod._dilate(fill_holes(line), 2)
+    in_mouth = mouth[y0:y1, x0:x1]
+    touched = [j for j in np.unique(skin_lab[parts_mod._dilate(reaching, 2) & (skin_lab >= 0)])
+               if j != face and (in_mouth & (skin_lab == j)).sum() * 2 < skin_sizes[j]]
+    hand_skin = np.isin(skin_lab, touched)
     inside = (sub_w > 0.98) & (np.arange(y0, y1)[:, None] < geom.band_bottom)
     if int((hand_skin & inside).sum()) < HAND_MIN:
         return np.zeros(w0.shape, np.float32)
@@ -510,11 +519,9 @@ def hampel(rows: list[dict[str, Any]], cyclic: bool) -> list[dict[str, Any]]:
 
 # --- the mouth ----------------------------------------------------------------------------------------------------
 
-def mouth_reading(arr: np.ndarray, geom: Geometry) -> dict[str, Any] | None:
-    """How a mouth in reference coordinates smiles: the dark line or opening nearest the mouth point (DROP under the
-    box's skin, off the headset's grey), its corners its leftmost and rightmost pixels. `lift` is how far its top edge
-    in the middle third sits below the chord between the corners (px; + the corners turned up: a smile, - turned down:
-    an O or a pout); `height` the mean of its bottom less top there, plus one. None where no mouth line is found."""
+def mouth_line(arr: np.ndarray, geom: Geometry) -> np.ndarray | None:
+    """The mouth of a picture in reference coordinates, on `Geometry.mouth_box`: the dark line or opening nearest the
+    mouth point (DROP under the box's skin, off the headset's grey). None where there is none."""
     x0, y0, x1, y1 = geom.mouth_box
     a = arr[y0:y1, x0:x1]
     lum = luma(a)
@@ -527,9 +534,17 @@ def mouth_reading(arr: np.ndarray, geom: Geometry) -> dict[str, Any] | None:
     yy, xx = np.mgrid[0:a.shape[0], 0:a.shape[1]]
     cx, cy = geom.mouth[0] - x0, geom.mouth[1] - y0
     near = m & ((xx - cx) ** 2 / 30 ** 2 + (yy - cy) ** 2 / 16 ** 2 < 1)
-    if not near.any():
+    return reach(m, near) if near.any() else None
+
+
+def mouth_reading(arr: np.ndarray, geom: Geometry) -> dict[str, Any] | None:
+    """How a mouth in reference coordinates smiles (`mouth_line`), its corners its leftmost and rightmost pixels.
+    `lift` is how far its top edge in the middle third sits below the chord between the corners (px; + the corners
+    turned up: a smile, - turned down: an O or a pout); `height` the mean of its bottom less top there, plus one. None
+    where no mouth line is found."""
+    g = mouth_line(arr, geom)
+    if g is None:
         return None
-    g = reach(m, near)
     ys, xs = np.nonzero(g)
     if len(xs) < 6:
         return None

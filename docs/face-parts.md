@@ -129,7 +129,7 @@ A sprite leaves out the weight's outermost 2 px, where the weight is under 0.1. 
 
 Each body cell is copied with its anchor and a keep image for anything that must stay above the face layer. The keep contains the body's own dark grey and black reaching inward from the boundary, its lines in the feather, and a hand.
 
-A hand differs from the reference face by more than 48 in any channel and reaches inward from outside the layer. The frame's light, warm skin is divided into pieces using drawn lines as walls. Teeth and white streaks do not count as skin. The piece that overlaps the reference's lower face most is the face. Other skin pieces touched by the outside piece belong to the hand, with their surrounding lines. A hand counts where at least 400 px lie on the weight's flat part above `band_bottom`.
+A hand differs from the reference face by more than 48 in any channel and reaches inward from outside the layer. The frame's light, warm skin is divided into pieces using drawn lines as walls. Teeth and white streaks do not count as skin. The piece that overlaps the reference's lower face most is the face. Other skin pieces touched by the outside piece belong to the hand, with their surrounding lines. A skin piece that lies half or more inside the body's own mouth belongs to the mouth, even when a finger at the corner joins it to the hand, and the layer covers it. For this check, the body's own mouth line or opening is read like a talking frame's mouth, filled and grown 2 px. A hand counts where at least 400 px lie on the weight's flat part above `band_bottom`.
 
 The body's own open mouth is kept only where it meets a hand. The face's own skin is never counted as hand skin.
 
