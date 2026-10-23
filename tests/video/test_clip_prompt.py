@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from sprite_gen import cli
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import clip_prompt
 from sprite_gen.video import frames as frames_mod
@@ -180,3 +181,29 @@ def test_frames_of_a_clip_with_audio_and_a_cover_are_the_pictures_frames(tmp_pat
     assert (report["codec"], report["pix_fmt"], report["audio_streams"], report["cover_streams"]) == ("h264", "yuv420p", 1, 1)
     saved = json.loads((tmp_path / "frames" / "frames.report.json").read_text(encoding="utf-8"))
     assert saved["audio_streams"] == 1 and saved["stream_index"] == report["stream_index"]
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
+def test_the_video_frames_command_hands_over_keyed_frames_and_prints_the_report_it_wrote(tmp_path: Path, capsys) -> None:
+    """`sprite-gen video-frames` from its argv to its files: a green-keyed H.264 clip comes out as raw and keyed
+    frames, the report says the run passed, and the printed summary names the report and the keyed frames."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for i in range(6):
+        im = Image.new("RGB", (64, 64), (0, 255, 0))
+        ImageDraw.Draw(im).rectangle((20 + i, 20, 33 + i, 49), fill=(200, 40, 40))
+        im.save(src / f"f-{i:04d}.png")
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "24", "-i", str(src / "f-%04d.png"), "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-crf", "12", str(clip)], check=True)
+    out = tmp_path / "frames"
+    assert cli.main(["video-frames", "--clip", str(clip), "--out-dir", str(out), "--key", "green"]) == 0
+    keyed = sorted((out / "keyed").glob("frame-*.png"))
+    assert len(keyed) == len(list((out / "raw").glob("frame-*.png"))) == 6
+    first = Image.open(keyed[0])
+    assert first.mode == "RGBA" and first.getpixel((0, 0))[3] == 0 and first.getpixel((26, 35))[3] == 255
+    report = json.loads((out / "frames.report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "passed" and report["frames"] == 6
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["report"] == str((out / "frames.report.json").resolve()) and printed["keyed_dir"] == report["keyed_dir"]
+    assert (printed["frames"], printed["width"], printed["height"], printed["fps"]) == (6, 64, 64, 24.0)
