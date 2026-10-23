@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFilter
 
-from logo_lettering import GREEN_PAINTED, key_excess, lettering, over, truth_over
+from logo_lettering import BUTTER, GREEN_PAINTED, MAGENTA_PAINTED, MINT, SKY, key_excess, lettering, over, quilt, truth_over
 from sprite_gen.frames import logo_matte
 
 
@@ -201,6 +201,71 @@ def test_the_key_keeps_a_glows_hue_longest() -> None:
     # a cyan glow keeps green's hue to ~85 % coverage and magenta's to ~half; an orange one the other way
     assert logo_matte.choose_key(Image.new("RGB", (60, 40), (40, 230, 255)))["key"] == "green"
     assert logo_matte.choose_key(Image.new("RGB", (60, 40), (255, 120, 20)))["key"] == "magenta"
+
+
+def test_a_title_in_both_keys_hues_gets_neither_key() -> None:
+    # patchwork letters: pink patches and a plum outline in magenta's hue, mint patches in green's
+    choice = logo_matte.choose_key(quilt(key=(30, 40, 90))[0])
+    assert choice["scores"]["magenta"]["hued_pct"] >= logo_matte.CLASH_HUED_PCT
+    assert choice["scores"]["green"]["hued_pct"] >= logo_matte.CLASH_HUED_PCT
+    assert choice["scores"]["green"]["clashes"] and choice["scores"]["magenta"]["clashes"]
+    assert choice["key"] is None
+
+
+def _cyan_title_with_mint(mint_pct: float) -> Image.Image:
+    # cyan lettering keeps green's hue longest (it would win green), with a few mint patches in it
+    mood = np.full((50, 100, 3), (40, 230, 255), dtype=np.uint8)
+    mood.reshape(-1, 3)[:int(round(mint_pct / 100 * 5000))] = (150, 235, 190)
+    return Image.fromarray(mood, "RGB")
+
+
+def test_a_colour_in_a_keys_hue_rules_the_key_out() -> None:
+    assert logo_matte.choose_key(_cyan_title_with_mint(0))["key"] == "green"
+    choice = logo_matte.choose_key(_cyan_title_with_mint(6))
+    assert choice["scores"]["green"]["clashes"] and choice["key"] == "magenta"
+
+
+def test_a_colour_the_brief_names_rules_its_key_out_at_a_smaller_share() -> None:
+    named = {"green": ["mint"], "magenta": []}
+    choice = logo_matte.choose_key(_cyan_title_with_mint(2), named=named)
+    assert choice["scores"]["green"]["named"] == ["mint"] and choice["key"] == "magenta"
+    assert logo_matte.choose_key(_cyan_title_with_mint(2))["key"] == "green"  # not named: 2 % may be scenery
+    assert logo_matte.choose_key(_cyan_title_with_mint(0), named=named)["key"] == "green"  # a word alone does not
+
+
+def test_see_through_inside_the_letters_is_found() -> None:
+    # on green the mint patches are a mix with the key, cut see-through inside the plum-outlined letters
+    image, mint = quilt()
+    cut, _ = logo_matte.matte(image, key="green")
+    inside = logo_matte.see_through_inside(cut)
+    alpha = np.asarray(cut)[..., 3]
+    assert ((alpha[mint] > 0) & (alpha[mint] < 255)).mean() > 0.9
+    assert inside["px"] >= 0.4 * mint.sum() and inside["wide"]
+    assert inside["pct_of_visible"] >= logo_matte.INSIDE_MAX_PCT
+
+
+def test_the_other_key_keeps_the_mint_patches_and_finds_nothing_inside() -> None:
+    # the same letters with peach for pink in a navy outline: nothing in magenta's hue, so magenta keeps them all
+    image, mint = quilt(key=MAGENTA_PAINTED, colours=((240, 170, 120), BUTTER, MINT, SKY), outline=(30, 34, 70))
+    cut, _ = logo_matte.matte(image, key="magenta")
+    assert (np.asarray(cut)[..., 3][mint] == 255).mean() > 0.95
+    assert not logo_matte.see_through_inside(cut)["wide"]
+
+
+@pytest.mark.parametrize("item, key", [
+    (lambda: lettering(), "magenta"),
+    (lambda: lettering(fill=(232, 182, 52), outline=(20, 24, 40), glow=(40, 230, 255), glow_radius=4.0,
+                       glow_strength=0.8), "magenta"),
+    (lambda: lettering(fill=(232, 182, 52), outline=(20, 24, 40), glow=(40, 230, 255), glow_radius=9.0,
+                       key=GREEN_PAINTED), "green"),  # a glow pooled in the counter of the O
+    (lambda: lettering(fill=(232, 182, 52), outline=(20, 24, 40), glow=(40, 230, 255), glow_radius=9.0), "magenta"),
+    (lambda: lettering(fill=(255, 214, 40), glow=(255, 120, 20), glow_radius=5.0, glow_strength=0.7,
+                       key=GREEN_PAINTED), "green"),
+    (lambda: lettering(glow=None, pixel=True, noise=0.0, size=(96, 48)), "magenta"),
+], ids=["white-glow", "outlined-cyan-glow", "pooled-glow-green", "pooled-glow-magenta", "orange-glow-green", "pixel"])
+def test_a_glow_is_not_see_through_inside(item, key) -> None:
+    cut, _ = logo_matte.matte(item().image, key=key)
+    assert not logo_matte.see_through_inside(cut)["wide"]
 
 
 def test_the_key_is_read_off_the_lettering_box_not_the_scene() -> None:

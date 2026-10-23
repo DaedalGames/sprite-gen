@@ -17,8 +17,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from logo_lettering import GREEN_PAINTED, MAGENTA_PAINTED, lettering
+from logo_lettering import GREEN_PAINTED, MAGENTA_PAINTED, lettering, quilt
 from sprite_gen import gen
+from sprite_gen.frames import logo_matte
 from sprite_gen.gen import base as gen_base
 from sprite_gen.gen import logo
 
@@ -372,6 +373,60 @@ def test_an_explicit_key_is_kept(tmp_path, fake) -> None:
     assert _run(tmp_path, chroma_key="magenta") == 0
     assert "#FF00FF" in provider.requests[1].prompt
     assert _report(tmp_path)["steps"]["key"]["source"] == "explicit"
+
+
+# A key in the title's own hue turns those letters see-through (docs/logo.md, which key): patchwork letters in pink and
+# plum (magenta's hue) with mint patches (green's) leave neither key, and a see-through inside the letters is refused.
+QUILT_STYLE = "patchwork pixel letters of pastel fabric patches (pink, mint, butter yellow, sky blue), a plum outline"
+
+
+def test_a_title_in_both_keys_hues_is_refused_before_the_lettering_is_bought(tmp_path, fake) -> None:
+    provider = fake(mood=quilt(key=(30, 40, 90))[0])
+    with pytest.raises(SystemExit, match="both keys' hues") as refusal:
+        _run(tmp_path, style=QUILT_STYLE)
+    assert "--chroma-key" in str(refusal.value) and "mint" in str(refusal.value)
+    assert len(provider.requests) == 1  # the mood image only: the lettering was not bought
+    assert not (tmp_path / "logo" / "lettering.png").exists()
+    report = _report(tmp_path)
+    assert report["status"] == "refused" and report["refused_at"] == "key"
+    key = report["steps"]["key"]
+    assert key["key"] is None and key["source"] == "auto"
+    assert key["scores"]["green"]["clashes"] and key["scores"]["magenta"]["clashes"]
+    assert key["scores"]["green"]["named"] == ["mint"] and key["scores"]["magenta"]["named"] == ["pink", "plum"]
+
+
+def test_a_key_named_in_the_titles_hue_is_kept_and_said(tmp_path, fake, capsys) -> None:
+    provider = fake(mood=quilt(key=(30, 40, 90))[0])
+    assert _run(tmp_path, style=QUILT_STYLE, chroma_key="magenta") == 0
+    assert "#FF00FF" in provider.requests[1].prompt
+    report = _report(tmp_path)
+    assert report["steps"]["key"]["key"] == "magenta" and report["steps"]["key"]["source"] == "explicit"
+    assert any("magenta key named is one of the title's colours" in warning for warning in report["warnings"])
+    assert "see-through" in capsys.readouterr().err
+
+
+def test_see_through_inside_the_letters_is_refused_and_kept_aside(tmp_path, fake) -> None:
+    provider = fake(reads=(["ION"],))
+    out = tmp_path / "logo"
+    out.mkdir()
+    quilt()[0].save(out / "lettering.png")  # on green: the mint patches are cut see-through
+    with pytest.raises(SystemExit, match="see-through inside") as refusal:
+        _run(tmp_path, lettering=out / "lettering.png")
+    assert "--chroma-key magenta" in str(refusal.value)
+    assert provider.looked == []  # refused before the text check
+    assert not (out / "logo.png").exists() and (out / "logo.rejected.png").is_file()
+    assert (out / "logo.preview.png").is_file()
+    report = _report(tmp_path)
+    assert report["status"] == "refused" and report["refused_at"] == "matte"
+    inside = report["logo"]["see_through_inside"]
+    assert inside["pct_of_visible"] >= logo_matte.INSIDE_MAX_PCT and inside["wide"]
+
+
+def test_a_glowing_title_is_not_see_through_inside(tmp_path, fake) -> None:
+    fake()
+    assert _run(tmp_path) == 0
+    report = _report(tmp_path)
+    assert report["status"] == "ok" and not report["logo"]["see_through_inside"]["wide"]
 
 
 def test_no_font_is_ever_drawn(tmp_path, fake, monkeypatch) -> None:

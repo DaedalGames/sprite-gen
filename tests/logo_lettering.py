@@ -93,6 +93,38 @@ def lettering(
     return Lettering(image=image, alpha=alpha, colour=true_colour, letters=solid, background=background)
 
 
+PINK, BUTTER, MINT, SKY = (240, 140, 200), (250, 230, 140), (150, 235, 190), (140, 200, 240)
+PLUM = (90, 40, 80)
+QUILT = (PINK, BUTTER, MINT, SKY)  # pink and plum are in magenta's hue, mint in green's
+
+
+def quilt(*, size: tuple[int, int] = (320, 160), key: tuple[int, int, int] = GREEN_PAINTED,
+          colours: tuple[tuple[int, int, int], ...] = QUILT, outline: tuple[int, int, int] = PLUM, noise: float = 2.0,
+          patch: int = 14, seed: int = 7) -> tuple[Image.Image, np.ndarray]:
+    """Patchwork pixel letters: three outlined blocks (the middle one with a counter the key shows through)
+    filled with square fabric patches (pink, butter yellow, mint and sky blue in a plum outline), on a key.
+    Returns (the RGB picture, the mint patches' mask)."""
+    width, height = size
+    rgb = np.broadcast_to(np.array(key, dtype=np.float64), (height, width, 3)).copy()
+    mint = np.zeros((height, width), dtype=bool)
+    top, bottom, wide, rim = int(height * 0.18), int(height * 0.82), int(width * 0.2), 4
+    for number, left in enumerate((int(width * 0.08), int(width * 0.4), int(width * 0.72))):
+        rgb[top:bottom, left:left + wide] = outline
+        for row, y in enumerate(range(top + rim, bottom - rim, patch)):
+            for column, x in enumerate(range(left + rim, left + wide - rim, patch)):
+                y1, x1 = min(y + patch, bottom - rim), min(x + patch, left + wide - rim)
+                colour = colours[(row + column + number) % len(colours)]
+                rgb[y:y1, x:x1] = colour
+                mint[y:y1, x:x1] = colour == MINT
+        if number == 1:  # a counter, outlined, with the key showing through it
+            cy, cx, half_h, half_w = (top + bottom) // 2, left + wide // 2, height // 8, wide // 6
+            rgb[cy - half_h - rim:cy + half_h + rim, cx - half_w - rim:cx + half_w + rim] = outline
+            rgb[cy - half_h:cy + half_h, cx - half_w:cx + half_w] = key
+            mint[cy - half_h - rim:cy + half_h + rim, cx - half_w - rim:cx + half_w + rim] = False
+    rgb += np.random.default_rng(seed).normal(0.0, noise, rgb.shape)
+    return Image.fromarray(np.uint8(np.clip(np.round(rgb), 0, 255)), "RGB"), mint
+
+
 def key_excess(rgb: np.ndarray, key: str = "magenta") -> np.ndarray:
     """How much of the key's hue a colour carries: min(R,B)-G for magenta, G-max(R,B) for green."""
     rgb = np.asarray(rgb, dtype=np.float64)
