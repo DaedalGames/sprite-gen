@@ -17,6 +17,11 @@ GitHub-hosted CI(GitHub Actions)는 쓰지 않는다. 테스트 게이트와 whe
 lavapipe 에서는 첫 업로드에서 죽는다 — 그래서 그런 호스트에서는 RIFE 를 떼어 내되 조용히 건너뛰지는
 않는다.
 
+`scripts/linux_lane.sh` 레인은 두 번의 `pytest` 호출에 모두 `--full` 을 전달해 모든 시험을 실행한다.
+일반 `pytest` 실행은 `pyproject.toml` 에 등록된 `slow` 표시 시험을 `tests/conftest.py` 가 실행 대상에서
+제외하는 빠른 묶음이다. `tests/release/test_fast_bundle.py` 는 레인의 각 `pytest` 호출에 `--full` 이 있는지
+확인한다.
+
 실제 rife-ncnn-vulkan 을 돌리는 시험은 `real_rife` 표시를 단다(`pyproject.toml` 이 등록하고,
 `tests/conftest.py` 가 RIFE 를 못 찾으면 그 표시가 붙은 시험을 건너뛴다). `--rife-unmeasured` 는
 RIFE 가 닿는 곳이 하나도 없는 상태로 스위트 전체를 돌려 그 시험들이 이 이유로 건너뛰어지고,
