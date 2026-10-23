@@ -20,6 +20,11 @@ from .facing import INSPECTION_PROMPT
 
 OPENAI_MODEL = "gpt-4.1-mini"
 GROK_MODEL = "grok-4.6"
+# What codex reads lettering on (`inspect_image`), named on the call over the login's own config, so a logo's text
+# check reads on the same model and effort on every machine (docs/logo.md, the text check). The facing check still
+# runs on the login's config.
+CODEX_READ_MODEL = "gpt-6-sol"
+CODEX_READ_EFFORT = "high"
 FACING_LABEL = "facing vision check"
 
 
@@ -49,10 +54,11 @@ def response_text(status: int, reply, *, label: str = FACING_LABEL) -> tuple[str
                   "response_status": reply.get("status")}
 
 
-def codex_inspect(path: Path, workdir: Path, *, prompt: str = INSPECTION_PROMPT,
-                  label: str = FACING_LABEL) -> tuple[str, dict]:
+def codex_inspect(path: Path, workdir: Path, *, prompt: str = INSPECTION_PROMPT, label: str = FACING_LABEL,
+                  model: str | None = None, effort: str | None = None) -> tuple[str, dict]:
     # Isolated cwd and ephemeral session: no project instructions, no stale
-    # output reuse and no persistent vision rollouts. Uses the existing login.
+    # output reuse and no persistent vision rollouts. Uses the existing login,
+    # on its config's model and effort unless the call names them.
     from .codex_provider import announce_codex_billing, codex_login
     login = codex_login()
     if login.source is None:
@@ -61,14 +67,19 @@ def codex_inspect(path: Path, workdir: Path, *, prompt: str = INSPECTION_PROMPT,
     with tempfile.TemporaryDirectory(prefix="facing-", dir=workdir) as directory:
         output = Path(directory) / "answer.txt"
         command = [provider_binary("codex"), "exec", "--sandbox", "read-only",
-                   "--skip-git-repo-check", "--ephemeral", "--color", "never",
-                   "-C", directory, "-i", str(path.resolve()), "-o", str(output), "-"]
+                   "--skip-git-repo-check", "--ephemeral", "--color", "never", "-C", directory]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["-c", f'model_reasoning_effort="{effort}"']
+        command += ["-i", str(path.resolve()), "-o", str(output), "-"]
         completed = subprocess.run(command, input=prompt, capture_output=True,
                                    text=True, encoding="utf-8", env=provider_subprocess_env(),
                                    timeout=GEN_TIMEOUT_SECONDS)
         if completed.returncode:
             raise SystemExit(f"{_tag(label)}: codex exited {completed.returncode}")
-        return output.read_text(encoding="utf-8"), {"transport": "codex-exec", "auth_source": login.source}
+        named = {key: value for key, value in (("model", model), ("effort", effort)) if value}
+        return output.read_text(encoding="utf-8"), {"transport": "codex-exec", "auth_source": login.source, **named}
 
 
 def grok_inspect(path: Path, *, credential=None, call=None, prompt: str = INSPECTION_PROMPT,
