@@ -54,7 +54,7 @@ VERSION = 1
 PLAYER_PATH = Path(__file__).with_name("sprite-gen-face-v1.mjs")
 LIFT_TIE = 0.5  # px: rests this near the nearest lift are told apart by their switch
 
-# The voice -> mouth level rule the player runs (sprite-gen-face-v1.mjs `mouthTrack`): the broadcast mouth's numbers,
+# The voice -> mouth level rule the player runs (sprite-gen-face-v1.mjs `mouthTrack`): the flap's numbers,
 # docs/face-parts.md "The line".
 MOUTH_RULES = {"closed_under": 0.12, "prominence": 0.05, "min_gap_s": 1 / 12, "open_lo_hi": [2, 5], "surprise_at": 0.85,
                "lead_frames": 1, "max_step": 3, "normal_top": 6, "surprise_top": 6, "wide_from": 4,

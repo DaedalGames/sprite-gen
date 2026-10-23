@@ -55,7 +55,7 @@ SKIN_LUMA = 175          # skin is opaque and lighter than this
 RAMP = 14                # the weight rises from 0 at the top edge to 1 this far below it
 MARGIN, FEATHER = 6, 10  # the union grown by MARGIN px is flat; the weight falls to 0 over FEATHER px outside it
 EYE_GROW = 6
-REACH = 12               # a frame's lower face counts this far past the reference's own (a talking jaw drops ~7 px)
+REACH = 12               # a frame's lower face counts this far past the reference's own: a dropped jaw, not a hand
 BAND = 30                # the anchor band: this far outside the flat part, above band_bottom, less the eyes
 SEARCH = 48              # px each way the place is searched; a best on the rim is searched again at twice this
 FINE = 3                 # px each way the place is read again at each size and tilt
@@ -632,15 +632,17 @@ def keep_overlay(body: np.ndarray, keep: np.ndarray) -> tuple[Image.Image, tuple
 
 
 def over(dst: np.ndarray, src: np.ndarray, at: tuple[int, int] = (0, 0)) -> np.ndarray:
-    """Source-over (straight alpha) of `src` on `dst` with its corner at `at`; float RGBA 0..255, in place."""
+    """Source-over (straight alpha) of `src` on `dst` with its corner at `at`; float RGBA 0..255, in place. Where
+    `src` is clear, `dst` is left as it is, its colour under no coverage included."""
     x0, y0 = at
     h, w = src.shape[:2]
     d = dst[y0:y0 + h, x0:x0 + w]
     sa, da = src[..., 3:4] / 255, d[..., 3:4] / 255
     a = sa + da * (1 - sa)
     rgb = np.where(a > 0, (src[..., :3] * sa + d[..., :3] * da * (1 - sa)) / np.maximum(a, 1e-6), 0)
-    d[..., :3] = rgb
-    d[..., 3:4] = a * 255
+    covered = sa > 0
+    d[..., :3] = np.where(covered, rgb, d[..., :3])
+    d[..., 3:4] = np.where(covered, a * 255, d[..., 3:4])
     return dst
 
 

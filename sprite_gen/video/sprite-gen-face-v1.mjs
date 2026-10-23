@@ -17,9 +17,9 @@ function roundEven(x) {
   return f % 2 === 0 ? f : f + 1;
 }
 
-// The broadcast mouth's syllable rule: loudness over 1/48 s windows every 1/96 s, lightly smoothed, against the
-// line's loudest; a syllable is a peak over closed_under standing prominence above the lower of its neighbouring
-// dips, min_gap_s apart (the louder stays). Each opens open_lo_hi by its loudness (a surprise line's loudest to
+// The flap: a mouth opens on every syllable and closes between them. Loudness over 1/48 s windows every 1/96 s,
+// lightly smoothed, against the line's loudest; a syllable is a peak over closed_under standing prominence above the
+// lower of its neighbouring dips, min_gap_s apart (the louder stays). Each opens open_lo_hi by its loudness (a surprise line's loudest to
 // surprise_top) on the frame lead_frames ahead of it, half of it the frame before, two fifths the frame after, closed
 // otherwise; no frame moves more than max_step levels, and a level over normal_top is entered from wide_from.
 export function mouthTrack(samples, sampleRate, rules, { fps = 24, tags = [] } = {}) {
