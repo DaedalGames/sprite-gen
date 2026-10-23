@@ -444,6 +444,26 @@ def same_picture(distances, start, length):
     return float(distances[js, js+length].mean())/step
 
 
+def same_picture_count(reading, distances, judged):
+    """A cut the crossings count an odd number of steps (`judged`, `reading.judge`), asked whether the count missed a
+    crossing: where the feet are seen together over more than HIDE_SHARE of a step at a pass (`reading.overlap`) and the
+    clip a cut on is the same picture (`same_picture`, at most SAME_PICTURE_MAX playback steps along the cut), no legs
+    swapped. Returns (what was read, None where it is not asked; the cut's count, `uncertain` (`same-picture`) where the
+    count missed a crossing, else `judged` itself)."""
+    overlap = reading.overlap
+    if not (judged['verdict'] == 'refuted' and judged['k'][0] % 2 and overlap is not None and overlap > HIDE_SHARE):
+        return None, judged
+    near = same_picture(distances, *judged['cut'])
+    said = {'over_step': None if near is None else round(near, 3), 'max': SAME_PICTURE_MAX, 'overlap': round(overlap, 3),
+            'hides': HIDE_SHARE}
+    if near is None or near > SAME_PICTURE_MAX:
+        return said, judged
+    return said, {**judged, 'verdict': 'uncertain', 'code': 'same-picture',
+                  'why': f"the crossings count {judged['why']}, but the feet are seen together {overlap:.2f} of a step at a "
+                         f"pass (over {HIDE_SHARE:g}: a pass can hide there) and the clip a cut on is the same picture ({near:.2f} "
+                         f"playback steps along the cut, at most {SAME_PICTURE_MAX:g}): no legs swapped, a crossing unseen"}
+
+
 def _rank(rows, *, flow_limit, seam_max, in_phase):
     """Two-step cuts, best first, and how many of the first passed the gates: in phase (`in_phase`), its top band calm
     at the wrap (`_calm`: a thin part the flow hardly sees, a staff, does not jump), its wrap over its step (`ratio`) at
@@ -507,17 +527,11 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
         if reading.in_phase(searched):
             record.update(chosen_by='search', cut=searched)
             return _two_steps(found, record), record
-        overlap = reading.overlap
-        if searched['verdict'] == 'refuted' and searched['k'][0] % 2 and overlap is not None and overlap > HIDE_SHARE:
-            near = same_picture(distances, found['start'], found['length'])
-            record['search']['same_picture'] = {'over_step': None if near is None else round(near, 3), 'max': SAME_PICTURE_MAX,
-                                                'overlap': round(overlap, 3), 'hides': HIDE_SHARE}
-            if near is not None and near <= SAME_PICTURE_MAX:
-                record.update(chosen_by='search', cut={
-                    **searched, 'verdict': 'uncertain', 'code': 'same-picture',
-                    'why': f"the crossings count {searched['why']}, but the feet are seen together {overlap:.2f} of a step at a "
-                           f"pass (over {HIDE_SHARE:g}: a pass can hide there) and the clip a cut on is the same picture ({near:.2f} "
-                           f"playback steps along the cut, at most {SAME_PICTURE_MAX:g}): no legs swapped, a crossing unseen"})
+        said, counted = same_picture_count(reading, distances, searched)
+        if said is not None:
+            record['search']['same_picture'] = said
+            if counted is not searched:
+                record.update(chosen_by='search', cut=counted)
                 return found, record
     twos = reading.twos(min_len, max_len)
     record['two_cuts'] = len(twos)
