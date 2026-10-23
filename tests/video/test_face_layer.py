@@ -405,7 +405,7 @@ const due = [];
 for (const b of pack.body) {
   const s = job.sounds?.[b.name];
   if (s) b.sound = `sound/${b.name}`;
-  if (b.sound) loads.set(b.sound, { voice: new Voice(b.name, s?.seconds ?? b.cells.length / fps), arrives: s?.arrives });
+  if (b.sound) loads.set(b.sound, { voice: new Voice(b.name, s?.seconds ?? b.cells.length / fps), arrives: s?.arrives, fails: s?.fails });
 }
 globalThis.fetch = (url) => new Promise((resolve, reject) => {
   const v = loads.get(url);
@@ -574,6 +574,31 @@ def test_a_line_asked_for_right_after_a_clip_whose_sound_loads_late_is_said_afte
     assert out["sounds"]["greet"]["frame"] == t0 > 5
     assert out["sounds"]["A"]["frame"] == t0 + plan["line_start"]
     assert out["frames"][t0:t0 + len(plan["frames"])] == shown(plan)
+
+
+@needs_node
+@pytest.mark.parametrize("arrives", [13, 20])
+def test_a_line_whose_voice_loads_only_after_the_clip_s_own_mouth_waits_for_the_clip_to_end(case, arrives):
+    """Asked for during the greeting's own mouth, its voice loaded after the span (13) or after the clip (20): the line
+    is not planned with the clip, which plays to its end with the layer off, and starts on the loop after it."""
+    root, pack = case
+    out = live(root, {"frames": 70, "requests": [{"frame": 0, "play": "greet"},
+                                                 {"frame": 4, "say": "A", "seconds": 0.5, "arrives": arrives}]})
+    t0 = out["frames"].index(["greet", 0, None])
+    cells = len(body(pack, "greet")["cells"])
+    assert t0 + tf.GREET_OWN_END <= arrives
+    assert out["frames"][t0:t0 + cells] == [["greet", k, None] for k in range(cells)]
+    assert out["sounds"]["A"]["frame"] > max(t0 + cells, arrives) and talks(out, pack, "A")
+    assert out["settled"]["greet"]["frame"] <= out["settled"]["A"]["frame"]
+
+
+@needs_node
+def test_a_line_asked_for_right_after_a_clip_that_fails_plays_on_the_loop(case):
+    root, pack = case
+    out = live(root, {"frames": 50, "sounds": {"greet": {"seconds": 0.5, "arrives": 3, "fails": True}},
+                      "requests": [{"frame": 0, "play": "greet"}, {"frame": 1, "say": "A", "seconds": 0.5}]})
+    assert "did not load" in out["settled"]["greet"]["error"] and out["settled"]["A"]["error"] is None
+    assert ["greet", 0, None] not in out["frames"] and out["sounds"]["A"]["frame"] > 3 and talks(out, pack, "A")
 
 
 @needs_node
