@@ -20,10 +20,10 @@ grown from (`Geometry`).
   through their anchors, joined (`union`; a frame adds nothing past `REACH` px of the reference's own lower face, so a
   hand or sleeve the skin grows into stays out), and holes filled; flat 1 over it grown by `MARGIN`, a cos² feather
   over `FEATHER` px outside it, 0 above the top edge rising to 1 over `RAMP`, the eyes cut out.
-- **Sprite** (`face_sprite`): a talking frame's lower face at the clip's own resolution, its alpha the weight less
-  what must stay the body's where the face meets it — the dark grey and black that reach in from the boundary (the
-  headset's boom, the choker) and the lines drawn in the feather — its colour moved onto the reference's by the median
-  over the feather.
+- **Sprite** (`face_sprite`): a talking frame's lower face at the clip's own resolution, its alpha the weight (less
+  its outermost EDGE px, which the resampling would spread past it) less what must stay the body's where the face
+  meets it — the dark grey and black that reach in from the boundary (the headset's boom, the choker) and the lines
+  drawn in the feather — its colour moved onto the reference's by the median over the feather.
 - **Keep** (`body_keep`): per body frame, what of the body stays on top of the layer: its own dark grey and black
   reaching in from the boundary, its lines in the feather, and a hand (`hand_reach`): what differs from the reference
   face and reaches in from outside the layer far into the face above the chin.
@@ -54,6 +54,8 @@ LUMA = np.array([0.299, 0.587, 0.114], np.float32)
 SKIN_LUMA = 175          # skin is opaque and lighter than this
 RAMP = 14                # the weight rises from 0 at the top edge to 1 this far below it
 MARGIN, FEATHER = 6, 10  # the union grown by MARGIN px is flat; the weight falls to 0 over FEATHER px outside it
+EDGE = 2                 # a sprite leaves out the feather's outermost px (weight under 0.1): mapped to the clip's
+                         # pixels and back, its edge spreads a pixel, and nothing may change outside the weight
 EYE_GROW = 6
 REACH = 12               # a frame's lower face counts this far past the reference's own: a dropped jaw, not a hand
 BAND = 30                # the anchor band: this far outside the flat part, above band_bottom, less the eyes
@@ -586,7 +588,7 @@ def face_sprite(native: Image.Image, to_native: np.ndarray, w0: np.ndarray, refe
     size = (w0.shape[1], w0.shape[0])
     face_ref = warp(nat, to_native, size)
     hole = np.maximum(dark_reach(face_ref, w0), line_band(face_ref, w0))
-    w_face = w0 * (1 - hole)
+    w_face = w0 * (1 - hole) * parts_mod._erode(w0 > 0, EDGE)
     off = colour_offset(reference, face_ref, w_face)
     back = np.linalg.inv(to_native)
     w_nat = warp(w_face, back, native.size)

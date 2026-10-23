@@ -166,13 +166,12 @@ def bake(pack_dir: Path, voice_path: Path, out: Path, *, play: str | None = None
             if s["comp"] > s["body"] + s["layer"]:
                 over_sum.append(r["t"])
 
-    own = plan["line_start"] or 0
-    sound_parts = []
-    if play is not None and own:
-        src = bodies[play].get("sound")
-        sound_parts.append(decode(pack_dir / src, own / fps) if src else np.zeros(int(round(own / fps * RATE)), np.float32))
-    sound_parts.append(padded)
-    track_audio = np.concatenate(sound_parts)
+    # the clip's own sound for its own_mouth span, silence while the line waits for the layer, the padded voice
+    own, start_at = plan["own_mouth"], plan["line_start"]
+    src = bodies[play].get("sound") if play is not None else None
+    head = decode(pack_dir / src, own / fps) if src and own else np.zeros(int(round(own / fps * RATE)), np.float32)
+    head = np.concatenate([head, np.zeros(int(round(start_at / fps * RATE)) - len(head), np.float32)])
+    track_audio = np.concatenate([head, padded])
     frames = len(rows)
     track_audio = np.concatenate([track_audio, np.zeros(max(0, int(round(frames / fps * RATE)) - len(track_audio)), np.float32)])
     write_wav(out / "voice-baked.wav", track_audio)
@@ -182,11 +181,9 @@ def bake(pack_dir: Path, voice_path: Path, out: Path, *, play: str | None = None
         refused.append(f"frames {over_sum} step over the jump line and over the body's and the layer's steps together")
     if any(r["outside_changed_px"] for r in rows):
         refused.append("pixels changed outside the layer's weight")
-    if plan["layer_from"] is not None and plan["layer_from"] >= frames:
-        refused.append("the layer found no frame within the jump line of its rest to come on")
     report = {"pack": str(pack_dir), "voice": str(voice_path), "play": play, "start_cell": start, "tags": tags, "lead_s": lead, "tail_s": tail,
-              "fps": fps, "frames": frames, "set": plan["set"], "rest": plan["rest"], "line_start": plan["line_start"],
-              "layer_from": plan["layer_from"], "levels": track["levels"], "syllables": len(track["syllables"]),
+              "fps": fps, "frames": frames, "set": plan["set"], "rest": plan["rest"], "own_mouth_frames": plan["own_mouth"],
+              "line_start": plan["line_start"], "wait_frames": plan["wait"], "levels": track["levels"], "syllables": len(track["syllables"]),
               "talk_frames": sum(1 for r in rows if r["layer"] == "talk"), "rest_frames": sum(1 for r in rows if r["layer"] == "rest"),
               "off_frames": sum(1 for r in rows if r["layer"] == "off"),
               "outside_changed_px_max": max((r["outside_changed_px"] for r in rows), default=0),
@@ -259,7 +256,7 @@ def run(**kwargs: object) -> int:
     if kwargs.get("beside") is not None:
         made.append(str(video(out, report, Path(str(kwargs["beside"])), kwargs.get("video_height"), str(kwargs.get("matte") or MATTE))))  # type: ignore[arg-type]
     print(json.dumps({"out": str(out), "frames": report["frames"], "set": report["set"], "rest": report["rest"],
-                      "line_start": report["line_start"], "layer_from": report["layer_from"], "talk_frames": report["talk_frames"],
+                      "line_start": report["line_start"], "wait_frames": report["wait_frames"], "talk_frames": report["talk_frames"],
                       "over_line": report["over_line"], "over_sum": report["over_sum"], "outside_changed_px_max": report["outside_changed_px_max"],
                       "verdict": report["verdict"], "videos": made}, ensure_ascii=False, indent=2))
     if report["verdict"] != "pass":

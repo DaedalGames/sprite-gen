@@ -4,7 +4,7 @@
 // frames. docs/face-parts.md owns the rules; the numbers are the pack's (`face-pack.json` rules).
 //
 //   mouthTrack(samples, sampleRate, rules, { fps, tags })  voice -> a mouth level per frame
-//   pickFaces(pack, levels, set, rest, { from })           levels -> a talking frame (or the rest) per frame
+//   pickFaces(pack, levels, set, rest)                     levels -> a talking frame (or the rest) per frame
 //   planScene(pack, { play, start, levels, tags })         a body clip and a line -> what each frame shows
 //   loadFacePack(url), createFacePlayer(canvas, pack, { audioContext })   the live page
 
@@ -86,8 +86,8 @@ export function mouthTrack(samples, sampleRate, rules, { fps = 24, tags = [] } =
 // frame within the jump line of the clip's next, an entry from the rest and an exit to it (both within the enter
 // line: the clip's own largest step) cost the pack's numbers. A frame costs how far its open area is from the
 // level's (a mouth opened less than wanted under_weight times more), in one level's area; the rest costs the area
-// wanted. Before `from` only the rest is allowed (the layer is not on yet).
-export function pickFaces(pack, levels, set, rest, { from = 0 } = {}) {
+// wanted.
+export function pickFaces(pack, levels, set, rest) {
   const rules = pack.rules;
   const D = pack.face.steps;
   const n = D.length;
@@ -109,7 +109,6 @@ export function pickFaces(pack, levels, set, rest, { from = 0 } = {}) {
     const arg = new Array(S + 1).fill(-1);
     for (let k = 0; k < S; k++) {
       const j = frames[k];
-      if (t < from) continue;
       let best = Infinity, how = -1;
       if (j > 0 && member.has(j - 1) && cost[pos.get(j - 1)] < best) { best = cost[pos.get(j - 1)]; how = pos.get(j - 1); }
       if (cost[k] + rules.hold_cost < best) { best = cost[k] + rules.hold_cost; how = k; }
@@ -156,16 +155,15 @@ function mod(a, n) {
 }
 
 // What every frame shows for a body clip played from its start (`play`), or the loop from a cell (`start`), with a
-// line said at once (its mouth `levels`, one a frame). The line waits for the end of the clip's own_mouth span: its
-// own mouth and sound play till then, the layer off. The layer comes on in the set and at the rest the body names at
-// that frame (`entry`), at the first frame from there whose switch to that rest is within the jump line — or at once,
-// in its own set and rest, when it is already on (`layer`) — and the line's frames are picked from there. A clip
-// that plays once goes on to the loop from its first cell.
+// line said at once (its mouth `levels`, one a frame). The line waits for the end of the clip's own_mouth span (its
+// own mouth and sound play till then, the layer off), and then for the first frame whose switch to the rest the body
+// names there (`entry`) is within the jump line: a voice never plays on a frame whose mouth cannot move. A layer
+// already on (`layer`) goes on in its own set and rest at once. A clip that plays once goes on to the loop from its
+// first cell; a line with no frame to come on at within the clip and one round of the loop is refused.
 export function planScene(pack, { play = null, start = 0, levels = [], layer = null } = {}) {
   const loop = loopBody(pack);
   const first = play ? body(pack, play) : loop;
   const own = play && first.own_mouth ? first.own_mouth.end_frame : 0;
-  const total = (levels.length ? own : first.cells.length) + levels.length;
   const cellAt = (t) => {
     if (!play) return { body: loop.name, cell: mod(start + t, loop.cells.length) };
     if (t < first.cells.length) return { body: first.name, cell: t };
@@ -173,26 +171,28 @@ export function planScene(pack, { play = null, start = 0, levels = [], layer = n
   };
   const frames = [];
   if (!levels.length) {
-    for (let t = 0; t < total; t++) frames.push({ ...cellAt(t), face: null, layer: "off", level: 0 });
-    return { frames, set: null, rest: null, line_start: null, layer_from: null };
+    for (let t = 0; t < first.cells.length; t++) frames.push({ ...cellAt(t), face: null, layer: "off", level: 0 });
+    return { frames, set: null, rest: null, own_mouth: own, line_start: null, wait: null };
   }
   const { set, rest } = layer ?? body(pack, cellAt(own).body).entry;
-  let from = 0;
+  let lineStart = own;
   if (!layer) {
-    while (from < levels.length) {
-      const c = cellAt(own + from);
+    const limit = (play ? first.cells.length : 0) + loop.cells.length;
+    while (lineStart < limit) {
+      const c = cellAt(lineStart);
       if (body(pack, c.body).switch[String(rest)][c.cell] <= pack.rules.jump_line) break;
-      from++;
+      lineStart++;
     }
+    if (lineStart >= limit) throw new RangeError(`the face layer has no frame within the jump line of its rest ${rest} to come on`);
   }
-  const pick = pickFaces(pack, levels, set, rest, { from });
-  for (let t = 0; t < total; t++) {
+  const pick = pickFaces(pack, levels, set, rest);
+  for (let t = 0; t < lineStart + levels.length; t++) {
     const c = cellAt(t);
-    if (t < own + from) { frames.push({ ...c, face: null, layer: "off", level: t >= own ? levels[t - own] : 0 }); continue; }
-    const j = pick.path[t - own];
-    frames.push({ ...c, face: j ?? rest, layer: j === null ? "rest" : "talk", level: levels[t - own] });
+    if (t < lineStart) { frames.push({ ...c, face: null, layer: "off", level: 0 }); continue; }
+    const j = pick.path[t - lineStart];
+    frames.push({ ...c, face: j ?? rest, layer: j === null ? "rest" : "talk", level: levels[t - lineStart] });
   }
-  return { frames, set, rest, line_start: own, layer_from: own + from, want: pick.want, cost: pick.cost };
+  return { frames, set, rest, own_mouth: own, line_start: lineStart, wait: lineStart - own, want: pick.want, cost: pick.cost };
 }
 
 // --- the live page --------------------------------------------------------------------------------------------------
@@ -360,7 +360,7 @@ export function createFacePlayer(canvas, pack, { audioContext } = {}) {
       }
       return run((t0) => {
         const plan = planScene(pack, { start: mod(t0 - loopPhase, loop.cells.length), levels, layer: resting });
-        sound(data, t0);
+        sound(data, t0 + plan.line_start);
         return { plan };
       });
     },
