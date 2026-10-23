@@ -564,7 +564,12 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   A consumer that only calls the manifest gate once but then reads the frame tree unguarded would
   leave a TOCTOU window; the full read must be inside the strategy.
 - **Cross-process single-writer.** `.sprite-gen.lock` blocks a second **process** from writing
-  the same run dir (a link or a folder at that name is refused, never followed: §4); the pipeline's
+  the same run dir (a link or a folder at that name is refused, never followed: §4). A process
+  removes only the very lock entry it made, or judged stale to reclaim, and only while it still holds
+  it — same device, inode and content, and `release_run_dir_lock` withdraws that lock's exit
+  cleanup — while making, reclaiming and removing the entry queue on a kernel lock on the run dir
+  itself, so among sprite-gen processes on one host, on a file system that locks folders, neither a
+  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. The pipeline's
   **one worker owns one character folder** rule (§2, SKILL.md)
   is what excludes concurrent writers on the same run dir in the first place. Same-process
   re-entry is intentionally allowed so one interpreter can run prepare → extract → compose in

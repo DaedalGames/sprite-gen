@@ -11,7 +11,10 @@ example Claude Code and the Codex app driving the skill in parallel):
   and the webview's compose/export subprocesses through them) fail loudly with
   the holder's pid instead of silently interleaving output files. The lock is
   the entry `.sprite-gen.lock` itself: a link or a folder at that name is refused,
-  never followed, read or removed.
+  never followed, read or removed. A process removes only the very entry it made,
+  or judged stale to reclaim, and only while it still holds it; making, reclaiming
+  and removing the entry queue on a kernel lock on the run dir itself (per host,
+  where the file system locks folders).
 - `atomic_write_text()` / `atomic_save_image()` — temp file in the target dir
   + `os.replace`, so a concurrent reader never observes a half-written
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
@@ -46,7 +49,9 @@ import stat
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path, PurePath
+from typing import NamedTuple
 
 from PIL import Image
 
@@ -100,6 +105,21 @@ if fcntl is None and os.name == "nt":  # pragma: no cover - Windows-only backend
             wintypes.DWORD,
             ctypes.POINTER(_OVERLAPPED),
         ]
+        # LockFileEx 는 폴더를 잠그지 못하고 os.open 은 폴더를 열지 못한다 — 런 폴더 락 항목의 줄(`_entry_guard`)은
+        # 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스로 선다
+        _CreateMutexW = _kernel32.CreateMutexW
+        _CreateMutexW.restype = wintypes.HANDLE
+        _CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        _WaitForSingleObject = _kernel32.WaitForSingleObject
+        _WaitForSingleObject.restype = wintypes.DWORD
+        _WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        _ReleaseMutex = _kernel32.ReleaseMutex
+        _ReleaseMutex.restype = wintypes.BOOL
+        _ReleaseMutex.argtypes = [wintypes.HANDLE]
+        _CloseHandle = _kernel32.CloseHandle
+        _CloseHandle.restype = wintypes.BOOL
+        _CloseHandle.argtypes = [wintypes.HANDLE]
+        _WAIT_INFINITE, _WAIT_OWNED = 0xFFFFFFFF, (0x00000000, 0x00000080)  # WAIT_OBJECT_0, WAIT_ABANDONED
         _LOCK_IMPL = "LockFileEx"
     except (ImportError, OSError, AttributeError):
         _LOCK_IMPL = None
@@ -134,11 +154,24 @@ RWLOCK_SUFFIX = ".sg-rwlock"
 # reclaim threshold for locks whose holder pid cannot be verified
 # (unreadable lock file, or a writer on another host of a shared volume)
 STALE_LOCK_SECONDS = 15 * 60
+# a lock entry that keeps changing under the run dir's kernel lock is not one sprite-gen made
+_LOCK_ROUNDS = 100
 
-# Lock paths this process already owns. Re-entry from the same process (for
-# example a long-lived MCP server invoking prepare -> extract -> compose against
-# one run dir) must succeed; the single-writer rule is against other processes.
-_HELD_LOCKS: set[Path] = set()
+
+class _LockEntry(NamedTuple):
+    """락 이름에 있던 바로 그 항목 — 장치·inode 와 내용(읽을 수 없으면 None). 지운 inode 번호를 곧 다시 쓰는 파일
+    시스템이 있어 번호만으로는 같은 항목인지 모른다."""
+
+    dev: int
+    ino: int
+    content: bytes | None
+
+
+# Lock paths this process holds -> the entry it made there and the exit handler that
+# removes it. Re-entry from the same process (for example a long-lived MCP server
+# invoking prepare -> extract -> compose against one run dir) must succeed; the
+# single-writer rule is against other processes.
+_HELD_LOCKS: dict[Path, tuple[_LockEntry, Callable[[], None]]] = {}
 
 
 def relative_posix(path: PurePath, start: PurePath) -> str:
@@ -234,6 +267,104 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+@contextlib.contextmanager
+def _entry_guard(folder: Path):
+    """런 폴더 자체에 거는 커널 락 — 락 항목을 만들고 지우는 일(만들기·회수·해제·종료 처리)이 모두 이 아래서 줄을 서서,
+    판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다. 폴더에 아무것도 만들지 않고, 쥔 프로세스가
+    죽으면 커널이 놓는다. 줄은 한 호스트 안의 프로세스들이 선다(주인이 살았는지도 이 호스트의 pid 로 본다).
+    macOS·리눅스는 폴더 fd 의 flock(`_lock_fd`). Windows 는 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스
+    (`Global\\` 이름이라 로그온 세션이 달라도 한 줄 — LockFileEx 는 폴더를 잠그지 못한다). Windows 길은 아직 그 기기에서
+    재지 않았다."""
+    if fcntl is not None:
+        fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            try:
+                _lock_fd(fd, exclusive=True)
+            except OSError as exc:  # 폴더 잠금을 받지 않는 파일 시스템
+                raise OSError(exc.errno, f"the file system refuses a lock on the run dir ({exc.strerror}), which sprite-gen "
+                                         f"needs to make or remove {LOCK_FILENAME}", str(folder)) from exc
+            try:
+                yield
+            finally:
+                _unlock_fd(fd)
+        finally:
+            os.close(fd)
+    elif _LOCK_IMPL == "LockFileEx":  # pragma: no cover - Windows-only backend
+        found = os.stat(folder)
+        mutex = _CreateMutexW(None, False, f"Global\\sprite-gen-run-dir-{found.st_dev:x}-{found.st_ino:x}")
+        if not mutex:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if _WaitForSingleObject(mutex, _WAIT_INFINITE) not in _WAIT_OWNED:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                yield
+            finally:
+                _ReleaseMutex(mutex)
+        finally:
+            _CloseHandle(mutex)
+    else:
+        raise SystemExit(f"run dir lock in {folder}: no kernel lock on this platform to queue its making and removal")
+
+
+# 락 항목을 읽을 때: 이름의 링크를 따라가지 않고(O_NOFOLLOW — Windows 에는 없어 fstat 대조가 대신 잡는다), 그 자리에 들어선
+# FIFO 에 막히지 않고(O_NONBLOCK), 바이트 그대로(O_BINARY, Windows).
+_READ_ENTRY = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+
+
+def _read_entry(lock_path: Path) -> tuple[_LockEntry | None, float]:
+    """락 이름에 있는 항목을 따라가지 않고 읽는다 — (그 항목, 바뀐 시각). 일반 파일이 아니면(링크·폴더) 열지 않고 None.
+    lstat 한 그 항목을 열어 fstat 가 같은지 보고 그 fd 에서만 읽는다. 그 사이 이름에 다른 것이 들어섰으면 본 항목은 이미
+    없으니, 이름에 아무것도 없을 때처럼 FileNotFoundError."""
+    seen = os.lstat(lock_path)
+    if not stat.S_ISREG(seen.st_mode):
+        return None, seen.st_mtime
+    try:
+        fd = os.open(lock_path, _READ_ENTRY)
+    except PermissionError:  # 읽을 수 없는 락 — 장치·inode 와 바뀐 시각으로만 본다
+        return _LockEntry(seen.st_dev, seen.st_ino, None), seen.st_mtime
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ELOOP, errno.EMLINK):  # 없어졌다, 링크가 들어섰다(BSD 는 EMLINK)
+            raise
+        raise FileNotFoundError(errno.ENOENT, "the lock entry changed while it was read", str(lock_path)) from exc
+    try:
+        got = os.fstat(fd)
+        if (got.st_dev, got.st_ino) != (seen.st_dev, seen.st_ino):
+            raise FileNotFoundError(errno.ENOENT, "the lock entry changed while it was read", str(lock_path))
+        chunks = []
+        while chunk := os.read(fd, 65536):
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    return _LockEntry(got.st_dev, got.st_ino, b"".join(chunks)), got.st_mtime
+
+
+def _remove_if_same(lock_path: Path, entry: _LockEntry) -> bool:
+    """락 이름에 있는 것이 `entry` — 이 프로세스가 만들었거나 회수하려고 판정한 바로 그 항목(일반 파일, 같은 장치·inode,
+    같은 내용)일 때만 지운다. 락 항목을 지우는 길은 이것 하나다(해제·종료 처리·회수). 부르는 쪽이 `_entry_guard` 를 쥐고
+    있어, 판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다."""
+    try:
+        if _read_entry(lock_path)[0] != entry:
+            return False
+        os.unlink(lock_path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _let_go(lock_path: Path, at_exit: Callable[[], None]) -> None:
+    """쥔 락을 놓는다 — `at_exit` 를 단 그 잡기가 아직 쥐고 있을 때만(명시 해제 뒤 남은 종료 처리, 다시 잡은 뒤의 옛 종료
+    처리는 아무것도 하지 않는다). `_HELD_LOCKS` 에서 빼고, 이름에 있는 것이 만든 그 항목일 때만 지운다. 지우지 못해도(런
+    폴더가 사라졌거나 다른 것이 들어섰다) 놓은 것이다."""
+    held = _HELD_LOCKS.get(lock_path)
+    if held is None or held[1] is not at_exit:
+        return
+    if _HELD_LOCKS.pop(lock_path, None) is not held:  # 같은 프로세스의 다른 스레드가 먼저 놓았다
+        return
+    with contextlib.suppress(OSError), _entry_guard(lock_path.parent):
+        _remove_if_same(lock_path, held[0])
+
+
 def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     """Take the single-writer lock for `run_dir`, released automatically at exit.
 
@@ -244,74 +375,85 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
 
     The lock is the entry at that name in the run dir itself, never resolved:
     a link or a folder there is refused before anything is read, and is never
-    followed or removed — reclaiming it would delete whatever it points to.
+    followed or removed — reclaiming it would delete whatever it points to. A
+    stale lock is judged from a descriptor opened without following the name,
+    and reclaiming removes only the entry so judged.
+
+    Making and reclaiming the entry queue on a kernel lock on the run dir itself
+    (`_entry_guard`), as release does: a writer on this host waits while another
+    judges, removes or makes the entry, so a late reclaimer never removes a lock
+    taken meanwhile.
 
     Re-entry from the same process is allowed: the MCP server / freeze binary
     runs many pipeline steps in one interpreter against the same run dir, and a
     writer must never block itself.
 
-    Release runs via atexit (normal return, SystemExit, KeyboardInterrupt).
-    A SIGKILL'd holder is covered by the dead-pid reclaim above.
+    Release runs via atexit (normal return, SystemExit, KeyboardInterrupt) while
+    this process still holds the lock, and removes only the entry it made (same
+    device, inode and content). A SIGKILL'd holder is covered by the dead-pid
+    reclaim above.
     """
     lock_path = Path(run_dir).resolve() / LOCK_FILENAME
     if lock_path in _HELD_LOCKS:
         return lock_path
-    while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # never follows a link at the name (open(2))
-            break
-        except FileExistsError:
+    with _entry_guard(lock_path.parent):
+        for _ in range(_LOCK_ROUNDS):
+            try:  # never follows a link at the name (open(2))
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+                break
+            except FileExistsError:
+                pass
             try:
-                regular = stat.S_ISREG(os.lstat(lock_path).st_mode)
+                found, changed = _read_entry(lock_path)
             except FileNotFoundError:
-                continue  # holder released it between our checks; retry the create
-            if not regular:
+                continue  # it went away while we looked; retry the create
+            if found is None:
                 raise SystemExit(
                     f"run dir lock {lock_path} is not a lock file (a link or a folder)\n"
                     f"  sprite-gen never follows or removes it; move it away if no sprite-gen process is running"
                 )
             holder: dict = {}
-            try:
-                holder = json.loads(lock_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
-            pid = holder.get("pid")
+            with contextlib.suppress(TypeError, ValueError):  # unreadable (None) or not JSON: holder unknown
+                holder = json.loads(found.content)
+            pid = holder.get("pid") if isinstance(holder, dict) else None
             if isinstance(pid, int) and _pid_alive(pid):
                 raise SystemExit(
                     f"run dir is locked by {holder.get('owner', 'unknown')} (pid {pid}): {run_dir}\n"
                     f"  another sprite-gen process is writing this run dir; wait for it to finish,\n"
                     f"  or delete {lock_path} if you are sure that process is gone"
                 )
-            try:
-                age = time.time() - lock_path.stat().st_mtime
-            except OSError:
-                continue  # holder released it between our checks; retry the create
-            if isinstance(pid, int) or age > STALE_LOCK_SECONDS:
-                # dead pid, or unverifiable and old: reclaim, then retry the
-                # exclusive create (one winner if two reclaimers race)
-                try:
-                    lock_path.unlink()
-                except OSError:
-                    pass
-                continue
+            age = time.time() - changed
+            if not (isinstance(pid, int) or age > STALE_LOCK_SECONDS):
+                raise SystemExit(
+                    f"run dir has a lock whose holder cannot be verified ({age:.0f}s old): {lock_path}\n"
+                    f"  delete the lock file if no sprite-gen process is running"
+                )
+            # dead pid, or unverifiable and old: reclaim the entry judged here, then retry the exclusive create
+            _remove_if_same(lock_path, found)
+        else:
             raise SystemExit(
-                f"run dir has a lock whose holder cannot be verified ({age:.0f}s old): {lock_path}\n"
-                f"  delete the lock file if no sprite-gen process is running"
+                f"run dir lock {lock_path} kept changing while sprite-gen read it\n"
+                f"  something other than sprite-gen is replacing it; stop that before writing this run dir"
             )
-
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"owner": owner, "pid": os.getpid(), "started": time.time()}, handle)
-
-    _HELD_LOCKS.add(lock_path)
-
-    def _release() -> None:
+        content = json.dumps({"owner": owner, "pid": os.getpid(), "started": time.time()}).encode("utf-8")
+        made, written = None, 0
         try:
-            lock_path.unlink()
-        except OSError:
-            pass
-        _HELD_LOCKS.discard(lock_path)
+            made = os.fstat(fd)
+            while written < len(content):
+                written += os.write(fd, content[written:])
+        except BaseException:
+            os.close(fd)
+            if made is not None:  # 다 쓰지 못했다(디스크가 찼다) — 만들다 만 그 항목을 거둔다, 남으면 다음 writer 를 막는다
+                with contextlib.suppress(OSError):
+                    _remove_if_same(lock_path, _LockEntry(made.st_dev, made.st_ino, content[:written]))
+            raise
+        os.close(fd)
 
-    atexit.register(_release)
+    def at_exit() -> None:
+        _let_go(lock_path, at_exit)
+
+    _HELD_LOCKS[lock_path] = (_LockEntry(made.st_dev, made.st_ino, content), at_exit)
+    atexit.register(at_exit)
     return lock_path
 
 
@@ -322,15 +464,15 @@ def release_run_dir_lock(run_dir: Path) -> None:
     한 번의 in-process 추출 뒤 락을 영구 보유해, heal_run 의 서브프로세스
     재추출이 산 pid 락에 막힌다. 락은 세션 리스가 아니라 작업 단위 writer-writer
     상호배제고, 원자성은 스테이징 통짜 스왑이 보장하므로 작업이 끝나면 놓는 게
-    맞다. atexit 핸들러는 남아 있어도 멱등이다 (unlink 실패 무시 + discard)."""
+    맞다. 놓으면서 그 잡기의 종료 처리를 거둔다 — 놓은 뒤 이름에 들어선 다음 writer 의
+    락이나 링크를 이 프로세스가 끝날 때 지우지 않는다. 지우는 것은 이 프로세스가 만든
+    바로 그 항목뿐이다(`_remove_if_same`). 쥐지 않은 락이면 아무것도 하지 않는다."""
     lock_path = Path(run_dir).resolve() / LOCK_FILENAME
-    if lock_path not in _HELD_LOCKS:
+    held = _HELD_LOCKS.get(lock_path)
+    if held is None:
         return
-    try:
-        lock_path.unlink()
-    except OSError:
-        pass
-    _HELD_LOCKS.discard(lock_path)
+    atexit.unregister(held[1])
+    _let_go(lock_path, held[1])
 
 
 def _rwlock_path(run_dir: Path) -> Path:
