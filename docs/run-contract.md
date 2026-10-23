@@ -572,11 +572,29 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. Removing
   and holding belong to the process that made the entry: a hold is bound to the pid that took it, so a
   forked child never re-enters, releases or removes its parent's lock and is refused by it like any
-  other writer, and where `os.register_at_fork` exists a child forgets its parent's holds and exit
-  cleanups and closes its copies of the run dir's kernel-lock descriptors at the fork — a holder killed
-  inside that kernel lock leaves it to no child. The boundary is a child forked by C code that skips
-  Python's fork hooks: the pid check still keeps it from removing or re-entering the parent's lock, but it
-  keeps any kernel-lock descriptor it inherited until it ends, and a writer waits for it. The pipeline's
+  other writer. Where `os.register_at_fork` exists, a child forgets its parent's holds and exit
+  cleanups and closes its copies of the run dir's kernel-lock descriptors at the fork, and the parent
+  never locks a descriptor a Python fork may have copied before it was recorded: a fork that runs the
+  hooks between reading the fork count and recording the descriptor (on any thread, a signal handler on
+  the same thread included) makes the parent open another, and the parent opens none while another
+  thread's fork that already ran the hooks has not returned — it waits for that fork, and fails loudly
+  when the fork is still marked in progress after ten seconds. A release that fails that way keeps its
+  lock: the process can release it again, and its exit cleanup still tries to (an entry it leaves when it
+  ends is a dead holder's, reclaimed by the next writer). The parent unlocks a
+  descriptor before taking it out of the record, even when an exception skipped the first unlock. So a
+  holder killed inside that kernel lock, or thrown out of it by an exception, leaves it to no child that
+  Python's fork hooks ran in and that does not return into the code the fork interrupted. Every guarantee
+  in this paragraph holds except at three boundaries. A child forked by C code that skips Python's fork
+  hooks: the pid check still keeps it from removing or re-entering the parent's lock, but it keeps any
+  kernel-lock descriptor it inherited until it ends or execs, and a writer waits for it. A child forked
+  in a signal handler that returns from the handler and goes on with the code the signal interrupted: it
+  is a copy of the parent's flow, so the lock cannot tell it from the parent — there is always a bytecode
+  boundary between the helper's last check and the system call it guards. Inside the lock helper it can
+  remove whatever is at the lock name, a lock another writer took meanwhile included, and after the lock
+  is taken it goes on writing the run dir as the parent; such a child must not return into code that uses
+  the lock (a caller's contract). An exception that a signal handler raises inside runio's fork hooks:
+  CPython reports it and goes on with the fork, so that fork may go unseen by a parent opening its
+  kernel lock, or leave a mark that makes the process's other threads fail loudly as above. The pipeline's
   **one worker owns one character folder** rule (§2, SKILL.md)
   is what excludes concurrent writers on the same run dir in the first place. Same-process
   re-entry is intentionally allowed so one interpreter can run prepare → extract → compose in

@@ -15,7 +15,9 @@ example Claude Code and the Codex app driving the skill in parallel):
   or judged stale to reclaim, and only while it still holds it; making, reclaiming
   and removing the entry queue on a kernel lock on the run dir itself (per host,
   where the file system locks folders). A lock belongs to the process that took
-  it: a child it forks neither removes nor holds it.
+  it: a child it forks neither removes nor holds it (docs/run-contract.md §7
+  names the boundaries — a C-fork child, a signal-handler fork child that returns
+  into the interrupted code, an exception inside the fork hooks).
 - `atomic_write_text()` / `atomic_save_image()` — temp file in the target dir
   + `os.replace`, so a concurrent reader never observes a half-written
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
@@ -156,7 +158,8 @@ RWLOCK_SUFFIX = ".sg-rwlock"
 # reclaim threshold for locks whose holder pid cannot be verified
 # (unreadable lock file, or a writer on another host of a shared volume)
 STALE_LOCK_SECONDS = 15 * 60
-# a lock entry that keeps changing under the run dir's kernel lock is not one sprite-gen made
+# a lock entry that keeps changing under the run dir's kernel lock is not one sprite-gen made, and a fork that lands
+# every time that kernel lock is opened is not an ordinary fork
 _LOCK_ROUNDS = 100
 
 
@@ -182,25 +185,57 @@ class _Held(NamedTuple):
 # the single-writer rule is against other processes, a forked child included.
 _HELD_LOCKS: dict[Path, _Held] = {}
 
-# 런 폴더 커널 락(`_entry_guard`)에 이 프로세스가 연 폴더 fd. 열기+기록, 기록 빼기+닫기는 `_FORK_MUTEX` 아래서 하고 fork 는
-# 그동안 기다리므로(`_before_fork`), fork 순간 열린 fd 는 모두 여기 있다 — fork 자식이 닫을 사본. flock 기다림은 뮤텍스 밖이다.
+# 런 폴더 커널 락(`_entry_guard`)에 이 프로세스가 연 폴더 fd — 파이썬 fork 훅이 도는 fork 자식이 닫을 사본. 순서 둘이 이 기록을
+# 지킨다: 열고 나서 기록하고 빼고 나서 닫으니 기록은 늘 열린 fd 의 부분집합이고(자식이 닫는 번호는 부모가 연 그 fd 의 사본이다),
+# 풀고 나서 빼니 기록에서 빠지는 fd 는 늘 풀린 것이다(그 뒤 기록 밖 사본을 가진 자식이 생겨도 잠긴 설명이 아니다).
 _GUARD_FDS: set[int] = set()
-_FORK_MUTEX = threading.RLock()  # 같은 스레드의 시그널 처리기가 fork 해도 막히지 않게 (CPython logging 의 at-fork 락과 같은 꼴)
+# 이 프로세스의 파이썬 fork — before 훅을 지난 횟수와, 지났지만 부모에서 아직 돌아오지 않은 fork 의 진행 중 표시 (pid, 스레드).
+# fd 를 열고 기록하는 사이에 fork 시스템 호출이 끼면 자식은 기록 밖 사본을 갖는다. 그런 fork 는 열기 전에 읽은 횟수를 바꾸거나(그
+# 뒤에 before 훅을 지났다 — 같은 스레드의 시그널 처리기도), 열기 전에 이미 훅을 지나 돌아오지 않은 채였다(runio 의 훅 뒤에 도는
+# 다른 before 훅이나 임포트 락을 기다리며 GIL 을 놓은 다른 스레드). `_entry_guard` 는 뒤의 것이 돌아오기를 기다려 열고, 앞의
+# 것이면 잠그지 않고 새로 연다. 두 순서가 이 둘 중 하나로 반드시 보이게 한다 — 훅은 표시를 넣고 나서 횟수를 올리고
+# (`_before_fork`), `_entry_guard` 는 횟수를 읽고 나서 표시를 본다. 뮤텍스가 없어 같은 스레드의 처리기가 fork 해도 막히지
+# 않고, 훅을 거치지 않는 C fork 자식이 잡힌 채 물려받을 것도 없다.
+_FORKS = 0
+_FORKING: list[tuple[int, int]] = []
+# 다른 스레드의 fork 가 훅을 지나고 이만큼 돌아오지 않으면 보통 fork 가 아니다 — 매달리지 않고 크게 실패한다
+_FORK_WAIT_SECONDS = 10.0
 
 
 def _before_fork() -> None:
-    _FORK_MUTEX.acquire()
+    global _FORKS
+    # 표시 → 횟수: 표시를 넣고 나서 횟수를 올린다. 올라간 횟수를 읽은 `_entry_guard` 는 이 표시도 본다 — 순서가 뒤집히면 이 훅이
+    # 횟수를 올린 뒤 표시를 넣기 전에 `_entry_guard` 가 그 올라간 횟수를 읽고 표시를 보아(아직 없다) fd 를 열 수 있고, 이 fork 가
+    # 기록 전의 그 fd 를 복사해도 읽은 횟수에 이미 들어 있고 표시는 늦어 어느 쪽으로도 보이지 않는다. 표시를 넣은 뒤 시그널 처리기의
+    # 예외가 이 훅을 끊어도(CPython 은 훅의 예외를 알리기만 하고 fork 를 잇는다) 횟수는 올린다
+    mark = (os.getpid(), threading.get_ident())
+    try:
+        _FORKING.append(mark)
+    finally:
+        _FORKS += 1
 
 
 def _after_fork_in_parent() -> None:
-    _FORK_MUTEX.release()
+    try:
+        _FORKING.remove((os.getpid(), threading.get_ident()))
+    except ValueError:  # 처리기에서 돌아와 부모의 fork 를 이어 간 자식에는 그 표시가 없다
+        pass
+
+
+def _forking_elsewhere() -> bool:
+    """이 프로세스의 다른 스레드에 before 훅을 지났지만 부모에서 아직 돌아오지 않은 파이썬 fork 가 있나 — 그 fork 시스템 호출은
+    지금 여는 fd 를 기록되기 전에 복사할 수 있다. 이 스레드의 것은 셈하지 않는다: 이 스레드가 이 코드를 도는 동안 그 fork 는
+    일어나지 않는다(이 스레드의 시그널 처리기가 그 fork 의 훅 사이에서 락을 잡는 자리). 다른 pid 의 것은 훅을 거치지 않은 C fork
+    자식이 물려받은 부모의 기록이다."""
+    me, here = os.getpid(), threading.get_ident()
+    return any(pid == me and thread != here for pid, thread in list(_FORKING))
 
 
 def _after_fork_in_child() -> None:
     """fork 자식은 부모의 런 폴더 락을 하나도 쥐지 않는다 — 물려받은 보유 기록과 그 종료 처리를 버리고, 커널 락 fd 사본을
-    닫는다. 닫기는 이 프로세스의 참조만 놓는다: 부모가 쥔 flock 은 그대로다(LOCK_UN 이면 부모의 것까지 풀린다)."""
-    global _FORK_MUTEX
-    _FORK_MUTEX = threading.RLock()
+    닫는다. 닫기는 이 프로세스의 참조만 놓는다: 부모가 쥔 flock 은 그대로다(LOCK_UN 이면 부모의 것까지 풀린다). 부모의 다른
+    스레드가 하던 fork 는 이 프로세스에 없다."""
+    _FORKING.clear()
     for fd in _GUARD_FDS:
         with contextlib.suppress(OSError):
             os.close(fd)
@@ -313,14 +348,39 @@ def _entry_guard(folder: Path):
     판정과 지우기 사이에 다른 sprite-gen 이 그 이름에 만들거나 지우지 못한다. 폴더에 아무것도 만들지 않고, 쥔 프로세스가
     죽으면 커널이 놓는다. 줄은 한 호스트 안의 프로세스들이 선다(주인이 살았는지도 이 호스트의 pid 로 본다).
     macOS·리눅스는 폴더 fd 의 flock(`_lock_fd`) — 그 fd 는 `_GUARD_FDS` 에 있어 파이썬 fork 훅이 도는 fork 자식은 사본을
-    닫는다(쥔 프로세스가 그 안에서 죽어도 자식이 커널 락을 이어 쥐지 않는다. 훅을 거치지 않는 C fork 자식은 끝날 때까지
-    갖는다 — docs/run-contract.md §7). Windows 는 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스
+    닫는다. 다른 스레드의 파이썬 fork 가 진행 중이면 돌아올 때까지 열지 않고(`_FORK_WAIT_SECONDS` 를 넘으면 SystemExit),
+    열고 기록하는 사이에 파이썬 fork 가 끼었을 수 있으면 그 설명은 잠그지 않고 새로 열고(`_LOCK_ROUNDS` 를 넘으면 SystemExit),
+    기록에서 빼기 전에 한 번 더 푼다 — 기록 밖 사본을 가진 자식이 있어도 그 설명은 잠긴 적이 없거나 이미 풀렸다. 그래서 쥔
+    프로세스가 그 안에서 죽거나 예외로 나가도 자식이 커널 락을 이어 쥐지 않는다. 경계 셋(docs/run-contract.md §7): 훅을
+    거치지 않는 C fork 자식은 끝나거나 exec 할 때까지 사본을 갖고, 시그널 처리기에서 fork 한 뒤 처리기에서 돌아와 끊긴 코드를
+    잇는 자식은 부모와 가려지지 않으며, 시그널 처리기의 예외가 runio 의 fork 훅을 끊으면 그 fork 는 보이지 않거나 진행 중
+    표시가 남는다. Windows 는 폴더의 장치·파일 번호로 이름 붙인 커널 뮤텍스
     (`Global\\` 이름이라 로그온 세션이 달라도 한 줄 — LockFileEx 는 폴더를 잠그지 못한다). Windows 길은 아직 그 기기에서
     재지 않았다."""
     if fcntl is not None:
-        with _FORK_MUTEX:
+        for _ in range(_LOCK_ROUNDS):
+            # 횟수 읽기 → 표시 보기: 횟수를 읽고 나서 진행 중 표시를 본다. 읽은 뒤에 훅을 지난 fork 는 횟수가 바뀌어 보이고, 읽기
+            # 전에 훅을 지나 아직 돌아오지 않은 fork 는 표시로 보인다 — 순서가 뒤집히면 표시를 본 뒤 횟수를 읽기 전에 훅을 지난
+            # fork 가 둘 다에 걸리지 않는다
+            forks = _FORKS
+            deadline = time.monotonic() + _FORK_WAIT_SECONDS
+            while _forking_elsewhere():  # 그 fork 가 돌아올 때까지 — 지금 열면 기록되기 전의 사본이 자식에게 갈 수 있다
+                if time.monotonic() > deadline:
+                    raise SystemExit(
+                        f"run dir lock in {folder}: another thread's fork is still marked in progress after "
+                        f"{_FORK_WAIT_SECONDS:g}s, and sprite-gen will not open its kernel lock on the run dir while a fork "
+                        f"may copy it\n  a fork of this process has not returned, or an exception cut its fork hook short; "
+                        f"stop that before writing this run dir")
+                time.sleep(0.001)  # GIL 을 놓고 기다린다 — 그 fork 의 스레드가 돌아야 돌아온다
             fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             _GUARD_FDS.add(fd)
+            if _FORKS == forks:  # 열고 기록하는 사이에 fork 가 없었다 — 이 설명의 사본은 모두 기록돼 자식이 닫는다
+                break
+            _GUARD_FDS.discard(fd)  # 그 사이 fork 의 자식이 기록 밖 사본을 가졌을 수 있다 — 그 설명은 잠그지 않고 새로 연다
+            os.close(fd)
+        else:
+            raise SystemExit(f"run dir lock in {folder}: a fork landed every time sprite-gen opened its kernel lock on the "
+                             f"run dir\n  something keeps forking this process; stop that before writing this run dir")
         try:
             try:
                 _lock_fd(fd, exclusive=True)
@@ -332,9 +392,10 @@ def _entry_guard(folder: Path):
             finally:
                 _unlock_fd(fd)
         finally:
-            with _FORK_MUTEX:
-                _GUARD_FDS.discard(fd)
-                os.close(fd)
+            with contextlib.suppress(OSError):  # 위의 풀기를 예외(Ctrl-C)가 건너뛰었어도 기록에서 빼기 전에 푼다
+                _unlock_fd(fd)
+            _GUARD_FDS.discard(fd)
+            os.close(fd)
     elif _LOCK_IMPL == "LockFileEx":  # pragma: no cover - Windows-only backend
         found = os.stat(folder)
         mutex = _CreateMutexW(None, False, f"Global\\sprite-gen-run-dir-{found.st_dev:x}-{found.st_ino:x}")
@@ -411,14 +472,25 @@ def _held_here(lock_path: Path) -> _Held | None:
 def _let_go(lock_path: Path, at_exit: Callable[[], None]) -> None:
     """쥔 락을 놓는다 — `at_exit` 를 단 그 잡기를 이 프로세스가 아직 쥐고 있을 때만(명시 해제 뒤 남은 종료 처리, 다시 잡은
     뒤의 옛 종료 처리, fork 자식이 물려받은 부모의 종료 처리는 아무것도 하지 않는다). `_HELD_LOCKS` 에서 빼고, 이름에 있는
-    것이 만든 그 항목일 때만 지운다. 지우지 못해도(런 폴더가 사라졌거나 다른 것이 들어섰다) 놓은 것이다."""
+    것이 만든 그 항목일 때만 지운다. 지우지 못해도(런 폴더가 사라졌거나 폴더 잠금을 받지 않거나 다른 것이 들어섰다) 놓은 것이다.
+    런 폴더 커널 락을 잡지 못하면(`_entry_guard` 의 SystemExit — 다른 스레드의 fork 가 돌아오지 않음 — 나 그 사이 Ctrl-C) 뺀 것을
+    되돌려 쥔 그대로 두고 그 예외를 낸다 — 다시 놓거나 끝날 때 놓는다."""
     held = _held_here(lock_path)
     if held is None or held.at_exit is not at_exit:
         return
     if _HELD_LOCKS.pop(lock_path, None) is not held:  # 같은 프로세스의 다른 스레드가 먼저 놓았다
         return
-    with contextlib.suppress(OSError), _entry_guard(lock_path.parent):
-        _remove_if_same(lock_path, held.entry, held.pid)
+    entered = False
+    try:
+        with _entry_guard(lock_path.parent):
+            entered = True
+            _remove_if_same(lock_path, held.entry, held.pid)
+    except OSError:
+        pass
+    except BaseException:
+        if not entered:
+            _HELD_LOCKS.setdefault(lock_path, held)
+        raise
 
 
 def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
@@ -447,7 +519,17 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     and never re-enters, releases or removes it — where os.register_at_fork
     exists the child forgets its parent's holds and exit cleanups at the fork,
     and a child forked by C code that skips Python's fork hooks still has a pid
-    of its own.
+    of its own. docs/run-contract.md §7 names where this stops: a C-fork child
+    keeps the run dir's kernel lock until it ends or execs, a child forked in a
+    signal handler that returns into this code cannot be told from the parent,
+    and an exception a signal handler raises inside runio's fork hooks can hide
+    that fork or leave it marked in progress.
+
+    While another thread's Python fork is in progress the kernel lock is not
+    opened (a fork could copy it before it is recorded): taking or releasing the
+    lock waits for that fork and exits loudly (SystemExit) if it is still marked
+    in progress after ten seconds — taking leaves nothing behind, and releasing
+    keeps the lock held, so it can be released again or at exit.
 
     Release runs via atexit (normal return, SystemExit, KeyboardInterrupt) while
     this process still holds the lock, and removes only the entry it made (same
@@ -526,16 +608,17 @@ def release_run_dir_lock(run_dir: Path) -> None:
     한 번의 in-process 추출 뒤 락을 영구 보유해, heal_run 의 서브프로세스
     재추출이 산 pid 락에 막힌다. 락은 세션 리스가 아니라 작업 단위 writer-writer
     상호배제고, 원자성은 스테이징 통짜 스왑이 보장하므로 작업이 끝나면 놓는 게
-    맞다. 놓으면서 그 잡기의 종료 처리를 거둔다 — 놓은 뒤 이름에 들어선 다음 writer 의
+    맞다. 놓고 나서 그 잡기의 종료 처리를 거둔다 — 놓은 뒤 이름에 들어선 다음 writer 의
     락이나 링크를 이 프로세스가 끝날 때 지우지 않는다. 지우는 것은 이 프로세스가 만든
     바로 그 항목뿐이다(`_remove_if_same`). 쥐지 않은 락이면 — fork 자식에게는 부모의 락도 —
-    아무것도 하지 않는다."""
+    아무것도 하지 않는다. 런 폴더 커널 락을 잡지 못해 크게 실패하면(다른 스레드의 fork 가
+    진행 중 표시를 남긴 채다) 쥔 그대로라 다시 놓을 수 있고 종료 처리도 남는다."""
     lock_path = Path(run_dir).resolve() / LOCK_FILENAME
     held = _held_here(lock_path)
     if held is None:
         return
-    atexit.unregister(held.at_exit)
     _let_go(lock_path, held.at_exit)
+    atexit.unregister(held.at_exit)
 
 
 def _rwlock_path(run_dir: Path) -> Path:
