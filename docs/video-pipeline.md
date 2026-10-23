@@ -647,7 +647,7 @@ reads the drawing's own border on the clip's first frame (keyed, its specks eras
 left or right) is a border side when the subject's pixels on that side's outermost row or column
 cover at least 2 % of the side's length (`BORDER_MIN_FRACTION`, 0.02). A strand's tip grazing the
 edge covers less than that; a drawing cut there covers far more. A pixel that is only near the
-edge, inside the 4-pixel band but not on the outermost line, does not make a border.
+edge, inside the 4-pixel band but not on the outermost line, does not make a border. This reading is implemented by `frames.extract.own_border` using `FRAME_SIDES` and `BORDER_MIN_FRACTION`. The Breathe layer's `pixel` mode uses the same function when wording its refusal of a frame pushed past a border side ([breathing](breathing.md)).
 
 Subject contact on a border side is accepted in every frame, wherever it is along that side.
 Subject contact on any other side is still the clip framed too tight and refused, with the same

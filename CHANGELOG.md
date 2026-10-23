@@ -2,6 +2,39 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## Unreleased
+
+**Upgrading from 3.0.0: Bakes retain the same bytes for figures whose anatomy is unchanged. The `pixel` refusal message now names the sides and pixel counts. A figure that had `face-absent` may now have a face, with a lower rigid boundary only when that face ends below the neck.**
+
+The Breathe layer still supports `pixel` and `smooth`.
+
+- **Changed: Pixel refusal.** `pixel` still refuses stretched content past the top, left, or right of a cell instead of cropping it.
+  The message names each side and its opaque pixel count. A pixel past a corner counts on both sides.
+  When an overflowing side is the drawing's own border, the message also gives the number of pixels covering that edge.
+  It advises `--mode smooth` or sidecar `mode: "smooth"` for an illustration cut by its frame.
+  It advises a wider cell margin or lower `depth` for a pixel sprite.
+  It warns that padding, baking, and cropping back silently loses pushed off content.
+  The curator preview uses the same refusal wording.
+  The border reading follows the 2% rule in [video pipeline](docs/video-pipeline.md) section 3.
+  See [breathing](docs/breathing.md) for behavior at frame edges.
+- **New: Second eye pair search.** It runs only when the existing search finds no pair.
+  Its minimum eye area is 0.2% of opaque pixels above the neck.
+  Its eye width to height limit is 3.0, and its minimum eye center distance from the body axis is 0.02 of content width.
+  Pair placement, separation, size similarity, and row overlap conditions remain the same.
+  A face found by this search clears `face-absent`. It lowers the boundary only if the face ends below the neck.
+- **Faster: Breathe bakes.** Array operations speed up pixel outline thinning, appendage weights, and row mapping.
+  `smooth` solves displacement only for pixels that move.
+  Anatomy and settings checks run once per row, and `sprite-gen breathe` shares one anatomy measurement between its report and bake.
+  On synthetic 960 x 960 cells with Apple M1, bake time fell from 0.20 s to 0.10 s for `smooth`.
+  For an outlined figure with arms in `pixel`, it fell from 0.98 s to 0.05 s.
+  These measurements exclude PNG reading and writing.
+  `bake_breathe_sequence(images, cfg, anat=None)` and `anatomy_report(images, cfg, anat=None)` accept measured anatomy.
+  `protect(anat)` accepts one column or an array of columns.
+- **Tests:** `tests/effects/test_breathe.py` checks border counts, advice, smooth edge preservation, and the second face search.
+  `tests/effects/test_breathe_js_mirror.py` checks curator refusal wording and byte identity with the pixel bake.
+  `tests/effects/test_breathe_smooth.py` checks pixel and smooth byte goldens and shared anatomy and strain measurements.
+  `tests/effects/test_breathe_publish.py` checks that the stand-in bake accepts the new argument.
+
 ## v3.0.0 - Remove rig layer composition
 
 **Upgrading from 2.46.0: `sprite-gen compose-layers` and its other launch forms are removed, and rig layer declarations are no longer read.** `compose-atlas` no longer writes a manifest `rig` block or `animation.rows.<state>.track` for a run that declared a rig. Runs that never declared `rig`, `layers` or a state `track` get the same manifest as before. Existing run files and `layers/` folders stay on disk.
