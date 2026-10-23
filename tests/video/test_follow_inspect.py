@@ -141,6 +141,22 @@ def test_the_loop_directory_is_read_and_not_written(tmp_path):
     assert snapshot(loop_dir) == followed
 
 
+def test_the_loop_directory_spelt_in_capitals_is_the_loop_directory(tmp_path):
+    """On a volume that ignores case, `LOOP` is `loop`: an out dir spelt so is the loop directory, or inside it."""
+    loop_dir = strip_dir(tmp_path/'loop')
+    if not (tmp_path/'LOOP').exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 폴더다')
+    as_cut = snapshot(loop_dir)
+    for inside in (tmp_path/'LOOP', tmp_path/'LOOP'/'inspect'):
+        try:
+            follow_inspect.inspect_loop(loop_dir, [CHEST], inside)
+            said = 'written'
+        except SystemExit as refusal:
+            said = str(refusal)
+        assert snapshot(loop_dir) == as_cut, f'{inside.name}: the inspection wrote into the loop directory ({said})'
+        assert 'is in the loop directory; an inspection writes nothing there' in said, said
+
+
 def test_inspecting_first_changes_nothing_video_follow_writes(tmp_path):
     inspected, plain = strip_dir(tmp_path/'inspected'), strip_dir(tmp_path/'plain')
     inspect(inspected, [CHEST], tmp_path/'out', on_fold='lower')

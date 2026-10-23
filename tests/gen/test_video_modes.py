@@ -6,6 +6,7 @@ run before any call, and the report's `mode` / `inputs`. No network — HTTP is 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,30 @@ def test_edit_precheck_rejects_before_any_call(tmp_path: Path, build, seconds, e
     api = _FakeApi()
     with pytest.raises(SystemExit, match=expected):
         video.edit_video(build(tmp_path), probe=lambda clip: seconds, **api.kw())
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("spelling", ["same", "capitals"])
+@pytest.mark.parametrize("verb", ["extend", "edit"])
+def test_the_result_is_never_published_over_the_clip_it_is_made_from(tmp_path: Path, verb: str, spelling: str) -> None:
+    """`--out` naming the input clip — as given, or spelt in capitals on a volume that ignores case — is refused before
+    any call: the result is published over `--out`, which would replace the clip."""
+    given = MP4 + b"the input clip"
+    api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/4.mp4", "duration": 5}, "model": "grok-imagine-video"})
+    clip = tmp_path / "take.mp4"
+    out = clip if spelling == "same" else tmp_path / "TAKE.MP4"
+    request = _ext(tmp_path, video=clip, out=out) if verb == "extend" else _edit(tmp_path, video=clip, out=out)
+    _clip(tmp_path, "take.mp4", given)  # after the request: `_ext`/`_edit` write their own default clip, `in.mp4`
+    if not out.exists():
+        pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다")
+    make = video.extend_video if verb == "extend" else video.edit_video
+    try:
+        make(request, probe=_probe(5.0, 10.0), **api.kw())
+        said = "published"
+    except SystemExit as refusal:
+        said = str(refusal)
+    assert clip.read_bytes() == given, f"video-{verb} 이 입력 클립 위에 결과를 내놓았다 ({said}, calls {len(api.calls)})"
+    assert re.search(rf"video-{verb}: --video and --out are the same file", said), said
     assert api.calls == []
 
 

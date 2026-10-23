@@ -9,7 +9,9 @@ report says. Nothing here draws a font: a logo comes from the model or not at al
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import unicodedata
 from pathlib import Path
 
@@ -357,6 +359,62 @@ def test_a_lettering_image_is_cut_again_without_generating(tmp_path, fake) -> No
     assert report["steps"]["key"] == {"key": "green", "source": "border"}
     assert [c["step"] for c in report["calls"]] == ["logo-check"]
     assert (out / "logo.png").is_file()
+
+
+def _ran(tmp_path: Path, **overrides) -> str:
+    """`logo` 한 번 — 끝난 모양을 한 줄로(rc, 아니면 멈춘 까닭)."""
+    try:
+        return f"rc={_run(tmp_path, **overrides)}"
+    except (SystemExit, OSError) as stopped:
+        return f"{type(stopped).__name__}: {stopped}"
+
+
+def test_a_given_lettering_spelt_in_capitals_is_its_own_file_and_is_cut_again(tmp_path, fake) -> None:
+    """In place again, by another spelling of the same file (a volume that ignores case): the input is the run's
+    own `lettering.png`, kept and cut again, not removed as an earlier run's result."""
+    fake(reads=(["ION"],))
+    out = tmp_path / "logo"
+    out.mkdir()
+    lettering(key=GREEN_PAINTED, fill=(255, 214, 40), glow=(255, 120, 20), glow_strength=0.7).image.save(out / "lettering.png")
+    if not (out / "LETTERING.png").exists():
+        pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다")
+    said = _ran(tmp_path, lettering=out / "LETTERING.png")
+    assert said == "rc=0", f"제 lettering.png 를 다른 철자로 받은 입력을 지웠다 ({said})"
+    assert (out / "logo.png").is_file()
+
+
+def test_a_mood_image_in_a_folder_of_the_old_working_name_is_never_touched(tmp_path, fake) -> None:
+    fake(reads=(["ION"], ["ION"]))
+    given = tmp_path / "logo" / ".logo-work" / "title.png"
+    given.parent.mkdir(parents=True)
+    _scene().save(given)
+    read = hashlib.sha256(given.read_bytes()).hexdigest()
+    said = _ran(tmp_path, mood=given)
+    assert given.is_file() and hashlib.sha256(given.read_bytes()).hexdigest() == read, f"out 안 .logo-work 의 --mood 를 지웠다 ({said})"
+    assert said == "rc=0", said
+    left = sorted(p.name for p in (tmp_path / "logo").iterdir() if p.name.startswith("."))
+    assert left == [".logo-work"], f"이 실행의 작업 폴더가 남았다: {left}"
+
+
+@pytest.mark.parametrize(("flag", "place", "why"), [
+    ("lettering", "logo.png", r"--lettering and logo\.png in --out-dir are the same file"),
+    ("lettering", "logo.preview.png", r"--lettering and logo\.preview\.png in --out-dir are the same file"),
+    ("mood", "lettering.png", r"--mood and lettering\.png in --out-dir are the same file"),
+    ("mood", "logo.report.json", r"--mood and logo\.report\.json in --out-dir are the same file"),
+])
+def test_a_picture_given_as_a_file_the_run_writes_is_refused_before_anything_is_made(tmp_path, fake, flag, place, why) -> None:
+    """Only `mood.png` for `--mood` and `lettering.png` for `--lettering` take back a picture the run made; any other
+    file the run removes or writes would replace the picture it was given."""
+    fake(reads=(["ION"], ["ION"]))
+    out = tmp_path / "logo"
+    out.mkdir()
+    picture = (lettering(key=GREEN_PAINTED).image if flag == "lettering" else _scene())
+    picture.save(out / place, format="PNG")
+    read, before = hashlib.sha256((out / place).read_bytes()).hexdigest(), sorted(p.name for p in out.iterdir())
+    said = _ran(tmp_path, **{flag: out / place})
+    assert hashlib.sha256((out / place).read_bytes()).hexdigest() == read, f"--{flag} 로 받은 {place} 를 덮어썼다 ({said})"
+    assert re.search(why, said), f"출력 파일인 입력을 거절하지 않았다 ({said})"
+    assert sorted(p.name for p in out.iterdir()) == before, f"거절했는데 무엇이 생겼다 ({said})"
 
 
 def test_a_mood_image_full_of_magenta_moves_the_lettering_to_the_green_key(tmp_path, fake) -> None:
