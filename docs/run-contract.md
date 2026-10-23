@@ -146,8 +146,10 @@ not restate it elsewhere; point here.
   .frames.sg-staging/                # transient: extract builds the new generation here, swapped into frames/ under publish_guard
 ```
 Transient publish sidecars exist only during an extract/import commit: `.frames.sg-backup`
-and `.extract-failure.sg-backup` (in-place rollback copies) and `.<name>.sg-rwlock` (in the
-parent dir — the publish reader/writer lock). Their durability/concurrency boundary is §7.
+and `.extract-failure.sg-backup` (extract's in-place rollback copies), an import's own
+`.<name>.<pid>-<random>.sg-staging` (beside the run dir) and `.sg-backup.<pid>-<random>` (in it,
+§4), and `.<name>.sg-rwlock` (in the parent dir — the publish reader/writer lock). Their
+durability/concurrency boundary is §7.
 
 Rules the display depends on:
 
@@ -391,6 +393,32 @@ A **failed or invalid** re-import (e.g. a bad `_refs` role) leaves the prior run
 succeeds or rolls back). The publish holds the run-dir single-writer lock in place
 throughout, so a concurrent **writer** cannot preempt (writer Isolation).
 
+**An import never touches its inputs.** An input — `--pngs-dir`, `--atlas`, `--manifest`, the
+atlas a manifest names, and what the import reads in `--pngs-dir` (every frame, `_base` image,
+`_refs` PNG and `meta.json`, and every folder it reads one from), any of which may be a link — that
+is the run dir, lies inside it, goes through anything inside it, or holds it is refused before
+anything is made, with or without `--force`: a publish replaces the run dir's whole prior content
+entry by entry — a link as a link, so a path that goes through one breaks — and the run would
+otherwise be written into its input. An input is followed the way the system opens it
+(`runio.follow_path`): its path as given, made absolute but never resolved or folded, one entry at
+a time — every link (a Windows directory junction counts as one) and every folder it looks up,
+including a folder that a later `..` leaves again. The refusal names the first entry it goes
+through inside the run dir, and a link loop is refused by name. A path that only passes through the
+run dir itself (`run/../incoming`) is not refused: the run dir stays where it is while its content
+is replaced. What is found in `--pngs-dir` is checked once all of it is found and is
+named in the refusal by where it was found. Folders are compared by real path and file
+identity (`runio.same_folder`, `runio.inside_folder`), so a link or a second spelling on a
+case-insensitive volume is the same folder. The run is built in a staging folder of its own beside
+the run dir and the prior content is moved aside into a backup folder of its own inside it
+(`runio.new_stage`: `.<name>.<pid>-<random>.sg-staging`, `.sg-backup.<pid>-<random>`). A folder
+that already has a staging or backup name, an input's or anyone else's, is never reused or removed:
+besides those two folders the run deletes only the prior content it replaces, and a failed publish
+puts every prior file back. The run dir's single-writer lock is the entry `.sprite-gen.lock` itself
+(`runio.acquire_run_dir_lock`, every writer): a link or a folder at that name is refused by name and
+never followed, read or removed, so reclaiming a stale lock deletes only a stale lock file. The run
+carries the run dir's name (`character.id`) and path (`frames-manifest.json` `run_dir`), never the
+staging folder's.
+
 > **Reader isolation (named strategy: reader/writer locking).** Every operation that
 > republishes frames — a `--force` re-import **and** a re-extract (`extract` builds into a
 > staging dir, then swaps `frames/` into place) — holds the run dir's *exclusive* publish
@@ -536,7 +564,38 @@ boundary of the run-dir's atomicity and concurrency guarantees. What is **in for
   A consumer that only calls the manifest gate once but then reads the frame tree unguarded would
   leave a TOCTOU window; the full read must be inside the strategy.
 - **Cross-process single-writer.** `.sprite-gen.lock` blocks a second **process** from writing
-  the same run dir; the pipeline's **one worker owns one character folder** rule (§2, SKILL.md)
+  the same run dir (a link or a folder at that name is refused, never followed: §4). A process
+  removes only the very lock entry it made, or judged stale to reclaim, and only while it still holds
+  it — same device, inode and content, and `release_run_dir_lock` withdraws that lock's exit
+  cleanup — while making, reclaiming and removing the entry queue on a kernel lock on the run dir
+  itself, so among sprite-gen processes on one host, on a file system that locks folders, neither a
+  released writer's exit nor a late reclaimer removes a lock another writer took meanwhile. Removing
+  and holding belong to the process that made the entry: a hold is bound to the pid that took it, so a
+  forked child never re-enters, releases or removes its parent's lock and is refused by it like any
+  other writer. Where `os.register_at_fork` exists, a child forgets its parent's holds and exit
+  cleanups and closes its copies of the run dir's kernel-lock descriptors at the fork, and the parent
+  never locks a descriptor a Python fork may have copied before it was recorded: a fork that runs the
+  hooks between reading the fork count and recording the descriptor (on any thread, a signal handler on
+  the same thread included) makes the parent open another, and the parent opens none while another
+  thread's fork that already ran the hooks has not returned — it waits for that fork, and fails loudly
+  when the fork is still marked in progress after ten seconds. A release that fails that way keeps its
+  lock: the process can release it again, and its exit cleanup still tries to (an entry it leaves when it
+  ends is a dead holder's, reclaimed by the next writer). The parent unlocks a
+  descriptor before taking it out of the record, even when an exception skipped the first unlock. So a
+  holder killed inside that kernel lock, or thrown out of it by an exception, leaves it to no child that
+  Python's fork hooks ran in and that does not return into the code the fork interrupted. Every guarantee
+  in this paragraph holds except at three boundaries. A child forked by C code that skips Python's fork
+  hooks: the pid check still keeps it from removing or re-entering the parent's lock, but it keeps any
+  kernel-lock descriptor it inherited until it ends or execs, and a writer waits for it. A child forked
+  in a signal handler that returns from the handler and goes on with the code the signal interrupted: it
+  is a copy of the parent's flow, so the lock cannot tell it from the parent — there is always a bytecode
+  boundary between the helper's last check and the system call it guards. Inside the lock helper it can
+  remove whatever is at the lock name, a lock another writer took meanwhile included, and after the lock
+  is taken it goes on writing the run dir as the parent; such a child must not return into code that uses
+  the lock (a caller's contract). An exception that a signal handler raises inside runio's fork hooks:
+  CPython reports it and goes on with the fork, so that fork may go unseen by a parent opening its
+  kernel lock, or leave a mark that makes the process's other threads fail loudly as above. The pipeline's
+  **one worker owns one character folder** rule (§2, SKILL.md)
   is what excludes concurrent writers on the same run dir in the first place. Same-process
   re-entry is intentionally allowed so one interpreter can run prepare → extract → compose in
   sequence.

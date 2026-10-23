@@ -68,8 +68,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
-import secrets
 import shutil
 from pathlib import Path
 
@@ -80,6 +78,7 @@ from sprite_gen.effects.anatomy import Anatomy, analyze
 from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import solid_alpha_bbox
+from sprite_gen.spec.runio import inside_folder, new_stage, same_folder
 
 # 강체 경계에서 변형 강도가 0 이 되기까지의 테이퍼 반폭 (콘텐츠 높이 비율).
 # 이 테이퍼가 이음매를 없앤다 — 경계에서 강도가 계단이 아니라 경사로 떨어진다.
@@ -938,31 +937,6 @@ def _cells(text: str) -> list[int]:
         raise argparse.ArgumentTypeError(f"cell numbers separated by commas, not {text!r}")
 
 
-def _same(a: Path, b: Path) -> bool:
-    """같은 폴더인가 — 장치·inode 로 본다. 링크로 돌아 들어와도, 대소문자를 가리지 않는 볼륨에서 철자만
-    달라도 같은 폴더다."""
-    return a.exists() and b.exists() and a.samefile(b)
-
-
-def _inside(path: Path, folder: Path) -> bool:
-    """`path` 가 `folder` 안에 드는가 — 조상 가운데 `folder` 와 같은 폴더가 있다. `path` 는 아직 없어도 된다."""
-    return any(_same(parent, folder) for parent in path.parents)
-
-
-def _new_stage(out: Path) -> Path:
-    """`out` 옆에 이 실행만의 빈 임시 폴더 — 같은 볼륨이라 다 쓴 뒤 rename 한 번으로 내놓는다. 이름이 이미
-    있으면(원본이든 다른 실행의 것이든) 그 폴더는 건드리지 않고 다른 이름을 고른다. mkdtemp(0700)가 아니라
-    mkdir 이라 내놓은 out 이 보통 폴더 권한을 갖는다."""
-    for _ in range(100):
-        stage = out.parent / f".{out.name}.{os.getpid()}-{secrets.token_hex(4)}.partial"
-        try:
-            stage.mkdir()
-        except FileExistsError:
-            continue
-        return stage
-    raise SystemExit(f"breathe: {out.parent} 에 임시 폴더 이름을 못 골랐다")
-
-
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("frames", help="folder of the loop's frames (*.png, played in name order)")
     parser.add_argument("out", help="new folder for the breathing frames (same names) and breathe.json")
@@ -1033,11 +1007,11 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         raise SystemExit(f"breathe: {src_dir} 에 PNG 프레임이 없다")
     # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다(링크, 철자).
     src_real, out_real = src_dir.resolve(), out_dir.resolve()
-    if _same(out_real, src_real):
+    if same_folder(out_real, src_real):
         raise SystemExit("breathe: out 이 frames 와 같은 폴더다 — 원본 프레임 위에 덮어쓰지 않는다")
-    if _inside(out_real, src_real):
+    if inside_folder(out_real, src_real):
         raise SystemExit(f"breathe: out 이 frames 안에 있다 ({out_real}) — 원본 폴더 안에는 쓰지 않는다")
-    if _inside(src_real, out_real):
+    if inside_folder(src_real, out_real):
         raise SystemExit(f"breathe: frames 가 out 안에 있다 ({src_real}) — 원본이 든 폴더에 내놓지 않는다")
     if out_real.exists() and not out_real.is_dir():
         raise SystemExit(f"breathe: {out_dir} 는 폴더가 아니다")
@@ -1055,7 +1029,7 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
     # 실행들은 각자의 임시 폴더에 쓰고, rename 이 먼저 닿은 쪽이 내놓는다(늦은 쪽은 차 있는 out 에서 멈춘다).
     # 지우는 것은 이 실행의 임시 폴더뿐이고, 원본 폴더에는 아무것도 쓰지 않는다.
     out_real.parent.mkdir(parents=True, exist_ok=True)
-    stage = _new_stage(out_real)
+    stage = new_stage(out_real, ".partial")
     try:
         for path, frame in zip(paths, baked):
             frame.save(stage / path.name)
