@@ -393,6 +393,15 @@ def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
             raise SystemExit(f"--out-dir lies inside {flag}: {out_dir} (a run is never written into its input)")
 
 
+def _found_inputs(src: Path, groups: list[dict[str, Any]], *files: Path | None) -> dict[str, Path]:
+    """What an import reads in its --pngs-dir `src`, named by where it was found there: every folder it reads a file
+    from (a group folder, `_base`, `_refs`), then every file it reads (a frame, a `_refs` PNG, and `files`: the
+    `_base` image and meta.json when it reads them). Any of them may be a link, and lead into the run dir."""
+    read = [p for g in groups for p in (*g["paths"], *g["refs"])] + [p for p in files if p is not None]
+    folders = [f for f in dict.fromkeys(p.parent for p in read) if f != src]
+    return {f"{relative_posix(p, src)} in --pngs-dir": p for p in (*folders, *read)}
+
+
 def _build_and_publish(out_dir: Path, build: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:
     """Make the run dir, take its single-writer lock, build the run into a staging folder of this
     run's own beside it (`.<out>.<pid>-<random>.sg-staging`, a new name, so a folder of the old fixed
@@ -569,6 +578,9 @@ def _run(args: argparse.Namespace):
         if bad_refs:
             raise SystemExit("invalid _refs role prefix — expected anchor-/basis-/guide-<name>.png, got: "
                              + ", ".join(bad_refs))
+        # what the import found in --pngs-dir is an input too: a link there may lead into --out-dir, whose prior
+        # content --force deletes. Compared with the run dir once all of it is found, before the run dir is made.
+        _refuse_overlap(_found_inputs(src, groups, base_src, meta_path if meta_path.is_file() else None), out_dir)
         # atomic rebuild: all validation above ran before any mutation; build into a
         # staging dir, then publish over out_dir. A --force re-import that fails (or is
         # invalid) leaves the prior run intact — never clear-then-fail.

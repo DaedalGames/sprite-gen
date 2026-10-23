@@ -393,10 +393,13 @@ A **failed or invalid** re-import (e.g. a bad `_refs` role) leaves the prior run
 succeeds or rolls back). The publish holds the run-dir single-writer lock in place
 throughout, so a concurrent **writer** cannot preempt (writer Isolation).
 
-**An import never touches its inputs.** An input — `--pngs-dir`, `--atlas`, `--manifest`, or
-the atlas a manifest names — that is the run dir, lies inside it, or holds it is refused before
-anything is made, with or without `--force`: a publish replaces the run dir's whole prior content,
-and the run would otherwise be written into its input. Folders are compared by real path and file
+**An import never touches its inputs.** An input — `--pngs-dir`, `--atlas`, `--manifest`, the
+atlas a manifest names, and what the import reads in `--pngs-dir` (every frame, `_base` image,
+`_refs` PNG and `meta.json`, and every folder it reads one from), any of which may be a link — that
+is the run dir, lies inside it, or holds it is refused before anything is made, with or without
+`--force`: a publish replaces the run dir's whole prior content, and the run would otherwise be
+written into its input. What is found in `--pngs-dir` is checked once all of it is found and is
+named in the refusal by where it was found. Folders are compared by real path and file
 identity (`runio.same_folder`, `runio.inside_folder`), so a link or a second spelling on a
 case-insensitive volume is the same folder. The run is built in a staging folder of its own beside
 the run dir and the prior content is moved aside into a backup folder of its own inside it
