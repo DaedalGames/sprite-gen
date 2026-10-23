@@ -79,7 +79,7 @@ def test_the_entry_set_is_read_off_the_clip_mouth_where_the_layer_comes_on(case)
     idle, greet = body(pack, "idle")["entry"], body(pack, "greet")["entry"]
     assert idle["frame"] == 0 and idle["set"] == "neutral" and idle["rest"] in pack["face"]["sets"]["neutral"]["closed"]
     assert greet["frame"] == tf.GREET_OWN_END and greet["set"] == "smile" and greet["rest"] in pack["face"]["sets"]["smile"]["closed"]
-    assert greet["own_lift"] >= fl.SMILE_LIFT > fl.NEUTRAL_LIFT >= idle["own_lift"]
+    assert greet["own_lift"] >= fl.SMILE_FROM > idle["own_lift"]
 
 
 def test_own_mouth_runs_to_the_first_closed_frame_after_the_last_sound(case):
