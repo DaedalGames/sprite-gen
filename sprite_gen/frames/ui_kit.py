@@ -42,6 +42,7 @@ from PIL import Image, ImageDraw
 
 from sprite_gen._deps import np
 from sprite_gen.frames.alpha_floor import clear_haze
+from sprite_gen.util.console import utf8_streams
 
 REFERENCE = 1024
 GAP = 48
@@ -1326,6 +1327,7 @@ def run(**kwargs: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

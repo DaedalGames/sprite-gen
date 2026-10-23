@@ -36,7 +36,6 @@ class ChildGuard:
             [sys.executable, "-c", _CHILD, str(run_dir), mode, str(hold)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             encoding="utf-8",
         )
         self.thread = threading.Thread(target=self._drain, daemon=True)

@@ -43,6 +43,7 @@ from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video import play as play_mod
+from sprite_gen.util.console import utf8_streams
 
 START_GAP_SECONDS = 2.0
 # Clip length the batch asks the video model for. 3 s holds two or more cycles of every
@@ -867,8 +868,10 @@ def run_item(
         if lp.get("motion_anchor", {}).get("applied") is False:
             result["loop"]["motion_anchor"] = lp["motion_anchor"]
         if "rife" in (lp.get("jump_repair") or {}):
-            # cut as filmed for want of RIFE: the set report lists it under `warnings`
-            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "off_max_before", "install")}
+            # cut as filmed for want of RIFE: the set report lists it under `warnings` (a wrap the seam bridge read carries
+            # its `seam`, not the flow's `off_max_before`)
+            result["loop"]["jump_repair"] = {k: lp["jump_repair"][k] for k in ("applied", "why", "off_max_before", "seam", "install")
+                                             if k in lp["jump_repair"]}
         result["ok"] = True
     except CodexUnavailableAsk as exc:
         result["ok"] = False
@@ -1293,6 +1296,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-set", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

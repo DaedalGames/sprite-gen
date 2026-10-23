@@ -1,7 +1,12 @@
 """`detect_background_key_rgb` reads the image a band of rows at a time and must answer as the
-whole-image form did. `_whole_image_detect` is that form, frozen: every sample widened to
-int32 at once, then `np.unique` over the bins. The banded form keeps a count and a channel
-sum per bin instead, so a large still costs a histogram rather than an array of samples.
+whole-image form does. `_whole_image_detect` is that form: every sample widened to int32 at
+once, then `np.unique` over the bins. The banded form keeps a count and a channel sum per bin
+instead, so a large still costs a histogram rather than an array of samples.
+
+The whole-image form states the rule outright, so it changes with the rule: since the lean is
+read against the declared key's cut (2026-10-21) it reads the candidates the rule admitted
+before the lean first, then the lean only where the key's cut leaves the border's one
+key-coloured background, and the banded form counts each of those sets per bin.
 """
 from __future__ import annotations
 
@@ -37,7 +42,12 @@ def _whole_image_mask(height: int, width: int) -> np.ndarray:
     return mask
 
 
-def _whole_image_detect(image: Image.Image, chroma_key: tuple[int, int, int]) -> tuple[int, int, int]:
+def _whole_image_detect(image: Image.Image, chroma_key: tuple[int, int, int],
+                        threshold: float | None = None) -> tuple[int, int, int]:
+    from sprite_gen.frames.extract import (DEFAULT_KEY_THRESHOLD, _KEY_DETECT_LEAN_LEFT_MIN_FRACTION,
+                                           _KEY_DETECT_NEIGHBOUR_BINS)
+
+    threshold = DEFAULT_KEY_THRESHOLD if threshold is None else threshold
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     if not keyed_channels:
         return tuple(chroma_key)
@@ -46,17 +56,34 @@ def _whole_image_detect(image: Image.Image, chroma_key: tuple[int, int, int]) ->
     sample = _whole_image_mask(height, width) & (data[..., 3] != 0)
     if not sample.any():
         return tuple(chroma_key)
+    total = int(np.count_nonzero(sample))
     rgb = data[..., :3].astype(np.int32)
+    before = sample & _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels, lean=False)
     family = sample & _border_key_candidate_field(rgb, keyed_channels, unkeyed_channels)
-    if int(np.count_nonzero(family)) < int(np.count_nonzero(sample)) * _KEY_DETECT_MIN_FRACTION:
+    if int(np.count_nonzero(before)) >= total * _KEY_DETECT_MIN_FRACTION:
+        return _mode_mean(rgb[before])[1]
+    if int(np.count_nonzero(family)) < total * _KEY_DETECT_MIN_FRACTION:
         return tuple(chroma_key)
-    colors = rgb[family]
+    mode_bin, mean = _mode_mean(rgb[family])
+    near = (np.abs((rgb >> _KEY_DETECT_BIN_SHIFT) - np.asarray(mode_bin)) <= _KEY_DETECT_NEIGHBOUR_BINS).all(axis=-1)
+    distance = np.sqrt(((rgb - np.asarray(chroma_key)) ** 2).sum(axis=-1))
+    left = family & ~before & near & (distance > threshold)
+    if (int(np.count_nonzero(left)) >= total * _KEY_DETECT_LEAN_LEFT_MIN_FRACTION
+            and int(np.count_nonzero(family & ~near)) < total * _KEY_DETECT_MIN_FRACTION):
+        return mean
+    return tuple(chroma_key)
+
+
+def _mode_mean(colors: np.ndarray) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """(the most populated 8-wide bin, the mean of its members); the lowest bin on a tie."""
     bins = (colors >> _KEY_DETECT_BIN_SHIFT).astype(np.int64)
     slots = (bins[:, 0] << 16) | (bins[:, 1] << 8) | bins[:, 2]
-    _, inverse, counts = np.unique(slots, return_inverse=True, return_counts=True)
-    members = colors[inverse == int(np.argmax(counts))]
+    values, inverse, counts = np.unique(slots, return_inverse=True, return_counts=True)
+    mode = int(np.argmax(counts))
+    members = colors[inverse == mode]
     mean = members.sum(axis=0, dtype=np.int64) // len(members)
-    return (int(mean[0]), int(mean[1]), int(mean[2]))
+    slot = int(values[mode])
+    return (slot >> 16, (slot >> 8) & 0xFF, slot & 0xFF), (int(mean[0]), int(mean[1]), int(mean[2]))
 
 
 def _noisy(size: tuple[int, int], colour: tuple[int, int, int], spread: int, seed: int) -> np.ndarray:
@@ -89,6 +116,15 @@ def _images() -> list[tuple[str, Image.Image]]:
     out.append(("tie across channels", Image.fromarray(tie)))
     grok = _noisy((120, 90), (216, 46, 147), 6, 11)
     out.append(("grok magenta", Image.fromarray(grok)))
+    # leaning greens past the declared key's cut, across it (the noise straddles it) and inside it, over several
+    # bands, and two of them on one border
+    for seed, (name, colour, spread) in enumerate((("leaning past the cut", (0, 200, 90), 3),
+                                                   ("leaning across the cut", (0, 206, 84), 4),
+                                                   ("leaning inside the cut", (0, 214, 80), 2))):
+        out.append((name, Image.fromarray(_noisy((150, 2 * _KEY_DETECT_BAND_ROWS + 9), colour, spread, 20 + seed))))
+    two = _noisy((90, 90), (0, 200, 90), 2, 31)
+    two[:, 60:] = (0, 120, 55)
+    out.append(("two leaning greens", Image.fromarray(two)))
     out.append(("palette", Image.fromarray(_noisy((64, 80), (8, 162, 24), 12, 3)).convert("P")))
     return out
 

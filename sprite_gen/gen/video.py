@@ -70,6 +70,7 @@ from .xai import (
     NO_ANSWER, Credential, HttpCall, TransportError, resolve_credential, http_json, no_answer, post,
     read_whole, rejected_fix, time_left,
 )
+from sprite_gen.util.console import utf8_streams
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
 # Extension and editing: the API rejects the 1.5 model on both endpoints, so the
@@ -1124,6 +1125,7 @@ def run_resume(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     return _run(_build_parser().parse_args(argv))
 
 

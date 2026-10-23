@@ -294,7 +294,7 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
 
     target = KEY_TARGETS[kind]
     if background_key is None:
-        painted = detect_background_key_rgb(image, target)
+        painted = detect_background_key_rgb(image, target, _EXTRACT_KEY_THRESHOLD)
     else:
         painted = (int(background_key[0]), int(background_key[1]), int(background_key[2]))
     extra: dict[str, Any] = {}

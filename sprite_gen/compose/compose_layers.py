@@ -57,6 +57,7 @@ from sprite_gen.compose.layers import (has_layer_contract, landmark_map, require
                                resolve_stack, state_track)
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, load_request
+from sprite_gen.util.console import utf8_streams
 
 # Where a composite bake puts its output and what it names the report. The one
 # place these strings live (`docs/layer-tracks.md` §5 documents the same tree;
@@ -641,6 +642,7 @@ def run(*, run_dir: Path, names: str | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(
         description="Bake a rig run's declared composite stacks into <run-dir>/layers/.")
     add_arguments(parser)

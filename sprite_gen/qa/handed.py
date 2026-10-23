@@ -57,6 +57,7 @@ from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.hexcolor import parse_hex
+from sprite_gen.util.console import utf8_streams
 
 # Opaque enough to be the character: the body's centre and the marker are read on these pixels.
 ALPHA_MIN = 128
@@ -416,6 +417,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen handed-check", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

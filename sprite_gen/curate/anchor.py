@@ -35,6 +35,7 @@ from sprite_gen.curate.curation import (anchor_choices, apply_pixel_edits, apply
                        frame_variant, load_curation, pixel_snap_scale, source_frame_index,
                        state_instances, state_pixel_ops, state_plan)
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
+from sprite_gen.util.console import utf8_streams
 
 ANCHOR_SCALE = 8
 CONTENT_ALPHA_FLOOR = 40  # 콘텐츠 crop 기준 (프린지 알파를 콘텐츠로 세지 않는다)
@@ -505,6 +506,7 @@ def run(run_dir: Path, direction: str | None = None, all_directions: bool = Fals
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_arguments(parser)
     args = parser.parse_args(argv)

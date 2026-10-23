@@ -82,7 +82,7 @@ def _collect(tmp_path: Path, name: str, env: dict[str, str]) -> dict[str, list[b
         cwd=ROOT,
         env={**env, "RIFE_PROBE_OUT": str(out)},
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 0, f"collection with {name} failed:\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     return json.loads(out.read_text())
@@ -184,7 +184,7 @@ def test_the_rife_less_run_fails_each_unmarked_skip_by_name(tmp_path):
         cwd=ROOT,
         env=_rife_less_env(tmp_path),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     output = f"{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     assert report.is_file(), output

@@ -149,7 +149,7 @@ def project(baseline: Any, source: Source) -> tuple[Projection | None, str | Non
     m, report = baseline.meta, baseline.source_report
     if report.get("kind") != "sprite-gen-video-loop-report" or report.get("status") != "passed":
         return None, "source-report-unverified"
-    if "follow" in m:
+    if loop.sway_recorded(m):
         return None, "follow-source-warp-unverified"
     n = len(baseline.frames)
     cycle = report.get("cycle", {})
@@ -183,7 +183,7 @@ def project(baseline: Any, source: Source) -> tuple[Projection | None, str | Non
     anchor = m.get("foot_anchor")
     if anchor not in ("none", "body") or report.get("anchor") != anchor:
         return None, "source-anchor-unsupported"
-    if any(k in m for k in ("cycle_align", "motion_anchor")) or report.get("size_hold", {}).get("applied"):
+    if any(k in m for k in ("cycle_align", "motion_anchor", "wrap_blend")) or report.get("size_hold", {}).get("applied"):
         return None, "source-processing-unsupported"
     hints = (report.get("jump_repair") or {}).get("replaced", [])
     if (not isinstance(hints, list) or any(type(k) is not int or not 0 <= k < n for k in hints)

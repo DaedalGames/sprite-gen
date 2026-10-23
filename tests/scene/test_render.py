@@ -308,11 +308,11 @@ def test_module_entrypoint_renders_and_reports_failures_by_name(tmp_path):
     spec = write_scene(tmp_path, [{"id": "hero", "asset": "red", "at": [8, 12]}], width=15)
     out = tmp_path / "out"
     result = subprocess.run([sys.executable, "-m", "sprite_gen.scene.render", "--spec", str(spec), "--out-dir", str(out), "--formats", "png"],
-                            capture_output=True, text=True, check=False)
+                            capture_output=True, encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
     assert summary["frames"] == 5 and summary["inspection_status"] == "measured" and "placement.json" in summary["files"]
     failed = subprocess.run([sys.executable, "-m", "sprite_gen.scene.render", "--spec", str(spec), "--out-dir", str(tmp_path / "video"), "--formats", "mp4"],
-                            capture_output=True, text=True, check=False)
+                            capture_output=True, encoding="utf-8", check=False)
     assert failed.returncode != 0 and "scene-render: MP4 requires even canvas dimensions" in failed.stderr
     assert not (tmp_path / "video").exists()

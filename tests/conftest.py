@@ -27,7 +27,7 @@ def help_options(*argv: str) -> set[str]:
         [sys.executable, *argv, "--help"],
         cwd=REPO_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         env=env,
     )
     assert proc.returncode == 0, proc.stderr
@@ -39,7 +39,7 @@ def run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPTS_DIR / name), *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
 
 
@@ -60,11 +60,16 @@ def symlink_or_skip(link: Path, target: Path) -> None:
 
 
 # Tests that skip where no RIFE is reachable for a reason other than RIFE: an input the lane does not
-# give. Named without their parameters. In the lane's RIFE-less run (`pytest --rife-unmeasured`) these
-# and the tests marked real_rife may skip; any other skip fails (docs/release.md).
+# give. Named without their parameters, or with them where one case alone skips. In the lane's RIFE-less
+# run (`pytest --rife-unmeasured`) these and the tests marked real_rife may skip; any other skip fails
+# (docs/release.md).
 NOT_RIFE_SKIPS = {
     # SPRITE_GEN_CHROMA_REAL_STILLS names model stills, which the repository does not hold.
     "tests/frames/test_chroma_key_relative.py::test_real_still_keys_out_its_painted_border",
+    # A folder spelt in capitals is the same folder only on a volume that ignores case (macOS, Windows); the
+    # lane's Linux volume tells the two spellings apart, so the layout the case measures cannot be made there.
+    "tests/effects/test_breathe_publish.py::test_overlapping_folders_are_refused_before_anything_is_made"
+    "[out_inside_frames_spelt_in_capitals]",
 }
 
 
@@ -99,7 +104,7 @@ def _fail_unmeasured_skip(report: pytest.TestReport | pytest.CollectReport, node
     test body, the file at import."""
     if not report.skipped or hasattr(report, "wasxfail") or not node.config.getoption("rife_unmeasured", False):
         return
-    if node.get_closest_marker("real_rife") or report.nodeid.partition("[")[0] in NOT_RIFE_SKIPS:
+    if node.get_closest_marker("real_rife") or {report.nodeid, report.nodeid.partition("[")[0]} & NOT_RIFE_SKIPS:
         return
     path, line, reason = report.longrepr
     report.outcome = "failed"

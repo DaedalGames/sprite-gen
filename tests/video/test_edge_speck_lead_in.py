@@ -56,7 +56,7 @@ def test_a_fleck_far_from_the_body_is_erased_before_the_edge_check(tmp_path):
             image.paste(FLECK, (117, 51, 119, 52))
     files = _raw(tmp_path, 3, fleck)
     report = frames_mod.key_frames(files, tmp_path / "keyed", key="magenta")
-    assert report["edge_contacts"] == [] and report["edge_policy"] == "refuse"
+    assert report["edge_contacts"] == [] and report["edge_policy"] == "border"
     assert [row["specks"] for row in report["rows"]] == [0, 1, 0]
     assert report["specks"]["dropped"] == 1 and report["specks"]["frames"] == 1
     keyed = Image.open(tmp_path / "keyed" / "frame-0001.png").convert("RGBA")
@@ -166,7 +166,7 @@ def test_key_coloured_background_apart_from_the_body_is_still_residual(tmp_path)
     with pytest.raises(SystemExit, match="leftover chroma background") as refused:
         frames_mod.key_frames(files, tmp_path / "keyed", key="green", allow_subject=True)
     assert "framed too tight" not in str(refused.value)
-    keyed = Image.open(tmp_path / "keyed" / "frame-0001.png")
+    keyed = Image.open(tmp_path / "keyed.refused" / "frame-0001.png")
     split = frames_mod.classify_edge_contact(Image.open(files[1]), keyed, GREEN)
     assert split["subject"] == 0 and split["residual"] > 0
 

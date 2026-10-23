@@ -196,7 +196,7 @@ def test_video_api_key_requires_own_confirmation(monkeypatch, tmp_path):
 
 def test_real_cli_finish_save_and_reload(tmp_path):
     def cli(*args):
-        p = subprocess.run([sys.executable, "-m", "sprite_gen.cli", *args], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-m", "sprite_gen.cli", *args], capture_output=True, encoding="utf-8")
         return p, json.loads(p.stdout) if p.stdout else None
     p, data = cli("defaults", "show")
     assert p.returncode == 0 and data["revision"] == "missing"
@@ -233,7 +233,7 @@ def test_one_image_can_enter_optional_curation(tmp_path, ready_login):
     run = tmp_path / "curation-run"
     imported = subprocess.run([sys.executable, "-m", "sprite_gen.cli", "unpack-atlas",
                                "--pngs-dir", str(pngs), "--out-dir", str(run)],
-                              capture_output=True, text=True)
+                              capture_output=True, encoding="utf-8")
     assert imported.returncode == 0, imported.stderr
     state = build_run_state(run)
     assert sum(len(row["frames"]) for row in state["states"]) == 1

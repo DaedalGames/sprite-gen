@@ -73,6 +73,7 @@ from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video.repair import ALPHA_SOLID
+from sprite_gen.util.console import utf8_streams
 
 PROG = "video-stop"
 KIND = "stop"
@@ -487,6 +488,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog=f"sprite-gen {PROG}", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

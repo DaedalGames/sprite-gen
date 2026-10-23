@@ -30,6 +30,7 @@ from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 
 from .base import flags_over_spec
+from sprite_gen.util.console import utf8_streams
 
 
 # Default safe margin is proportional to the cell dimension (floored), not a fixed
@@ -1160,6 +1161,7 @@ RETIRED_PP_MESSAGE = (
 
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     if getattr(args, "_retired_pp", False):

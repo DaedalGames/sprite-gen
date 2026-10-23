@@ -1272,6 +1272,124 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     return out, record
 
 
+# --- the seam bridge (docs/loop-repair.md section 2, "The seam bridge") -------------------------------------------
+
+# A loop that is not a walk — an idle, an action cut whole — is not read for its flow: an idle's blinks and half-shut
+# eyes leave the walk's flow, and the flow repair would make them again. Its wrap alone is read, on the frames as they
+# play (`loop.cell_features`, the seam gate's own thumbnail): the step from its last frame to its first against the mean
+# of the SURGE_AROUND steps either side of it. A wrap over the gate's limit there jumps, and the frames round it are made
+# again by RIFE between the frames either side, the fewest first.
+BRIDGE_WIDTHS = (1, 2, 4)  # frames made round the wrap: ceil(m / 2) before it and floor(m / 2) after
+BRIDGE_MIN_FRAMES = 2 * SURGE_AROUND + max(BRIDGE_WIDTHS) + 2  # the widest stretch and the steps either side, none shared
+
+
+def bridge_run(width: int, count: int) -> list[int]:
+    """The frames a bridge `width` frames wide makes round the wrap of a loop `count` frames long, in play order."""
+    return [*range(count - (width + 1) // 2, count), *range(width // 2)]
+
+
+def _ring(flat: np.ndarray) -> np.ndarray:
+    """A loop's steps as it plays, on its frames' features: `ring[k]` from frame k to the next, the last into the first."""
+    return np.abs(np.roll(flat, -1, axis=0) - flat).mean(axis=1)
+
+
+def _around(ring: np.ndarray, first: int, last: int) -> float:
+    """The mean of the SURGE_AROUND steps before step `first` and after step `last` of a loop's steps (`_ring`)."""
+    n = len(ring)
+    near = [(first - 1 - i) % n for i in range(SURGE_AROUND)] + [(last + 1 + i) % n for i in range(SURGE_AROUND)]
+    return max(float(ring[near].mean()), 1e-12)
+
+
+def seam_bridge(frames: list[Image.Image], interpolate: Interpolate | None, *, limit: float, hold: int | None,
+                facing: str = "right", skip: str | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+    """The seam bridge (docs/loop-repair.md section 2, "The seam bridge") of a loop that is not a walk.
+
+    The wrap jumps where its step is over `limit` (the seam gate's) times the mean of the SURGE_AROUND steps either side
+    of it, and over `loop.PIN_NOISE_MAX`, the re-render noise of a pinned first frame: a near-still loop moves so
+    little a step that its ratios are large where nothing shows. Read on the frames as they play, cropped to their union
+    box, on the seam gate's thumbnail (`loop.cell_features`). A loop drawn on twos or threes (`hold`, the cut's own,
+    `held.measure_cycle`) is not bridged: a frame made round the wrap would split a drawing, and a loop that changes its
+    drawing every other step reads the wrap against steps of nothing.
+
+    A wrap that jumps is bridged BRIDGE_WIDTHS frames at a time, the fewest first (`bridge_run`): each frame made by
+    `interpolate` between the frames either side of the run, at its own time (`between_time`), so the loop keeps its
+    length. Before a frame is made the straight line between the two (their thumbnails, mixed in steps of one) is read:
+    a run whose line leaves a step of the stretch from one to the other over `limit` times the mean of the steps
+    either side is not made, a reading RIFE's frames have not brought under it on any loop measured. A run is taken
+    where none of its frames carries an interpolation fault (`interpolation_quality.faults`, a ghost read where the
+    ghost screen reads the stretch and the steps either side) and, read again with them, every step of the stretch is
+    within `limit` times the mean of the steps either side; the first run taken ends the search. Where none is, the
+    loop is kept as filmed for the seam gate to judge. At most 1 + 2 + 4 frames are made.
+
+    `interpolate` None reads the wrap and stops at the first run to make (`unmade`). `skip` (why) reads nothing.
+    `facing` reads nothing here: it is recorded for the jump guard of `video-loop-compare` (`restoration.jump`)."""
+    from sprite_gen.video import loop as loop_mod  # loop imports this module
+
+    n = len(frames)
+    record: dict[str, Any] = {"reading": "seam", "limit": limit, "floor": loop_mod.PIN_NOISE_MAX, "around": SURGE_AROUND,
+                              "widths": list(BRIDGE_WIDTHS), "facing": facing, "replaced": [], "tries": [], "calls": 0}
+    if skip is not None:
+        record["skipped"] = skip
+        return frames, record
+    if n < BRIDGE_MIN_FRAMES:
+        record["skipped"] = f"a loop of {n} frames, under {BRIDGE_MIN_FRAMES}: no steps either side of the widest stretch"
+        return frames, record
+    box = loop_mod.cells_box(frames)
+    flat = loop_mod.cell_features(frames, box)
+    ring = _ring(flat)
+    wrap = float(ring[-1])
+    seam = wrap / _around(ring, n - 1, n - 1)
+    record.update(seam=round(seam, 4), wrap=round(wrap, 5), hold=hold)
+    if hold is not None and hold > 1:
+        record["skipped"] = "drawn on twos or threes: a frame made round the wrap would split a drawing"
+        return frames, record
+    if seam <= limit or wrap <= loop_mod.PIN_NOISE_MAX:
+        record["skipped"] = "the wrap reads as a step of the loop"
+        return frames, record
+    reads: bool | None = None
+    for width in BRIDGE_WIDTHS:
+        run = bridge_run(width, n)
+        a, b = (run[0] - 1) % n, (run[-1] + 1) % n
+        stretch = [(a + i) % n for i in range((b - a) % n)]
+        line = float(np.abs(flat[b] - flat[a]).mean()) / len(stretch) / _around(ring, stretch[0], stretch[-1])
+        tried: dict[str, Any] = {"width": width, "frames": run, "anchors": [a, b], "line": round(line, 4)}
+        record["tries"].append(tried)
+        if line > limit:
+            tried.update(outcome="rejected", rejected_for="line")
+            continue
+        if interpolate is None:
+            record["unmade"] = {k: tried[k] for k in ("frames", "anchors", "line")}
+            break
+        if reads is None:
+            # the ghost screen on the stretch and the steps either side, read once a frame is to be made
+            near = sorted({(a - SURGE_AROUND + i) % n for i in range(len(stretch) + 2 * SURGE_AROUND + 1)})
+            reads = bool(ghost_screen([frames[k] for k in near])["reads"])
+        out = list(frames)
+        made = []
+        for k in run:
+            t = between_time(a, k, b, n)
+            frame = interpolate(frames[a], frames[b], t)
+            record["calls"] += 1
+            if frame.mode != "RGBA" or frame.size != frames[k].size:
+                raise ValueError("repair interpolator must return an RGBA frame of the original size")
+            measure = {**smear(frame, frames[a], frames[b]), "outline_shift": outline_shift(frame, frames[a], frames[b]),
+                       "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, frames[a], frames[b], t)}
+            made.append({"frame": k, "t": round(t, 4), "proposal": measure, "look": looks(measure),
+                         "faults": faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"])})
+            out[k] = frame
+        after_ring = _ring(loop_mod.cell_features(out, box))
+        after = float(after_ring[stretch].max()) / _around(after_ring, stretch[0], stretch[-1])
+        wrong = sorted({f for m in made for f in m["faults"]})
+        tried.update(made=made, faults=wrong, look=sorted({w for m in made for w in m["look"]}), after=round(after, 4))
+        if wrong or after > limit:
+            tried.update(outcome="rejected", rejected_for="fault" if wrong else "seam")
+            continue
+        tried["outcome"] = "accepted"
+        record.update(replaced=run, width=width, seam_after=tried["after"])
+        return out, record
+    return frames, record
+
+
 # --- the jolt index (docs/loop-repair.md section 3) ------------------------------------------
 
 # Reference bounds, at the edge of what was kept on the 2026-10-03 takes (section 3): nothing kept

@@ -21,7 +21,8 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.spec.runio import atomic_write_text
-from sprite_gen.video import evidence, follow, repair, rife
+from sprite_gen.video import evidence, repair, rife, sway
+from sprite_gen.video import loop as loop_mod
 from sprite_gen.video.interpolation_quality import faults
 
 METRIC_VERSION = "same-sample-defects-v1"
@@ -134,7 +135,7 @@ class Loop:
         return {"artifacts": self.artifacts, "frames": len(self.frames), "cell": list(self.frames[0].size),
                 "timing": {"delay_ms": self.delay, "duration_ms": self.delay * len(self.frames) if self.delay else None},
                 "source_cut": self.meta.get("source_cut"), "producer": self.source_report.get("producer"),
-                "gait": self.source_report.get("gait"), "follow": "follow" in self.meta,
+                "gait": self.source_report.get("gait"), "follow": loop_mod.sway_recorded(self.meta),
                 "pixels_sha256": evidence.digest(b"".join(f.tobytes() for f in self.frames))}
 
 
@@ -147,7 +148,7 @@ def _measure(loop: Loop) -> dict[str, Any]:
     quality = [rife.smear(f, frames[k - 1], frames[(k + 1) % len(frames)]) for k, f in enumerate(frames)]
     body: dict[str, Any]
     try:
-        y, x, height, worn = follow.body_motion(frames)
+        y, x, height, worn = sway.body_motion(frames)
         body = {"x_px": x.tolist(), "y_px": y.tolist(), "height_px": height, "worn_px": worn}
     except ValueError as exc:
         body = {"unknown": str(exc)}

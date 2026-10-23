@@ -152,7 +152,7 @@ def test_scripts_wrappers_reexport_their_package_module() -> None:
         f"m = runpy.run_path({str(ROOT / 'scripts' / 'serve_curation.py')!r});"
         "sys.exit(0 if callable(m.get('main')) and callable(m.get('build_run_state')) else 1)"
     )
-    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, encoding="utf-8")
 
     assert proc.returncode == 0, f"scripts/serve_curation.py stopped re-exporting the impl:\n{proc.stderr}"
     # That the wrapper also runs the entrypoint (`python scripts/serve_curation.py` is a

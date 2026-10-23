@@ -4,6 +4,7 @@
 //
 // 호흡은 프레임 선택(깜빡임)과 직교하는 변조 레이어다 (maintainer 확정 2026-07-18).
 // truth = entries[state].breathe = {depth, breaths, lag, rigid_row, anatomy} | null.
+// `mode: "smooth"` 줄은 미러하지 않는다 — breatheComposite 가 거부한다 (아래).
 //
 // **검출은 여기서 하지 않는다** (maintainer 결정 2026-07-25 b안). 목 병목·대칭 눈쌍·부속
 // 판정은 서버(`sprite_gen/anatomy.py`)가 GET /api/breathe-anatomy 로 한 번 돌려
@@ -239,6 +240,13 @@ function breatheComposite(base, cfg, phase) {
   out.height = h;
   const ctx = out.getContext("2d");
   ctx.imageSmoothingEnabled = false;
+  // smooth 줄은 미러가 없다 — 쌍선형 사잇값은 브라우저와 파이썬의 부동소수가 같은 바이트를
+  // 낸다고 보장할 수 없다. pixel 워프로 그리면 굽기와 다른 숨을 보여 주므로 거부한다
+  // (미리보기는 원본과 알림, 영상 내보내기는 중단). 결과는 compose 나 `sprite-gen breathe` 로 본다.
+  if (cfg && cfg.mode === "smooth") {
+    throw new BreatheRefused(
+      "smooth 줄은 큐레이터가 따라 그리지 않는다 — 결과는 compose(GIF·아틀라스)나 `sprite-gen breathe` 로 본다.");
+  }
   const anat = cfg && cfg.anatomy;
   // `rigid_row` 는 사람의 의도(입력)이고 `anatomy` 는 거기서 파생된 캐시다. 굽기는 둘이
   // 어긋나면 재검출해 의도를 따르는데(`resolve_anatomy` 의 stale_override), 미러는 검출을

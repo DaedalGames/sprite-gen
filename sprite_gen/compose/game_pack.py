@@ -26,6 +26,7 @@ from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, STRETCHES, con
 from sprite_gen._deps import np
 from sprite_gen.spec.assets import finite, load_asset, load_asset_states
 from sprite_gen.util.resample import resize_cell
+from sprite_gen.util.console import utf8_streams
 
 MAX_PAGE_SIZE = 4096
 MAX_BYTES = 50_000_000
@@ -561,6 +562,7 @@ def run(**kwargs):
 
 
 def main():
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args()))

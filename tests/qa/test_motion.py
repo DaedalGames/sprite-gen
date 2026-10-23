@@ -235,7 +235,7 @@ def test_module_entrypoint_publishes_report_and_preserves_sources(tmp_path):
         [sys.executable, "-m", "sprite_gen.qa.motion", "--source", str(source),
          "--contacts", "0:4", "--foot-box", "8,25,34,12", "--fps", "5",
          "--facing", "right", "--out", str(output)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, encoding="utf-8", check=False,
     )
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())

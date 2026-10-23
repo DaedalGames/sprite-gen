@@ -10,6 +10,8 @@
 # Run it from a clean clone of the commit being measured, on x86-64 Linux with:
 #   - Python 3.14 (`python3.14` on PATH, or named by SPRITE_GEN_LANE_PYTHON),
 #   - ffmpeg, and img2webp from libwebp >= 1.5 (its `-exact` flag),
+#   - Node.js (`node` on PATH), which runs the curator's JavaScript in tests/effects/test_breathe_*.py
+#     (not needed by `--rife-only`),
 #   - a Vulkan loader with a CPU driver (Mesa lavapipe is enough).
 # The host's tools are not installed by this script: a missing one ends the run by name. The
 # environment it creates lives in the clone (.venv, ignored), as the quickstart's does.
@@ -95,6 +97,8 @@ command -v img2webp >/dev/null || fail "img2webp (libwebp >= 1.5) is not on PATH
 # their whole input (no `grep -q`): under pipefail an early-exiting grep kills the writer with
 # SIGPIPE and the pipeline reads as a failure.
 img2webp -h 2>&1 | grep -- -exact >/dev/null || fail "img2webp has no -exact flag; libwebp must be 1.5 or newer"
+# Without node the curator's JavaScript tests skip, which no run of this lane would measure.
+[ "$rife_only" = 1 ] || command -v node >/dev/null || fail "node (Node.js) is not on PATH; the curator's JavaScript tests run it"
 /sbin/ldconfig -p | grep 'libvulkan\.so\.1' >/dev/null || fail "no Vulkan loader (libvulkan.so.1)"
 git diff --quiet && git diff --cached --quiet || fail "the checkout has uncommitted changes"
 [ ! -e .venv ] || fail ".venv already exists; run from a fresh clone"
@@ -109,6 +113,7 @@ fi
 sha=$(git rev-parse HEAD)
 echo "commit $sha"
 echo "$("$PYTHON" --version), $(ffmpeg -version | head -1 | cut -d' ' -f1-3)"
+[ "$rife_only" = 1 ] || echo "node $(node --version)"
 
 step "install (clean environment, as the quickstart does)"
 "$PYTHON" -m venv .venv

@@ -79,7 +79,7 @@ def _run(payload, tmp_path):
     src = tmp_path / "in.json"
     src.write_text(json.dumps(payload), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(harness), str(CURATOR), str(src)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     return json.loads(Path(payload["out"]).read_text(encoding="utf-8"))
 
