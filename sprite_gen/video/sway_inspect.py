@@ -57,6 +57,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.effects import breathe as breathe_mod
 from sprite_gen.spec.runio import atomic_write_set
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import sway
@@ -107,10 +108,11 @@ def _engine_version() -> str:
         return "unknown"
 
 
-def policy() -> dict[str, Any]:
-    """The way the motion is read and a region moved: its name and the numbers it is fixed by; the way a reading
-    is carried from a cut (`--read-on`) and a floor kept (`--stretch-floor`), by name."""
-    return {"name": sway.POLICY, "harmonics": sway.HARMONICS, "alpha_solid": sway.ALPHA_SOLID,
+def policy(ask: sway.Ask) -> dict[str, Any]:
+    """The way the motion is read and a region moved: its name (by the drive: the body's motion or the breath) and the
+    numbers it is fixed by; the way a reading is carried from a cut (`--read-on`) and a floor kept (`--stretch-floor`),
+    by name."""
+    return {"name": ask.policy, "harmonics": sway.HARMONICS, "alpha_solid": sway.ALPHA_SOLID,
             "worn": [sway.WORN_FROM, sway.WORN_TO], "gain_measured": sway.GAIN_MEASURED, "gain_step": sway.GAIN_STEP,
             "weight": "cos2", "transport": sway.TRANSPORT_POLICY, "stretch_floor": sway.STRETCH_POLICY}
 
@@ -119,15 +121,17 @@ def _degrees(slope: float) -> float:
     return round(math.degrees(math.atan(slope)), DEGREES)
 
 
-def _weight_and_gradient(x: np.ndarray, y: np.ndarray, ellipse: tuple[float, float, float, float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """A region's weight at points (x, y) — cos² of the ellipse's own radius, 0 at its rim and outside — and the
-    weight's gradient there, across and down."""
-    cx, cy, rx, ry = ellipse
+def _weight_and_gradient(x: np.ndarray, y: np.ndarray, ellipse: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A region's weight at points (x, y) — cos² of the ellipse's own radius, 1 over its flat share where it has one,
+    0 at its rim and outside (`sway.region_weight`) — and the weight's gradient there, across and down."""
+    cx, cy, rx, ry = ellipse[:4]
+    flat = sway.flat_of(ellipse)
     u, v = (x - cx) / rx, (y - cy) / ry
     r = np.hypot(u, v)
     inside = r < 1
-    weight = np.where(inside, np.cos(r * math.pi / 2) ** 2, 0.0)
-    slope = np.where(inside & (r > 0), -(math.pi / 2) * np.sin(math.pi * r) / np.where(r > 0, r, 1.0), 0.0)
+    weight = breathe_mod.flat_cos2(r, flat)
+    falling = r if flat == 0 else np.clip((r - flat) / (1 - flat), 0.0, None)  # the way left, from the flat share to the rim
+    slope = np.where(inside & (falling > 0), -(math.pi / 2) * np.sin(math.pi * falling) / (1 - flat) / np.where(r > 0, r, 1.0), 0.0)
     return weight, slope * u / rx, slope * v / ry
 
 
@@ -255,14 +259,17 @@ def _png(board: np.ndarray) -> bytes:
     return data.getvalue()
 
 
-def inspect_loop(loop_dir: Path, regions: list[tuple[float, float, float, float]], out_dir: Path, *,
-                 gain: float = sway.GAIN_DEFAULT, freq: float = sway.FREQ_DEFAULT, zeta: float = sway.ZETA_DEFAULT,
+def inspect_loop(loop_dir: Path, regions: list[tuple[float, ...]], out_dir: Path, *,
+                 gain: float | None = None, freq: float | None = None, zeta: float | None = None,
                  on_fold: str = "refuse", scale: int = SCALE_DEFAULT, columns: int = COLUMNS_DEFAULT,
-                 read_on: str | None = None, stretch_floor: float | None = None, verb: str = VERB) -> dict[str, Any]:
+                 read_on: str | None = None, stretch_floor: float | None = None, breathe: Path | None = None,
+                 lag: float | None = None, gain_across: float | None = None, verb: str = VERB) -> dict[str, Any]:
     """The record of what `video-sway` asked the same way does to the loop, written with its two boards into
     `out_dir`. The loop directory is read and not written."""
     request = sway.read_request(loop_dir, regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, verb=verb,
-                                read_on=read_on, stretch_floor=stretch_floor)
+                                read_on=read_on, stretch_floor=stretch_floor, breathe=breathe, lag=lag,
+                                gain_across=gain_across)
+    ask = request.ask
     out_dir = out_dir.expanduser().resolve()
     if out_dir == request.loop_dir or request.loop_dir in out_dir.parents:
         raise SystemExit(f"{verb}: --out-dir {out_dir} is in the loop directory; an inspection writes nothing there")
@@ -284,16 +291,16 @@ def inspect_loop(loop_dir: Path, regions: list[tuple[float, float, float, float]
         solid = before[..., 3] >= sway.ALPHA_SOLID
         field = sway.move_field(xx, yy, answer.moves_in(k), carry)
         area = None if field is None else jacobian(field[1], field[2])
-        masks = [sway.region_weight(xx, yy, region, carry) > 0 for region in request.regions]
+        masks = [sway.region_weight(xx, yy, region, carry) > 0 for region in ask.regions]
         entries, offsets = [], []
-        for i, ((cx, cy, rx, ry), radius, g, hold, mask) in enumerate(zip(request.regions, answer.radii, answer.gains,
-                                                                          answer.held, masks)):
+        for i, (region, radius, g, hold, mask) in enumerate(zip(ask.regions, answer.radii, answer.gains, answer.held, masks)):
+            cx, cy, rx, ry, *flat = region
             dx, dy = (0.0, 0.0) if hold else (float(answer.moves[g][0][k]), float(answer.moves[g][1][k]))
             offsets.append((dx, dy))
             least, at = _least(area, mask)
             bend = sway.fold_ratio(math.hypot(dx, dy), radius)  # the move's steepest slope: G
             entries.append({
-                "index": i, "ellipse": [round(cx + float(carry[0]), 6), round(cy + float(carry[1]), 6), rx, ry],
+                "index": i, "ellipse": [round(cx + float(carry[0]), 6), round(cy + float(carry[1]), 6), rx, ry, *flat],
                 "offset_px": [round(dx, PLACES) + 0.0, round(dy, PLACES) + 0.0], "reach_px": round(math.hypot(dx, dy), PLACES),
                 "fold_ratio": round(bend, PLACES),
                 "jacobian_min": round(least, PLACES), "jacobian_min_at": at,
@@ -329,10 +336,12 @@ def inspect_loop(loop_dir: Path, regions: list[tuple[float, float, float, float]
         "meta": {"file": request.meta_path.name, "sha256": _sha256(request.meta_bytes), "bytes": len(request.meta_bytes),
                  "cut_sha256": cut_sha256, "follow_recorded": loop_mod.sway_recorded(meta)},
         "cut": {"frames": n, "w": w, "h": h, "delay_ms": float(meta["delay_ms"])},
-        "regions": [list(region) for region in request.regions],
-        "settings": {"gain": request.gain, "on_fold": request.on_fold, "freq_hz": request.freq, "zeta": request.zeta,
-                     "read_on": request.read_on, "stretch_floor": request.stretch_floor},
-        "policy": policy(),
+        "regions": [list(region) for region in ask.regions],
+        "settings": {"gain": ask.gain, "on_fold": ask.on_fold, "freq_hz": ask.freq, "zeta": ask.zeta,
+                     "read_on": ask.read_on, "stretch_floor": ask.stretch_floor}
+                    | ({} if ask.gain_across is None else {"gain_across": ask.gain_across})
+                    | ({} if ask.breath is None else {"breathe_sha256": ask.breath.sha256, "lag": ask.breath.lag}),
+        "policy": policy(ask),
         "engine": {"name": "sprite-gen", "version": _engine_version()},
     }
     input_id = _sha256(_canonical({
@@ -359,7 +368,7 @@ def inspect_loop(loop_dir: Path, regions: list[tuple[float, float, float, float]
             "bend": max(cell["regions"][i]["bend"] for cell in cells), "bend_deg": max(cell["regions"][i]["bend_deg"] for cell in cells),
             "changed_px": sum(cell["regions"][i]["changed_px"] for cell in cells),
             "ring": list(RINGS[i % len(RINGS)]),
-        } for i, (region, radius, g, hold) in enumerate(zip(request.regions, answer.radii, answer.gains, answer.held))],
+        } for i, (region, radius, g, hold) in enumerate(zip(ask.regions, answer.radii, answer.gains, answer.held))],
         "seams": [pairs[key] for key in sorted(pairs)],
         "cells": cells,
         "boards": {
@@ -389,10 +398,12 @@ def run(**kwargs: object) -> int:
     verb = str(kwargs.get("verb") or VERB)
     out_dir = Path(str(kwargs["out_dir"]))
     record = inspect_loop(Path(str(kwargs["loop_dir"])), list(kwargs["region"]), out_dir,  # type: ignore[arg-type]
-                          gain=float(kwargs.get("gain", sway.GAIN_DEFAULT)), freq=float(kwargs.get("freq", sway.FREQ_DEFAULT)),  # type: ignore[arg-type]
-                          zeta=float(kwargs.get("zeta", sway.ZETA_DEFAULT)), on_fold=str(kwargs.get("on_fold") or "refuse"),  # type: ignore[arg-type]
+                          gain=kwargs.get("gain"), freq=kwargs.get("freq"), zeta=kwargs.get("zeta"),  # type: ignore[arg-type]
+                          on_fold=str(kwargs.get("on_fold") or "refuse"),
                           scale=int(kwargs.get("scale", SCALE_DEFAULT)), columns=int(kwargs.get("columns", COLUMNS_DEFAULT)),  # type: ignore[call-overload]
-                          read_on=kwargs.get("read_on"), stretch_floor=kwargs.get("stretch_floor"), verb=verb)  # type: ignore[arg-type]
+                          read_on=kwargs.get("read_on"), stretch_floor=kwargs.get("stretch_floor"),  # type: ignore[arg-type]
+                          breathe=kwargs.get("breathe"), lag=kwargs.get("lag"), gain_across=kwargs.get("gain_across"),  # type: ignore[arg-type]
+                          verb=verb)
     for note in sway.fold_notes(record["follow"], verb):
         print(note, file=sys.stderr)
     out_dir = out_dir.expanduser().resolve()

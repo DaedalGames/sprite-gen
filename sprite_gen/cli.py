@@ -382,7 +382,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         video_align.run,
     ),
     "video-sway": (
-        "The Sway layer: a soft part of a looping body sways with the body's motion, an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align). Old name video-follow, still run.",
+        "The Sway layer: a soft part of a looping body sways with the body's motion, an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align), or of a cycle's frames at their own size (--frames, --out); on the breath, late behind the Breathe layer's chest (--breathe). Old name video-follow, still run.",
         video_sway.add_arguments,
         video_sway.run,
     ),

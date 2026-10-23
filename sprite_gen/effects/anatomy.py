@@ -94,6 +94,15 @@ class Anatomy:
                 "face": list(self.face) if self.face else None,
                 "warnings": list(self.warnings)}
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Anatomy":
+        """`as_dict` 가 쓴 한 벌을 다시 읽는다 (breathe.json 의 resolved.anatomy) — 잰 자리(`origin`, `neck_span`)는 실리지
+        않으니 없다."""
+        keys = ("width", "height", "axis_x", "neck_row", "neck_source", "rigid_row", "rigid_source", "basis_row",
+                "torso_half", "max_half", "torso_source")
+        return cls(**{k: data[k] for k in keys}, face=tuple(data["face"]) if data.get("face") else None,
+                   warnings=tuple(data.get("warnings") or ()))
+
 
 # ── 실루엣 ──────────────────────────────────────────────────────────
 
