@@ -13,6 +13,10 @@
   4. 내놓다가 못 끝내면 옛 런은 한 바이트도 바뀌지 않고, 이 실행의 임시 폴더만 치운다
   5. out 이 빈 폴더로 가는 링크면 링크가 가리키는 자리에 내놓고 링크는 그대로 둔다
   6. 내놓은 런은 런 폴더의 이름을 단다 — 캐릭터 id 와 매니페스트의 run_dir 은 임시 폴더가 아니라 런 폴더다
+  7. 입력 경로가 지나는 것도 입력이다 — 운영체제처럼 한 칸씩 따라가며 찾아보는 항목(링크, 뒤의 `..` 로 다시
+     나오는 폴더)이 out 안에 있으면 `--force` 여도 만들기 전에 그 항목을 대며 거절한다. 거절하지 않은 실행은 어떤
+     입력 경로도 끊거나 바꾸지 않고 런 폴더 밖을 건드리지 않는다. 고리 링크는 문구로 거절하고, 락 이름 자리의
+     링크는 따라가지 않고 거절한다
 """
 
 from __future__ import annotations
@@ -21,7 +25,9 @@ import json
 import os
 import pathlib
 import re
+import time
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from PIL import Image
@@ -342,3 +348,277 @@ def test_a_run_is_named_after_its_run_dir_not_its_staging_folder(tmp_path, kind)
     manifest = json.loads((run / "frames" / "frames-manifest.json").read_text(encoding="utf-8"))
     assert request["character"]["id"] == "hero-curator", "임시 폴더 이름이 캐릭터 id 가 됐다"
     assert manifest["run_dir"] == str(run.resolve()), "매니페스트가 지워진 임시 폴더를 가리킨다"
+
+
+# ── 7. 입력 경로가 지나는 것도 입력이다 ─────────────────────────────────
+# --force 는 out 안의 항목을 이름째 지운다 — 링크는 링크째로. 입력 경로가 out 안의 링크나 폴더를 지나면 그 경로가
+# 끊긴다. 배치마다 단언은 하나다: 만들기 전에 거절했거나, 모든 입력 경로가 같은 파일·폴더·바이트로 열리고 런 폴더
+# 밖이 그대로다. 배치 이름(N1…W1)은 진단 행렬(dispatch eve-20261023-120717)의 것이다.
+
+class Bed(NamedTuple):
+    argv: list[str]
+    reads: list[Path]          # 입력 경로 — 받은 그대로, import 가 여는 것 전부
+    cwd: Path | None = None
+
+
+def _bed(root: Path) -> tuple[Path, Path, Path]:
+    """밖 원본 `external/original.png`, --force 가 갈아 끼울 옛 런 `run`, 빈 `incoming`."""
+    ext, run, inc = root / "external", root / "run", root / "incoming"
+    ext.mkdir()
+    _cell(0).save(ext / "original.png")
+    _prior(run)
+    inc.mkdir()
+    return ext, run, inc
+
+
+def _aged(path: Path) -> None:
+    """한 시간 전에 바뀐 파일 — 락으로 읽히면 주인을 확인할 수 없는 오래된 락이라 회수 대상이다."""
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+
+
+def _pngs_dir_is_a_link_in_out(root: Path) -> Bed:                    # run/input -> external/
+    ext, run, _ = _bed(root)
+    given = run / "input"
+    given.symlink_to(ext, target_is_directory=True)
+    return Bed(["--pngs-dir", str(given), "--out-dir", str(run)], [given, given / "original.png"])
+
+
+def _atlas_is_a_link_in_out(root: Path) -> Bed:                       # run/input.png -> external/original.png
+    ext, run, _ = _bed(root)
+    given = run / "input.png"
+    given.symlink_to(ext / "original.png")
+    return Bed(["--atlas", str(given), "--grid", "1x1", "--out-dir", str(run)], [given])
+
+
+def _frame_through_a_link_in_out(root: Path) -> Bed:                  # incoming/1.png -> run/hop.png -> external/original.png
+    ext, run, inc = _bed(root)
+    (run / "hop.png").symlink_to(ext / "original.png")
+    (inc / "1.png").symlink_to(run / "hop.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _group_through_a_link_in_out(root: Path) -> Bed:                  # incoming/walk -> run/hop -> external/
+    ext, run, inc = _bed(root)
+    (run / "hop").symlink_to(ext, target_is_directory=True)
+    (inc / "walk").symlink_to(run / "hop", target_is_directory=True)
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "walk", inc / "walk" / "original.png"])
+
+
+def _frame_through_three_links_one_in_out(root: Path) -> Bed:         # 1.png -> ../mid/1.png -> ../run/hop.png -> ../external/original.png
+    _, run, inc = _bed(root)
+    (run / "hop.png").symlink_to("../external/original.png")
+    (root / "mid").mkdir()
+    (root / "mid" / "1.png").symlink_to("../run/hop.png")
+    (inc / "1.png").symlink_to("../mid/1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _frame_through_a_folder_link_in_out(root: Path) -> Bed:           # 1.png -> ../run/hopdir/original.png, run/hopdir -> ../external
+    _, run, inc = _bed(root)
+    (run / "hopdir").symlink_to("../external", target_is_directory=True)
+    (inc / "1.png").symlink_to("../run/hopdir/original.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _frame_through_a_link_in_out_spelt_in_capitals(root: Path) -> Bed:  # 1.png -> ../RUN/hop.png
+    _, run, inc = _bed(root)
+    if not (root / "RUN").exists():
+        pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 폴더다")
+    (run / "hop.png").symlink_to("../external/original.png")
+    (inc / "1.png").symlink_to("../RUN/hop.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _base_through_a_link_in_out(root: Path) -> Bed:                   # _base -> ../run/hopbase -> ../external/base
+    ext, run, inc = _bed(root)
+    (ext / "base").mkdir()
+    _cell(1).save(ext / "base" / "identity.png")
+    (run / "hopbase").symlink_to("../external/base", target_is_directory=True)
+    (inc / "_base").symlink_to("../run/hopbase", target_is_directory=True)
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png", inc / "_base" / "identity.png"])
+
+
+def _refs_through_a_link_in_out(root: Path) -> Bed:                   # _refs -> ../run/hopr -> ../external/refs
+    ext, run, inc = _bed(root)
+    (ext / "refs").mkdir()
+    _cell(1).save(ext / "refs" / "anchor-a.png")
+    (run / "hopr").symlink_to("../external/refs", target_is_directory=True)
+    (inc / "_refs").symlink_to("../run/hopr", target_is_directory=True)
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png", inc / "_refs" / "anchor-a.png"])
+
+
+def _meta_through_a_link_in_out(root: Path) -> Bed:                   # meta.json -> ../run/hop.json -> ../external/meta.json
+    ext, run, inc = _bed(root)
+    (ext / "meta.json").write_text('{"items": {}}\n', encoding="utf-8")
+    (run / "hop.json").symlink_to("../external/meta.json")
+    (inc / "meta.json").symlink_to("../run/hop.json")
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png", inc / "meta.json"])
+
+
+def _frame_link_dips_into_a_run_folder(root: Path) -> Bed:            # 1.png -> ../run/sub/../../external/original.png
+    _, run, inc = _bed(root)
+    (run / "sub").mkdir()
+    (inc / "1.png").symlink_to("../run/sub/../../external/original.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _atlas_path_dips_into_a_run_folder(root: Path) -> Bed:            # --atlas run/sub/../../external/original.png
+    _, run, _ = _bed(root)
+    (run / "sub").mkdir()
+    given = Path(f"{run}/sub/../../external/original.png")
+    return Bed(["--atlas", str(given), "--grid", "1x1", "--out-dir", str(run)], [given])
+
+
+def _group_link_dips_into_a_run_folder(root: Path) -> Bed:            # walk -> ../run/sub/../../external
+    _, run, inc = _bed(root)
+    (run / "sub").mkdir()
+    (inc / "walk").symlink_to("../run/sub/../../external", target_is_directory=True)
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "walk", inc / "walk" / "original.png"])
+
+
+def _pngs_dir_passes_through_the_run_dir(root: Path) -> Bed:          # run/../incoming — 런 폴더는 내놓는 동안에도 그 자리다
+    _, run, inc = _bed(root)
+    _cell(1).save(inc / "1.png")
+    given = Path(f"{run}/../incoming")
+    return Bed(["--pngs-dir", str(given), "--out-dir", str(run)], [given, given / "1.png"])
+
+
+def _relative_from_inside_the_run_dir(root: Path) -> Bed:             # cd run; --pngs-dir ../incoming --out-dir .
+    _, run, inc = _bed(root)
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", "../incoming", "--out-dir", "."], [inc, inc / "1.png"], cwd=run)
+
+
+def _frame_is_a_hard_link_of_a_run_file(root: Path) -> Bed:           # 이름이 둘인 파일은 out 쪽 이름이 지워져도 열린다
+    _, run, inc = _bed(root)
+    _cell(1).save(run / "x.png")
+    os.link(run / "x.png", inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _plain_frames(root: Path) -> Bed:
+    _, run, inc = _bed(root)
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _frame_link_loop(root: Path) -> Bed:                              # 1.png -> 1.png
+    _, run, inc = _bed(root)
+    (inc / "1.png").symlink_to("1.png")
+    _cell(1).save(inc / "2.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "2.png"])
+
+
+def _pngs_dir_link_loop_without_out_dir(root: Path) -> Bed:           # loop -> loop, out 은 입력 옆 기본 자리
+    _bed(root)
+    (root / "loop").symlink_to("loop", target_is_directory=True)
+    return Bed(["--pngs-dir", str(root / "loop")], [])
+
+
+def _lock_name_links_to_the_atlas(root: Path) -> Bed:                 # run/.sprite-gen.lock -> ../external/original.png (한 시간 전)
+    ext, run, _ = _bed(root)
+    _aged(ext / "original.png")
+    (run / ".sprite-gen.lock").symlink_to("../external/original.png")
+    return Bed(["--atlas", str(ext / "original.png"), "--grid", "1x1", "--out-dir", str(run)], [ext / "original.png"])
+
+
+def _lock_name_links_to_a_file_outside(root: Path) -> Bed:            # run/.sprite-gen.lock -> ../external/keep.txt (한 시간 전, 입력 아님)
+    ext, run, inc = _bed(root)
+    (ext / "keep.txt").write_bytes(b"not the run's\n")
+    _aged(ext / "keep.txt")
+    (run / ".sprite-gen.lock").symlink_to("../external/keep.txt")
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _lock_name_links_to_a_fresh_file(root: Path) -> Bed:              # run/.sprite-gen.lock -> ../external/keep.txt (방금)
+    ext, run, inc = _bed(root)
+    (ext / "keep.txt").write_bytes(b"not the run's\n")
+    (run / ".sprite-gen.lock").symlink_to("../external/keep.txt")
+    _cell(1).save(inc / "1.png")
+    return Bed(["--pngs-dir", str(inc), "--out-dir", str(run)], [inc, inc / "1.png"])
+
+
+def _rwlock_sidecar_links_to_the_atlas(root: Path) -> Bed:            # .run.sg-rwlock -> external/original.png — 열기만 하고 쓰지 않는다
+    ext, run, _ = _bed(root)
+    (root / RWLOCK).symlink_to("external/original.png")
+    return Bed(["--atlas", str(ext / "original.png"), "--grid", "1x1", "--out-dir", str(run)], [ext / "original.png"])
+
+
+SEP = r"[/\\]"
+
+
+def _through(flag: str, *names: str) -> str:
+    """거절 문구 — `flag` 가 out 안의 항목(`names`: 배치 폴더부터의 이름)을 지난다."""
+    return re.escape(flag) + " goes through .*" + SEP.join(map(re.escape, names)) + ", inside --out-dir"
+
+
+LOCK_REFUSED = "run" + SEP + re.escape(".sprite-gen.lock is not a lock file")
+
+# (배치, 만드는 함수, 거절 문구 — None 이면 거절 없이 돌아야 한다)
+PATHS = [
+    ("N1", _pngs_dir_is_a_link_in_out, _through("--pngs-dir", "run", "input")),
+    ("N2", _atlas_is_a_link_in_out, _through("--atlas", "run", "input.png")),
+    ("N3", _frame_through_a_link_in_out, _through("1.png in --pngs-dir", "run", "hop.png")),
+    ("N4", _group_through_a_link_in_out, _through("walk in --pngs-dir", "run", "hop")),
+    ("M1", _frame_through_three_links_one_in_out, _through("1.png in --pngs-dir", "run", "hop.png")),
+    ("M2", _frame_through_a_folder_link_in_out, _through("1.png in --pngs-dir", "run", "hopdir")),
+    ("M3", _frame_through_a_link_in_out_spelt_in_capitals, _through("1.png in --pngs-dir", "RUN", "hop.png")),
+    ("B1", _base_through_a_link_in_out, _through("_base in --pngs-dir", "run", "hopbase")),
+    ("R1", _refs_through_a_link_in_out, _through("_refs in --pngs-dir", "run", "hopr")),
+    ("J1", _meta_through_a_link_in_out, _through("meta.json in --pngs-dir", "run", "hop.json")),
+    ("D1", _frame_link_dips_into_a_run_folder, _through("1.png in --pngs-dir", "run", "sub")),
+    ("D2", _atlas_path_dips_into_a_run_folder, _through("--atlas", "run", "sub")),
+    ("D3", _group_link_dips_into_a_run_folder, _through("walk in --pngs-dir", "run", "sub")),
+    ("P1", _pngs_dir_passes_through_the_run_dir, None),
+    ("P2", _relative_from_inside_the_run_dir, None),
+    ("P3", _frame_is_a_hard_link_of_a_run_file, None),
+    ("C0", _plain_frames, None),
+    ("C1", _frame_link_loop, re.escape("1.png in --pngs-dir cannot be followed")),
+    ("C2", _pngs_dir_link_loop_without_out_dir, re.escape("--pngs-dir cannot be followed")),
+    ("L1", _lock_name_links_to_the_atlas, LOCK_REFUSED),
+    ("L2", _lock_name_links_to_a_file_outside, LOCK_REFUSED),
+    ("L3", _lock_name_links_to_a_fresh_file, LOCK_REFUSED),
+    ("W1", _rwlock_sidecar_links_to_the_atlas, None),
+]
+
+
+def _opens(path: Path) -> object:
+    """경로를 열면 닿는 것 — 같은 파일·폴더(장치·inode)와 그 바이트나 목록, 못 열면 그 까닭."""
+    try:
+        st = path.stat()
+        return st.st_dev, st.st_ino, sorted(os.listdir(path)) if path.is_dir() else path.read_bytes()
+    except OSError as exc:
+        return f"cannot open: {exc.strerror}"
+
+
+def _outside(root: Path, before: dict[str, object] | None = None) -> dict[str, object]:
+    """런 폴더(`run`) 밖 전부. `before` 에 없던 읽기·쓰기 락 사이드카(런이 옆에 두는 것)는 뺀다."""
+    got = {name: what for name, what in _tree(root).items() if name != "run" and not name.startswith("run/")}
+    if before is not None and RWLOCK not in before:
+        got.pop(RWLOCK, None)
+    return got
+
+
+@pytest.mark.parametrize("tag,layout,why", PATHS, ids=[f"{tag}-{layout.__name__.strip('_')}" for tag, layout, _ in PATHS])
+def test_force_never_breaks_an_input_path_or_touches_what_lies_outside_the_run_dir(tmp_path, monkeypatch, tag, layout, why) -> None:
+    bed = layout(tmp_path)
+    if bed.cwd is not None:
+        monkeypatch.chdir(bed.cwd)
+    whole, outside, opened = _tree(tmp_path), _outside(tmp_path), {path: _opens(path) for path in bed.reads}
+    try:
+        said = f"rc={_unpack(*bed.argv, '--force')}"
+    except SystemExit as refusal:
+        said = str(refusal)
+        assert _tree(tmp_path) == whole, f"{tag}: 거절했는데 무엇이 생기거나 바뀌었다 ({said})"
+    else:
+        assert {path: _opens(path) for path in bed.reads} == opened, f"{tag}: 입력 경로가 끊기거나 다른 것을 연다 ({said})"
+        assert _outside(tmp_path, outside) == outside, f"{tag}: 런 폴더 밖이 바뀌었다 ({said})"
+    if why:
+        assert re.search(why, said), f"{tag}: 그 항목을 대며 거절하지 않았다 ({said})"
+    else:
+        assert said == "rc=0" and (tmp_path / "run" / "sprite-request.json").is_file(), f"{tag}: 돌지 않았다 ({said})"
