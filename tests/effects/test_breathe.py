@@ -10,6 +10,8 @@
   6. 행당 변형 상한 초과는 조용히 깎지 않고 멈춘다
 """
 
+import re
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -532,6 +534,59 @@ def test_clipping_the_cell_raises_instead_of_cropping_the_head() -> None:
     with pytest.raises(SystemExit) as err:
         bake_breathe_sequence([tight] * 12, cfg)
     assert "셀 밖으로" in str(err.value)
+
+
+def _cut_bust(touch: bool = True) -> Image.Image:
+    """화면 왼쪽 변에 잘린 흉상 — 소매가 바깥 열을 38px 덮는다(`touch`). 몸통 축이 소매 쪽으로 끌려 있어
+    pixel 의 가로 늘임이 축 왼쪽을 밖으로 밀고, 소매가 셀 밖으로 나간다. 머리 위와 오른쪽에는 여백이 있다.
+    `touch=False` 면 소매가 변에서 1px 떨어져 있다 — 같은 밀림이지만 그림 자체의 테두리가 아니다."""
+    im = Image.new("RGBA", (120, 130), (0, 0, 0, 0))
+    px = im.load()
+
+    def fill(x0, y0, x1, y1, color):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                px[x, y] = color
+
+    fill(52, 8, 80, 40, (222, 184, 150, 255))                 # 머리
+    fill(60, 40, 72, 50, (222, 184, 150, 255))                # 목 (병목)
+    fill(34, 50, 98, 130, (170, 120, 96, 255))                # 몸통 — 화면 아래 변에 닿는다
+    fill(0 if touch else 1, 62, 34, 100, (90, 110, 170, 255))  # 소매 — 왼쪽 변
+    return im
+
+
+def _clip_refusal(src: Image.Image) -> str:
+    with pytest.raises(SystemExit) as err:
+        bake_breathe_sequence([src] * 12, dict(CFG))
+    return str(err.value)
+
+
+def test_a_clip_on_the_drawings_own_border_points_at_smooth() -> None:
+    """화면에 잘린 그림(큰 일러·영상 칸)을 pixel 이 거절할 때 — 거절은 그대로, 문구는 어느 변으로 몇 개가
+    나갔는지와, 그 변이 그림 자체의 테두리면(바깥 줄을 그 변 길이의 2 % 이상 덮으면, video-frames 와 같은
+    판정) smooth 를 말한다. 여백을 붙여 굽고 잘라 내는 우회는 밀려 나간 만큼을 조용히 잃는다.
+    smooth 는 같은 그림을 거절 없이 굽고 그 변을 그대로 둔다."""
+    src = _cut_bust()
+    message = _clip_refusal(src)
+    clipped = int(re.search(r"불투명 픽셀 (\d+)개가 잘린다", message).group(1))
+    assert f"왼쪽 변 밖 {clipped}" in message, message
+    assert "위 변 밖" not in message and "오른쪽 변 밖" not in message, message
+    assert "왼쪽 변 바깥 줄 38 px" in message, message
+    assert "--mode smooth" in message and "잘라 내지 마라" in message, message
+
+    smooth = state_breathe({"states": {"idle": {"breathe": {"mode": "smooth", "breaths": 1}}}}, "idle")
+    frames, _ = bake_breathe_sequence([src] * 12, smooth)
+    edge = [src.getpixel((0, y)) for y in range(src.height)]
+    for i, frame in enumerate(frames):
+        assert [frame.getpixel((0, y)) for y in range(frame.height)] == edge, f"{i}번 칸: 왼쪽 변이 움직였다"
+
+
+def test_a_clip_off_the_drawings_border_keeps_the_margin_advice() -> None:
+    """변에 닿지 않은 그림이 밀려 나가면 여백이 모자란 것이다 — smooth 를 권하지 않는다."""
+    message = _clip_refusal(_cut_bust(touch=False))
+    assert re.search(r"왼쪽 변 밖 \d+", message), message
+    assert "--mode smooth" not in message, message
+    assert "셀 여백을 늘리거나 depth 를 낮춰라" in message, message
 
 
 # ── 8. 얼굴이 몸통에 있는 실루엣 (목 없음) ─────────────────────────
