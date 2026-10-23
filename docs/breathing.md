@@ -18,6 +18,7 @@ smooth 모드의 고정 영역과 동작 방식은 다음과 같다.
 - 가슴은 목 아래 몸통의 `chest_y` 지점, 몸통 중심축에 위치한 원형 가중치(cos^2)를 중심으로 호흡한다. 가중치 너비는 몸통 반폭의 `chest_rx`배, 높이는 목 아래 몸통 높이의 `chest_ry`배다. 들숨 시 가슴 중심은 기준 행의 `depth`배만큼 상승하고, 가슴 타원 중심이 아닌 정점 P에서 바깥쪽으로 `depth_x`만큼 부풀어 오른다.
 - 목 바로 아래 중심축 양쪽에 위치한 원형 어깨 가중치 두 개는 가슴 상승량의 `shoulder`배만큼, 가슴보다 `shoulder_lag` 호흡 주기만큼 늦게 올라간다. 측정된 너비 안쪽의 목과 목과 어깨 사이의 칼라(collar)는 움직이지 않는다. 행 전체가 통째로 오르내리지 않는다.
 - 한 번의 호흡은 정지 상태에서 솟아오르는 형태다. 들숨이 호흡에서 차지하는 비율은 `inhale` 키로 정한다 (기본값 0.40, 따라서 기본적으로 들숨 40%, 날숨 60%). 다른 곳에서 만든 호흡은 이 키로 자신의 들숨 비율을 명시할 수 있다. 위상 0의 셀이 원본과 바이트 단위로 일치하므로 루프의 이음매와 루프 간 연결부가 온전히 유지된다. `breaths`는 1부터 8까지의 정수로 루프 길이에 정확히 맞춘다. 외부에서 호흡 타이밍을 맞추기 위해(예: 클립 내 큰 손 동작을 피하려는 경우) 각 들숨이 정점에 도달하는 셀 목록인 `breath_peaks`를 지정할 수 있다. 호흡 횟수는 정점의 개수가 되며, `breaths`를 함께 지정할 경우 일치해야 한다. 첫 셀은 정지 상태를 유지하고 루프는 정지 상태로 끝난다. 호흡은 셀 0, 두 정점 사이에서 날숨이 간격의 1 - inhale을 차지하고 다음 들숨이 inhale을 차지하는 지점(기본값에서는 60%와 40%), 루프 끝의 정지 상태로 구분된다.
+- 한 행은 루프 자체일 수도 있고, 어떤 루프에서 빠져나가거나 루프로 들어오는 짧은 구간(루프의 한 토막)일 수도 있다. `loop_cells`는 그 행이 호흡을 이어받는 루프의 셀 수이고 (2 이상의 정수), `start_cell`은 그 행이 시작하는 루프의 셀이다 (0 이상 loop_cells 미만의 정수, 기본값 0). 행의 셀 i는 루프의 셀 (start_cell + i) mod loop_cells의 위상을 같은 부동소수점 값 그대로 갖고, 박자(`breaths`, 또는 정점 셀이 그 루프의 셀인 `breath_peaks`)는 루프의 것이다. 따라서 행의 첫 셀이 반드시 정지 상태인 것은 아니다. `loop_cells`를 생략하거나 null로 두면 행은 자신의 셀 수를 가진 자기 자신의 루프이고, 두 키를 모두 생략하면 위상과 베이크는 이전과 바이트 단위로 동일하다. 정규화된 smooth 설정, 즉 `breathe.json`의 `config`에는 두 키가 항상 담기며, 생략하면 `start_cell: 0`과 `loop_cells: null`로 기록된다.
 
 몸이 한쪽으로 돌아간 경우 다음 키들을 조절한다.
 - `chest_tilt`: 가슴 가중치를 회전한다 (도 단위, 화면 기준 시계 방향).
@@ -46,11 +47,14 @@ smooth 모드의 고정 영역과 동작 방식은 다음과 같다.
 | `chest_x` | 0 | -1에서 1 | 몸통 중심축 기준 가슴 타원 중심 이동 (몸통 반폭 단위) |
 | `chest_flat` | 0 | 0에서 0.9 | 정점 P에서 가장자리까지 완전히 상승하는 구간 비율 |
 | `inhale` | 0.40 | 0.2에서 0.8 | 한 번의 호흡에서 들숨이 차지하는 비율. 들숨은 이 위상에서 정점에 이르고 나머지는 날숨이다 |
+| `loop_cells` | 행 자신의 셀 수 | 2 이상의 정수 | 행이 호흡을 이어받는 루프의 셀 수. 생략하면 행이 곧 자신의 루프다 |
+| `start_cell` | 0 | 0 이상 loop_cells 미만의 정수 | 행이 시작하는 루프의 셀. 행의 셀 i는 루프의 셀 (start_cell + i) mod loop_cells의 위상을 갖는다 |
 | `breaths` | - | 1에서 8 | 루프에 들어맞는 정수 호흡 횟수 |
 | `breath_peaks` | - | - | 각 들숨 정점 셀 목록 (외부 타이밍 조절용) |
 
 거부 조건은 다음과 같다.
-- 허용 범위를 벗어난 값은 무시되지 않고 거부된다. pixel 행에 smooth 전용 형상 키(`chest_y`, `chest_rx`, `chest_ry`, `shoulder`, `shoulder_lag`, `chest_tilt`, `chest_bias`, `chest_bias_y`, `chest_dir`, `chest_x`, `chest_flat`, `inhale`)나 `breath_peaks`를 지정해도 무시되지 않고 거부된다.
+- 허용 범위를 벗어난 값은 무시되지 않고 거부된다. pixel 행에 smooth 전용 형상 키(`chest_y`, `chest_rx`, `chest_ry`, `shoulder`, `shoulder_lag`, `chest_tilt`, `chest_bias`, `chest_bias_y`, `chest_dir`, `chest_x`, `chest_flat`, `inhale`)나 `breath_peaks`, 또는 역시 smooth 전용인 `start_cell`과 `loop_cells`를 지정해도 무시되지 않고 거부된다.
+- 루프의 한 토막에 대한 값도 조정하거나 감싸지 않고 거부한다. `start_cell`이 음수이거나 정수가 아닌 경우, `loop_cells`가 2 미만이거나 정수가 아닌 경우, `start_cell`이 `loop_cells` 이상인 경우, `loop_cells`를 생략한 채 `start_cell`이 행의 셀 수 이상인 경우(베이크 시점에 거부), 그리고 `breath_peaks`의 마지막 정점이 `loop_cells`의 끝에서 한 셀 이내인 경우가 그렇다.
 - 정점 P는 타원 내부에 머물러야 하므로, `chest_bias`와 `chest_bias_y`를 합쳐 반지름의 0.9를 초과하면 거부된다.
 - `breath_peaks`에 셀 0의 정점이 포함되거나, 정점이 증가하는 순서가 아니거나, 정점 간격이 2셀보다 가깝거나, 마지막 정점이 루프 끝에서 1셀 이내인 경우 거부된다. `breaths`가 함께 지정되었으나 정점 개수와 일치하지 않는 경우도 거부된다.
 - smooth 모드에 `lag`(pixel 모드의 진행파)를 지정하면 첫 셀을 움직이게 되므로 무시되지 않고 거부된다.
@@ -61,10 +65,16 @@ smooth 모드의 고정 영역과 동작 방식은 다음과 같다.
 비디오 루프 셀처럼 큐레이션 실행이 아닌 프레임 폴더를 처리할 때는 독립 명령어를 사용한다.
 
 ```bash
-sprite-gen breathe <frames> <out> [--mode pixel|smooth] [--depth D] [--depth-x D] [--breaths N] [--breath-peaks ...] [--lag L] [--rigid-row R] [--chest-y ...] [--chest-rx ...] [--chest-ry ...] [--shoulder ...] [--shoulder-lag ...] [--chest-tilt ...] [--chest-bias ...] [--chest-bias-y ...] [--chest-dir ...] [--chest-x ...] [--chest-flat ...] [--inhale S] [--avoid-region X0,Y0,X1,Y1 [--avoid-anchor X0,Y0,X1,Y1] [--fps F]]
+sprite-gen breathe <frames> <out> [--mode pixel|smooth] [--depth D] [--depth-x D] [--breaths N] [--breath-peaks ...] [--lag L] [--rigid-row R] [--chest-y ...] [--chest-rx ...] [--chest-ry ...] [--shoulder ...] [--shoulder-lag ...] [--chest-tilt ...] [--chest-bias ...] [--chest-bias-y ...] [--chest-dir ...] [--chest-x ...] [--chest-flat ...] [--inhale S] [--loop-cells N] [--start-cell K] [--reference FRAME.png] [--avoid-region X0,Y0,X1,Y1 [--avoid-anchor X0,Y0,X1,Y1] [--fps F]]
 ```
 
 `<frames>`는 파일 이름 순서대로 재생되는 PNG 프레임 폴더다. 사이드카와 동일한 검증과 베이크 처리를 거치므로 같은 값이면 동일한 바이트를 출력한다. 변환된 프레임들을 원본과 동일한 이름으로 저장하고, 적용된 설정과 위상 및 해부학 측정값을 담은 `breathe.json`을 새 폴더에 한 번에 작성한다. 심볼릭 링크를 추적하고 대소문자를 구분하지 않는 디스크의 서로 다른 표기를 동일하게 취급하는 실제 위치를 기준으로, `<out>`과 `<frames>`가 같은 폴더이거나 어느 한쪽이 다른 쪽 내부에 있는 경우 및 이미 존재하면서 비어 있지 않은 폴더는 아무것도 생성하거나 삭제하지 않고 거부하되 기존의 빈 폴더는 허용한다. `<frames>` 폴더에는 어떤 파일도 새로 쓰지 않으며, 프레임을 비롯한 기존 파일을 변경하거나 삭제하지 않는다. 결과물은 `<out>` 옆에 다른 폴더와 겹치지 않는 고유한 이름의 자체 임시 폴더에서 빌드한 뒤 한 번에 제자리로 이동하며, 작업을 완료하지 못했을 때도 오직 직접 만든 임시 폴더만 삭제하고 이전 작업의 잔여 폴더처럼 직접 만들지 않은 폴더는 그대로 둔다.
+
+`--reference FRAME.png`(모든 모드)를 주면 행의 해부학 측정값(머리 선, 가슴, 상승 높이, 프레임 안에서 해부학이 차지하는 위치)을 행의 첫 프레임 대신 그 프레임에서 측정한다. 프레임들과 같은 크기여야 하며 다르면 거부된다. 루프 세트의 첫 셀을 지정하면, 첫 프레임이 루프와 다른 토막(예: 머리를 든 상태로 시작하는 경우)도 루프의 해부학으로 베이크된다. 이때 `breathe.json`에는 그 파일의 `path`와 `sha256`을 담은 `reference`가 기록된다. 예를 들어 두 번 호흡하는 96셀 루프의 셀 40에서 시작하는, 루프에서 빠져나가는 토막은 다음과 같이 베이크한다.
+
+```bash
+sprite-gen breathe way-out/ way-out-breathed/ --mode smooth --breaths 2 --loop-cells 96 --start-cell 40 --reference loop/frame-000.png
+```
 
 손이 가슴 앞에서 크게 움직이는 idle에서는 들숨의 정점이 손의 상승과 겹치면 호흡이 손을 따라가거나 가슴이 손 아래로 가라앉는 것처럼 보인다. `--mode smooth --avoid-region X0,Y0,X1,Y1`은 손의 움직임을 피해 호흡 박자를 고른다.
 
@@ -73,7 +83,7 @@ sprite-gen breathe <frames> <out> [--mode pixel|smooth] [--depth D] [--depth-x D
 - 후보 호흡 횟수는 한 번의 호흡이 1.5초부터 4초가 되도록 고른다. 따라서 `--fps` 또는 비디오 루프 `cycle/` 폴더의 프레임 시간이 필요하다. 먼저 정점을 균등하게 둔다. 선택된 횟수의 각 들숨 정점은 최대 3셀까지 옮겨 볼 수 있다. 호흡이 3번 이하면 정점을 각각 옮기고, 더 많으면 모두 함께 옮긴다. 모든 후보는 그 행 자체의 `inhale` 곡선, 즉 베이크가 쓰는 것과 같은 `smooth_wave` 곡선으로 평가한다.
 - 점수는 호흡 곡선과 몸통 상승량의 상관에서 호흡 곡선과 손 자체의 상승량의 상관을 뺀 값이다. 각 들숨 정점의 앞뒤 2셀 안에서 가슴 상승량인 `lift x w`가 손 자체의 상승량보다 작지 않아야 한다. 조건을 만족하는 균등 후보 중 점수가 가장 높은 것을 고르며, 동점이면 호흡 횟수가 적은 것을 고른다. 정점을 옮긴 후보는 점수가 0.1보다 더 높을 때만 채택한다. 조건을 만족하는 후보가 없으면 조용히 박자를 고르지 않고 거부한다. 0.1의 차이와 기본 띠는 적은 수의 루프에서 정했으며, 루프가 늘면 다시 측정해야 한다.
 - 선택한 `breaths` 또는 `breath_peaks`는 사이드카 검사를 다시 거쳐 베이크된다. `breathe.json`의 `beat`에는 비율과 픽셀 단위의 사각형, 탐색 반경, 프레임 시간, 상승량, 셀별 손 자체의 상승량과 몸통 상승량, 선택 규칙의 수치가 기록된다. 모든 균등 후보의 호흡 횟수, 정점, 점수, 손과 몸통의 상관, `margin_px`, `keeps`와 가장 좋은 이동 정점 후보 및 `chosen`도 기록된다. `--avoid-region`이 없으면 이 과정은 실행되지 않고 `beat`도 쓰이지 않는다.
-- `--avoid-region`은 `--breaths` 또는 `--breath-peaks`와 함께 쓸 수 없고, `pixel` 모드에서도 거부된다. `--avoid-anchor`와 `--fps`는 `--avoid-region` 없이 쓸 수 없다. 프레임 시간이 없거나 사각형을 추적할 수 없어도 거부된다. 이 `breathe.json`을 읽는 스웨이(Sway) 레이어는 같은 박자로 움직이며 그 `inhale`도 따른다. 그 기록의 `drive`에는 선택된 `breaths` 또는 `breath_peaks`와 `inhale`이 담긴다.
+- `--avoid-region`은 `--breaths` 또는 `--breath-peaks`와 함께 쓸 수 없고, `pixel` 모드에서도 거부된다. `--loop-cells`나 `--start-cell`과도 함께 쓸 수 없다. 박자는 루프 전체의 프레임에서 고르는 것이고 토막은 자신이 속한 루프의 박자를 이어받으므로, 루프에서 박자를 고른 뒤 그 값을 토막에 넘긴다. `--avoid-anchor`와 `--fps`는 `--avoid-region` 없이 쓸 수 없다. 프레임 시간이 없거나 사각형을 추적할 수 없어도 거부된다. 이 `breathe.json`을 읽는 스웨이(Sway) 레이어는 같은 박자로 움직이며 그 `inhale`도 따른다. 그 기록의 `drive`에는 선택된 `breaths` 또는 `breath_peaks`와 `inhale`, 그리고 `start_cell`과 `loop_cells`가 담긴다.
 
 비디오 루프 셀 처리 예시는 다음과 같다.
 
