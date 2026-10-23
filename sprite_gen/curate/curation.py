@@ -238,13 +238,15 @@ BREATHE_SMOOTH_DEPTH_X = 0.028
 # 아래) 옮긴다 — 무게는 꼭대기에서 테두리까지 반직선으로 줄어 가까운 쪽이 짧고 돌아간 쪽이 길다.
 # chest_x: 가슴 중심을 몸통 축에서 옮김 (몸통 반폭 비율 — 긴 머리처럼 한쪽으로 쏠린 것이 축을 끌 때),
 # chest_flat: 꼭대기 둘레에서 전량으로 오르는 몫 (꼭대기에서 테두리까지의 비율).
+# inhale: 한 호흡에서 들숨이 차지하는 몫 — 들숨 꼭대기가 이 위상에 오고 나머지가 날숨이다 (기본은 들숨이 짧다).
+# 바깥에서 만든 숨의 기록(breathe.json)도 이 값으로 제 곡선을 말한다.
 BREATHE_SMOOTH_SHAPE = {"chest_y": 0.31, "chest_rx": 0.83, "chest_ry": 0.28, "shoulder": 0.5, "shoulder_lag": 0.08,
                         "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0, "chest_x": 0.0, "chest_bias_y": 0.0,
-                        "chest_flat": 0.0}
+                        "chest_flat": 0.0, "inhale": 0.40}
 BREATHE_SMOOTH_SHAPE_RANGES = {"chest_y": (0.05, 0.95), "chest_rx": (0.2, 3.0), "chest_ry": (0.05, 1.5),
                                "shoulder": (0.0, 1.5), "shoulder_lag": (0.0, 0.3), "chest_tilt": (-60.0, 60.0),
                                "chest_bias": (-0.9, 0.9), "chest_dir": (-90.0, 90.0), "chest_x": (-1.0, 1.0),
-                               "chest_bias_y": (-0.9, 0.9), "chest_flat": (0.0, 0.9)}
+                               "chest_bias_y": (-0.9, 0.9), "chest_flat": (0.0, 0.9), "inhale": (0.2, 0.8)}
 # 꼭대기는 타원 안쪽이어야 한다 — 테두리에 닿으면 그쪽으로 무게가 줄어들 거리가 없다.
 BREATHE_SMOOTH_PEAK_REACH = 0.9
 
@@ -286,8 +288,8 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     `mode` 를 적은 사이드카만 반환에 `mode` 가 실린다 — 안 적은 사이드카(지금까지의 전부)는
     정규화 결과도 굽기도 이전과 바이트 같다. smooth 는 `lag` 가 없고(진행파는 첫 칸을 움직인다),
     `depth` 생략은 `BREATHE_SMOOTH_DEPTH`, `depth_x` 생략은 `BREATHE_SMOOTH_DEPTH_X` 이며, 모양 값
-    (`BREATHE_SMOOTH_SHAPE` 의 키)이 기본값과 함께 실린다. 모양 값은 smooth 만 쓴다 — pixel 줄에
-    있으면 조용히 무시하지 않고 거부한다."""
+    (`BREATHE_SMOOTH_SHAPE` 의 키, 들숨 몫 `inhale` 포함)이 기본값과 함께 실린다. 모양 값은 smooth 만 쓴다 — pixel
+    줄에 있으면 조용히 무시하지 않고 거부한다."""
     if not curation:
         return None
     entry = curation.get("states", {}).get(state)

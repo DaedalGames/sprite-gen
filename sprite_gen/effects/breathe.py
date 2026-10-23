@@ -56,8 +56,8 @@ AI 개입 0 — 같은 입력이면 항상 같은 출력.
     목 밴드(강체 경계 ~ 어깨선)에서 켜지고 콘텐츠 맨 아래에서 꺼진다
 
 정사상(원본 점의 내용이 가는 자리)의 역을 고정점 반복으로 풀어 쌍선형으로 뜬다(곱한 알파).
-강체 경계 위(목·턱 위)와 무게 밖은 원본 바이트 그대로다. 한 호흡은 0 에서 시작해 들숨(INHALE)에
-1, 날숨에 0 으로 돌아오는 한쪽 혹이고 어깨의 늦음도 양 끝에서 0 이라, 위상 0 인 칸은 원본과
+강체 경계 위(목·턱 위)와 무게 밖은 원본 바이트 그대로다. 한 호흡은 0 에서 시작해 들숨 몫(`inhale`)의
+위상에 1, 날숨에 0 으로 돌아오는 한쪽 혹이고 어깨의 늦음도 양 끝에서 0 이라, 위상 0 인 칸은 원본과
 바이트 같다. 가슴 무게가 몸통 안에서 0 으로 떨어져 화면 변에 닿은 그림도 밖으로 밀리지 않는다.
 줄 전체가 기준 칸(첫 칸)에서 잰 해부와 그 자리를 쓴다 — 영상 루프의 머리 윗선이 칸마다 흔들려도
 경계는 움직이지 않는다.
@@ -91,8 +91,6 @@ DEFAULT_DEPTH = 0.06
 DEFAULT_LAG = 0.10
 # 한 호흡이 부드럽게 읽히려면 필요한 최소 프레임 수 (프레임을 찍어낼 때의 권고치).
 SMOOTH_CYCLE_FRAMES = 6
-# smooth 모드 — 들숨이 한 호흡에서 차지하는 비율 (들숨이 날숨보다 짧다).
-INHALE = 0.40
 DEFAULT_SMOOTH_DEPTH = BREATHE_SMOOTH_DEPTH
 DEFAULT_SMOOTH_DEPTH_X = BREATHE_SMOOTH_DEPTH_X
 SMOOTH_SHAPE = dict(BREATHE_SMOOTH_SHAPE)
@@ -449,25 +447,31 @@ def breathe_mode(cfg: dict) -> str:
     return mode
 
 
-def smooth_wave(t: float) -> float:
-    """smooth 의 한 호흡 — 위상 0 에서 0, 들숨 끝(INHALE)에 1, 날숨 끝에 다시 0.
+def smooth_wave(t: float, inhale: float) -> float:
+    """smooth 의 한 호흡 — 위상 0 에서 0, 들숨 끝(위상 `inhale`)에 1, 날숨 끝에 다시 0.
 
     pixel 의 `wave` 는 위아래로 흔드는 사인이고 진행파 지연까지 있어 위상 0 에서도 윗행이
     움직인다. 여기는 쉼(0)에서 올랐다 돌아오기만 하는 한쪽 혹이고, 양 끝과 정점에서 기울기가
-    0 이라 루프 이음에서 꺾이지 않는다."""
+    0 이라 루프 이음에서 꺾이지 않는다. 들숨 몫은 줄의 설정(`smooth_inhale`)에서 받는다 — 여기 기본값이 있으면
+    기록이 말하는 것과 다른 곡선이 조용히 나온다."""
     t = t % 1.0
-    g = 0.5 * t / INHALE if t < INHALE else 0.5 + 0.5 * (t - INHALE) / (1.0 - INHALE)
+    g = 0.5 * t / inhale if t < inhale else 0.5 + 0.5 * (t - inhale) / (1.0 - inhale)
     return 0.5 - 0.5 * math.cos(2.0 * math.pi * g)
 
 
-def smooth_shoulder_wave(t: float, lag: float) -> float:
+def smooth_inhale(cfg: dict) -> float:
+    """smooth 줄의 들숨 몫 — 설정의 `inhale` (생략이면 기본값, 다른 모양 값과 같다)."""
+    return _shape(cfg)["inhale"]
+
+
+def smooth_shoulder_wave(t: float, lag: float, inhale: float) -> float:
     """어깨의 호흡 — 가슴보다 `lag` 만큼 늦게 정점에 닿되 위상 0 과 1 에서는 가슴과 같이 0.
 
     `wave(t - lag)` 로 늦추면 위상 0 에서 어깨가 아직 날숨 끝에 걸려 있어 첫 칸이 원본이 아니게
     된다. 시간을 `t - lag·sin(πt)` 로 휘면 양 끝은 그대로 두고 가운데만 늦출 수 있다 (lag < 1/π
     이면 단조라 되감기지 않는다)."""
     t = t % 1.0
-    return smooth_wave(t - lag * math.sin(math.pi * t))
+    return smooth_wave(t - lag * math.sin(math.pi * t), inhale)
 
 
 def smooth_band(anat: Anatomy) -> tuple[float, float]:
@@ -634,8 +638,9 @@ def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float) -> Imag
     끝까지 제자리이므로, 둘째 걸음부터는 첫걸음에 움직인 픽셀(무게 띠 안)만 다시 푼다 — 같은 식을
     같은 점에서 재므로 결과가 같다."""
     rgba = frame.convert("RGBA")
-    chest = smooth_wave(t)
-    shoulders = smooth_shoulder_wave(t, _shape(cfg)["shoulder_lag"])
+    shape = _shape(cfg)
+    chest = smooth_wave(t, shape["inhale"])
+    shoulders = smooth_shoulder_wave(t, shape["shoulder_lag"], shape["inhale"])
     box = solid_alpha_bbox(rgba)
     if not box or (chest == 0.0 and shoulders == 0.0):
         return rgba                                  # 위상 0 — 원본 그대로 (바이트)
@@ -889,19 +894,19 @@ def fit_breathe_pattern(seq_len: int, cfg: dict) -> list[float]:
     if seq_len <= 0:
         return []
     if cfg.get("breath_peaks"):
-        return _peaked_phases(seq_len, list(cfg["breath_peaks"]))
+        return _peaked_phases(seq_len, list(cfg["breath_peaks"]), smooth_inhale(cfg))
     breaths = max(1, int(cfg.get("breaths", 1)))
     return [((i * breaths) % seq_len) / seq_len for i in range(seq_len)]
 
 
-def _peaked_phases(seq_len: int, peaks: list[int]) -> list[float]:
+def _peaked_phases(seq_len: int, peaks: list[int], inhale: float) -> list[float]:
     """들숨 꼭대기 칸을 바깥에서 받은 위상 (smooth) — 숨 k 는 쉼에서 시작해 `peaks[k]` 칸에서 가득 차고(위상
-    INHALE) 다음 쉼으로 돌아간다. 쉼은 0 칸, 꼭대기 사이를 날숨 1-INHALE : 들숨 INHALE 로 나누는 자리, 그리고
+    `inhale`) 다음 쉼으로 돌아간다. 쉼은 0 칸, 꼭대기 사이를 날숨 1-inhale : 들숨 inhale 로 나누는 자리, 그리고
     루프 끝이다 — 첫 칸이 쉼이고 루프가 쉼에서 닫힌다. 숨마다 위상은 [0, 1) 이다."""
     if peaks[-1] > seq_len - 2:
         raise SystemExit(f"breathe: breath_peaks 의 마지막 {peaks[-1]} 가 {seq_len}칸 루프의 끝에 너무 가깝다 — "
                          f"꼭대기 뒤에 날숨이 들어갈 칸이 있어야 루프가 쉼에서 닫힌다 ({seq_len - 2} 까지).")
-    rests = [0.0] + [p + (1.0 - INHALE) * (q - p) for p, q in zip(peaks, peaks[1:])] + [float(seq_len)]
+    rests = [0.0] + [p + (1.0 - inhale) * (q - p) for p, q in zip(peaks, peaks[1:])] + [float(seq_len)]
     phases = []
     k = 0
     for i in range(seq_len):
@@ -909,9 +914,9 @@ def _peaked_phases(seq_len: int, peaks: list[int]) -> list[float]:
             k += 1
         start, peak, end = rests[k], peaks[k], rests[k + 1]
         if i <= peak:
-            phases.append(INHALE * (i - start) / (peak - start))
+            phases.append(inhale * (i - start) / (peak - start))
         else:
-            phases.append(INHALE + (1.0 - INHALE) * (i - peak) / (end - peak))
+            phases.append(inhale + (1.0 - inhale) * (i - peak) / (end - peak))
     return phases
 
 
@@ -1055,6 +1060,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="the chest's peak moved across its long axis, times its half height, positive down (0)")
     shape.add_argument("--chest-flat", type=float, default=None,
                        help="share of the way from the peak to the rim that rises in full (0)")
+    shape.add_argument("--inhale", type=float, default=None,
+                       help="share of one breath the in-breath takes, the rest the out-breath; the in-breath peaks at this "
+                            f"phase ({SMOOTH_SHAPE['inhale']})")
     shape.add_argument("--breath-peaks", type=_cells, default=None, metavar="CELL,CELL,...",
                        help="smooth: the cells where each in-breath peaks (the breath count is how many); the first "
                             "cell stays at rest and the loop closes at rest")
@@ -1085,7 +1093,8 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         chest_ry: float | None = None, shoulder: float | None = None, shoulder_lag: float | None = None,
         chest_tilt: float | None = None, chest_bias: float | None = None, chest_dir: float | None = None,
         chest_x: float | None = None, chest_bias_y: float | None = None, chest_flat: float | None = None,
-        breath_peaks: list[int] | None = None, avoid_region: tuple[float, float, float, float] | None = None,
+        inhale: float | None = None, breath_peaks: list[int] | None = None,
+        avoid_region: tuple[float, float, float, float] | None = None,
         avoid_anchor: tuple[float, float, float, float] | None = None, fps: float | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
     같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다.
@@ -1097,7 +1106,7 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
                              ("chest_ry", chest_ry), ("shoulder", shoulder), ("shoulder_lag", shoulder_lag),
                              ("chest_tilt", chest_tilt), ("chest_bias", chest_bias), ("chest_dir", chest_dir),
                              ("chest_x", chest_x), ("chest_bias_y", chest_bias_y), ("chest_flat", chest_flat),
-                             ("breath_peaks", breath_peaks))
+                             ("inhale", inhale), ("breath_peaks", breath_peaks))
            if v is not None}
     if avoid_region is None and (avoid_anchor is not None or fps is not None):
         raise SystemExit("breathe: --avoid-anchor 와 --fps 는 --avoid-region 의 것이다 — 손 상자 없이는 읽지 않는다")
@@ -1116,7 +1125,8 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         if frame_ms is None:
             raise SystemExit("breathe: --avoid-region 은 한 숨의 길이를 초로 본다 — --fps 를 주라 (video-loop 의 cycle/ "
                              "폴더면 루프의 strip meta 에서 읽는다)")
-        chosen, beat = breath_beat.choose(images, smooth_lift(anat, cfg), avoid_region, avoid_anchor, frame_ms)
+        chosen, beat = breath_beat.choose(images, smooth_lift(anat, cfg), smooth_inhale(cfg), avoid_region, avoid_anchor,
+                                          frame_ms)
         cfg = _cli_breathe(raw | chosen)
     resolved = anatomy_report(images, cfg, anat)
     baked, phases = bake_breathe_sequence(images, cfg, anat)

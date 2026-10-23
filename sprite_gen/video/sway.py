@@ -73,8 +73,9 @@ are moved, at the frame time its meta writes — rounded to hundredths of a ms, 
 A breathing idle's head stays where it is and its body moves a pixel or two: read off the outline, that motion is
 whole-pixel steps, and the damped mass answers their jerks, not the breath. `--breathe <breathe.json>` sways the part
 on the breath instead: the Breathe layer's record of the breath the frames were given (`sprite-gen breathe` writes it
-beside them), its phases checked against those its config gives. The chest rises lift × w; the part rises as far, late
-by `--lag` of a breath (the time warp the Breathe layer's shoulders are late by), and lies the difference behind:
+beside them), its phases checked against those its config gives. The chest rises lift × w, w the breath of the record's
+in-breath share (its config's `inhale`, the phase the in-breath peaks at); the part rises as far, late by `--lag` of a
+breath (the time warp the Breathe layer's shoulders are late by), and lies the difference behind:
 offset = gain × lift × (w − w late), against the way the chest rises. Where the breath rests the offset is 0 — the first
 cell, and where the loop closes — and a cell whose every offset is 0 is the cell as it was, byte for byte.
 
@@ -589,26 +590,30 @@ class Breath:
     beat: dict[str, Any]  # the breath count, or the cell of each in-breath's peak
     lift: float  # px the chest rises at the top of an in-breath (breathe.smooth_lift)
     heading: float  # degrees from straight up the chest rises toward (its chest_dir)
+    inhale: float  # share of one breath the in-breath takes (its inhale): the phase the chest peaks at
     lag: float  # of one breath
 
     def unit(self) -> tuple[np.ndarray, np.ndarray]:
         """Per cell, the part's offset from where the breath carries it at gain 1, across and down: the chest rises
-        `lift` × w (breathe.smooth_wave), the part as far late by `lag` (the time warp the Breathe layer's shoulders are
-        late by, breathe.smooth_shoulder_wave), and the part lies the difference behind, against the way the chest
-        rises. 0 where the breath rests — its first cell, and where the loop closes."""
-        share = np.asarray([breathe_mod.smooth_wave(p) - breathe_mod.smooth_shoulder_wave(p, self.lag) for p in self.phases])
+        `lift` × w (breathe.smooth_wave, of the record's in-breath share), the part as far late by `lag` (the time warp
+        the Breathe layer's shoulders are late by, breathe.smooth_shoulder_wave), and the part lies the difference
+        behind, against the way the chest rises. 0 where the breath rests — its first cell, and where the loop closes."""
+        wave, late = breathe_mod.smooth_wave, breathe_mod.smooth_shoulder_wave
+        share = np.asarray([wave(p, self.inhale) - late(p, self.lag, self.inhale) for p in self.phases])
         heading = math.radians(self.heading)
         return self.lift * share * -math.sin(heading) + 0.0, self.lift * share * math.cos(heading)
 
     def record(self) -> dict[str, Any]:
         return {"kind": "breath", "breathe_sha256": self.sha256, "lag": self.lag, "lift_px": round(self.lift, 4),
-                "heading_deg": self.heading, **self.beat}
+                "heading_deg": self.heading, "inhale": self.inhale, **self.beat}
 
 
 def read_breath(path: Path, lag: float | None, *, verb: str = VERB) -> Breath:
     """The breath of a Breathe layer's record (breathe.json): a smooth breath, whose phases are the ones its config
     gives after the sidecar's checks (`state_breathe`, `breathe.fit_breathe_pattern`), whose chest rises as the anatomy it
-    was baked with says. A record written by hand for a breath made elsewhere is read alike and must say the same."""
+    was baked with says, on the curve of its in-breath share (`inhale`; a record written before the key was there says
+    the default by leaving it out, as the sidecar does). A record written by hand for a breath made elsewhere is read
+    alike and must say the same — its in-breath share among it."""
     lag = LAG_DEFAULT if lag is None else float(lag)
     if not 0 < lag < LAG_MAX:  # a NaN is not
         raise SystemExit(f"{verb}: --lag is the share of a breath the part is late by, above 0 and under 1/π ({LAG_MAX:.4f}): at "
@@ -643,7 +648,7 @@ def read_breath(path: Path, lag: float | None, *, verb: str = VERB) -> Breath:
         raise SystemExit(f"{verb}: --breathe {path}: its resolved.anatomy is not one sprite-gen breathe writes ({exc})") from exc
     beat = {"breath_peaks": list(cfg["breath_peaks"])} if cfg.get("breath_peaks") else {"breaths": cfg["breaths"]}
     return Breath(path, hashlib.sha256(data).hexdigest(), [float(p) for p in phases], beat,
-                  breathe_mod.smooth_lift(anatomy, cfg), float(cfg["chest_dir"]), lag)
+                  breathe_mod.smooth_lift(anatomy, cfg), float(cfg["chest_dir"]), float(cfg["inhale"]), lag)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1103,8 +1108,9 @@ def add_request_arguments(parser: argparse.ArgumentParser, *, loop_dir: bool = T
     parser.add_argument("--breathe", type=Path, default=None, metavar="BREATHE.JSON",
                         help="sway on the breath: the record sprite-gen breathe writes beside the frames it breathed (smooth). The part "
                              "follows the chest's rise late by --lag instead of answering the body's motion as a damped mass: its offset is "
-                             "gain x the chest's rise x (w - w late), against the way the chest rises, 0 where the breath rests (the "
-                             "first cell). The record's phases must be the ones its config gives, one for each cell swayed")
+                             "gain x the chest's rise x (w - w late), w the breath of the record's in-breath share (its config's "
+                             "inhale), against the way the chest rises, 0 where the breath rests (the first cell). The record's phases "
+                             "must be the ones its config gives, one for each cell swayed")
     parser.add_argument("--lag", type=float, default=None,
                         help=f"on the breath: the share of a breath the part peaks after the chest, above 0 and under 1/π (default {LAG_DEFAULT:g})")
     parser.add_argument("--read-on", type=parse_read_on, default=None, metavar="SHA256",

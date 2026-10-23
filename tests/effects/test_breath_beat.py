@@ -51,7 +51,8 @@ def _loop(folder: Path, hands: list[int], body: list[int] | None = None) -> Path
 
 
 def _wave(cfg: dict) -> np.ndarray:
-    return np.asarray([breathe.smooth_wave(p) for p in breathe.fit_breathe_pattern(N, {"mode": "smooth", **cfg})])
+    inhale = breathe.smooth_inhale(cfg)
+    return np.asarray([breathe.smooth_wave(p, inhale) for p in breathe.fit_breathe_pattern(N, {"mode": "smooth", **cfg})])
 
 
 def _peaks(w: np.ndarray) -> list[int]:
@@ -92,6 +93,15 @@ def test_hands_that_move_against_the_breath_keep_the_evenly_spaced_breaths(tmp_p
     rows = {row["breaths"]: row for row in beat["candidates"]}
     assert rows[2]["corr_hands"] < -0.9 and rows[2]["score"] > rows[1]["score"]
     assert beat["nudged_best"]["score"] <= rows[2]["score"] + breath_beat.MARGIN
+
+
+def test_each_beat_is_read_on_the_rows_in_breath_share(tmp_path) -> None:
+    """`--inhale` 이 있으면 후보마다 그 들숨 몫의 곡선으로 꼭대기와 점수를 잰다 — 굽기가 쓸 곡선 그대로다."""
+    report = _avoid(_loop(tmp_path / "loop", BUMP), tmp_path / "out", "--inhale", "0.3")
+    assert report["config"]["inhale"] == 0.3
+    for row in report["beat"]["candidates"]:
+        k = row["breaths"]
+        assert row["peaks"] == _peaks(_wave({"breaths": k, "inhale": 0.3})) != _peaks(_wave({"breaths": k}))
 
 
 def test_the_hands_own_rise_is_read_against_the_band_just_above_them(tmp_path) -> None:

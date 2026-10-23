@@ -8,7 +8,7 @@
 - 손 상자(`--avoid-region`)와 그 위 몸 상자(`--avoid-anchor`, 생략하면 손 상자 바로 위 띠 `anchor_band`)를 첫 칸
   기준 마스크 NCC 로 따라간다(`auto_motion.track_box`, 정수 px). 손의 제 오름 = 손 − 몸, 몸 오름 = 몸 (위 양수).
 - 후보는 한 숨이 `PERIOD_S` 안인 숨 수 k 를 고르게 둔 것, 그리고 고른 k 의 꼭대기를 앞뒤 `NUDGE` 칸까지 민 것이다
-  (k 가 3 이하면 꼭대기마다 따로, 넘으면 다 같이). 곡선은 굽기와 같은 `breathe.smooth_wave` 다.
+  (k 가 3 이하면 꼭대기마다 따로, 넘으면 다 같이). 곡선은 굽기와 같은 `breathe.smooth_wave` 다 — 같은 들숨 몫(`inhale`)으로.
 - 점수 = 상관(숨, 몸 오름) − 상관(숨, 손 오름). 숨이 손과 같이 오르내리지 않고 영상의 몸과 같이 가면 높다.
 - 조건: 들숨 꼭대기마다 앞뒤 `NEAR` 칸에서 가슴 오름(가슴 오름 px × 숨) 이 손의 제 오름보다 낮지 않다 — 가슴이
   손 위에 있다. 가슴 오름 px 는 굽기가 쓰는 그 값(`breathe.smooth_lift`)이다.
@@ -59,9 +59,10 @@ def _corr(a: np.ndarray, b: np.ndarray) -> float:
     return float((a * b).sum() / d) if d else 0.0
 
 
-def _row(beat: dict, n: int, hands: np.ndarray, body: np.ndarray, lift: float) -> dict[str, Any]:
-    """한 박자 후보의 점수와 조건 — 그 박자로 굽기가 쓸 위상에서."""
-    w = np.asarray([breathe.smooth_wave(p) for p in breathe.fit_breathe_pattern(n, {"mode": "smooth", **beat})])
+def _row(beat: dict, n: int, hands: np.ndarray, body: np.ndarray, lift: float, inhale: float) -> dict[str, Any]:
+    """한 박자 후보의 점수와 조건 — 그 박자와 들숨 몫으로 굽기가 쓸 위상과 곡선에서."""
+    phases = breathe.fit_breathe_pattern(n, {"mode": "smooth", "inhale": inhale, **beat})
+    w = np.asarray([breathe.smooth_wave(p, inhale) for p in phases])
     peaks = [i for i in range(n) if w[i] > PEAK_LEVEL and w[i] >= w[i - 1] and w[i] >= w[(i + 1) % n]]
     margin = min(lift * w[p] - max(hands[(p + j) % n] for j in range(-NEAR, NEAR + 1)) for p in peaks)
     corr_hands, corr_body = _corr(w, hands), _corr(w, body)
@@ -74,10 +75,11 @@ def candidates(n: int, frame_ms: float) -> list[int]:
     return [k for k in range(1, BREATHE_BREATHS_MAX + 1) if PERIOD_S[0] <= n * frame_ms / 1000 / k <= PERIOD_S[1]]
 
 
-def nudged(n: int, k: int) -> list[list[int]]:
-    """숨 k 번을 고르게 둔 꼭대기를 앞뒤 `NUDGE` 칸까지 민 꼭대기 목록들 — 첫 칸은 쉼, 마지막 꼭대기 뒤에 날숨이 들어갈
-    두 칸, 꼭대기 사이 두 칸 이상(curation 의 breath_peaks 검사와 _peaked_phases 의 끝 검사)."""
-    base = [round((i + breathe.INHALE) * n / k) for i in range(k)]
+def nudged(n: int, k: int, inhale: float) -> list[list[int]]:
+    """숨 k 번을 고르게 둔 꼭대기(숨마다 들숨 몫 `inhale` 자리)를 앞뒤 `NUDGE` 칸까지 민 꼭대기 목록들 — 첫 칸은 쉼,
+    마지막 꼭대기 뒤에 날숨이 들어갈 두 칸, 꼭대기 사이 두 칸 이상(curation 의 breath_peaks 검사와 _peaked_phases 의
+    끝 검사)."""
+    base = [round((i + inhale) * n / k) for i in range(k)]
     span = range(-NUDGE, NUDGE + 1)
     moves = itertools.product(span, repeat=k) if k <= 3 else ((m,) * k for m in span)
     out = []
@@ -102,10 +104,10 @@ def pick(evenly: list[dict[str, Any]], pushed: list[dict[str, Any]]) -> dict[str
     return top if top is not None and top["score"] > best["score"] + MARGIN else best
 
 
-def choose(images: list[Image.Image], lift: float, avoid: tuple[float, float, float, float],
+def choose(images: list[Image.Image], lift: float, inhale: float, avoid: tuple[float, float, float, float],
            anchor: tuple[float, float, float, float] | None, frame_ms: float) -> tuple[dict[str, Any], dict[str, Any]]:
     """`images`(숨 넣기 전 칸들)에서 고른 숨 박자(`{"breaths": k}` 또는 `{"breath_peaks": [...]}`)와 breathe.json 에
-    남길 `beat` 기록."""
+    남길 `beat` 기록 — 곡선은 줄의 들숨 몫 `inhale` 의 것이다."""
     n = len(images)
     size = images[0].size
     anchor = anchor_band(avoid) if anchor is None else anchor
@@ -124,9 +126,9 @@ def choose(images: list[Image.Image], lift: float, avoid: tuple[float, float, fl
     if not ks:
         raise SystemExit(f"breathe: --avoid-region — 루프가 {n * frame_ms / 1000:g} 초라 {PERIOD_S[0]:g}~{PERIOD_S[1]:g} 초 "
                          f"숨이 정수 번 들어가지 않는다. --breaths 로 정해라.")
-    evenly = [_row({"breaths": k}, n, hands, body, lift) for k in ks]
+    evenly = [_row({"breaths": k}, n, hands, body, lift, inhale) for k in ks]
     best = pick(evenly, [])
-    pushed = [_row({"breath_peaks": peaks}, n, hands, body, lift) for peaks in nudged(n, best["breaths"])]
+    pushed = [_row({"breath_peaks": peaks}, n, hands, body, lift, inhale) for peaks in nudged(n, best["breaths"], inhale)]
     chosen = pick(evenly, pushed)
     beat = {"breaths": chosen["breaths"]} if "breaths" in chosen else {"breath_peaks": chosen["breath_peaks"]}
     top = max(pushed, key=lambda row: (row["keeps"], row["score"]), default=None)

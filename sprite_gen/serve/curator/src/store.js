@@ -14,7 +14,7 @@ function isNumericScalar(v) {
 // 굽기 방식 — 파이썬 curation.BREATHE_MODES 미러. 생략 = pixel.
 const BREATHE_MODES = ["pixel", "smooth"];
 // smooth 모양 값의 허용 범위 — 파이썬 curation.BREATHE_SMOOTH_SHAPE_RANGES 미러.
-const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9] };
+const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9], inhale: [0.2, 0.8] };
 
 function breatheRangeProblems(raw) {
   const bounds = [["depth", 0.005, 0.20, 0.06], ["breaths", 1, 8, 1], ["lag", 0, 0.45, 0.1]];
