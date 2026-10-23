@@ -15,6 +15,10 @@ example Claude Code and the Codex app driving the skill in parallel):
   atlas/manifest/frame. `atomic_write_set()` extends the same mechanism to a
   set of files that only makes sense published together (a sheet, its manifest,
   and the report naming it).
+- `same_folder()` / `inside_folder()` / `new_stage()` — a writer never writes
+  into, moves or deletes its inputs: inputs and outputs are compared by real
+  path and file identity before anything is made, and a staging folder is a
+  new one of the run's own, the only thing beside the output a run deletes.
 
 `curation.json` is intentionally NOT under this pipeline write lock: the curation
 surface writes it with the same atomic replace, and the compose scripts read one
@@ -33,6 +37,7 @@ import atexit
 import contextlib
 import json
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -135,6 +140,31 @@ def relative_posix(path: PurePath, start: PurePath) -> str:
     """Return a manifest-safe relative path with POSIX separators."""
 
     return path.relative_to(start).as_posix()
+
+
+def same_folder(a: Path, b: Path) -> bool:
+    """같은 폴더(또는 파일)인가 — 장치·inode 로 본다. 링크로 돌아 들어와도, 대소문자를 가리지 않는 볼륨에서 철자만
+    달라도 같다. 둘 중 하나가 아직 없으면 같지 않다."""
+    return a.exists() and b.exists() and a.samefile(b)
+
+
+def inside_folder(path: Path, folder: Path) -> bool:
+    """`path` 가 `folder` 안에 드는가 — 조상 가운데 `folder` 와 같은 폴더가 있다. `path` 는 아직 없어도 된다."""
+    return any(same_folder(parent, folder) for parent in path.parents)
+
+
+def new_stage(out: Path, suffix: str) -> Path:
+    """`out` 옆에 이 실행만의 빈 임시 폴더 `.<out>.<pid>-<random><suffix>` — 같은 볼륨이라 다 쓴 뒤 rename 으로
+    내놓는다. 이름이 이미 있으면(입력이든 다른 실행의 것이든) 그 폴더는 건드리지 않고 다른 이름을 고른다.
+    mkdtemp(0700)가 아니라 mkdir 이라 내놓은 폴더가 보통 폴더 권한을 갖는다."""
+    for _ in range(100):
+        stage = out.parent / f".{out.name}.{os.getpid()}-{secrets.token_hex(4)}{suffix}"
+        try:
+            stage.mkdir()
+        except FileExistsError:
+            continue
+        return stage
+    raise SystemExit(f"{out.parent}: no free name for a staging folder beside {out.name}")
 
 
 def _pid_alive(pid: int) -> bool:

@@ -30,7 +30,7 @@ import argparse
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image
 
@@ -41,8 +41,11 @@ from sprite_gen.spec.runio import (
     acquire_run_dir_lock,
     atomic_save_image,
     atomic_write_text,
+    inside_folder,
+    new_stage,
     publish_guard,
     relative_posix,
+    same_folder,
 )
 from sprite_gen.frames.segment import mask_components
 from sprite_gen.util.console import utf8_streams
@@ -204,7 +207,11 @@ def write_run(
     meta: dict[str, Any],
     layout_source: str,
     provenance: dict[str, Any],
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
+    """Write the run's files into `out_dir`, a staging folder when `run_dir` names the run dir they are
+    published into: the run carries that name and path, never the staging folder's."""
+    run_dir = run_dir or out_dir
     cell_w, cell_h = cell
     frames_root = out_dir / "frames"
     frames_root.mkdir(parents=True, exist_ok=True)
@@ -240,7 +247,7 @@ def write_run(
         "version": 1,
         "kind": "sprite-gen-request",
         "engine": "component-row",
-        "character": {"id": out_dir.name, "description": f"unpacked from atlas ({layout_source})"},
+        "character": {"id": run_dir.name, "description": f"unpacked from atlas ({layout_source})"},
         "cell": {"shape": "rect" if cell_w != cell_h else "square", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
         "chroma_key": provenance.get("chroma_key", {"name": "magenta", "hex": "#FF00FF", "rgb": [255, 0, 255]}),
         "states": request_states,
@@ -248,7 +255,7 @@ def write_run(
     atomic_write_text(out_dir / "sprite-request.json", json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(
         frames_root / "frames-manifest.json",
-        json.dumps({"ok": True, "engine": "component-row", "run_dir": str(out_dir), "cell": request["cell"], "rows": manifest_rows, "errors": [], "warnings": []}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps({"ok": True, "engine": "component-row", "run_dir": str(run_dir), "cell": request["cell"], "rows": manifest_rows, "errors": [], "warnings": []}, ensure_ascii=False, indent=2) + "\n",
     )
     source_doc = {
         "version": 1,
@@ -267,7 +274,7 @@ def import_pngs(out_dir: Path, png_paths: list[Path], state_name: str, labels: l
 
 
 def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str, Any] | None = None,
-                      base_src: Path | None = None) -> dict[str, Any]:
+                      base_src: Path | None = None, run_dir: Path | None = None) -> dict[str, Any]:
     """Import separate PNGs as one or more curator rows (states).
 
     groups: [{"name": str, "paths": [Path], "labels": [str], "refs": [Path]}] —
@@ -279,7 +286,10 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
     생성 재료 `<role>-<name>.png` → `references/imported/<state>/` (상태별 생성 재료
     칩). 역할(anchor/basis/guide) 해석은 serve_curation `_state_refs` 가 파일명에서
     단독 수행한다 (여긴 파일명 보존 복사만 — 역할 파싱 SSoT 이원화 금지).
+
+    `run_dir` 는 out_dir(스테이징)을 내놓을 런 폴더 — 런은 그 이름과 경로를 단다, 스테이징 폴더의 것이 아니라.
     """
+    run_dir = run_dir or out_dir
     loaded: list[tuple[dict[str, Any], list[Image.Image]]] = []
     cell_w = 0
     cell_h = 0
@@ -337,7 +347,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
         "version": 1,
         "kind": "sprite-gen-request",
         "engine": "component-row",
-        "character": {"id": out_dir.name, "description": f"imported PNG set from {first_dir}"},
+        "character": {"id": run_dir.name, "description": f"imported PNG set from {first_dir}"},
         "cell": {"shape": "square" if cell_w == cell_h else "rect", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
         "chroma_key": {"name": "magenta", "hex": "#FF00FF", "rgb": [255, 0, 255]},
         "states": request_states,
@@ -347,7 +357,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
     atomic_write_text(out_dir / "sprite-request.json", json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(
         out_dir / "frames" / "frames-manifest.json",
-        json.dumps({"ok": True, "engine": "component-row", "run_dir": str(out_dir), "cell": request["cell"],
+        json.dumps({"ok": True, "engine": "component-row", "run_dir": str(run_dir), "cell": request["cell"],
                     "rows": manifest_rows, "errors": [], "warnings": []}, ensure_ascii=False, indent=2) + "\n",
     )
     atomic_write_text(
@@ -363,17 +373,47 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
             "base_source": base_out_name, "imported_refs": imported_refs_manifest}
 
 
-def _new_staging(out_dir: Path) -> Path:
-    """A fresh empty staging dir beside out_dir. The run is built here first, then
-    published atomically, so a failed/partial build never touches the prior run."""
-    staging = out_dir.parent / f".{out_dir.name}.sg-staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
-    return staging
+def _refuse_overlap(inputs: dict[str, Path | None], out_dir: Path) -> None:
+    """An input is never written, moved or deleted. Refused before anything is made: an input that is
+    the run dir (the run would replace it), lies inside it (a --force publish moves the run dir's prior
+    content aside and deletes it), or holds it (the run would be written into the input). Read by real
+    path and file identity, so a link, or a second spelling on a case-insensitive volume, is the same
+    folder."""
+    for flag, given in inputs.items():
+        if given is None:
+            continue
+        path = Path(given).expanduser().resolve()
+        if same_folder(path, out_dir):
+            kind = "folder" if path.is_dir() else "file"
+            raise SystemExit(f"{flag} and --out-dir are the same {kind}: {path} (an input is never overwritten)")
+        if inside_folder(path, out_dir):
+            raise SystemExit(f"{flag} lies inside --out-dir: {path} "
+                             "(--force replaces the run dir's content, never an input)")
+        if inside_folder(out_dir, path):
+            raise SystemExit(f"--out-dir lies inside {flag}: {out_dir} (a run is never written into its input)")
 
 
-_PUBLISH_BACKUP = ".sg-backup"
+def _build_and_publish(out_dir: Path, build: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:
+    """Make the run dir, take its single-writer lock, build the run into a staging folder of this
+    run's own beside it (`.<out>.<pid>-<random>.sg-staging`, a new name, so a folder of the old fixed
+    name — an input or another run's — is never touched), then publish it over out_dir. A failed or
+    invalid build leaves the prior run intact; the staging folder is the only thing beside out_dir the
+    run deletes. Called once every input is read and checked, so a refusal has made nothing."""
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SystemExit(f"cannot create run dir next to the input: {out_dir}\n  {exc}\n  pass --out-dir <writable path> to choose another location")
+    acquire_run_dir_lock(out_dir, "unpack_atlas_run")
+    staging = new_stage(out_dir, ".sg-staging")
+    try:
+        result = build(staging)
+        _publish_run(staging, out_dir)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return result
+
+
+_PUBLISH_BACKUP = "sg-backup"  # the in-place backup is `.sg-backup.<pid>-<random>` (runio.new_stage)
 
 
 def _publish_run(staging: Path, out_dir: Path) -> None:
@@ -385,16 +425,15 @@ def _publish_run(staging: Path, out_dir: Path) -> None:
     concurrent writer's `acquire_run_dir_lock(out_dir)` always finds the held lock and
     blocks (runio single-writer contract holds across the whole publish). On an I/O failure
     the swap rolls back to the prior run byte-intact (Atomicity: succeed or roll back).
+    The backup is a new folder of this publish's own, so a `.sg-backup` already in the prior run
+    is prior content like any other: moved aside, restored by a rollback, replaced on success.
     Called only after a successful build."""
-    reserved = {LOCK_FILENAME, _PUBLISH_BACKUP}
-    backup = out_dir / _PUBLISH_BACKUP
     # publish_guard (exclusive) blocks concurrent readers (serve_curation read_guard) for
     # the whole swap, so a serving /api/run never observes the half-published state
     # (reader isolation — a reader sees the complete prior run or the complete new run).
     with publish_guard(out_dir):
-        if backup.exists():
-            shutil.rmtree(backup)
-        backup.mkdir()
+        backup = new_stage(out_dir / _PUBLISH_BACKUP, "")
+        reserved = {LOCK_FILENAME, backup.name}
         moved: list[str] = []
         phase1_done = False
         try:
@@ -456,14 +495,11 @@ def _run(args: argparse.Namespace):
             out_dir = base.parent / f"{base.stem}-curator"
         else:
             raise SystemExit("need one of --pngs-dir / --atlas / --manifest (or pass --out-dir)")
+    out_dir = out_dir.resolve()  # a link publishes where it points; inputs are compared with the real run dir
 
+    _refuse_overlap({"--pngs-dir": args.pngs_dir, "--atlas": args.atlas, "--manifest": args.manifest}, out_dir)
     if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
         raise SystemExit(f"out-dir not empty: {out_dir} (use --force)")
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise SystemExit(f"cannot create run dir next to the input: {out_dir}\n  {exc}\n  pass --out-dir <writable path> to choose another location")
-    acquire_run_dir_lock(out_dir, "unpack_atlas_run")
 
     # --pngs-dir: import a folder of separate PNGs (e.g. a furniture set).
     # 하위폴더가 있으면 각 하위폴더가 큐레이터 줄(state) 하나가 된다 —
@@ -536,12 +572,8 @@ def _run(args: argparse.Namespace):
         # atomic rebuild: all validation above ran before any mutation; build into a
         # staging dir, then publish over out_dir. A --force re-import that fails (or is
         # invalid) leaves the prior run intact — never clear-then-fail.
-        staging = _new_staging(out_dir)
-        try:
-            result = import_png_groups(staging, groups, iso, base_src=base_src)
-            _publish_run(staging, out_dir)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
+        result = _build_and_publish(
+            out_dir, lambda staging: import_png_groups(staging, groups, iso, base_src=base_src, run_dir=out_dir))
         result["ok"] = True
         result["out_dir"] = str(out_dir)
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -586,14 +618,13 @@ def _run(args: argparse.Namespace):
                 states[i]["name"] = name
 
     provenance["atlas"] = str(atlas_path)
+    if not args.atlas:
+        _refuse_overlap({"the atlas the manifest names": Path(atlas_path)}, out_dir)
     # atomic rebuild (see --pngs-dir): atlas/layout resolution above is read-only; build
     # into staging, then publish over out_dir so a failed rebuild leaves the prior run intact.
-    staging = _new_staging(out_dir)
-    try:
-        result = write_run(staging, atlas, states, cell, meta, layout_source, provenance)
-        _publish_run(staging, out_dir)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    result = _build_and_publish(
+        out_dir, lambda staging: write_run(staging, atlas, states, cell, meta, layout_source, provenance,
+                                           run_dir=out_dir))
     result["ok"] = True
     result["out_dir"] = str(out_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))

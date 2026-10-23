@@ -146,8 +146,10 @@ not restate it elsewhere; point here.
   .frames.sg-staging/                # transient: extract builds the new generation here, swapped into frames/ under publish_guard
 ```
 Transient publish sidecars exist only during an extract/import commit: `.frames.sg-backup`
-and `.extract-failure.sg-backup` (in-place rollback copies) and `.<name>.sg-rwlock` (in the
-parent dir — the publish reader/writer lock). Their durability/concurrency boundary is §7.
+and `.extract-failure.sg-backup` (extract's in-place rollback copies), an import's own
+`.<name>.<pid>-<random>.sg-staging` (beside the run dir) and `.sg-backup.<pid>-<random>` (in it,
+§4), and `.<name>.sg-rwlock` (in the parent dir — the publish reader/writer lock). Their
+durability/concurrency boundary is §7.
 
 Rules the display depends on:
 
@@ -390,6 +392,19 @@ A **failed or invalid** re-import (e.g. a bad `_refs` role) leaves the prior run
 **byte-intact** — it is never cleared-then-failed (write-side Atomicity: a rebuild fully
 succeeds or rolls back). The publish holds the run-dir single-writer lock in place
 throughout, so a concurrent **writer** cannot preempt (writer Isolation).
+
+**An import never touches its inputs.** An input — `--pngs-dir`, `--atlas`, `--manifest`, or
+the atlas a manifest names — that is the run dir, lies inside it, or holds it is refused before
+anything is made, with or without `--force`: a publish replaces the run dir's whole prior content,
+and the run would otherwise be written into its input. Folders are compared by real path and file
+identity (`runio.same_folder`, `runio.inside_folder`), so a link or a second spelling on a
+case-insensitive volume is the same folder. The run is built in a staging folder of its own beside
+the run dir and the prior content is moved aside into a backup folder of its own inside it
+(`runio.new_stage`: `.<name>.<pid>-<random>.sg-staging`, `.sg-backup.<pid>-<random>`). A folder
+that already has a staging or backup name, an input's or anyone else's, is never reused or removed:
+besides those two folders the run deletes only the prior content it replaces, and a failed publish
+puts every prior file back. The run carries the run dir's name (`character.id`) and path
+(`frames-manifest.json` `run_dir`), never the staging folder's.
 
 > **Reader isolation (named strategy: reader/writer locking).** Every operation that
 > republishes frames — a `--force` re-import **and** a re-extract (`extract` builds into a
