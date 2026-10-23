@@ -126,6 +126,19 @@ def test_size_and_tilt_are_read_with_the_place(case):
         assert abs(rows[k][2] - (1 + 0.02 * w)) < 0.01 and abs(rows[k][3] - 3 * w) < 0.7, (k, rows[k])
 
 
+def test_a_head_that_turns_is_placed_where_its_mouth_is(case):
+    """A head that turns moves its hair, headset and cheeks further than its mouth: the band reads them moved and tilted,
+    and its place would carry the layer off the mouth. Size and tilt stay the band's; the place is read on the skin
+    round the frame's closed mouth, and a frame whose mouth is open takes the move of the closed frames round it."""
+    _, pack = case
+    rows = [anchor(six) for six in body(pack, "turn")["to_body"]]
+    for k, (w, mouth) in enumerate(zip(tf.TURN, tf.TURN_MOUTH)):
+        dx, dy, _, th = rows[k]
+        assert math.hypot(dx, dy) < (1.0 if mouth == "neutral" else 2.0), (k, rows[k])
+        if w > 0.9:
+            assert th < -2.5, (k, rows[k])
+
+
 def test_a_hand_over_the_cheek_stays_on_top_of_the_layer(case):
     root, pack = case
     keep = body(pack, "cheek")["keep"]

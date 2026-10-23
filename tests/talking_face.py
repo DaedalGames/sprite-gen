@@ -8,9 +8,10 @@ not. A mouth is closed neutral (corners down), closed smiling (corners up) or op
 tongue in it). A hand can be raised over the right cheek from a sleeve below, a finger at the open mouth's corner. A view draws a square of the cell at another size: the talking
 clip is drawn at twice the size, as a face cut from the reference.
 
-`write_case(root)` writes the reference, a talking clip, four body clips (an idle loop, a greeting that talks with its
-own mouth and closes in a smile, a hand over the cheek, a head that goes 60 px up and back), the greeting's mouth
-timeline and a face request naming them all.
+`write_case(root)` writes the reference, a talking clip, five body clips (an idle loop, a greeting that talks with its
+own mouth and closes in a smile, a hand over the cheek, a head that goes 60 px up and back, a head that turns: its
+hair, headset and cheeks move and tilt, its mouth stays), the greeting's mouth timeline and a face request naming them
+all.
 """
 from __future__ import annotations
 
@@ -53,6 +54,11 @@ GREET_VOICED = range(2, 9)
 GREET_OWN_END = 10
 HAND_FRAMES = range(4, 9)
 JUMP = [-60 * math.sin(math.pi * k / 8) for k in range(9)]
+# a head that turns: its hair, headset and cheeks go 12 px right and tilt 5 degrees, its mouth stays; closed but for
+# two frames that open
+TURN_NEAR, TURN_FAR = 45.0, 85.0
+TURN = [math.sin(math.pi * k / 10) for k in range(11)]
+TURN_MOUTH = ["neutral"] * 4 + [1, 2] + ["neutral"] * 5
 
 
 def _pose(dx: float = 0.0, dy: float = 0.0, s: float = 1.0, th: float = 0.0) -> np.ndarray:
@@ -71,9 +77,11 @@ def _ellipse(x, y, cx, cy, rx, ry):
     return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2
 
 
-def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False, view: tuple[int, int, int] = (0, 0, SIZE)) -> Image.Image:
+def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False, view: tuple[int, int, int] = (0, 0, SIZE),
+         turn: dict | None = None) -> Image.Image:
     """One cell: the head at `pose` (dx, dy, s, th) with `mouth`, on the still body, seen through `view` (x, y, side:
-    the square of the cell drawn at SIZE)."""
+    the square of the cell drawn at SIZE). A head that `turn`s is at `turn` from TURN_FAR px of the mouth out (its hair,
+    headset and cheeks) and at `pose` within TURN_NEAR px (the mouth and the skin round it), smoothly between."""
     n = SIZE * SS
     v, u = np.mgrid[0:n, 0:n]
     x0, y0, side = view
@@ -82,6 +90,12 @@ def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False
     m = _pose(**(pose or {}))
     hx = m[0, 0] * X + m[0, 1] * Y + m[0, 2]
     hy = m[1, 0] * X + m[1, 1] * Y + m[1, 2]
+    if turn is not None:
+        far = _pose(**turn)
+        t = np.clip((np.hypot(X - MOUTH[0], Y - MOUTH[1]) - TURN_NEAR) / (TURN_FAR - TURN_NEAR), 0, 1)
+        w = t * t * (3 - 2 * t)
+        hx = (1 - w) * hx + w * (far[0, 0] * X + far[0, 1] * Y + far[0, 2])
+        hy = (1 - w) * hy + w * (far[1, 0] * X + far[1, 1] * Y + far[1, 2])
     rgb = np.zeros(X.shape + (3,))
     a = np.zeros(X.shape)
 
@@ -180,6 +194,7 @@ def write_case(root: Path) -> Path:
     _clip(root / "greet", greet)
     _clip(root / "cheek", [draw({"dy": 0.5 * math.sin(k)}, 3 if k in HAND_FRAMES else "neutral", hand=k in HAND_FRAMES) for k in range(10)])
     _clip(root / "jump", [draw({"dy": dy}) for dy in JUMP])
+    _clip(root / "turn", [draw(mouth=mouth, turn={"dx": 12 * w, "th": -5 * w}) for w, mouth in zip(TURN, TURN_MOUTH)])
     rows = ["frame\tt_s\tstate\tsound"]
     for k, mouth in enumerate(GREET):
         state = "closed" if mouth in ("neutral", "smile") else "open"
@@ -190,7 +205,8 @@ def write_case(root: Path) -> Path:
                "body": [{"name": "idle", "loop": True, "frames": "idle"},
                         {"name": "greet", "frames": "greet", "mouth_timeline": "greet-mouth.tsv"},
                         {"name": "cheek", "frames": "cheek"},
-                        {"name": "jump", "frames": "jump"}]}
+                        {"name": "jump", "frames": "jump"},
+                        {"name": "turn", "frames": "turn"}]}
     path = root / "face-request.json"
     path.write_text(json.dumps(request, indent=1), encoding="utf-8")
     return path
