@@ -171,7 +171,7 @@ def test_a_pack_is_written_into_a_new_folder_only(case, tmp_path):
 # --- the player ---------------------------------------------------------------------------------------------------
 
 def _flap(x, sr, rules, surprise, fps=24):
-    """The broadcast mouth's syllable rule as it was measured (numpy, Python's round): the player moved it."""
+    """The flap as it was first written (numpy, Python's round), the rule the player moved."""
     nf = int(np.ceil(len(x) / sr * fps))
     hop = sr // 96
     env = np.array([np.sqrt(np.mean(x[i:i + 2 * hop] ** 2) + 1e-12) for i in range(0, len(x) - 2 * hop, hop)])
@@ -297,7 +297,7 @@ def padded(rate=48000):
 
 @needs_node
 @pytest.mark.parametrize("tags", [[], ["[surprised]"]])
-def test_the_player_s_mouth_rule_is_the_broadcast_rule(case, tags):
+def test_the_player_s_mouth_rule_is_the_flap_as_first_written(case, tags):
     root, pack = case
     x = padded()
     out = player(root, {"samples": x.tolist(), "rate": 48000, "tags": tags})

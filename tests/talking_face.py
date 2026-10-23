@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """A synthetic talking character for the face layer's tests (`sprite_gen.video.face_layer`, `face_pack`, `face_bake`).
 
-A cartoon head on a still body, drawn area-sampled on a transparent 480 px cell: a skin face in a dark outline, a hair
-cap and side locks, two eyes, a nose, a mouth, a headset boom that crosses the lower face to the mouth's corner, a neck
-with a dark grey choker, shoulders. The head moves by a similarity about the mouth (place, size, tilt); the body does
+A cartoon head on a still body, drawn area-sampled on a transparent 480 px cell (the key's colour left under no
+coverage, as a keyer leaves it): a skin face in a dark outline, a hair cap and side locks, two eyes, a nose, a mouth, a
+headset boom that crosses the lower face to the mouth's corner, a neck with a dark grey choker, shoulders. The head moves by a similarity about the mouth (place, size, tilt); the body does
 not. A mouth is closed neutral (corners down), closed smiling (corners up) or open (an ellipse of `size` 1..4). A hand
 can be raised over the right cheek from a sleeve below. A view draws a square of the cell at another size: the talking
 clip is drawn at twice the size, as a face cut from the reference.
@@ -37,6 +37,7 @@ CHOKER = (40, 40, 44)
 CLOTH = (90, 110, 160)
 SLEEVE = (230, 225, 215)
 HAND = (245, 205, 190)
+KEY = (0, 160, 70)  # left under no coverage, as a keyer leaves it
 GEOMETRY = {"mouth": [240, 262], "eyes": [[175, 174, 215, 206], [265, 174, 305, 206]],
             "lower_face": {"top": 228, "box": [120, 228, 360, 400], "seeds": [[195, 255], [285, 255], [240, 305], [215, 280]]},
             "band_bottom": 300}
@@ -134,7 +135,7 @@ def draw(pose: dict | None = None, mouth: object = "neutral", hand: bool = False
             paint((np.abs(X - fx) < 4.5) & (Y > 251) & (Y < 302), HAND)
     pm = np.concatenate([rgb * a[..., None], a[..., None]], -1).reshape(SIZE, SS, SIZE, SS, 4).mean((1, 3))
     alpha = pm[..., 3]
-    colour = np.where(alpha[..., None] > 0, pm[..., :3] / np.maximum(alpha[..., None], 1e-6), 0)
+    colour = np.where(alpha[..., None] > 0, pm[..., :3] / np.maximum(alpha[..., None], 1e-6), KEY)
     return Image.fromarray(np.dstack([np.round(colour), np.round(alpha * 255)]).clip(0, 255).astype(np.uint8), "RGBA")
 
 
