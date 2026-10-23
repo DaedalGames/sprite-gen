@@ -384,8 +384,9 @@ class CodexProvider:
         return codex_inspect(path, workdir)
 
     def inspect_image(self, path: Path, workdir: Path, prompt: str, *, label: str = "vision check") -> tuple[str, dict]:
-        from .facing_vision import codex_inspect
-        return codex_inspect(path, workdir, prompt=prompt, label=label)
+        from .facing_vision import CODEX_READ_EFFORT, CODEX_READ_MODEL, codex_inspect
+        return codex_inspect(path, workdir, prompt=prompt, label=label, model=CODEX_READ_MODEL,
+                             effort=CODEX_READ_EFFORT)
 
     def generate(self, request: GenRequest, workdir: Path) -> ProviderRun:
         # `image_gen` exposes no effort or size dial, so neither knob is carried

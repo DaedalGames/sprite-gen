@@ -6,8 +6,8 @@ picture it belongs to (a title screen, a poster), it is drawn as part of that wo
 materials and light. So a logo is made in three steps:
 
 1. **mood** — a title screen or poster in the brief's style with the title lettered in it
-   (`gen`, no reference). Its text is read back (`inspect_image`); a title the model dropped
-   or misspelt is refused here, before the next image is bought.
+   (`gen`, no reference). Its text is read back (`inspect_image`, a misreading read once more);
+   a title the model dropped or misspelt is refused here, before the next image is bought.
 2. **lettering** — that picture as the reference of an edit asking for only its lettering,
    the same letterforms, materials and effects, on a flat chroma key (`gen --ref`). The key
    is chosen from the title's colours in the mood image (the box its text check finds) unless
@@ -66,6 +66,10 @@ MOOD_READ_PROMPT = READ_PROMPT[:-1] + (
     '. Add "box": [left, top, right, bottom], the box round the title lettering and its glow, each a share '
     "of the image's width or height from 0 to 1."
 )
+REFUSED = ("mismatch", "no-text")  # the verdicts a text check refuses on
+# How many readings one text check may take: a reading that would refuse is read again, up to this many, and one
+# that spells the text passes (docs/logo.md, the text check).
+MAX_READS = 2
 
 
 def _quoted(text: str) -> str:
@@ -199,10 +203,10 @@ def route_of(auth_source: str | None) -> str:
     return "unknown"
 
 
-def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | None, *,
-              prompt: str = READ_PROMPT) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Ask the provider what the image spells, once. Returns (check, call). A call that fails or an answer
-    that cannot be read is `unverified` — said, never counted as a match."""
+def _read_once(backend, image: Path, workdir: Path, text: str, subtitle: str | None,
+               prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One reading: (check, call). A call that fails or an answer that cannot be read is `unverified` — said,
+    never counted as a match."""
     started = time.monotonic()
     try:
         answer, metadata = backend.inspect_image(image, workdir, prompt, label=READ_LABEL)
@@ -211,7 +215,7 @@ def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | No
         return {"verdict": "unverified", "reason": reason, "asked": [text, *([subtitle] if subtitle else [])]}, \
             {"error": reason, "elapsed_seconds": time.monotonic() - started}
     lines, box = parse_answer(answer)
-    who = {key: metadata.get(key) for key in ("model", "auth_source", "transport")}
+    who = {key: metadata.get(key) for key in ("model", "effort", "auth_source", "transport")}
     call = {**who, "elapsed_seconds": time.monotonic() - started}
     if lines is None:
         return {"verdict": "unverified", "reason": "invalid-vision-response",
@@ -219,10 +223,40 @@ def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | No
     return {**compare_text(lines, text, subtitle), **({"box": box} if box else {}), **who}, call
 
 
+def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | None, *,
+              prompt: str = READ_PROMPT) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Ask the provider what the image spells, and again while what it reads would refuse, up to `MAX_READS`
+    readings: one that spells the text passes; only readings that all differ refuse. A call that fails is not
+    asked again: the check is `unverified` when nothing was read before it, and a misreading before it stands.
+    Returns (check, calls): the deciding reading's check, with every reading in order under `readings`, and a
+    call per reading. The one rule both text checks decide by."""
+    taken: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    for number in range(1, MAX_READS + 1):
+        check, call = _read_once(backend, image, workdir, text, subtitle, prompt)
+        taken.append(check)
+        calls.append({**call, "reading": number})
+        if check["verdict"] not in REFUSED:
+            break
+    read = [check for check in taken if check["verdict"] != "unverified"]
+    deciding = next((check for check in read if check["verdict"] == "match"), read[-1] if read else taken[-1])
+    readings = [{"reading": number, **{key: check[key] for key in ("verdict", "read", "normalized_read", "box", "reason")
+                                        if key in check}} for number, check in enumerate(taken, 1)]
+    return {**deciding, "max_reads": MAX_READS, "readings": readings}, calls
+
+
+def _reads(check: dict[str, Any]) -> str:
+    """What a refused check's readings spelled, in order: "['IO']", or "['IO'] and then ['I0']"."""
+    return " and then ".join(repr(reading["read"]) for reading in check["readings"] if "read" in reading)
+
+
 def _call(step: str, provider: str, details: dict[str, Any], elapsed: float | None = None) -> dict[str, Any]:
     auth = details.get("auth_source")
     entry = {"step": step, "provider": provider, "model": details.get("model"), "auth_source": auth,
              "transport": details.get("transport"), "route": route_of(auth)}
+    for key in ("effort", "reading"):  # a text check's reading: its number and the effort it was read at
+        if key in details:
+            entry[key] = details[key]
     if elapsed is not None:
         entry["elapsed_seconds"] = round(float(elapsed), 3)
     if details.get("error"):
@@ -370,11 +404,11 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
         report["calls"].append(_call("mood", result.provider, {**result.extra, "model": result.model},
                                      result.elapsed_seconds))
     report["files"]["mood"] = str(files["mood.png"])
-    check, call = read_text(backend, files["mood.png"], work, text, subtitle, prompt=MOOD_READ_PROMPT)
+    check, calls = read_text(backend, files["mood.png"], work, text, subtitle, prompt=MOOD_READ_PROMPT)
     report["text_check"]["mood"] = check
-    report["calls"].append(_call("mood-check", provider, call, call.get("elapsed_seconds")))
-    if check["verdict"] in ("mismatch", "no-text"):
-        raise _Refusal("mood-check", f"logo: the mood image reads {check['read']!r}, not {check['asked']!r} — the "
+    report["calls"] += [_call("mood-check", provider, call, call.get("elapsed_seconds")) for call in calls]
+    if check["verdict"] in REFUSED:
+        raise _Refusal("mood-check", f"logo: the mood image reads {_reads(check)}, not {check['asked']!r} — the "
                        "model dropped or changed the title; generate the mood image again (the lettering was "
                        "not bought)")
     if check["verdict"] == "unverified":
@@ -425,13 +459,13 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
     report["files"]["preview"] = str(files["logo.preview.png"])
     reading = work / "logo-read.png"
     _publish(logo_matte.reading_backdrop(logo), reading)
-    check, call = read_text(backend, reading, work, text, subtitle)
+    check, calls = read_text(backend, reading, work, text, subtitle)
     report["text_check"]["logo"] = check
-    report["calls"].append(_call("logo-check", report["provider"], call, call.get("elapsed_seconds")))
-    if check["verdict"] in ("mismatch", "no-text"):
+    report["calls"] += [_call("logo-check", report["provider"], call, call.get("elapsed_seconds")) for call in calls]
+    if check["verdict"] in REFUSED:
         _publish(logo, files["logo.rejected.png"])
         report["files"]["rejected"] = str(files["logo.rejected.png"])
-        raise _Refusal("logo-check", f"logo: the logo reads {check['read']!r}, not {check['asked']!r} — kept aside "
+        raise _Refusal("logo-check", f"logo: the logo reads {_reads(check)}, not {check['asked']!r} — kept aside "
                        f"as {files['logo.rejected.png'].name}; generate the lettering again (--mood "
                        f"{files['mood.png']} skips the mood image)")
     _publish(logo, files["logo.png"])

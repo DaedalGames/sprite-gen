@@ -8,8 +8,8 @@ as part of that world: its letterforms, materials and light come from the scene.
 is made in three steps:
 
 1. **mood** — a title screen (16:9) or poster (2:3) in the brief's style with the title
-   lettered in it. The text check reads it back; a title the model dropped or misspelt is
-   refused here, before the next image is bought.
+   lettered in it. The text check reads it back (a misreading is read once more); a title
+   the model dropped or misspelt is refused here, before the next image is bought.
 2. **lettering** — that picture attached as the reference of an image edit that asks for
    only its lettering, with the same letterforms, materials, colours, outlines, glows and
    effects, on a flat chroma key.
@@ -38,7 +38,7 @@ sprite-gen logo --provider codex --text "STARFALL" --lettering logo/lettering.pn
 | `--mood PATH` | start from a picture with the title already in it (a title screen you have, a candidate you picked): step 1 is not generated, its text is still read |
 | `--lettering PATH` | a lettering image already on a key is cut again (after a matte change, or for a lettering drawn elsewhere): nothing is generated; the logo's text is still read |
 | `--chroma-key` | `auto` (default), `magenta` or `green` — [below](#which-key) |
-| `--provider`, `--model`, `--quality`, `--resolution` | as `gen`, for both images and both text checks ([gen](gen.md)) |
+| `--provider`, `--model`, `--quality`, `--resolution` | as `gen`, for both images ([gen](gen.md)); the provider also reads both text checks, on its own reading model ([below](#the-text-check)) |
 | `--out-dir`, `--report` | where the files go; the report defaults to `<out-dir>/logo.report.json` |
 
 ## Files
@@ -70,8 +70,10 @@ its text could not be checked); `refused` (with `refused_at`: `mood-check`, `mat
   `visible_opaque_share`) and `key_hue_left` (visible pixels whose colour still carries the
   key's hue — 0 is the aim);
 - `text_check.mood` and `text_check.logo` (below);
-- `calls`: every call in order — `mood`, `mood-check`, `lettering`, `logo-check` — with its
-  provider, model, `auth_source`, `transport`, `elapsed_seconds` for the images, and `route`:
+- `calls`: every call in order — `mood`, `mood-check`, `lettering`, `logo-check`, a check's
+  call once for each reading it took, with its `reading` (1, 2) and the `effort` it was read
+  at (`null` where the provider names none) — with its provider, model, `auth_source`,
+  `transport`, `elapsed_seconds` for the images, and `route`:
   `subscription` (a codex ChatGPT login, a Grok login) or `per-call` (a codex API-key login,
   `XAI_API_KEY`, `OPENAI_API_KEY`; each said on stderr before its request leaves, as every
   metered call in sprite-gen is);
@@ -79,10 +81,10 @@ its text could not be checked); `refused` (with `refused_at`: `mood-check`, `mat
 
 ## The text check
 
-The provider that drew the images reads them back, once each, through the same vision call
-the facing check uses (`inspect_image`; codex `exec` read-only and ephemeral, or the xAI or
-OpenAI Responses API on the same credential). It is asked to return the lines of text as
-spelled, without being told what they should say. Both checks compare by one rule
+The provider that drew the images reads them back through the same vision call the facing
+check uses (`inspect_image`; codex `exec` read-only and ephemeral, or the xAI or OpenAI
+Responses API on the same credential). It is asked to return the lines of text as spelled,
+without being told what they should say. Both checks compare by one rule
 (`logo.normalize`), what the text spells:
 
 - **kept** — every letter and digit, and every mark written on one: an accent, a vowel
@@ -103,8 +105,31 @@ The subtitle may be read before or after the title. The verdict is one of:
 | `mismatch`, `no-text` | refused: the lettering is not bought | refused: the cut is kept as `logo.rejected.png` |
 | `unverified` (the call failed, or its answer was not the JSON asked for) | a warning; go on | `logo.png` is published with `status: unverified` and a warning: look at the preview |
 
-A model that reads stylised lettering can misread it; a refusal names what was read, so a
-person can judge, and `--mood` or `--lettering` starts again from the files already made.
+A model that reads stylised lettering can misread it, and the same picture read twice can
+come back two ways. So a reading that would refuse (`mismatch`, `no-text`) is read once
+more, up to `logo.MAX_READS` (2) readings: one that spells the text passes, and only when
+every reading differs is the image refused. Both checks decide by this one rule
+(`logo.read_text`). A call that fails is not asked again: with nothing read before it the
+check is `unverified`, and a misreading before it stands. Each check in the report keeps
+the deciding reading's verdict and `read`, `max_reads`, and `readings`: every reading in
+order with its number, verdict and what it read (or why it could not). A refusal names
+every reading, so a person can judge, and `--mood` or `--lettering` starts again from the
+files already made.
+
+A second reading can only pass a picture whose letters are wrong if the reader writes a
+stroke that is not drawn: it is never told what the text should say. Measured on a
+synthetic pixel title drawn one stroke short (쿠 drawn as 구, the middle bar of ㅋ left
+out), the codex reader below read that syllable as 구 in 10 readings of 10 and never as
+쿠, so neither one reading nor a check of two (0 of 5) could pass it.
+
+On codex the text checks read on `gpt-6-sol` at `high` reasoning effort, named on each call
+over the login's own `config.toml` (`facing_vision.CODEX_READ_MODEL` and
+`CODEX_READ_EFFORT`). A check is a gate, and its verdict should not change with the machine
+it runs on: left to each login's config, the same picture could be read on another model
+and effort on each machine, and the report could not say which. These are the model and
+effort the measurement above ran on. The report names the model and effort of every
+reading. `--model` names the images' model only; the facing check still runs on the login's
+config. The xAI and OpenAI checks read on their own fixed models, as the facing check does.
 
 ## Which key
 
@@ -167,10 +192,12 @@ is dense, cut the same lettering on the other key's terms by generating it again
 
 ## Cost
 
-Four calls a logo — two images and two text checks — on the provider named. On a
-subscription (codex ChatGPT login, Grok login) nothing is billed per call; `calls[].route`
-says which route each ran on. `--mood` saves the first image, `--lettering` both. Nothing is
-sent again on its own: a refusal is said and the run ends.
+Four to six calls a logo on the provider named: two images and two text checks, each read
+once, or twice when its first reading would refuse. On a subscription (codex ChatGPT login,
+Grok login) nothing is billed per call; `calls[].route` says which route each ran on.
+`--mood` saves the first image, `--lettering` both. Beyond a check's second reading, nothing
+is sent again on its own: a call that fails is not asked again, and a refusal is said and
+the run ends.
 
 ## Related
 
