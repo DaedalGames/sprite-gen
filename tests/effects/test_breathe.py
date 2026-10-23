@@ -10,6 +10,7 @@
   6. 행당 변형 상한 초과는 조용히 깎지 않고 멈춘다
 """
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -193,6 +194,31 @@ def _small_outlined() -> Image.Image:
     for x, y in edge:
         px[x, y] = (0, 0, 0, 255)                               # 1px 검은 외곽선
     return im
+
+
+def _outlined_figure(h: int = 200) -> Image.Image:
+    """큰 도트 그림 — 둥근 머리, 목, 아래로 넓어지는 몸통, 옆으로 뻗은 팔, 1px 검은 외곽선, 눈.
+
+    외곽선이 비스듬해 정수 행·열 사상이 곳곳을 2px 로 겹치고 다듬기가 실제로 지우고 옮긴다. 팔은
+    부속이라 보호 가중이 켜진다. 다듬기·보호 가중·행 사상이 작은 픽스처보다 훨씬 많은 줄에서 돈다."""
+    w = int(h * 0.9)
+    pad = h // 10
+    tall = h - 2 * pad
+    yy, xx = np.mgrid[0:h, 0:w]
+    x, y = xx + 0.5 - w / 2.0, yy + 0.5 - pad
+    head = (x / (0.13 * tall)) ** 2 + ((y - 0.16 * tall) / (0.15 * tall)) ** 2 <= 1.0
+    neck = (np.abs(x) <= 0.05 * tall) & (y >= 0.29 * tall) & (y < 0.36 * tall)
+    torso = (y >= 0.34 * tall) & (y < tall) & (np.abs(x) <= (0.12 + 0.10 * (y - 0.34 * tall) / (0.66 * tall)) * tall)
+    arms = (y >= 0.40 * tall) & (y < 0.47 * tall) & (np.abs(x) <= 0.36 * tall)
+    figure = head | neck | torso | arms
+    inside = np.zeros_like(figure)
+    inside[1:-1, 1:-1] = figure[1:-1, 1:-1] & figure[:-2, 1:-1] & figure[2:, 1:-1] & figure[1:-1, :-2] & figure[1:-1, 2:]
+    a = np.zeros((h, w, 4), np.uint8)
+    a[figure] = (210, 185, 120, 255)
+    a[figure & ~inside] = (0, 0, 0, 255)
+    for ex in (-0.05 * tall, 0.05 * tall):
+        a[(np.abs(x - ex) <= 1.5) & (np.abs(y - 0.15 * tall) <= 1.5)] = (20, 20, 24, 255)
+    return Image.fromarray(a, "RGBA")
 
 
 def test_side_outline_survives_every_phase() -> None:

@@ -28,7 +28,8 @@ from sprite_gen.effects.breathe import (MAX_ROW_STRAIN, anatomy_fingerprint,  # 
                                 row_strain)
 from sprite_gen.frames.extract import solid_alpha_bbox  # noqa: E402
 from sprite_gen.serve.serve_curation import CURATOR_DIR  # noqa: E402
-from tests.effects.test_breathe import CFG, _dome, _humanoid, _key, _small_outlined, _winged  # noqa: E402
+from tests.effects.test_breathe import (CFG, _dome, _humanoid, _key, _outlined_figure, _small_outlined,  # noqa: E402
+                                        _winged)
 
 CURATOR_BREATHE = CURATOR_DIR / "src" / "breathe.js"
 PHASES = [i / 12 for i in range(12)]
@@ -95,8 +96,11 @@ def _rgba(image):
     (_dome, {"depth_x": 0.12}),
     (_dome, {"depth": 0.10, "depth_x": 0.0}),
     (_dome, {"depth": 0.10, "torso_half": 6}),
+    # 큰 도트 그림 — 다듬기·부속 보호·행 사상이 수백 줄에서 돈다. 굽기를 numpy 로 바꿔도 미러(바꾸지
+    # 않은 화소 순회)와 바이트가 같은지 여기서 본다.
+    (_outlined_figure, {}),
 ], ids=["humanoid", "winged", "small-outlined-thinning",
-        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band"])
+        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band", "outlined-figure"])
 def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path):
     src = build()
     cfg = {**CFG, **overrides}
