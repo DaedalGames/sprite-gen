@@ -69,6 +69,9 @@ WIDE_SCALES = np.round(np.arange(0.92, 1.0801, 0.02), 3)
 WIDE_THETAS = np.arange(-8.0, 8.01, 1.0)
 HAMPEL_WINDOW = 5
 HAMPEL_FLOOR = {"tx": 0.5, "ty": 0.5, "s": 0.01, "th": 0.3}
+RING_IN, RING_OUT = (30, 14), (60, 42)  # px half-axes of the ellipses round the mouth the ring lies between
+RING_SEARCH = 16         # px each way a body frame's place is read again on the ring; twice this where the best is on the rim
+RING_OPAQUE = 200 / 255  # the ring reads the reference's lower face where it is this opaque
 DARK_LUMA, DARK_CHROMA, DARK_GROW = 110, 45, 3
 LINE_LUMA, LINE_GROW = 150, 2
 FOREIGN = 48             # a body pixel this far (any channel, 0..255) from the reference face is foreign
@@ -387,21 +390,38 @@ def hand_reach(body_ref: np.ndarray, reference: np.ndarray, w0: np.ndarray, geom
 
 @dataclass
 class Band:
-    """The anchor reference: auto_motion's masked-NCC reference tuple on the band round the layer, and the
-    reference's features on the band's box."""
+    """An anchor reference: auto_motion's masked-NCC reference tuple on a region of the reference (the band round
+    the layer, or the ring round the mouth), and the reference's features on the region's box."""
 
     reference: tuple
     features: np.ndarray
 
     @classmethod
     def read(cls, reference: Image.Image, w0: np.ndarray, geom: Geometry) -> Band:
-        ref = features(reference)
+        """The band round the layer, on which a frame's place, size and tilt are read (`fit`)."""
         rows = np.arange(geom.size[1])[:, None] < geom.band_bottom
-        band = parts_mod._dilate(w0 > 0, BAND) & ~(w0 > 0.98) & rows & ~eye_mask(geom)
-        ys, xs = np.nonzero(band)
+        return cls.on(features(reference), parts_mod._dilate(w0 > 0, BAND) & ~(w0 > 0.98) & rows & ~eye_mask(geom), 0.05)
+
+    @classmethod
+    def ring(cls, reference: Image.Image, w0: np.ndarray, geom: Geometry) -> Band:
+        """The ring round the mouth, on which a body frame's place is read again (`place_on`): the reference's own
+        lower face (`w0`, its weight) between the ellipses RING_IN and RING_OUT round the mouth, where it is opaque.
+        The mouth inside it is left out: a body's closed mouth smiles more or less than the reference's."""
+        h, w = w0.shape
+        yy, xx = np.mgrid[0:h, 0:w]
+        mx, my = geom.mouth
+
+        def inside(rx: float, ry: float) -> np.ndarray:
+            return ((xx - mx) / rx) ** 2 + ((yy - my) / ry) ** 2 < 1
+
+        return cls.on(features(reference), (w0 > 0) & inside(*RING_OUT) & ~inside(*RING_IN), RING_OPAQUE)
+
+    @classmethod
+    def on(cls, ref: np.ndarray, region: np.ndarray, opaque: float) -> Band:
+        ys, xs = np.nonzero(region)
         x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
         patch = ref[y0:y1, x0:x1]
-        mask = band[y0:y1, x0:x1] & (patch[:, :, 3] > 0.05)
+        mask = region[y0:y1, x0:x1] & (patch[:, :, 3] > opaque)
         flat = patch[mask]
         c = flat - flat.mean(axis=0)
         return cls(((x0, y0, x1, y1), mask, c, float(np.sqrt((c * c).sum()))), patch.copy())
@@ -491,6 +511,61 @@ def fit(band: Band, feat: np.ndarray, geom: Geometry) -> dict[str, Any]:
     rec["edge"] = bool(first["edge"])
     rec["place_only"] = [float(t0[0]), float(t0[1])]
     return rec
+
+
+def place_on(ring: Band, feat: np.ndarray, a: dict[str, Any], geom: Geometry) -> dict[str, Any]:
+    """Anchor `a` with its place read again on the ring round the mouth (`Band.ring`), its size and tilt kept: the
+    frame laid through `a` is matched to the ring within RING_SEARCH px (`register`), and within twice that where the
+    best sits on the search's rim."""
+    m = matrix(a, geom)
+    for radius in (RING_SEARCH, 2 * RING_SEARCH):
+        loc, origin, size = _local(ring.reference, radius + 1)
+        rr = register(loc, warp(feat, m @ shift(*origin), size).astype(np.float64), (0, 0), radius)
+        if not rr["edge"]:
+            break
+    moved = m @ shift(-rr["sx"], -rr["sy"])
+    c = np.asarray(geom.mouth)
+    t = moved[:2, 2] - c + moved[:2, :2] @ c
+    return {**a, "tx": float(t[0]), "ty": float(t[1])}
+
+
+def on_ring(used: list[dict[str, Any]], placed: list[dict[str, Any] | None], cyclic: bool) -> list[dict[str, Any]]:
+    """Each anchor with the place read on the ring round the mouth: `placed` is `place_on`'s anchor where the frame's
+    own mouth is closed and None where it is not (an open mouth moves the jaw and the skin round it). A read frame's
+    move from band to ring is checked as `hampel` checks an anchor, against the moves read among the HAMPEL_WINDOW
+    frames round it (three or more), and a misreading takes their median. A frame read on the ring takes its move; any
+    other takes the moves of the read frames round it, linear between the nearest on each side (wrapping on a loop),
+    the nearest one's past the first or the last. A clip with no frame read keeps its places. Each anchor records its
+    move (`ring`) and whether it was read (`ring_read`)."""
+    n, h = len(used), HAMPEL_WINDOW // 2
+    read_moves = {k: np.array([p["tx"] - used[k]["tx"], p["ty"] - used[k]["ty"]]) for k, p in enumerate(placed) if p is not None}
+    moves = {}
+    for k, d in read_moves.items():
+        near = [read_moves[j % n] for j in range(k - h, k + h + 1) if (cyclic or 0 <= j < n) and j % n in read_moves]
+        if len(near) >= 3:
+            v = np.stack(near)
+            med = np.median(v, 0)
+            mad = 1.4826 * np.median(np.abs(v - med), 0)
+            floor = np.array([HAMPEL_FLOOR["tx"], HAMPEL_FLOOR["ty"]])
+            d = med if (np.abs(d - med) > np.maximum(3 * mad, floor)).any() else d
+        moves[k] = d
+    read = sorted(moves)
+    out = []
+    for k, a in enumerate(used):
+        if k in moves or not read:
+            d = moves.get(k, np.zeros(2))
+        else:
+            before = [j for j in read if j < k] or ([j - n for j in read] if cyclic else [])
+            after = [j for j in read if j > k] or ([j + n for j in read] if cyclic else [])
+            if before and after:
+                j0, j1 = max(before), min(after)
+                t = (k - j0) / (j1 - j0)
+                d = (1 - t) * moves[j0 % n] + t * moves[j1 % n]
+            else:
+                d = moves[(max(before) if before else min(after)) % n]
+        out.append({**a, "tx": a["tx"] + float(d[0]), "ty": a["ty"] + float(d[1]),
+                    "ring": [round(float(d[0]), 3), round(float(d[1]), 3)], "ring_read": k in moves})
+    return out
 
 
 def band_residual(band: Band, feat: np.ndarray, m: np.ndarray) -> float:
