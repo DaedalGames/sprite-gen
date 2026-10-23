@@ -12,13 +12,16 @@
   4. 죽은 주인의 락을 회수하는 일과 새 락을 만드는 일은 줄을 선다 — 늦은 회수자가 옛 락을 판정한 동안 다른 writer 는
      기다리고, 회수자가 그 판정한 옛 락만 지우고 잡은 뒤에야 차례가 와 그 살아 있는 락을 대며 거절된다. 두 writer 가
      함께 쥐지 않는다
+  5. 락 항목을 만들고 내용을 다 쓰지 못한 writer 는 그 만들다 만 항목을 거두고 실패한다 — 주인을 확인할 수 없는 락이
+     남아 다음 writer 를 막지 않는다
 
-3·4 는 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다.
+3–5 는 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -77,6 +80,26 @@ runio._pid_alive = judged
 runio.acquire_run_dir_lock(Path(sys.argv[1]), "slow-reclaimer")
 print("slow-reclaimer", flush=True)
 sys.stdin.readline()
+"""
+
+# 파일 크기 한도(RLIMIT_FSIZE)를 락 내용보다 작게 둔 writer — 락을 만든 뒤 쓰기가 한도에서 EFBIG 로 끊긴다(디스크가 찬
+# 것과 같은 자리). SIGXFSZ 는 무시해 프로세스가 죽지 않고 쓰기가 실패하게 한다. 한도는 import 뒤에 건다.
+_CUT_SHORT_WRITER = r"""
+import os
+import resource
+import signal
+import sys
+from pathlib import Path
+from sprite_gen.spec import runio
+print(os.getpid(), flush=True)
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (16, resource.getrlimit(resource.RLIMIT_FSIZE)[1]))
+try:
+    runio.acquire_run_dir_lock(Path(sys.argv[1]), "cut-short-writer")
+except OSError as exc:
+    print("failed", exc.errno, flush=True)
+else:
+    print("cut-short-writer", flush=True)
 """
 
 
@@ -257,6 +280,8 @@ def test_a_writer_that_still_holds_its_lock_removes_it_when_it_exits(tmp_path, s
     assert not os.path.lexists(lock), "쥔 락을 남기고 끝났다"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="runio._pid_alive cannot tell a dead pid on Windows: os.kill(pid, 0) "
+                                                    "sends CTRL_C_EVENT there (an existing defect outside this test)")
 def test_a_late_reclaimer_and_another_writer_queue_so_only_one_of_them_holds_the_run_dir(tmp_path, start) -> None:
     """죽은 주인의 락을 회수하는 일과 새 락을 만드는 일은 줄을 선다 (회수 경합, 설계 판정 eve-20261023-135225).
 
@@ -290,3 +315,18 @@ def test_a_late_reclaimer_and_another_writer_queue_so_only_one_of_them_holds_the
     assert f"run dir is locked by slow-reclaimer (pid {slow.pid})" in writer.stderr()
     assert slow.finish() == 0, slow.stderr()
     assert not os.path.lexists(lock)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE and SIGXFSZ are POSIX")
+def test_a_writer_that_could_not_write_its_lock_takes_back_what_it_made(tmp_path, start) -> None:
+    """락 항목을 만들고 내용을 쓰다 끊긴 writer(파일 크기 한도에서 EFBIG — 디스크가 찬 것과 같은 자리)는 그 만들다 만 항목을
+    거두고 실패한다. 주인을 확인할 수 없는 그 항목이 남으면 다음 writer 가 15분 동안 거절된다."""
+    run = tmp_path / "run"
+    run.mkdir()
+    lock = run / runio.LOCK_FILENAME
+    writer = start(_CUT_SHORT_WRITER, run)
+    assert writer.line() == f"failed {errno.EFBIG}", writer.stderr()
+    assert writer.finish() == 0, writer.stderr()
+    assert not os.path.lexists(lock), f"다 쓰지 못한 락 항목이 남았다: {lock.read_bytes()!r}"
+    following = start(_STEPS, run, "following-writer")
+    assert following.finish() == 0, following.stderr()
