@@ -9,9 +9,9 @@ tongue in it). A hand can be raised over the right cheek from a sleeve below, a 
 clip is drawn at twice the size, as a face cut from the reference.
 
 `write_case(root)` writes the reference, a talking clip, five body clips (an idle loop, a greeting that talks with its
-own mouth and closes in a smile, a hand over the cheek, a head that goes 60 px up and back, a head that turns: its
-hair, headset and cheeks move and tilt, its mouth stays), the greeting's mouth timeline and a face request naming them
-all.
+own mouth and closes in a smile, a hand over the cheek, a head that goes 60 px up and back, a head that turns: it
+tilts about its mouth and its hair, headset and cheeks move further, its mouth stays), the greeting's mouth timeline
+and a face request naming them all.
 """
 from __future__ import annotations
 
@@ -54,8 +54,8 @@ GREET_VOICED = range(2, 9)
 GREET_OWN_END = 10
 HAND_FRAMES = range(4, 9)
 JUMP = [-60 * math.sin(math.pi * k / 8) for k in range(9)]
-# a head that turns: its hair, headset and cheeks go 12 px right and tilt 5 degrees, its mouth stays; closed but for
-# two frames that open
+# a head that turns: it tilts 5 degrees about its mouth, and its hair, headset and cheeks go 12 px right as well; its
+# mouth stays where it is. Closed but for two frames that open
 TURN_NEAR, TURN_FAR = 45.0, 85.0
 TURN = [math.sin(math.pi * k / 10) for k in range(11)]
 TURN_MOUTH = ["neutral"] * 4 + [1, 2] + ["neutral"] * 5
@@ -194,7 +194,7 @@ def write_case(root: Path) -> Path:
     _clip(root / "greet", greet)
     _clip(root / "cheek", [draw({"dy": 0.5 * math.sin(k)}, 3 if k in HAND_FRAMES else "neutral", hand=k in HAND_FRAMES) for k in range(10)])
     _clip(root / "jump", [draw({"dy": dy}) for dy in JUMP])
-    _clip(root / "turn", [draw(mouth=mouth, turn={"dx": 12 * w, "th": -5 * w}) for w, mouth in zip(TURN, TURN_MOUTH)])
+    _clip(root / "turn", [draw({"th": -5 * w}, mouth, turn={"dx": 12 * w, "th": -5 * w}) for w, mouth in zip(TURN, TURN_MOUTH)])
     rows = ["frame\tt_s\tstate\tsound"]
     for k, mouth in enumerate(GREET):
         state = "closed" if mouth in ("neutral", "smile") else "open"

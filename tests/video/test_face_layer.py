@@ -127,9 +127,9 @@ def test_size_and_tilt_are_read_with_the_place(case):
 
 
 def test_a_head_that_turns_is_placed_where_its_mouth_is(case):
-    """A head that turns moves its hair, headset and cheeks further than its mouth: the band reads them moved and tilted,
-    and its place would carry the layer off the mouth. Size and tilt stay the band's; the place is read on the skin
-    round the frame's closed mouth, and a frame whose mouth is open takes the move of the closed frames round it."""
+    """A head that turns moves its hair, headset and cheeks further than its mouth: the band reads them moved, and its
+    place would carry the layer off the mouth. Size and tilt stay the band's; the place is read on the skin round the
+    frame's closed mouth, and a frame whose mouth is open takes the move of the closed frames round it."""
     _, pack = case
     rows = [anchor(six) for six in body(pack, "turn")["to_body"]]
     for k, (w, mouth) in enumerate(zip(tf.TURN, tf.TURN_MOUTH)):
