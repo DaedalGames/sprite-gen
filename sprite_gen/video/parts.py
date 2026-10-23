@@ -91,11 +91,28 @@ WRAP = 4  # frames: the order is read from the clip's frames this near the loop'
 NB = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
-def _shift(m: np.ndarray, dy: int, dx: int, fill: Any = 0) -> np.ndarray:
-    """`m` moved dy rows down and dx columns right, `fill` where nothing moved in."""
-    h, w = m.shape[:2]
-    out = np.full_like(m, fill)
-    out[max(0, dy):h + min(0, dy), max(0, dx):w + min(0, dx)] = m[max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)]
+def _moved(h: int, w: int, dy: int, dx: int) -> tuple[tuple[slice, slice], tuple[slice, slice]]:
+    """Where an h x w picture moved dy rows down and dx columns right lies, and where in it that came from."""
+    return ((slice(max(0, dy), h + min(0, dy)), slice(max(0, dx), w + min(0, dx))),
+            (slice(max(0, -dy), h - max(0, dy)), slice(max(0, -dx), w - max(0, dx))))
+
+
+def _shift(m: np.ndarray, dy: int, dx: int, fill: Any = 0, out: np.ndarray | None = None) -> np.ndarray:
+    """`m` moved dy rows down and dx columns right, `fill` where nothing moved in; written into `out` where given."""
+    dst, src = _moved(*m.shape[:2], dy, dx)
+    if out is None:
+        out = np.full_like(m, fill)
+    else:
+        out.fill(fill)
+    out[dst] = m[src]
+    return out
+
+
+def _planes_max(a: np.ndarray, out: np.ndarray) -> np.ndarray:
+    """`a.max(-1)` written into `out`, plane by plane: the same values, without a reduction over a short last axis."""
+    np.maximum(a[..., 0], a[..., 1], out=out)
+    for k in range(2, a.shape[-1]):
+        np.maximum(out, a[..., k], out=out)
     return out
 
 
@@ -169,13 +186,19 @@ def _code(a: np.ndarray) -> np.ndarray:
 
 
 def _least(seed: np.ndarray, cost_to: list[np.ndarray]) -> np.ndarray:
-    """The least cost of a path from `seed` to every pixel, a step from a neighbour costing cost_to[k] of that pixel."""
-    d = np.where(seed, 0.0, np.inf).astype(np.float32)
+    """The least cost of a path from `seed` to every pixel, a step from a neighbour costing cost_to[k] of that pixel.
+    Each step is taken in place, over the pixels the neighbour moves between (elsewhere it adds to inf and changes
+    nothing), in the costs' precision. No array is made and dropped a step: in a long-lived process whose heap earlier
+    work left scattered, each one costs kernel time, and a reading takes thousands of steps."""
+    d = np.where(seed, 0.0, np.inf).astype(np.result_type(np.float32, *cost_to))
+    step = np.empty_like(d)
+    moves = [_moved(*d.shape, dy, dx) for dy, dx in NB]
     for k in range(ITERATIONS):
-        old = d
-        for c, (dy, dx) in zip(cost_to, NB):
-            d = np.minimum(d, _shift(d, dy, dx, np.inf) + c)
-        if k % 25 == 24 and np.array_equal(d, old):
+        old = d.copy() if k % 25 == 24 else None
+        for c, (dst, src) in zip(cost_to, moves):
+            np.add(d[src], c[dst], out=step[dst])
+            np.minimum(d[dst], step[dst], out=d[dst])
+        if old is not None and np.array_equal(d, old):
             break
     return d
 
@@ -220,25 +243,32 @@ class Masker:
 
     def _feet(self, a: np.ndarray, b: np.ndarray) -> float:
         """How far apart two frames' feet are: the mean of the nearer three quarters of the differences below
-        FEET_ROWS, at the best shift."""
+        FEET_ROWS, at the best shift. Only those rows are read, into arrays made once a call (see `_least`)."""
         top = int(FEET_ROWS * a.shape[0])
         best = math.inf
         r = self.feet_shift
+        feet = a[top:]
+        on_a = feet[..., 3] > 0.05
+        moved, diff = np.empty_like(b), np.empty_like(feet)
+        d, on = np.empty(feet.shape[:2], feet.dtype), np.empty(feet.shape[:2], bool)
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
-                bb = _shift(b, dy, dx)
-                d = np.abs(a - bb).max(-1)[top:]
-                on = ((a[..., 3] > 0.05) | (bb[..., 3] > 0.05))[top:]
+                bb = _shift(b, dy, dx, out=moved)[top:]
+                _planes_max(np.abs(np.subtract(feet, bb, out=diff), out=diff), d)
+                np.logical_or(on_a, np.greater(bb[..., 3], 0.05, out=on), out=on)
                 v = np.sort(d[on])
                 if v.size:
                     best = min(best, float(v[: max(1, int(0.75 * v.size))].mean()))
         return best
 
     def _far(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        """Per pixel of `a`, the least distance of its patch to `b`'s within SEARCH."""
+        """Per pixel of `a`, the least distance of its patch to `b`'s within SEARCH, in arrays made once a call (see
+        `_least`)."""
         best = np.full(a.shape[:2], np.inf, np.float32)
+        moved, diff, near = np.empty_like(b), np.empty_like(a), np.empty(a.shape[:2], a.dtype)
         for dy, dx in _disk(self.search):
-            best = np.minimum(best, np.abs(a - _shift(b, dy, dx)).max(-1))
+            _planes_max(np.abs(np.subtract(a, _shift(b, dy, dx, out=moved), out=diff), out=diff), near)
+            np.minimum(best, near, out=best)
         return best
 
     def _siblings(self, p: np.ndarray, at: float) -> list[int]:
