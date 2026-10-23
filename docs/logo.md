@@ -223,11 +223,22 @@ inside the letter, where no glow reaches; a glow fades out beside the letters an
 counter no farther than it reaches beside them. After the matte and trim,
 `logo_matte.see_through_inside` measures the logo on that difference: the see-through pixels
 (coverage under 240 of 255, `INSIDE_ALPHA8`) that are walled in by opaque lettering (no way
-out to a transparent pixel except across opaque ones; a gap of 2 px or narrower does not
-count as a way out) and lie farther from the opaque lettering than the logo's own glow
-reaches beside it. The glow's reach (`glow_reach_px`) is the 99th percentile of how far the
-see-through pixels that do have a way out lie from the opaque lettering, and at least 2 px
-(a letter's antialiased rim).
+out to the picture's edge except across opaque pixels) and lie farther from the opaque
+lettering than the logo's own glow reaches beside it. The way out starts from the
+transparent pixels on the edge of the trimmed logo and runs through transparent pixels and
+see-through ones; a see-through gap of 2 px or narrower does not count as a way, a
+transparent gap of any width does. Only what is joined to the picture's edge is outside,
+however narrowly: a hole joined to the outside, even through one pixel, is outside. A
+transparent hole walled in by the letters is no way out: an O's counter, or a letter colour
+cut all the way to nothing, such as a square of the key's colour painted inside a
+see-through patch; the see-through patch round such a hole is therefore still counted
+inside. Transparent pixels are never counted, only see-through ones: a letter's own counter,
+transparent and walled in by the letter, adds nothing, so big hollow letters with no glow
+give 0. The same way out decides both things: which see-through pixels are inside, and the
+glow's reach. The glow's reach (`glow_reach_px`) is the 99th percentile of how far the
+see-through pixels that have a way out to the picture's edge lie from the opaque lettering,
+and at least 2 px (a letter's antialiased rim); a see-through pixel whose only way out would
+be a hole inside the letters does not count toward the reach.
 
 When that share is 1 % (`INSIDE_MAX_PCT`) of the visible lettering or more, the logo is
 refused at the matte step (`refused_at: matte`) before its text is read; no logo text check
@@ -247,7 +258,22 @@ plum outline, one letter with a counter) on green have their mint patches cut se
 and 9.5 % of the visible lettering is found inside; the same letters with no colour in
 magenta's hue, on magenta, give 0 %. A white glow, dark-outlined gold letters with a cyan
 glow, a cyan glow pooled in an O's counter on green and on magenta, an orange glow on green,
-and pixel lettering with no glow give 0 % each.
+and pixel lettering with no glow give 0 % each. A navy letter block on green, in flat
+colours, with a mint patch walled in by it, has the mint cut see-through and 17.1 % of the
+visible lettering found inside; with one 9x9 square of the key's colour in the middle of the
+patch, cut to nothing, 16.9 %; with four such squares, two of them glued to the patch's
+wall, 16.6 %. The glow's reach stays 2 px in all three (there is no glow). Run through
+`sprite-gen logo` with `--lettering`, the letter with one square is refused at `matte`
+before its text is read, as the one without is. With the mint patch filling the letter but
+for a 4 px outline and a hole glued to the letter's edge, one pixel of the letter left
+between the hole and the key round the letter, the hole is sealed and 88.6 % of the visible
+lettering is found inside; when that one pixel is the key's colour, the hole is joined to
+the outside, the patch has a way out through it, and nothing is found. Big hollow O and A
+letters, whose counters are transparent and walled in by the letters, find nothing with no
+glow (0 px). With a glow pooled round a counter whose middle stays transparent, a white
+glow on magenta gives 0 %, dark-outlined gold letters with a cyan glow on green 0 %, and an
+orange glow on green 0.02 %; a sweep of white glows from 3 to 16 px on both keys finds at
+most 0.04 %.
 
 ### Known limit
 
@@ -264,11 +290,13 @@ again with `--chroma-key` (or accept the ring: at full size it sits inside the g
 brightest part).
 
 The see-through check has limits of its own. A letter colour cut all the way to nothing
-leaves a hole that looks like a counter and is not found; keeping such a key off the
-lettering is the key choice's job. See-through within the glow's reach of the opaque
+everywhere leaves holes that look like counters, and transparent pixels are not counted, so
+it is not found; keeping such a key off the lettering is the key choice's job. A see-through
+patch round such a hole is found. See-through within the glow's reach of the opaque
 lettering is taken for glow, so in a glowing title a key-hued patch narrower than about
-twice that reach is not found. A see-through patch on a letter's outer edge with no outline
-walling it in has a way out and is not inside.
+twice that reach is not found. A see-through patch with a way out to the picture's edge is
+not inside: one on a letter's outer edge with no outline walling it in, or one that a hole
+joins to the outside, even through one pixel.
 
 ## Cost
 
