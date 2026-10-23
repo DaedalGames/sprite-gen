@@ -325,12 +325,31 @@ def test_a_line_said_on_a_clip_that_talks_waits_for_its_own_mouth(case):
     frames = scene["frames"]
     assert len(frames) == tf.GREET_OWN_END + len(levels)
     assert all(f["face"] is None and f["body"] == "greet" and f["cell"] == t for t, f in enumerate(frames[:tf.GREET_OWN_END]))
-    assert scene["layer_from"] == tf.GREET_OWN_END and scene["set"] == "smile"
+    assert scene["line_start"] == tf.GREET_OWN_END and scene["wait"] == 0 and scene["set"] == "smile"
     assert all(f["face"] in pack["face"]["sets"]["smile"]["frames"] for f in frames[tf.GREET_OWN_END:])
     greet_cells = len(body(pack, "greet")["cells"])
     assert [(f["body"], f["cell"]) for f in frames[greet_cells:greet_cells + 3]] == [("idle", 0), ("idle", 1), ("idle", 2)]
     loop = player(root, {"scene": {"start": 5, "levels": levels}})["scene"]
     assert [f["cell"] for f in loop["frames"][:9]] == [5, 6, 7, 8, 9, 10, 11, 0, 1] and loop["set"] == "neutral"
+
+
+@needs_node
+def test_a_line_waits_for_a_frame_the_layer_can_come_on_at(case, tmp_path):
+    """No voice on a frame whose mouth cannot move: where the switch to the rest is over the jump line after the
+    clip's own mouth, the line starts at the first frame it is within, and the frames between show the clip as it is."""
+    root, pack = case
+    greet = body(pack, "greet")
+    rest = str(greet["entry"]["rest"])
+    late = json.loads(json.dumps(pack))
+    for k in range(tf.GREET_OWN_END, tf.GREET_OWN_END + 3):
+        body(late, "greet")["switch"][rest][k] = pack["rules"]["jump_line"] + 1
+    (tmp_path / "late.json").write_text(json.dumps(late), encoding="utf-8")
+    levels = _flap(padded().astype(np.float64), 48000, pack["rules"], False)
+    scene = player(root, {"pack": str(tmp_path / "late.json"), "scene": {"play": "greet", "levels": levels}})["scene"]
+    assert (scene["own_mouth"], scene["line_start"], scene["wait"]) == (tf.GREET_OWN_END, tf.GREET_OWN_END + 3, 3)
+    assert len(scene["frames"]) == tf.GREET_OWN_END + 3 + len(levels)
+    assert all(f["face"] is None for f in scene["frames"][:tf.GREET_OWN_END + 3])
+    assert scene["frames"][tf.GREET_OWN_END + 3]["face"] is not None
 
 
 # --- the bake -----------------------------------------------------------------------------------------------------
@@ -368,7 +387,7 @@ def test_a_baked_greeting_keeps_its_own_frames_and_sound_then_talks(case, tmp_pa
     _wav(tmp_path / "line.wav", tf.voice())
     report = face_bake.bake(root / "pack", tmp_path / "line.wav", tmp_path / "out", play="greet", lead=0.2)
     assert report["verdict"] == "pass", report["refused"]
-    assert report["line_start"] == report["layer_from"] == tf.GREET_OWN_END
+    assert report["line_start"] == report["own_mouth_frames"] == tf.GREET_OWN_END and report["wait_frames"] == 0
     for t in range(tf.GREET_OWN_END):
         out = np.asarray(Image.open(tmp_path / "out" / "frames" / f"frame-{t:05d}.png"))
         cell = np.asarray(Image.open(root / "pack" / body(pack, "greet")["cells"][t]))
