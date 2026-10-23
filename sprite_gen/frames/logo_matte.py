@@ -493,22 +493,35 @@ def key_hue_left(image: Image.Image, key: str) -> dict[str, Any]:
     return {"px": int(hued.sum()), "pct_of_visible": round(float(hued.sum()) / max(int(seen.sum()), 1) * 100, 3)}
 
 
-def see_through_inside(image: Image.Image) -> dict[str, Any]:
-    """See-through pixels inside the letters (coverage under INSIDE_ALPHA8): walled in by opaque lettering — no way
-    out to a transparent pixel but across opaque ones, a channel of INSIDE_CHANNEL_PX or less not counting as a way
-    out — and farther from the opaque lettering than its glow reaches beside it (`glow_reach_px`: the
-    INSIDE_REACH_QUANTILE of how far the see-through pixels with a way out lie from it, at least INSIDE_EDGE_PX for
-    a letter's antialiased rim). A glow fades out beside the letters and pools in a counter no farther than it
-    reaches there; a letter's own colour in the key's hue, cut as a mix with the key, is see-through inside the
-    letter. `wide` when that is INSIDE_MAX_PCT of the visible lettering or more."""
-    alpha = np.asarray(image.convert("RGBA"))[..., 3]
+def _way_out(alpha: np.ndarray) -> np.ndarray:
+    """The pixels with a way out of the lettering: those reached from the transparent pixels on the picture's edge
+    through transparent pixels and see-through ones (a channel of INSIDE_CHANNEL_PX or less not counting as a way),
+    and the not-opaque pixels within INSIDE_CHANNEL_PX of them. Only what is joined to the edge is outside, however
+    narrowly: a transparent hole walled in by the letters (a counter, or a letter's colour cut to nothing) is not a
+    way out."""
     transparent = alpha == 0
     not_opaque = alpha < 255
-    see = ~transparent & (alpha < INSIDE_ALPHA8)
     r = INSIDE_CHANNEL_PX // 2  # a pixel of a wider channel has its whole (2r+1)^2 window in the channel
     wide = not_opaque & (_box_sum(not_opaque.astype(np.float64), r) >= (2 * r + 1) ** 2)
-    way_out = _grow_into(transparent, wide | transparent)
-    way_out |= not_opaque & (_box_sum(way_out.astype(np.float64), INSIDE_CHANNEL_PX) > 0)
+    edge = np.zeros(alpha.shape, dtype=bool)
+    edge[0] = edge[-1] = True
+    edge[:, 0] = edge[:, -1] = True
+    way_out = _grow_into(transparent & edge, wide | transparent)
+    return way_out | (not_opaque & (_box_sum(way_out.astype(np.float64), INSIDE_CHANNEL_PX) > 0))
+
+
+def see_through_inside(image: Image.Image) -> dict[str, Any]:
+    """See-through pixels inside the letters (coverage under INSIDE_ALPHA8): walled in by the lettering — no way out
+    to the picture's edge but across opaque pixels (`_way_out`) — and farther from the opaque lettering than its glow
+    reaches beside it (`glow_reach_px`: the INSIDE_REACH_QUANTILE of how far the see-through pixels with a way out
+    lie from it, at least INSIDE_EDGE_PX for a letter's antialiased rim). A glow fades out beside the letters and
+    pools in a counter no farther than it reaches there; a letter's own colour in the key's hue, cut as a mix with
+    the key, is see-through inside the letter, and a hole cut to nothing in it opens no way out. `wide` when that is
+    INSIDE_MAX_PCT of the visible lettering or more."""
+    alpha = np.asarray(image.convert("RGBA"))[..., 3]
+    transparent = alpha == 0
+    see = ~transparent & (alpha < INSIDE_ALPHA8)
+    way_out = _way_out(alpha)
     depth = _ring_depth(alpha == 255, INSIDE_MAX_REACH_PX)
     beside = depth[see & way_out]
     reach = max(INSIDE_EDGE_PX, int(np.quantile(beside, INSIDE_REACH_QUANTILE)) if len(beside) else 0)
