@@ -17,6 +17,7 @@ import pytest
 from PIL import Image
 
 from sprite_gen.effects.anatomy import analyze
+from sprite_gen.effects.anatomy import axis_x as axis_centroid
 from pathlib import Path
 
 from sprite_gen.effects.breathe import (DEFAULT_DEPTH, MAX_ROW_STRAIN, SMOOTH_CYCLE_FRAMES, TAPER,
@@ -632,6 +633,61 @@ def test_face_detection_ignores_a_single_eye_paired_with_a_centred_mouth() -> No
     assert anat.face is not None
     # 눈쌍(44~52)이 이겨야 한다 — 입(56~62)까지 삼키면 bottom 이 훨씬 아래로 간다
     assert anat.face[0] < 56, f"눈쌍이 아니라 다른 짝이 이겼다: {anat.face}"
+
+
+TURNED_EYES = (70, 82)        # 3/4 흉상의 눈 행 (콘텐츠 기준, 아래 끝 제외)
+
+
+def _turned_bust(eyes: bool = True) -> Image.Image:
+    """화면을 채운 큰 흉상, 얼굴이 3/4 로 돌아갔다 — 작은 두 눈, 긴 꽁지머리, 목걸이 구슬 둘.
+
+    · 두 눈(120·140 px)은 그림 전체 불투명(76,420)의 0.2 % 에 못 미치고, 목 위 머리 불투명의 0.2 % 는 넘는다.
+    · 먼 눈은 속눈썹 줄(20x7, 비 2.86)이라 비 상한 2.5 를 넘는다 (3.0 안).
+    · 꽁지머리가 몸통 축을 화면 오른쪽으로 끌어, 먼 눈 가운데가 축에서 8 px — 콘텐츠 폭(240)의 0.05 에
+      못 미친다 (0.02 는 넘는다). 지금 규칙은 셋 중 어느 하나로도 이 쌍을 놓친다.
+    · 목걸이 구슬 둘(14x14)은 눈보다 크고 둘 다 축 왼쪽이다. 축을 사이에 두라는 것과 쌍 가운데가 축에
+      있으라는 두 대칭 조건을 빼면 이 둘이 쌍으로 잡혀 경계가 목 아래로 내려간다.
+    `eyes=False` 면 눈이 없다 — 구슬만 남는다."""
+    a = np.zeros((420, 400, 4), np.uint8)
+
+    def fill(x0, y0, x1, y1, color):
+        a[y0:y1, x0:x1] = color
+
+    fill(90, 200, 330, 420, (120, 140, 200, 255))      # 몸통 — 화면 아래 변에 닿는다
+    fill(140, 30, 262, 60, (150, 110, 90, 255))        # 앞머리
+    fill(250, 40, 300, 330, (150, 110, 90, 255))       # 꽁지머리 — 어깨 앞으로 늘어진다
+    fill(150, 40, 250, 170, (235, 205, 180, 255))      # 얼굴
+    fill(180, 170, 220, 200, (235, 205, 180, 255))     # 목 (병목)
+    image = Image.fromarray(a, "RGBA")
+    box = solid_alpha_bbox(image)
+    cx = box[0] + axis_centroid(image, box)            # 눈과 구슬은 불투명 위에 칠해 축을 안 옮긴다
+    dark = (20, 15, 25, 255)
+    y0 = box[1] + TURNED_EYES[0]
+    if eyes:
+        fill(cx - 43, y0, cx - 33, y0 + 12, dark)      # 가까운 눈 — 축 왼쪽 38 px
+        fill(cx - 2, y0 + 3, cx + 18, y0 + 10, dark)   # 먼 눈 — 속눈썹 줄, 축 오른쪽 8 px
+    for x in (cx - 80, cx - 40):                       # 목걸이 구슬 — 둘 다 축 왼쪽
+        fill(x, 215, x + 14, 229, (30, 25, 35, 255))
+    return Image.fromarray(a, "RGBA")
+
+
+def test_a_turned_face_on_a_large_bust_is_found_and_keeps_the_neck_boundary() -> None:
+    """지금 눈쌍 규칙이 못 찾을 때만 한 번 더 본다 — 면적 하한을 그림 전체 대신 목 위 머리로 재고, 비 상한
+    3.0, 축 거리 하한 0.02 w. 축을 사이에 두기·쌍 가운데가 축에·떨어져 있기·크기 비·행 겹침은 그대로라
+    목걸이 구슬은 짝이 되지 않는다. 얼굴이 목보다 위라 경계는 목 그대로다 — 경고만 사라진다."""
+    anat = analyze(_turned_bust())
+    assert anat.face is not None, anat.warnings
+    assert anat.face[0] == TURNED_EYES[0] and anat.face[1] >= TURNED_EYES[1], f"눈이 아닌 쌍: {anat.face}"
+    assert not any(w.startswith("face-absent") for w in anat.warnings), anat.warnings
+    assert (anat.rigid_row, anat.rigid_source) == (anat.neck_row, "neck"), "얼굴이 목 위인데 경계가 움직였다"
+
+
+def test_the_looser_eye_search_does_not_pair_a_necklace() -> None:
+    """눈이 없으면 목걸이 구슬 둘만 남는다 — 둘 다 축 한쪽이라 느슨한 규칙에서도 쌍이 아니다."""
+    anat = analyze(_turned_bust(eyes=False))
+    assert anat.face is None, f"목걸이가 얼굴로 잡혔다: {anat.face}"
+    assert any(w.startswith("face-absent") for w in anat.warnings)
+    assert anat.rigid_row == anat.neck_row
 
 
 # ── 9. Validator round 2 회귀 ───────────────────────────────────────
