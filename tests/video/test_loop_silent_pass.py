@@ -247,7 +247,15 @@ def test_a_wrap_a_part_on_its_own_beat_leaves_open_says_so_in_its_failure_line(t
     """The front walker's tail swings on a beat of its own: the cut covers two steps by the clip's crossings and the
     overlapped wrap is turned off. The seam gate's line keeps its words up to the reason and gives that reason in place of
     a return to the starting pose; the report says it (`seam_refusal`)."""
-    report = overlap._cut(tmp_path, overlap._keyed(tmp_path), interpolate=overlap.Reads(), overlap="off")
+    # the walker cut as `video-loop --state walk --anchor motion-auto --overlap-wrap off` cuts it
+    try:
+        loop_mod.run_loop(overlap._keyed(tmp_path), tmp_path / "out", fps=24.0, state="walk", min_len=None,
+                          max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name="loop",
+                          report_path=tmp_path / "loop.json", anchor="motion-auto", repair="auto",
+                          interpolate=overlap.Between(), overlap_wrap="off")
+    except SystemExit:
+        pass
+    report = json.loads((tmp_path / "loop.json").read_text())
     error = report["error"]
     assert error.startswith("video-loop: loop seam ratio") and "the cycle does not close — the cut covers two steps" in error
     assert "a part on a beat of its own (a tail, a held prop) closes on no cut of two steps" in error
