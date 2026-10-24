@@ -234,7 +234,9 @@ def foot_drift(frames: list[Image.Image], measured: dict) -> dict:
 def at_cut(frames: list[Image.Image], measured: dict, feet: dict, *, start: int, length: int) -> dict:
     """Whether a cut the caller names (`--cycle fixed`) changes size, and moves its feet, one cycle on as the clip reads
     them (`cycle_drift`, `foot_drift`), read on the cut itself at the cycle the caller named: each frame of the cut
-    against the frame `length` later, or `length` earlier where the cut runs to the clip's end.
+    against the frame `length` later, or `length` earlier where the clip ends before that. Each frame has one partner,
+    so a frame the clip holds beyond the cut is the partner of one frame of it, never the reading of the rest: read on
+    the frames with a partner later alone, one frame after a cut on the clip's last cycle left one pair to read it.
 
     The clip's reading is over every frame, so frames that are not the walk the cut is (a standing start, another
     motion before the walk, a long run-up), or a clip too short to show the walk's cycle twice inside the lags the
@@ -242,11 +244,10 @@ def at_cut(frames: list[Image.Image], measured: dict, feet: dict, *, start: int,
     `change` is the median of the cut's height ratios (`coverage_heights`) less 1 and `feet_px` the median move of its
     feet's row over the same pairs, both over one cycle; `expected` and `feet_expected_px` are the clip's reading
     carried over one cycle. `size` (`feet`): the cut shows at least AT_CUT_SHARE of the expected change, the same way.
-    No pair (the clip does not show the cut's frames a cycle apart): neither."""
+    `pairs` is how many of the cut's frames have a partner; none (the clip holds no frame a cycle from any): neither."""
     n = len(frames)
-    pairs = [(k, k + length) for k in range(start, start + length) if k + length < n]
-    if not pairs:
-        pairs = [(k - length, k) for k in range(start, start + length) if k - length >= 0]
+    pairs = [(k, k + length) if k + length < n else (k - length, k)
+             for k in range(start, start + length) if k + length < n or k - length >= 0]
     expected = (1 + measured["drift"]) ** (length / (n - 1)) - 1
     feet_expected = feet["change_px"] * length / (n - 1)
     record = {"pairs": len(pairs), "share": AT_CUT_SHARE, "expected": round(expected, 4),
