@@ -256,15 +256,30 @@ def relative_posix(path: PurePath, start: PurePath) -> str:
     return path.relative_to(start).as_posix()
 
 
+def _identity(path: Path) -> tuple[int, int] | None:
+    """`path` 를 열 때 닿는 항목의 장치·inode — 링크는 따라가고, 아직 없으면(`Path.exists` 가 없다고 하면) None."""
+    if not path.exists():
+        return None
+    found = path.stat()
+    return found.st_dev, found.st_ino
+
+
+def _ancestors(path: Path, identity: Callable[[Path], tuple[int, int] | None] = _identity) -> set[tuple[int, int]]:
+    """`path` 의 조상(`path.parents`) 가운데 있는 것들의 장치·inode."""
+    return {found for parent in path.parents if (found := identity(parent)) is not None}
+
+
 def same_folder(a: Path, b: Path) -> bool:
     """같은 폴더(또는 파일)인가 — 장치·inode 로 본다. 링크로 돌아 들어와도, 대소문자를 가리지 않는 볼륨에서 철자만
     달라도 같다. 둘 중 하나가 아직 없으면 같지 않다."""
-    return a.exists() and b.exists() and a.samefile(b)
+    found = _identity(a)
+    return found is not None and found == _identity(b)
 
 
 def inside_folder(path: Path, folder: Path) -> bool:
     """`path` 가 `folder` 안에 드는가 — 조상 가운데 `folder` 와 같은 폴더가 있다. `path` 는 아직 없어도 된다."""
-    return any(same_folder(parent, folder) for parent in path.parents)
+    found = _identity(folder)
+    return found is not None and found in _ancestors(path)
 
 
 _MAX_LINKS = 40  # 이보다 많은 링크를 지나면 고리다 (리눅스 커널의 한도, macOS 는 32)
@@ -334,27 +349,41 @@ def refuse_overlap(inputs: Mapping[str, Path | None], outputs: Mapping[str, Path
     경로(None 은 건너뜀), `outputs` 는 이름 → 이 실행이 갈아 끼우거나 지우는 항목(파일이나 폴더 — 출력이 더해지기만
     하는 폴더는 넣지 않는다). 입력마다 `follow_path` 로 따라가, 닿은 실경로가 출력과 같거나(덮어씀), 출력 안에
     들거나(지움), 찾아본 항목 가운데 하나가 출력 안에 들면(그 항목이 지워져 길이 끊기거나 링크 너머가 지워짐)
-    거절한다. `holds` 에 이름이 든 출력은 입력 안에 들어도 거절한다(입력 안에 씀). 실경로와 장치·inode 로 보므로
-    링크와 대소문자를 가리지 않는 볼륨의 다른 철자도 같은 항목이다. 한 번의 호출 안에서 이미 본 항목은 다시 재지
-    않는다(찾은 입력이 많아도 공통 조상은 한 번). 따라갈 수 없는 입력(링크 고리)은 이름을 대며 거절한다."""
+    거절한다. `holds` 에 이름이 든 출력은 입력 안에 들어도 거절한다(입력 안에 씀). 출력은 받은 이름 그대로 연다 —
+    그 자리에 이미 있는 링크는 따라간 곳이 출력이다. 실경로와 장치·inode 로 보므로 링크와 대소문자를 가리지 않는
+    볼륨의 다른 철자도 같은 항목이다(`same_folder`, `inside_folder` 의 비교). 한 번의 호출 안에서 이미 본 항목은
+    다시 재지 않고, 항목마다 장치·inode 도 한 번만 찾는다(찾은 입력이 많아도 공통 조상과 출력은 한 번). 따라갈 수
+    없는 입력(링크 고리)은 이름을 대며 거절한다."""
     say = f"{verb}: " if verb else ""
     looked_at: set[Path] = set()
+    known: dict[Path, tuple[int, int] | None] = {}
+
+    def identity(entry: Path) -> tuple[int, int] | None:  # nothing is made or moved before the call ends
+        if entry not in known:
+            known[entry] = _identity(entry)
+        return known[entry]
+
+    places = {out: identity(place) for out, place in outputs.items()}
+    held = {out: _ancestors(outputs[out], identity) for out in holds if out in outputs}
     for flag, given in inputs.items():
         if given is None:
             continue
         looked, path = follow_input(flag, Path(given).expanduser(), verb=verb)
         fresh = [entry for entry in looked if entry not in looked_at]
         looked_at.update(fresh)
+        found, above = identity(path), _ancestors(path, identity)
+        passed = [(entry, _ancestors(entry, identity)) for entry in fresh]
         for out, place in outputs.items():
-            if same_folder(path, place):
+            at = places[out]
+            if at is not None and at == found:
                 kind = "folder" if path.is_dir() else "file"
                 raise SystemExit(f"{say}{flag} and {out} are the same {kind}: {path} (an input is never overwritten)")
-            if inside_folder(path, place):
+            if at is not None and at in above:
                 raise SystemExit(f"{say}{flag} lies inside {out}: {path} ({replaces}, never an input)")
-            through = next((entry for entry in fresh if inside_folder(entry, place)), None)
+            through = next((entry for entry, over in passed if at is not None and at in over), None)
             if through is not None:
                 raise SystemExit(f"{say}{flag} goes through {through}, inside {out} ({replaces}, never an input)")
-            if out in holds and inside_folder(place, path):
+            if out in held and found is not None and found in held[out]:
                 raise SystemExit(f"{say}{out} lies inside {flag}: {place} (a run is never written into its input)")
 
 

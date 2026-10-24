@@ -601,7 +601,7 @@ def test_overwriting_any_input_is_refused(case,tmp_path):
     paths,_,_=case
     baseline,origin,src=cli_args(case)
     old=paths['meta'].read_bytes()
-    with pytest.raises(SystemExit,match='cannot overwrite'):
+    with pytest.raises(SystemExit,match='--baseline-meta and --report are the same file'):
         main(['video-loop-repair',*baseline,*origin,*src,'--out-dir',str(tmp_path/'unsafe'),'--report',str(paths['meta'])])
     assert paths['meta'].read_bytes()==old and not (tmp_path/'unsafe').exists()
 

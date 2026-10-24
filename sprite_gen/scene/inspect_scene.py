@@ -111,7 +111,7 @@ def output_path(out, scene: Scene) -> Path:
     if path.name == LOCK_FILENAME or path.name.endswith(RWLOCK_SUFFIX):
         raise ValueError("inspection output must not use a reserved lock name")
     protected = [Path(p) for p in scene.source_fingerprints]
-    if path in protected or any(same_folder(path, p) for p in protected):
+    if any(same_folder(path, p) for p in protected):
         raise ValueError("inspection output cannot overwrite scene inputs")
     if path.exists() and not path.is_file():
         raise ValueError("inspection output must be a file")

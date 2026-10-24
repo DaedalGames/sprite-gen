@@ -414,7 +414,7 @@ def add_arguments(parser):
 def _output_path(out, source, sequence):
     path = Path(out).expanduser().resolve()
     protected = {Path(source).expanduser().resolve(), *(Path(p).resolve() for p in sequence.source_files)}
-    if path in protected or any(same_folder(path, p) for p in protected):
+    if any(same_folder(path, p) for p in protected):
         raise ValueError("motion report must not overwrite an asset source file")
     if path.name == ".sprite-gen.lock" or path.name.endswith(".sg-rwlock"):
         raise ValueError("motion report must not overwrite an output lock")

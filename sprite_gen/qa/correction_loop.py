@@ -19,6 +19,9 @@ from sprite_gen.qa import score as score_mod
 from sprite_gen.spec.runio import LOCK_FILENAME, atomic_write_text, refuse_overlap, relative_posix, same_folder
 from sprite_gen.util.console import utf8_streams
 
+BEST_CANDIDATE = "best-candidate"
+REPORT = "correction-loop.report.json"
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -42,10 +45,10 @@ def _skipped_by_copy(out_dir: Path) -> Callable[[Path], bool]:
                          or (not path.is_symlink() and same_folder(path, out_dir)))
 
 
-def _links_copied(source: Path, skipped: Callable[[Path], bool]) -> list[Path]:
-    """Every link in `source` the copy follows (`shutil.copytree` reads a linked file's bytes and a linked folder's
-    content), the linked folders walked too, as found there: what the copy reads beside the run dir's own entries."""
-    links: list[Path] = []
+def _copied(source: Path, skipped: Callable[[Path], bool]) -> list[Path]:
+    """Every entry the copy of `source` reads, as found there: each file, folder and link (`shutil.copytree` reads a
+    linked file's bytes and a linked folder's content), the linked folders walked too."""
+    found: list[Path] = []
     todo, walked = [source], set()
     while todo:
         with os.scandir(todo.pop()) as entries:
@@ -53,14 +56,39 @@ def _links_copied(source: Path, skipped: Callable[[Path], bool]) -> list[Path]:
                 path = Path(entry.path)
                 if skipped(path):
                     continue
-                if entry.is_symlink():
-                    links.append(path)
+                found.append(path)
                 if entry.is_dir():
                     folder = entry.stat()
                     if (folder.st_dev, folder.st_ino) not in walked:  # a folder linked twice, or a link loop, once
                         walked.add((folder.st_dev, folder.st_ino))
                         todo.append(path)
-    return links
+    return sorted(found)
+
+
+def _attempt(out_dir: Path, attempt: int) -> dict[str, Path]:
+    """What attempt `attempt` writes in the out dir: its folder and, in it, the inspection, the score, the hints and the
+    provider's log (written when a provider runs after the attempt)."""
+    folder = out_dir / f"attempt-{attempt}"
+    return {"folder": folder, "inspect": folder / "inspect.json", "score": folder / "score.json",
+            "hints": folder / "correction-hints.txt", "log": folder / "provider.log"}
+
+
+def _candidate(out_dir: Path, attempt: int) -> Path:
+    """Where the provider makes the run dir attempt `attempt` inspects."""
+    return out_dir / f"candidate-{attempt}"
+
+
+def _written(out_dir: Path, *, passes: int, preserve_best: bool) -> list[Path]:
+    """Every entry the loop writes in the out dir, at the path it writes: each attempt's folder and its files, each
+    candidate the provider makes (a loop of more than one pass runs a provider), the best candidate's copy and the
+    report."""
+    written: list[Path] = []
+    for attempt in range(1, passes + 1):
+        files = _attempt(out_dir, attempt)
+        written += [path for key, path in files.items() if key != "log" or attempt < passes]
+        if attempt > 1:
+            written.append(_candidate(out_dir, attempt))
+    return [*written, *([out_dir / BEST_CANDIDATE] if preserve_best else []), out_dir / REPORT]
 
 
 def _copy_run_dir(source: Path, target: Path, skipped: Callable[[Path], bool]) -> None:
@@ -97,32 +125,35 @@ def run_loop(
     given = run_dir
     run_dir = run_dir.expanduser().resolve()
     out_dir = (out_dir or (run_dir / "correction-loop")).expanduser().resolve()
-    # The loop never writes over, moves or deletes the run it reads: the run dir, and every link its copy follows
-    # (each with every link or folder its path looks up), is never the out dir or inside it. The out dir may lie in
-    # the run dir (the default does): it is added to it, and the copy leaves it out.
+    # The loop never writes over, moves or deletes the run it reads: the run dir, and every entry its best candidate's
+    # copy reads there (each with every link or folder its path looks up), is never anything the loop writes — the out
+    # dir and each entry the loop writes in it, at the path it writes, a link already there followed — nor inside one.
+    # The out dir may lie in the run dir (the default does): it is added to it, and the copy leaves it out.
     skipped = _skipped_by_copy(out_dir)
-    found = _links_copied(run_dir, skipped) if run_dir.is_dir() else []
+    found = _copied(run_dir, skipped) if run_dir.is_dir() else []
+    written = _written(out_dir, passes=max_passes if provider_command and not dry_run else 1, preserve_best=preserve_best)
     refuse_overlap({"--run-dir": given, **{f"{relative_posix(p, run_dir)} in --run-dir": p for p in found}},
-                   {"--out-dir": out_dir}, replaces="the loop writes its attempts and best candidate there")
+                   {"--out-dir": out_dir, **{f"{relative_posix(p, out_dir)} in --out-dir": p for p in written}},
+                   replaces="the loop writes its attempts and best candidate there")
     out_dir.mkdir(parents=True, exist_ok=True)
     attempts: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None
     current = run_dir
 
     for attempt in range(1, max_passes + 1):
-        attempt_dir = out_dir / f"attempt-{attempt}"
-        attempt_dir.mkdir(parents=True, exist_ok=True)
+        files = _attempt(out_dir, attempt)
+        files["folder"].mkdir(parents=True, exist_ok=True)
         inspect_report = inspect_mod.inspect_run(current, states=states)
         scored = score_mod.score_inspection(inspect_report)
-        atomic_write_text(attempt_dir / "inspect.json", json.dumps(inspect_report, ensure_ascii=False, indent=2) + "\n")
-        atomic_write_text(attempt_dir / "score.json", json.dumps(scored, ensure_ascii=False, indent=2) + "\n")
-        _write_hints(attempt_dir / "correction-hints.txt", scored["hints"])
+        atomic_write_text(files["inspect"], json.dumps(inspect_report, ensure_ascii=False, indent=2) + "\n")
+        atomic_write_text(files["score"], json.dumps(scored, ensure_ascii=False, indent=2) + "\n")
+        _write_hints(files["hints"], scored["hints"])
         record = {
             "attempt": attempt,
             "run_dir": str(current),
-            "inspect_report": str(attempt_dir / "inspect.json"),
-            "score_report": str(attempt_dir / "score.json"),
-            "hint_file": str(attempt_dir / "correction-hints.txt"),
+            "inspect_report": str(files["inspect"]),
+            "score_report": str(files["score"]),
+            "hint_file": str(files["hints"]),
             "ok": scored["ok"],
             "overall_score": scored["overall_score"],
             "candidate_rank": scored["candidate_rank"],
@@ -141,8 +172,8 @@ def run_loop(
             break
         if not provider_command:
             raise SystemExit("correction loop needs --provider-command, or use --dry-run for an inspect/score/hint demo")
-        next_run_dir = out_dir / f"candidate-{attempt + 1}"
-        prompt_file = attempt_dir / "correction-hints.txt"
+        next_run_dir = _candidate(out_dir, attempt + 1)
+        prompt_file = files["hints"]
         # The template is split first and each argument filled in after, so a substituted
         # path is never re-read as shell syntax: POSIX splitting would drop the backslashes
         # of a Windows path and break a path that holds a space or a quote.
@@ -151,7 +182,7 @@ def run_loop(
         command = shlex.join(argv)
         completed = subprocess.run(argv, capture_output=True, text=True)
         atomic_write_text(
-            attempt_dir / "provider.log",
+            files["log"],
             completed.stdout + ("\n--- stderr ---\n" + completed.stderr if completed.stderr else ""),
         )
         if completed.returncode != 0:
@@ -163,7 +194,7 @@ def run_loop(
     assert best is not None
     preserved_best = None
     if preserve_best:
-        preserved = out_dir / "best-candidate"
+        preserved = out_dir / BEST_CANDIDATE
         _copy_run_dir(Path(best["run_dir"]), preserved, skipped)
         preserved_best = str(preserved)
     result = {
@@ -176,7 +207,7 @@ def run_loop(
         "best_candidate": best,
         "preserved_best": preserved_best,
     }
-    atomic_write_text(out_dir / "correction-loop.report.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    atomic_write_text(out_dir / REPORT, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     return result
 
 

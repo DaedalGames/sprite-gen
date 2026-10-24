@@ -159,7 +159,7 @@ def test_cli_writes_unknown_successfully_and_refuses_corrupt_input_or_overwrite(
     r = json.loads(output.read_text())
     assert r["kind"] == compare.KIND and r["verdict"] == "unknown"
     assert json.loads(capsys.readouterr().out) == r
-    with pytest.raises(SystemExit, match="cannot overwrite"):
+    with pytest.raises(SystemExit, match="--baseline-meta and --report are the same file"):
         main(args + ["--report", str(a["meta"])])
     _edit(b["meta"], lambda d: d.update(w=1))
     with pytest.raises(SystemExit, match="size agrees"):
