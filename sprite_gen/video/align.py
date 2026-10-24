@@ -7,7 +7,8 @@ to be the same number of frames and to start on the same step. So every loop of 
 resampled to the set's median length L*: frame k of the new loop is the source loop at time
 k·L/L* (cyclic, offset 0), so a time that lands on a source frame takes that frame as filmed
 and only the times between two frames are made by RIFE — each kept unless it smeared, lost its
-outline or carries a ghost, where the nearer source frame is taken instead (`--between auto`, the
+outline, carries a ghost or opened a hole through a limb that neither source frame beside it has,
+where the nearer source frame is taken instead (`--between auto`, the
 default; `rife` keeps every made frame and warns, `nearest` makes none); a made frame kept that
 cross-fades two drawings inside its silhouette is named to look at. Every frame delivered,
 filmed or made, passes the ghost screen (`interpolation_quality.ghost_screen`): a filmed frame half
@@ -237,7 +238,8 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
     [i, j], "t": t}` for one made between two.
 
     A time between two source frames is made by `interpolate`, with what it added and the outline it
-    lost measured (`rife.smear`), its own ghost read (`rife.ghost`), and judged (`faults`); `between`
+    lost measured (`rife.smear`), its own ghost read (`rife.ghost`), the holes it opened inside its
+    silhouette that neither source frame has there (`rife.hole`), and judged (`faults`); `between`
     auto keeps a made frame with no fault and takes the nearer source frame where it has one, rife
     keeps every made frame, nearest makes none and takes the nearer source frame (the motion keeps the
     filmed frames at up to half a frame off their time). Every made frame is listed in `smear` with
@@ -293,7 +295,7 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
             made = interpolate(a, b, frac)
             measure = {**rife_mod.smear(made, a, b), "outline_shift": rife_mod.outline_shift(made, a, b),
                        "ghost": rife_mod.ghost(made) if screen["reads"] else None,
-                       "crossfade": rife_mod.crossfade(made, a, b, frac)}
+                       "crossfade": rife_mod.crossfade(made, a, b, frac), "hole": rife_mod.hole(made, a, b)}
             wrong = faults(measure)
             keep = between == "rife" or not wrong
             taken = ({"between": [i % count, (i + 1) % count], "t": round(frac, 4)} if keep
@@ -747,7 +749,10 @@ def _fault_line(name: str, m: dict[str, Any], ghost: dict[str, Any] | None = Non
             *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it"
                + ("" if m["outline_shift"] is None else f", {100 * m['outline_shift']:.2f} % lighter than theirs at the same rank")
                + " — a melted or ghost limb"] if "outline" in m["faults"] else []),
-            *([f"carries {_ghost_words(m['ghost'])} — a ghost"] if "ghost" in m["faults"] else [])]
+            *([f"carries {_ghost_words(m['ghost'])} — a ghost"] if "ghost" in m["faults"] else []),
+            *([f"opened a transparent hole inside its outline over {100 * m['hole']:.2f} % of its body, at least "
+               f"{rife_mod.HOLE_THICK} px thick, where neither source frame beside it has one — a gap through a limb"]
+              if "hole" in m["faults"] else [])]
     if m["method"] == "nearest":
         return (f"{name}: frame {m['at']}: RIFE's frame " + "; ".join(what)
                 + (", so the nearer source frame was taken there (--between auto)" if ghost is None else
@@ -1023,7 +1028,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                                         "its gait floor is the shortest cycle the screen looks for")
     parser.add_argument("--between", choices=BETWEEN, default=DEFAULT_BETWEEN,
                         help="a time between two source frames: auto (default) makes that frame with RIFE and keeps it unless it smeared, "
-                             "lost its outline (a melted limb) or carries a ghost (a part-covered band), where the nearer source frame is "
+                             "lost its outline (a melted limb), carries a ghost (a part-covered band) or opened a hole through a limb "
+                             "(a transparent gap inside its outline neither source frame beside it has), where the nearer source frame is "
                              "taken and named in the warnings; rife keeps every made frame and warns on those; nearest takes the nearer "
                              "source frame — nothing made, no RIFE needed, the motion up to half a frame off its time. Every made frame is "
                              "measured in the report (`smear`); under auto and nearest a filmed ghost frame gives way to a clean source "

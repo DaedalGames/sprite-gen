@@ -14,7 +14,9 @@ the flow failed and melted a limb into the fill; `outline_shift` reads that edge
 neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost — where the
 neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
 part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
-whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4). `passes` runs
+whole silhouette, a reading to look at, not a fault; `hole` reads a transparent hole a made frame opened
+inside its silhouette that neither neighbour has there, where the two runs disagree inside a limb
+(docs/loop-repair.md section 4). `passes` runs
 the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
 `torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
@@ -58,6 +60,7 @@ import PIL
 from PIL import Image, ImageFilter, PngImagePlugin
 
 from sprite_gen._deps import np
+from sprite_gen.video.frames import _components, _near
 
 BINARY = "rife-ncnn-vulkan"
 MODEL = "rife-v4.6"
@@ -99,6 +102,12 @@ OUTLINED = 0.75
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
 GHOST_THICK = 5
+# `hole`: a pixel under solid (alpha under 0.5) that the outside of the picture cannot reach without crossing the solid
+# body is a hole; a made frame's is its neighbours' where either of them is under solid within HOLE_REACH pixels of it
+# (a gap between an arm and the body, kept or moved a little by the flow), and counts where it makes a region at least
+# HOLE_THICK pixels thick: a pinhole a pixel or two wide, an antialiased crevice, is opened away.
+HOLE_REACH = 4
+HOLE_THICK = 5
 # `crossfade`: an edge's local range is read over this many pixels, wider than RIFE's blur, so a
 # softened edge keeps its height and a cross-faded one does not; strong edges are counted in windows
 # this share of the body's height; a window that kept under CROSSFADE_KEEP of its source frames'
@@ -455,6 +464,34 @@ def ghost(frame: Image.Image) -> float:
     lo, hi = PARTIAL_ALPHA
     thick = _mask((alpha > lo) & (alpha < hi), GHOST_THICK, ImageFilter.MinFilter)
     return round(float(thick.sum()) / max(1, int((alpha >= 0.5).sum())), 5)
+
+
+def _enclosed(solid: np.ndarray) -> np.ndarray:
+    """The pixels off `solid` that the outside of the picture cannot reach without crossing it (8-connected)."""
+    ys, starts, stops, pieces, _ = _components(~solid, diagonal=True)
+    h, w = solid.shape
+    inside = ~np.isin(pieces, pieces[(ys == 0) | (ys == h - 1) | (starts == 0) | (stops == w)])
+    out = np.zeros_like(solid)
+    for y, x0, x1 in zip(ys[inside], starts[inside], stops[inside]):
+        out[y, x0:x1] = True
+    return out
+
+
+def hole(made: Image.Image, a: Image.Image, b: Image.Image) -> float:
+    """A hole a made frame opened inside its silhouette that neither neighbour has there: of its pixels under solid
+    that the outside cannot reach without crossing its solid body, those with no pixel under solid in either neighbour
+    within HOLE_REACH, in regions at least HOLE_THICK pixels thick (opened by a square that wide), as a fraction of its
+    solid pixels. The coverage run can carry a gap one neighbour has between two legs into a leg the colour run keeps
+    whole: the frame shows the leg's fill on both sides of a transparent band, with no line round it, and nothing
+    added and no part coverage to read. A gap a neighbour has there — between an arm and the body, kept or moved a
+    little by the flow — is theirs. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
+    m, fa, fb = (np.asarray(f.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0 for f in (made, a, b))
+    solid = m >= 0.5
+    if not solid.any():
+        return 0.0
+    opened = _enclosed(solid) & ~_near((fa < 0.5) | (fb < 0.5), HOLE_REACH)
+    thick = _mask(_mask(opened, HOLE_THICK, ImageFilter.MinFilter), HOLE_THICK, ImageFilter.MaxFilter)
+    return round(float(thick.sum()) / int(solid.sum()), 5)
 
 
 def _local_range(x: np.ndarray) -> np.ndarray:

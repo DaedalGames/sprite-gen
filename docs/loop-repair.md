@@ -1282,7 +1282,8 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
 - **Smear and melt, per made frame**: `cycle_align.smear` lists every frame RIFE made, with its
   `method` — `rife` (kept) or `nearest` (a source frame beside it taken instead) — its `faults`,
   its own ghost reading (`ghost`, below; `null` where the screen does not read the loop), its
-  cross-fade reading and what to `look` at (`crossfade`, below — named, never judged), and what
+  cross-fade reading and what to `look` at (`crossfade`, below — named, never judged), the holes
+  it opened inside its silhouette that neither source frame has there (`hole`, below), and what
   it has that neither source frame beside it has (`rife.smear`):
   - `dark_excess`: dark pixels (luma under 70/255) inside the body beyond the darker neighbour's
     count, as a fraction of its solid pixels — a black smear raises it, a dark part that only
@@ -1474,6 +1475,41 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     blends their guesses part-covered, which the augmentation, combining them inside the binary, does
     not. Nor can the binary's own augmented calls be read for it: a call with `-x` from a to b and one
     from b to a agree where the single passes do not.
+- **A hole through a limb, per made frame** (`rife.hole`): RIFE runs a frame's colour and its
+  coverage apart (section 1), and where a step opens a gap between the legs in one source frame and
+  not the other, the coverage run can carry that gap into a leg the colour run keeps whole: a
+  transparent band through the leg, its fill on both sides. Nothing is added, no part coverage is
+  left to read, and the leg's own fill is all the line round the band — a fill darker than 70/255
+  (dark tights, a boot) is outline to the dark line, and one lighter than that is lost rank by rank
+  only where it is 50/255 lighter than the source frames' lines at the same rank, which light lines
+  elsewhere on the art (fur, hair drawn without a dark line) hide; the fault `outline` needs both.
+  Neither reading is about a hole.
+  - `hole`: of the made frame's pixels under solid (alpha under 0.5) that the outside of the
+    picture cannot reach without crossing its solid body, those with no pixel under solid in either
+    source frame within **4 px** (`rife.HOLE_REACH`, a square) — a gap between an arm and the body
+    that they have, kept or moved a little by the flow, is theirs — in regions at least **5 px**
+    thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or an antialiased crevice a
+    pixel or two wide opens away), as a fraction of its solid pixels.
+  - Over **0** (`interpolation_quality.HOLE_WARN`) the frame has a hole through a limb: the fault
+    `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` ("… opened a
+    transparent hole inside its outline over 2.69 % of its body, at least 5 px thick, where neither
+    source frame beside it has one — a gap through a limb, so the nearer source frame was taken
+    there"); `rife` keeps it, named. A hole that thick which neither source frame has near it is one
+    whatever its size: a gap a step opens between the legs lies where the source frame that shows it
+    open has it, and is that frame's; a gap the flow opens through a lock of hair is read the same
+    way as one through a leg.
+  - What it does not read: a band cut through a leg's edge rather than inside it reaches the
+    outside and is no hole (the outline rules read its edge as before); a hole within 4 px of a
+    gap a source frame has is read as that gap moved.
+  - Read only on the frames the alignment makes (`hole` in each `smear` row). The jump repair, the
+    eased retime and the overlapped wrap (section 2) do not read it, and neither do the versioned
+    measures of `video-loop-compare` and `video-loop-repair`.
+  - On the synthetic figure of `tests/video/test_inbetween_hole.py` — rectangles outlined in black,
+    legs filled darker than 70/255, one source frame with its legs side by side and the other with a
+    gap between them — the frame between with a band 8 px wide through its far leg reads
+    `outline_loss` 0 and `outline_shift` 11.3 %, no fault before this reading, and `hole` 2.69 %;
+    the frame drawn between, the same with the arm's gap 3 px on, and the same with a pinhole 3 px
+    wide through the leg read 0.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings
