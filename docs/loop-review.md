@@ -53,7 +53,9 @@ limit; otherwise source refusal stands. Passing cuts, `--seam-max 1000` included
 not read again, keeping identical bytes.
 
 Only where read again, `seam_after_anchor` records `source_seam_ratio`, `seam_ratio`,
-`largest_step_ratio`, and `largest_step_into` (pass or fail). The ramp closes the wrap
+`largest_step_ratio`, and `largest_step_into` (pass or fail). It also records `read`,
+`drawings`, and `hold` for the cells read again, and its `largest_step_into` is the
+first frame of a drawing. The ramp closes the wrap
 of a cut whose frames at the wrap jump sideways and moves the jump a few frames into the
 loop; read at the wrap alone, every such cut of the test walk passed (one or two frames
 moved 2 to 10 px); a window of steps beside the wrap misses a jump one frame longer than
@@ -66,7 +68,67 @@ does not close. Repaired frames check the wrap alone, a walk whose ordinary step
 uneven can read a step over the limit on the cells that play and is refused as before,
 and `--anchor feet` reads source frames.
 
-After this rule, the step gate reads cells between drawings for every walk or run loop that plays round. A known limit on walks held on twos or threes was measured on synthetic side walks sliding 0.1 px a frame, cut one stride by hand with `--anchor body` without repair from six starts each. The seam gate reads frames, not drawings: a cut whose wrap falls between drawings reads wrap 2.13 to 4.87 times the mean step on filmed frames and fails, though between drawings it closes (wrap 0.90 to 1.60). The body anchor rule also reads frame by frame, refusing all cuts on those held walks even where the ramp closed the wrap (cell wrap 0.00 to 1.77), because largest frame steps are 2.48 to 3.43 while cells between drawings step at most 1.32 to 1.70. Those cuts stay refused; reading seam gate and anchor rules between drawings is left to later work. Unheld walks of the same probe were unaffected.
+For any walk or run whose seam ratio gates the cut (neither pinned nor played once), the
+seam is read between the loop's drawings rather than frame by frame, using each drawing's
+first frame (`loop.seam_drawings`, built on `repair.flow_drawings`), the same reading the
+step gate uses. This applies in three places: the seam gate itself, both on
+source frames (`seam_measurement: source-frames`) and on rendered cells (`rendered-cells`:
+`--anchor motion` or `motion-auto`, a frame made by repair, or the body anchor rule); the
+body anchor's ramp rule on the cells that play, reading both the wrap and every step
+between the cells' drawings; and `--anchor motion-auto`'s candidate seam gate before a cut
+is taken (`loop.seam_on_cells` through `loop.wrap_on_cells`), which chooses among two-step
+cuts from foot crossings and judges overlapped wrap attempts. A loop showing fewer than
+three drawings is read on every frame (`seam_read.read: cells`), as the step gate skips
+such loops. A walk drawn a frame each (hold 1) has every frame a drawing, giving the same
+values, the same failure line, and the same loop files byte for byte. Reports record
+`seam_read` (`read`, `drawings`, `hold`) on every walk or run whose seam ratio gates the
+cut; `seam_after_anchor` gains the same three fields for cells read again, and its
+`largest_step_into` is the first frame of a drawing. Strip sidecar `strip.json` and the
+failure line of the seam gate do not change.
+
+On synthetic test frames of a 24-frame stride side walk standing in place, cut one stride
+from a drawing's first frame, the wrap reads 1.02 on twos and 0.95 on threes between drawings
+and passes, where frame-by-frame readings were 2.13 and 3.14 (refused before). When sliding
+0.3 px a frame and cut by hand with `--anchor body`, source frames still read 3.25 (twos)
+and 2.38 (threes) between drawings, but after the ramp moves the wrap back, the cells that
+play read wrap 1.02 and 0.98, and largest step 1.47 and 1.58 between drawings (passes, where
+frame-by-frame cell steps of 2.41 and 3.31 were refused). Under `--anchor motion-auto`, the
+side walk on twos cut at 0/24 reads 1.00 between drawings (2.10 frame by frame), and a second
+side walker on threes reads 0.75 (2.40 frame by frame). For a walker on threes with a big
+tail on its own beat, motion-auto's seam gate read tried two-step cuts at 3.81 to 4.07 frame
+by frame; between drawings the first tried reads 1.35, but it is out of phase by 4.3 frames,
+so the search's own cut stands. Jumps remain refused: a last drawing moved 10 px sideways
+reads 4.10 (twos) and 2.85 (threes) between drawings; on the sliding walk the ramp moves that
+jump into the loop, and the largest step between the cells' drawings is 5.52 and 2.45, so the
+refusal matches `--anchor none`. A ramp limitation also still refuses 3 of 24 cuts on threes
+sliding 0.2 to 0.3 px a frame: the ramp shifts cells by whole pixels, and where it moves the
+frames of one drawing apart, cells read as a drawing a frame, reading largest steps of 2.85
+to 2.99 on both the ramp rule and the step gate.
+
+Known limits (measured on the synthetic walk standing in place, cut from frame 0):
+- Between drawings, a wrap a few drawings off the stride reads as an ordinary step,
+  because one drawing step covers two or three frames of motion.
+- Cut length: drawn a frame each, cuts of 16 to 22, 28, and 30 frames of the 24-frame
+  stride are refused (2.38 to 4.07; 23 and 26 pass). On twos, cuts of 16 to 28 frames pass
+  (1.02 to 1.67) and 30 is refused (2.06). On threes, cuts of 16 to 30 frames all pass
+  (0.95 to 1.48).
+- Last drawing moved sideways: drawn a frame each, a last frame moved 2 px is refused
+  (3.05). On twos, a last drawing moved 2 px passes (1.66) and 3 px is refused (2.03). On
+  threes, it passes up to 4 px (1.73) and is refused from 6 px (2.14).
+- Sliding 0.2 px a frame with `--anchor body`, the ramp passes cuts of 16 to 28 frames on
+  twos (30 refused) and 16 to 30 on threes, a last drawing moved 2 px on twos (3 px refused)
+  and up to 6 px on threes (8 px refused).
+- The step gate, which already read between drawings before this change, passes the same
+  cuts (largest step 1.26 to 1.86); the frame-by-frame seam gate refused every such held
+  cut, closing ones included.
+- Synthetic motion has a fixed amplitude, so a cut off the stride stays within it; these
+  numbers do not translate directly into how visible such a cut is on a drawn walk.
+- The seam value is a mean over the whole frame, so the body and legs weigh most; on the
+  synthetic walk, the seam value between drawings alone does not see a small part (here
+  the arm) jumping at the wrap of a cut that skips a third of the cycle: on twos, the
+  16-frame cut has the arm cross its whole swing in one drawing at the wrap (a step moves
+  a sixth) at seam 1.26, the 20-frame cut crossing half; on threes, the 22-frame cut has the
+  stride drawings with the last shown one frame instead of three, a beat slip it cannot see.
 
 ## Material for a vision-capable reviewer
 

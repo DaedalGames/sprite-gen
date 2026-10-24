@@ -65,7 +65,7 @@ ANALYSIS_SIZE = 96  # thumbnail edge for the distance matrix
 STRIP_MAX_CELLS = 64  # upper bound on cells even when they are narrow
 STRIP_MAX_WIDTH = 32000  # Chrome refuses images wider than ~32767 px; the cap is on PIXELS — a 650 px cell allows only 49 cells (2026-09-09 wolf idle: 64 cells = 41,664 px, unrenderable)
 STRIP_MAX_HEIGHT = 520
-SEAM_RATIO_MAX = 2.0  # loop seam / mean adjacent distance inside the cycle
+SEAM_RATIO_MAX = 2.0  # loop seam / mean adjacent distance inside the cycle (a walk's or run's between its drawings, `seam_drawings`)
 # A walk's or run's largest step between drawings as it plays, the wrap one of them, over their mean step
 # (`drawing_steps`): past it the loop jumps inside, where the seam ratio, read at the wrap alone, does not look. Read
 # between drawings, not frames: a loop held on twos or threes steps nothing and then two or three steps at every drawing.
@@ -295,7 +295,8 @@ def distance_matrix(files: list[Path]) -> np.ndarray:
 
 
 def _seam_on_cells(cells: list[Image.Image]) -> tuple[float, float, np.ndarray]:
-    """Cells as they play, on their analysis features: the mean step, the wrap (last -> first) and each step."""
+    """Cells as they play (a walk's each drawing's first, `seam_drawings`), on their analysis features: the mean step, the
+    wrap (last -> first) and each step."""
     flat = np.stack([_small_features(im) for im in cells])
     steps = np.abs(flat[1:] - flat[:-1])
     return float(steps.mean()), float(np.abs(flat[-1] - flat[0]).mean()), steps.mean(axis=1)
@@ -1372,9 +1373,10 @@ def cell_features(frames: list[Image.Image], box: tuple[int, int, int, int] | No
 
 
 def wrap_on_cells(frames: list[Image.Image]) -> float:
-    """The seam gate's reading of a loop's frames as corrected: cropped to their union box, the wrap over the mean step
-    on the analysis thumbnail — the rendered cells the gate reads, short of the strip's scale."""
-    flat = cell_features(frames)
+    """The seam gate's reading of a walk's frames as corrected: cropped to their union box, the wrap over the mean step
+    on the analysis thumbnail, between the loop's drawings (`seam_drawings`) — the rendered cells the gate reads, short of
+    the strip's scale."""
+    flat = cell_features(frames)[seam_drawings(frames)[0]]
     step = float(np.abs(flat[1:] - flat[:-1]).mean())
     return float(np.abs(flat[-1] - flat[0]).mean()) / step if step > 0 else math.inf
 
@@ -1409,6 +1411,27 @@ def step_jitter(before: Image.Image, after: Image.Image, *, pixel: float, mean: 
     return {"move": [dx, dy], "ratio_moved_back": round(ratio, 4)} if ratio <= STEP_RATIO_MAX else None
 
 
+def drawing_firsts(cells: list[Image.Image]) -> tuple[list[int], int]:
+    """A loop's cells as they play, by drawing (`repair.flow_drawings`: a cell held on twos or threes shows its drawing
+    again): each drawing's first cell, in play order round the loop, and the hold. A loop drawn a frame each is every
+    cell, in order."""
+    runs, hold = repair_mod.flow_drawings(repair_mod.flow_states(cells))
+    return [run[0] for run in runs], hold
+
+
+def seam_drawings(cells: list[Image.Image]) -> tuple[list[int], dict[str, Any]]:
+    """The cells a walk's or run's seam is read on, in play order round the loop, and the reading (`seam_read`): each
+    drawing's first (`drawing_firsts`), as the step gate reads its steps. Read cell by cell, a loop held on twos or threes
+    steps nothing and then two or three steps at each drawing: a wrap between two drawings reads two or three times the
+    mean step where the loop closes, and a step into a drawing as much where nothing jumps. Every cell of a loop that
+    shows fewer than three drawings (`read: cells`), as the step gate skips it; a loop drawn a frame each is every cell
+    either way, and reads as it did."""
+    firsts, hold = drawing_firsts(cells)
+    if len(firsts) < 3:
+        return list(range(len(cells))), {"read": "cells", "why": "fewer than three drawings", "drawings": len(firsts), "hold": hold}
+    return firsts, {"read": "drawings", "drawings": len(firsts), "hold": hold}
+
+
 def drawing_steps(cells: list[Image.Image], pixel: float = 1.0) -> dict[str, Any] | None:
     """A loop's cells as they play, read between their drawings (`repair.flow_drawings`: a cell held on twos or threes
     shows its drawing again): each drawing's first cell on the analysis features (`_small_features`) and the step into the
@@ -1417,10 +1440,9 @@ def drawing_steps(cells: list[Image.Image], pixel: float = 1.0) -> dict[str, Any
     (`largest_ratio`, from the cell `largest_from` into the cell `largest_into`, each a drawing's first), the steps over
     STEP_RATIO_MAX that are one (`jitter`, larger first, where there are any), and the wrap's (`wrap_ratio`). None for a
     loop of fewer than three drawings."""
-    runs, hold = repair_mod.flow_drawings(repair_mod.flow_states(cells))
-    if len(runs) < 3:
+    firsts, hold = drawing_firsts(cells)
+    if len(firsts) < 3:
         return None
-    firsts = [run[0] for run in runs]
     flat = np.stack([_small_features(cells[k]) for k in firsts])
     steps = np.abs(np.roll(flat, -1, axis=0) - flat).mean(axis=1)
     mean = float(steps[:-1].mean())
@@ -1435,7 +1457,7 @@ def drawing_steps(cells: list[Image.Image], pixel: float = 1.0) -> dict[str, Any
         if moved is None:
             break
         jitter.append({"from": firsts[largest], "into": into, "ratio": round(float(steps[largest]) / mean, 4), **moved})
-    return {"read": "drawings", "drawings": len(runs), "hold": hold, "mean_step": round(mean, 6),
+    return {"read": "drawings", "drawings": len(firsts), "hold": hold, "mean_step": round(mean, 6),
             "largest_ratio": round(float(steps[largest]) / mean, 4) if mean > 0 else None,
             "largest_from": firsts[largest], "largest_into": into,
             "wrap_ratio": round(float(steps[-1]) / mean, 4) if mean > 0 else None,
@@ -2206,9 +2228,18 @@ def run_loop(
         idx = [min(L - 1, i2) for i2 in (round(k * L / n_out) for k in range(n_out))]
         pick = resampled_cells(strip, strip_meta, idx, L)
     seam_idx = [i + j for j in idx]
-    resampled_adjacent = float(np.mean([D[seam_idx[k], seam_idx[k + 1]] for k in range(len(seam_idx) - 1)]))
-    resampled_seam = float(D[seam_idx[-1], seam_idx[0]])
     on_cells = report_base["seam_measurement"] == "rendered-cells"
+    # A walk's or run's seam is read between its drawings, as its steps are (`seam_drawings`), where the seam ratio gates
+    # the cut: not a pin or a cut played once. Any other loop's, and a walk drawn a frame each, on every frame.
+    by_drawing = prof.gait and cycle["kind"] not in ("pinned", *nonloop.KINDS)
+    seam_read = None
+    read_idx = seam_idx
+    if by_drawing and not on_cells:
+        # The source frames the distances were read on, each drawing's first.
+        firsts, seam_read = seam_drawings([gait_frames[j] for j in seam_idx])
+        read_idx = [seam_idx[k] for k in firsts]
+    resampled_adjacent = float(np.mean([D[read_idx[k], read_idx[k + 1]] for k in range(len(read_idx) - 1)]))
+    resampled_seam = float(D[read_idx[-1], read_idx[0]])
     source_ratio = resampled_seam / resampled_adjacent if resampled_adjacent > 0 else math.inf
     # The body anchor moved the cells to close a wrap the source frames refuse: the cells that play are read again. Where
     # the seam ratio gates the cut, not a pin or a cut played once.
@@ -2216,8 +2247,10 @@ def run_loop(
               and source_ratio > seam_max)
     if on_cells or ramped:
         # The actual corrected/repaired/resampled strip cells, with the same limit — a cell given way to the frame
-        # beside it as filmed (`seam_as_filmed`), on the strip the cut makes with those frames.
-        adjacent, wrap, steps = _seam_on_cells(resampled_cells(*strip_of(seam_frames), idx, L) if as_filmed else pick)
+        # beside it as filmed (`seam_as_filmed`), on the strip the cut makes with those frames; a walk's between its drawings.
+        cells = resampled_cells(*strip_of(seam_frames), idx, L) if as_filmed else pick
+        on, cells_read = seam_drawings(cells) if by_drawing else (list(range(len(cells))), None)
+        adjacent, wrap, steps = _seam_on_cells([cells[k] for k in on])
     if ramped:
         # The ramp spreads whatever offset the wrap shows over the loop: a jump of a few frames comes out moved into the
         # loop, not closed. So the cells overrule the source frames only where their wrap and every step of the loop are
@@ -2227,13 +2260,18 @@ def run_loop(
             "source_seam_ratio": round(source_ratio, 4) if math.isfinite(source_ratio) else None,
             "seam_ratio": round(wrap / adjacent, 4) if adjacent > 0 else None,
             "largest_step_ratio": round(float(steps[largest]) / adjacent, 4) if adjacent > 0 else None,
-            "largest_step_into": idx[largest + 1],
+            "largest_step_into": idx[on[largest + 1]],
+            **(cells_read or {}),
         }
         if adjacent > 0 and wrap / adjacent <= seam_max and float(steps[largest]) / adjacent <= seam_max:
             report_base["seam_measurement"] = "rendered-cells"
             on_cells = True
     if on_cells:
         resampled_adjacent, resampled_seam = adjacent, wrap
+        seam_read = cells_read
+    if seam_read is not None:
+        # What the seam ratio below was read on: the drawings, as many as there are, and the hold.
+        report_base["seam_read"] = seam_read
     seam_ratio = resampled_seam / resampled_adjacent if resampled_adjacent > 0 else math.inf
     delay_ms = max(20, round(1000 * cycle_seconds / n_out))
     gif_path = out_dir / f"{name}.gif"
