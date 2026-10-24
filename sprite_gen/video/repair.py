@@ -1425,8 +1425,9 @@ HEAD_MEDIAN_FLOOR = 0.05  # % of body height: a median step below this is the tr
 # The top band's step into the loop's first frame, over the loop's median step, beyond which the
 # wrap pops (docs/loop-repair.md section 3, "The seam pop"). It sits between walks holding a part
 # that sways on its own beat and walks without one, on the cut as it plays and on the source frames
-# the cut is chosen from. Above it the cut is chosen again (`--anchor motion-auto`), and a pop that
-# stays is a warning line.
+# the cut is chosen from. Above it the cut is chosen again (`--anchor motion-auto`), and it is the
+# seam pop gate's default bound (`video-loop --seam-pop-max`): a loop that pops over it is refused,
+# with the gate off a warning line.
 SEAM_POP_REFERENCE = 10.0
 # The held side's seam (docs/loop-repair.md section 3, "The held side"): a held part that swings on
 # its own beat misses below its top too — under the hand, where the top band does not reach. Read
@@ -1523,6 +1524,15 @@ def seam_pop(alphas: list[np.ndarray]) -> dict[str, Any]:
     record["pop"] = round(pop, 3)
     record["pops"] = pop > SEAM_POP_REFERENCE
     return record
+
+
+def seam_pop_of(frames: list[Image.Image]) -> dict[str, Any]:
+    """`seam_pop` of a loop's frames read as `measure_jolt` reads the loop (their alpha in their union box), or
+    `skipped` (why) where the top band cannot be read."""
+    try:
+        return seam_pop(coverage(frames, union_box(frames)))
+    except ValueError as exc:
+        return {"skipped": str(exc)}
 
 
 def held_side(masks: list[np.ndarray]) -> str:
@@ -1653,10 +1663,32 @@ def seam_pop_verdict(measured: dict[str, Any], *, head_step_max: float | None = 
             and pop[axis]["wrap_over_median"] > pop["reference"] and not (axis == "x" and said)]
     if not axes:
         return []
-    words = {"x": "sideways", "y": "up or down"}
-    return ["the top of the silhouette jumps into the loop's first frame "
-            + ", ".join(f"{words[a]} {v['wrap_pct']:.2f} % of the body height, {v['wrap_over_median']:.1f}x its median step" for a, v in axes)
+    return ["the top of the silhouette jumps into the loop's first frame " + _pop_axes(axes)
             + f" (over {pop['reference']:g}x): a part held above the head swings on its own beat and does not close at this cut"]
+
+
+def _pop_axes(axes: list[tuple[str, dict[str, Any]]]) -> str:
+    words = {"x": "sideways", "y": "up or down"}
+    return ", ".join(f"{words[a]} {v['wrap_pct']:.2f} % of the body height, {v['wrap_over_median']:.1f}x its median step" for a, v in axes)
+
+
+def seam_pop_gate(pop: dict[str, Any], *, pop_max: float | None) -> dict[str, Any]:
+    """The seam pop as a gate (section 3, "The seam pop"): `pop` (`seam_pop`, or `skipped`) against `pop_max`
+    (`video-loop --seam-pop-max`, SEAM_POP_REFERENCE by default; None: off). `verdict` is `refused` where the pop is
+    over `pop_max`, `passed` where it is not, `unreadable` where the top band could not be read — not refused, and
+    `why` says it — and `off` with the pop as read."""
+    if pop_max is None:
+        return {"verdict": "off", "max": None, "pop": pop.get("pop")}
+    if "skipped" in pop:
+        return {"verdict": "unreadable", "max": pop_max, "pop": None, "why": pop["skipped"]}
+    return {"verdict": "refused" if pop["pop"] > pop_max else "passed", "max": pop_max, "pop": pop["pop"]}
+
+
+def seam_pop_words(pop: dict[str, Any], pop_max: float) -> str:
+    """Where the top band jumps into the loop's first frame over `pop_max` times its median step, in words: each axis
+    whose largest step is the wrap and over the bound, how far (% of the body height) and how many times its step."""
+    return _pop_axes([(axis, pop[axis]) for axis in ("y", "x")
+                      if pop[axis]["wrap_is_largest"] and pop[axis]["wrap_over_median"] > pop_max])
 
 
 def jolt_verdict(measured: dict[str, Any], *, jolt_max: float | None = JOLT_REFERENCE,

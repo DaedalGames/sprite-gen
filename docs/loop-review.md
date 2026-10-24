@@ -202,7 +202,11 @@ section 3, "The seam pop"; `cycle.seam_pop`). A first choice whose top closes, o
 nothing more is measured. Once it pops, the held part is read below its top as well, on the side
 the top band sits on: a cut whose shaft closes under the hand is taken first, and where no cut one
 step long closes it, a window two steps long — one cycle — is (`cycle.steps`, `strip.json`
-`steps: 2`; [loop repair](loop-repair.md) section 3, "The held side"). An explicit `--max-len` is
+`steps: 2`; [loop repair](loop-repair.md) section 3, "The held side"). Where the seam pop gate would
+refuse the cut so chosen, the next of the search's candidates in search order is read, and the first of
+up to four cuts the gate does not refuse is taken; if all four fail, the first choice stays and fails on
+the loop. See [loop repair](loop-repair.md) section 3, "The seam pop gate", recorded as
+`cycle.seam_pop_gate`. An explicit `--max-len` is
 never widened, nor cut back to half the clip: an explicit window is the window, on every path that
 sets a length (the count of steps and the one-shot failover below included), and a cut outside it
 fails ([loop repair](loop-repair.md) section 3, "The step screen"). Without one, only
