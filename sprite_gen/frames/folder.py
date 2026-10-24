@@ -14,6 +14,7 @@ A frame's time is what a loop's strip meta writes (`delay_ms`), in ms rounded to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -68,6 +69,25 @@ def open_frames(frames: Path, out: Path, verb: str) -> Frames:
     if len({im.size for im in images}) != 1:
         raise SystemExit(f"{verb}: 프레임 크기가 서로 다르다 — {sorted({im.size for im in images})}")
     return Frames(paths, images, out_real)
+
+
+def reference_frame(path: Path | str | None, frames: Frames, verb: str) -> tuple[Image.Image, dict[str, Any] | None]:
+    """The frame the frames are read against (`--reference`) and its record (path and sha256 of its file): `path`, a loop
+    set's first cell for a stretch of the loop that starts elsewhere, one size with the frames — or, without it, the first
+    frame and no record."""
+    if path is None:
+        return frames.images[0], None
+    path = Path(path).expanduser()
+    try:
+        data = path.read_bytes()
+        with Image.open(path) as opened:
+            image = opened.convert("RGBA")
+    except OSError as exc:
+        raise SystemExit(f"{verb}: --reference {path}: not read ({exc})") from exc
+    if image.size != frames.images[0].size:
+        raise SystemExit(f"{verb}: --reference {path} is {image.size[0]}x{image.size[1]} and the frames are "
+                         f"{frames.images[0].size[0]}x{frames.images[0].size[1]}; it is a cell of the same loop set")
+    return image, {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
 
 
 def publish(frames: Frames, images: list[Image.Image], record_name: str, record: dict[str, Any]) -> None:

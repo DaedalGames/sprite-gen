@@ -38,6 +38,7 @@ from sprite_gen.frames.extract import solid_alpha_bbox
 
 from tests.effects.test_breathe import _dome, _humanoid, _outlined_figure, _winged
 
+INHALE = B.SMOOTH_SHAPE["inhale"]  # 기본 들숨 몫 — 기본 숨이 가득 차는 위상
 SKIN = (222, 184, 150, 255)
 BODY = (170, 120, 96, 255)
 EYE = (24, 18, 22, 255)
@@ -117,9 +118,9 @@ def test_a_cell_at_phase_zero_is_byte_identical_to_its_source() -> None:
     for i in zero:
         assert frames[i].tobytes() == src.tobytes(), f"{i}번 칸: 위상 0 인데 원본과 다르다"
     assert any(f.tobytes() != src.tobytes() for f in frames), "숨을 한 번도 안 쉬었다"
-    assert B.smooth_wave(0.0) == 0.0 and B.smooth_wave(B.INHALE) == 1.0
+    assert B.smooth_wave(0.0, INHALE) == 0.0 and B.smooth_wave(INHALE, INHALE) == 1.0
     for lag in (0.0, 0.08, 0.2):
-        assert B.smooth_shoulder_wave(0.0, lag) == 0.0, "어깨 지연이 첫 칸을 움직인다"
+        assert B.smooth_shoulder_wave(0.0, lag, INHALE) == 0.0, "어깨 지연이 첫 칸을 움직인다"
 
 
 # ── 2. 머리 자리·바이트 고정 ───────────────────────────────────────
@@ -133,7 +134,7 @@ def test_the_head_stays_in_place_byte_for_byte(h: int) -> None:
     cut = top + anat.rigid_row                     # 이 위가 강체(목·턱 위) 구간
     cfg = _cfg(_smooth())
     expect = np.asarray(src)[:cut].tobytes()
-    for phase in (0.1, B.INHALE, 0.55, 0.8):
+    for phase in (0.1, INHALE, 0.55, 0.8):
         got = B.phase_frame(src, cfg, phase, anat)
         assert np.asarray(got)[:cut].tobytes() == expect, \
             f"위상 {phase}: 강체 경계({cut}행) 위가 움직였다 — 목·턱 위는 자리·바이트 그대로여야 한다"
@@ -185,10 +186,10 @@ def test_the_chest_rises_by_depth_and_settles_back(h: int) -> None:
     src, anat, cfg, rows, cols = _marked(h)
     lift = cfg["depth"] * anat.basis_rows
     reach = int(lift) + 4
-    for phase in (0.0, 0.2, B.INHALE, 0.7, 0.95):
+    for phase in (0.0, 0.2, INHALE, 0.7, 0.95):
         got = B.phase_frame(src, cfg, phase, anat)
         rise = _rise(src, got, rows["chest"], cols["axis"], reach)
-        want = lift * B.smooth_wave(phase)
+        want = lift * B.smooth_wave(phase, INHALE)
         assert rise == pytest.approx(want, abs=0.3), \
             f"위상 {phase}: 가슴 가운데가 {rise:.2f}px 올랐다 — {want:.2f}px 여야 한다 (depth {cfg['depth']} × 기준 {anat.basis_rows}행)"
 
@@ -200,7 +201,7 @@ def test_it_is_not_a_whole_row_moving_up(h: int) -> None:
     src, anat, cfg, rows, cols = _marked(h)
     lift = cfg["depth"] * anat.basis_rows
     reach = int(lift) + 4
-    got = B.phase_frame(src, cfg, B.INHALE, anat)
+    got = B.phase_frame(src, cfg, INHALE, anat)
     center = _rise(src, got, rows["chest"], cols["axis"], reach)
     side = _rise(src, got, rows["chest"], cols["side"], reach)
     tip = _rise(src, got, rows["shoulder"], cols["tip"], reach)
@@ -260,7 +261,7 @@ def test_no_seam_or_tear_between_the_head_and_the_body(h: int) -> None:
     box = solid_alpha_bbox(src)
     slope = 180.0 / (h - 1)
     cfg = _cfg(_smooth())
-    for phase in (0.25, B.INHALE, 0.6):
+    for phase in (0.25, INHALE, 0.6):
         got = np.asarray(B.phase_frame(src, cfg, phase, anat)).astype(int)
         for column in (box[0] + anat.axis_x, box[0] + anat.axis_x + int(B.SHOULDER_X * anat.torso_half)):
             red = got[box[1]:box[3], column, 0]           # 정수리부터 발끝까지 — 경계를 가로지른다
@@ -308,7 +309,7 @@ def test_the_default_pixel_mode_is_byte_identical_to_before(build, mode) -> None
 # ── 8. 사이드카 ─────────────────────────────────────────────────────
 
 SHAPE = ("chest_y", "chest_rx", "chest_ry", "shoulder", "shoulder_lag", "chest_tilt", "chest_bias", "chest_dir",
-         "chest_x", "chest_bias_y", "chest_flat")
+         "chest_x", "chest_bias_y", "chest_flat", "inhale")
 
 
 def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
@@ -324,16 +325,16 @@ def test_the_sidecar_reads_mode_depth_breaths_and_the_shape() -> None:
     assert {k: given[k] for k in SHAPE} == {"chest_y": 0.4, "chest_rx": 0.8, "chest_ry": 0.3,
                                             "shoulder": 0.6, "shoulder_lag": 0.1,
                                             "chest_tilt": 0.0, "chest_bias": 0.0, "chest_dir": 0.0,
-                                            "chest_x": 0.0, "chest_bias_y": 0.0, "chest_flat": 0.0}
+                                            "chest_x": 0.0, "chest_bias_y": 0.0, "chest_flat": 0.0, "inhale": 0.4}
     assert _cfg({"mode": "pixel", "breaths": 2})["mode"] == "pixel"
 
 
 def test_the_shape_moves_the_bake() -> None:
     """모양 값은 이름만 있는 게 아니다 — 가슴 높이를 바꾸면 다른 그림이 구워진다."""
     src = _bust()
-    a = B.phase_frame(src, _cfg(_smooth()), B.INHALE)
-    b = B.phase_frame(src, _cfg(_smooth(chest_y=0.6)), B.INHALE)
-    c = B.phase_frame(src, _cfg(_smooth(shoulder=0.0)), B.INHALE)
+    a = B.phase_frame(src, _cfg(_smooth()), INHALE)
+    b = B.phase_frame(src, _cfg(_smooth(chest_y=0.6)), INHALE)
+    c = B.phase_frame(src, _cfg(_smooth(shoulder=0.0)), INHALE)
     assert a.tobytes() != b.tobytes() and a.tobytes() != c.tobytes()
 
 
@@ -346,15 +347,17 @@ def test_an_unknown_mode_is_refused_loudly(bad) -> None:
 @pytest.mark.parametrize("key,value", [("chest_y", 0.0), ("chest_rx", 9.0), ("chest_ry", -1),
                                        ("shoulder", 3.0), ("shoulder_lag", 0.5), ("chest_y", "x"),
                                        ("chest_tilt", 75), ("chest_bias", -1.0), ("chest_dir", 120),
-                                       ("chest_x", 1.5), ("chest_bias_y", 0.95), ("chest_flat", 0.95)])
+                                       ("chest_x", 1.5), ("chest_bias_y", 0.95), ("chest_flat", 0.95),
+                                       ("inhale", 0.1), ("inhale", 0.85)])
 def test_a_shape_value_out_of_range_is_refused(key, value) -> None:
     with pytest.raises(SystemExit, match=key):
         _cfg(_smooth(**{key: value}))
 
 
-def test_a_shape_value_on_pixel_is_refused_not_ignored() -> None:
-    with pytest.raises(SystemExit, match="chest_y"):
-        _cfg({"depth": 0.06, "breaths": 2, "chest_y": 0.3})
+@pytest.mark.parametrize("key,value", [("chest_y", 0.3), ("inhale", 0.42)])
+def test_a_shape_value_on_pixel_is_refused_not_ignored(key, value) -> None:
+    with pytest.raises(SystemExit, match=key):
+        _cfg({"depth": 0.06, "breaths": 2, key: value})
 
 
 def test_the_sidecar_picks_the_smooth_warp() -> None:
@@ -515,7 +518,7 @@ def test_breath_peaks_put_each_in_breath_where_asked() -> None:
     cfg = _cfg(_smooth(breath_peaks=[10, 40, 52], breaths=None))
     assert cfg["breaths"] == 3 and cfg["breath_peaks"] == [10, 40, 52]
     phases = B.fit_breathe_pattern(60, cfg)
-    curve = [B.smooth_wave(t) for t in phases]
+    curve = [B.smooth_wave(t, INHALE) for t in phases]
     assert phases[0] == 0.0 and curve[0] == 0.0
     for p in (10, 40, 52):
         assert curve[p] == pytest.approx(1.0), f"{p}번 칸이 들숨 꼭대기가 아니다: {curve[p]}"
@@ -547,6 +550,93 @@ def test_breath_peaks_on_pixel_are_refused() -> None:
         _cfg({"depth": 0.06, "breath_peaks": [5, 15]})
 
 
+# ── 들숨 몫: 한 호흡에서 들숨이 차지하는 몫은 줄의 값 ────────────────
+
+def test_the_in_breath_takes_the_rows_inhale_share() -> None:
+    """`inhale` 은 한 호흡에서 들숨이 차지하는 몫이다 — 들숨 몫 0.42 인 줄은 위상 0.21 에 들숨 절반, 0.42 에 꼭대기이고,
+    그 칸들은 기본 줄(0.40)의 위상 0.20·0.40 칸과 바이트 같다. 어깨 지연을 0 으로 두면 어깨도 같은 곡선을 타서 칸이 곡선
+    값 하나로 정해진다."""
+    src = _bust(400)
+    anat = analyze(src)
+    row = _cfg(_smooth(inhale=0.42, shoulder_lag=0.0))
+    default = _cfg(_smooth(shoulder_lag=0.0))
+    for share in (0.5, 1.0):
+        want = B.phase_frame(src, default, share * INHALE, anat).tobytes()
+        assert want != src.tobytes()
+        assert B.phase_frame(src, row, share * 0.42, anat).tobytes() == want, \
+            f"들숨 몫 0.42 인데 위상 {share * 0.42:g} 가 들숨의 {share:g} 자리가 아니다"
+    assert row["inhale"] == 0.42 and default["inhale"] == INHALE
+
+
+def test_breath_peaks_split_the_breaths_at_the_rows_inhale_share() -> None:
+    """꼭대기 칸을 바깥에서 받아도 숨 사이 쉼은 꼭대기 사이를 날숨 1-inhale : 들숨 inhale 로 나누는 자리다 — 들숨 몫
+    0.42 면 10·40 칸 꼭대기 사이 쉼은 10 + 0.58 × 30 = 27.4 이고, 28 칸이 다음 숨의 들숨 0.42 × 0.6 / 12.6 자리다."""
+    cfg = _cfg(_smooth(breath_peaks=[10, 40, 52], breaths=None, inhale=0.42))
+    phases = B.fit_breathe_pattern(60, cfg)
+    assert phases[27] > 0.9 and phases[28] == pytest.approx(0.42 * (28 - 27.4) / (40 - 27.4))
+    assert [B.smooth_wave(phases[p], 0.42) for p in (10, 40, 52)] == pytest.approx([1.0, 1.0, 1.0])
+
+
+# ── 루프의 한 토막: 루프 세트의 들어감·나옴 조각이 루프의 숨을 그 칸에서 잇는다 ──────────
+
+@pytest.mark.parametrize("beat", [{"breaths": 2}, {"breath_peaks": [10, 34], "breaths": None}], ids=["breaths", "peaks"])
+@pytest.mark.parametrize("start,count", [(13, 17), (40, 20), (0, 48), (5, 48)],
+                         ids=["inside", "past-the-close", "whole", "turned"])
+def test_a_stretch_breathes_each_cell_at_its_loop_cells_phase(beat, start, count) -> None:
+    """`loop_cells`·`start_cell` 이면 줄은 그 루프의 한 토막이다 — 칸 i 의 위상은 루프 칸 (start_cell + i) mod
+    loop_cells 의 위상, 같은 double 이다. 루프 끝을 넘으면 루프 처음(쉼)으로 돈다. 숨 박자는 루프의 것이다."""
+    loop = B.fit_breathe_pattern(48, _cfg(_smooth(**beat)))
+    cfg = _cfg(_smooth(**beat, loop_cells=48, start_cell=start))
+    assert cfg["loop_cells"] == 48 and cfg["start_cell"] == start
+    assert B.breathe_loop(count, cfg) == loop
+    assert B.fit_breathe_pattern(count, cfg) == [loop[(start + i) % 48] for i in range(count)]
+
+
+@pytest.mark.parametrize("start,count", [(31, 20), (0, 16), (8, 16), (40, 16), (0, 96)],
+                         ids=["way-in", "way-out-0", "way-out-8", "way-out-40", "loop"])
+def test_a_stretch_has_the_phases_the_pad_laid_it_at(start, count) -> None:
+    """토막의 위상은 손 단계(pad)가 내던 위상과 같은 double 이다 — 조각을 48칸 숨 m 번인 48m 칸 열의 제 위상 칸에
+    깔고(앞뒤는 기준 칸, 위상 0 이면 둘째 숨 첫 칸) 그 열에 숨을 넣어 조각 칸만 읽던 것. 48칸 숨 둘인 96칸 루프의 한
+    토막으로 말하면 엔진이 같은 위상을 낸다."""
+    p = start or 48
+    m = -(-(p + count) // 48)
+    padded = B.fit_breathe_pattern(48 * m, _cfg(_smooth(breaths=m)))
+    stretch = B.fit_breathe_pattern(count, _cfg(_smooth(breaths=2, loop_cells=96, start_cell=start)))
+    assert stretch == padded[p:p + count]
+
+
+def test_a_row_without_the_stretch_is_its_own_loop() -> None:
+    """생략은 줄이 곧 루프다 — 정규화가 start_cell 0, loop_cells None 을 싣고 위상이 이전 식 그대로(같은 double)다.
+    start_cell 만 주면 제 루프를 그 칸부터 돈다."""
+    for raw in (_smooth(), _smooth(breath_peaks=[10, 34], breaths=None)):
+        cfg = _cfg(raw)
+        assert cfg["start_cell"] == 0 and cfg["loop_cells"] is None
+    cfg = _cfg(_smooth(breaths=3))
+    own = B.fit_breathe_pattern(30, cfg)
+    assert own == [((i * 3) % 30) / 30 for i in range(30)] == B.breathe_loop(30, cfg)
+    assert B.fit_breathe_pattern(30, _cfg(_smooth(breaths=3, start_cell=7))) == [own[(7 + i) % 30] for i in range(30)]
+
+
+@pytest.mark.parametrize("raw,why", [
+    (_smooth(loop_cells=24, start_cell=24), "start_cell"), (_smooth(start_cell=-1), "start_cell"),
+    (_smooth(start_cell=2.5), "start_cell"), (_smooth(loop_cells=1), "loop_cells"),
+    (_smooth(loop_cells="many"), "loop_cells"),
+    ({"depth": 0.06, "breaths": 2, "start_cell": 3}, "start_cell"), ({"depth": 0.06, "breaths": 2, "loop_cells": 48}, "loop_cells"),
+], ids=["past-the-loop", "negative", "not-int", "one-cell", "not-a-number", "start-on-pixel", "loop-on-pixel"])
+def test_a_stretch_that_cannot_be_kept_is_refused(raw, why) -> None:
+    with pytest.raises(SystemExit, match=why):
+        _cfg(raw)
+
+
+def test_a_start_past_the_rows_own_loop_is_refused_at_the_bake() -> None:
+    """loop_cells 를 생략하면 루프는 줄의 칸 수라 start_cell 의 끝은 굽기가 본다 — 조용히 접지 않는다. 루프의 꼭대기 칸도
+    그 루프 안에 들어야 한다."""
+    with pytest.raises(SystemExit, match="start_cell"):
+        B.fit_breathe_pattern(30, _cfg(_smooth(start_cell=30)))
+    with pytest.raises(SystemExit, match="breath_peaks"):
+        B.fit_breathe_pattern(30, _cfg(_smooth(breath_peaks=[10, 40], breaths=None, loop_cells=41)))
+
+
 @pytest.mark.parametrize("angle", [-30.0, 20.0])
 def test_the_chest_moves_along_its_direction(angle) -> None:
     """가슴 가운데는 `chest_dir` 쪽으로 간다 — 0 이 바로 위, 음수가 왼쪽 위. 크기는 그대로
@@ -564,7 +654,7 @@ def test_the_chest_moves_along_its_direction(angle) -> None:
     row, col = box[1] + int(cy), box[0] + int(cx)
     a[row - 24:row + 25, col] = MARK                   # 위로 가도 그 행에 선이 남게 길게
     marked = Image.fromarray(a, "RGBA")
-    got = np.asarray(B.phase_frame(marked, cfg, B.INHALE, anat), np.float64)
+    got = np.asarray(B.phase_frame(marked, cfg, INHALE, anat), np.float64)
 
     def centre(img):
         line = img[row, col - 12:col + 13, :3].mean(axis=1)
@@ -580,7 +670,7 @@ def test_facing_values_keep_the_head_still() -> None:
     anat = analyze(src)
     cut = solid_alpha_bbox(src)[1] + anat.rigid_row
     cfg = _cfg(_smooth(chest_tilt=-25, chest_bias=-0.6, chest_dir=-35))
-    for phase in (0.2, B.INHALE, 0.7):
+    for phase in (0.2, INHALE, 0.7):
         got = B.phase_frame(src, cfg, phase, anat)
         assert np.asarray(got)[:cut].tobytes() == np.asarray(src)[:cut].tobytes(), \
             f"위상 {phase}: 몸 방향 값을 줬더니 목·턱 위가 움직였다"
@@ -605,7 +695,7 @@ def test_a_figure_cut_by_the_frame_is_not_refused() -> None:
     src = _bust(margin=0.0)
     anat = analyze(src)
     w, h = src.size
-    for phase in (0.2, B.INHALE, 0.7):
+    for phase in (0.2, INHALE, 0.7):
         got = np.asarray(B.phase_frame(src, _cfg(_smooth()), phase, anat))
         assert (got[-1, :, 3] == np.asarray(src)[-1, :, 3]).all(), "아래 변이 비었다 — 발바닥이 떴다"
         for col in (0, w - 1):                       # 원본이 변까지 찬 행은 그대로 찬다
@@ -618,7 +708,7 @@ def test_a_swell_reaching_past_the_canvas_is_still_refused() -> None:
     pixel 과 같이 조용히 자르지 않고 멈춘다. 기본 모양에서는 생기지 않는다(위 시험)."""
     src = _bust(margin=0.0)
     with pytest.raises(SystemExit, match="셀 밖"):
-        B.phase_frame(src, _cfg(_smooth(depth=0.01, chest_rx=2.5, depth_x=0.05)), B.INHALE)
+        B.phase_frame(src, _cfg(_smooth(depth=0.01, chest_rx=2.5, depth_x=0.05)), INHALE)
     # 가슴 안에 그은 세로선은 depth_x 만큼 가운데에서 바깥으로 밀린다 (실루엣 밖 변은 그대로).
     probe = _bust(margin=0.12, gradient=False)
     anat = analyze(probe)
@@ -630,8 +720,8 @@ def test_a_swell_reaching_past_the_canvas_is_still_refused() -> None:
     col = box[0] + int(cx + 0.4 * cfg["chest_rx"] * anat.torso_half)
     a[row - 4:row + 5, col] = MARK
     roomy = Image.fromarray(a, "RGBA")
-    still = np.asarray(B.phase_frame(roomy, {**cfg, "depth_x": 0.0}, B.INHALE, anat), np.float64)
-    puffed = np.asarray(B.phase_frame(roomy, cfg, B.INHALE, anat), np.float64)
+    still = np.asarray(B.phase_frame(roomy, {**cfg, "depth_x": 0.0}, INHALE, anat), np.float64)
+    puffed = np.asarray(B.phase_frame(roomy, cfg, INHALE, anat), np.float64)
 
     def centre(img):
         line = img[row, col - 4:col + 5, :3].mean(axis=1)
@@ -643,7 +733,7 @@ def test_a_swell_reaching_past_the_canvas_is_still_refused() -> None:
 
 def test_a_strain_past_the_cap_is_refused() -> None:
     with pytest.raises(SystemExit, match="smooth"):
-        B.phase_frame(_bust(), _cfg(_smooth(depth=0.2)), B.INHALE)
+        B.phase_frame(_bust(), _cfg(_smooth(depth=0.2)), INHALE)
 
 
 # ── CLI: 같은 값, 같은 함수 ────────────────────────────────────────
@@ -664,15 +754,17 @@ def _blinking(h: int = 120, count: int = 12) -> list[Image.Image]:
 @pytest.mark.parametrize("raw,flags", [
     (_smooth(), ["--mode", "smooth", "--depth", "0.025", "--breaths", "2"]),
     (_smooth(chest_y=0.4, shoulder=0.3, shoulder_lag=0.12, depth_x=0.01, chest_tilt=-20, chest_bias=-0.4,
-             chest_dir=-25, chest_x=-0.1, chest_bias_y=0.2, chest_flat=0.25),
+             chest_dir=-25, chest_x=-0.1, chest_bias_y=0.2, chest_flat=0.25, inhale=0.42),
      ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--chest-y", "0.4",
       "--shoulder", "0.3", "--shoulder-lag", "0.12", "--depth-x", "0.01", "--chest-tilt", "-20",
       "--chest-bias", "-0.4", "--chest-dir", "-25", "--chest-x", "-0.1", "--chest-bias-y", "0.2",
-      "--chest-flat", "0.25"]),
+      "--chest-flat", "0.25", "--inhale", "0.42"]),
     (_smooth(breath_peaks=[3, 9], breaths=None), ["--mode", "smooth", "--depth", "0.025", "--breath-peaks", "3,9"]),
+    (_smooth(loop_cells=30, start_cell=23),
+     ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--loop-cells", "30", "--start-cell", "23"]),
     ({"depth": 0.06, "breaths": 2, "lag": 0.1},
      ["--depth", "0.06", "--breaths", "2", "--lag", "0.1"]),
-], ids=["smooth", "smooth-shape", "smooth-peaks", "pixel"])
+], ids=["smooth", "smooth-shape", "smooth-peaks", "smooth-stretch", "pixel"])
 def test_the_cli_bakes_what_the_curation_bake_bakes(tmp_path, raw, flags) -> None:
     from sprite_gen import cli
 
@@ -731,3 +823,47 @@ def test_the_cli_refuses_what_the_sidecar_refuses(tmp_path) -> None:
         cli.main(["breathe", str(src), str(tmp_path / "c"), "--chest-y", "0.3"])     # pixel 에 모양 값
     with pytest.raises(SystemExit):
         cli.main(["breathe", str(src), str(src), "--mode", "smooth"])   # 원본 위에 덮어쓰지 않는다
+    with pytest.raises(SystemExit, match="start_cell"):
+        cli.main(["breathe", str(src), str(tmp_path / "d"), "--start-cell", "3"])     # pixel 에 토막
+
+
+def _raised(image: Image.Image, rows: int) -> Image.Image:
+    """그림을 `rows` 행 위로 올린 칸 — 화면 아래 변에 닿은 몸통은 맨 아래 행을 이어 붙여 그대로 닿는다 (고개를 든 칸처럼
+    콘텐츠가 위로 길어진다)."""
+    a = np.asarray(image.convert("RGBA"))
+    return Image.fromarray(np.concatenate([a[rows:], np.repeat(a[-1:], rows, axis=0)]), "RGBA")
+
+
+def test_the_reference_is_the_frame_the_rows_anatomy_is_measured_on(tmp_path) -> None:
+    """`--reference` 면 해부를 첫 칸 대신 그 칸에서 잰다 — 루프 세트의 첫 칸에서 재면 첫 칸이 다른(고개를 든) 토막도
+    머리선·가슴·오르는 양이 루프의 것이다. 굽기는 그 한 벌로 굽고, 기록에 그 칸의 경로와 sha256 이 남는다."""
+    from sprite_gen import cli
+
+    base = _bust()
+    frames = [_raised(base, 4), *[base] * 7]
+    src = tmp_path / "piece"
+    src.mkdir()
+    for i, im in enumerate(frames):
+        im.save(src / f"frame-{i:03d}.png")
+    base.save(tmp_path / "base.png")
+    flags = ["--mode", "smooth", "--depth", "0.025", "--breaths", "2", "--loop-cells", "24", "--start-cell", "9"]
+    assert cli.main(["breathe", str(src), str(tmp_path / "own"), *flags]) == 0
+    assert cli.main(["breathe", str(src), str(tmp_path / "out"), *flags, "--reference", str(tmp_path / "base.png")]) == 0
+    own = json.loads((tmp_path / "own" / "breathe.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "out" / "breathe.json").read_text(encoding="utf-8"))
+    assert report["resolved"]["anatomy"] == analyze(base).as_dict() != own["resolved"]["anatomy"]
+    assert own["resolved"]["anatomy"]["height"] == report["resolved"]["anatomy"]["height"] + 4 and "reference" not in own
+    assert report["reference"] == {"path": str(tmp_path / "base.png"),
+                                   "sha256": hashlib.sha256((tmp_path / "base.png").read_bytes()).hexdigest()}
+    expect, phases = B.bake_breathe_sequence(frames, _cfg(_smooth(loop_cells=24, start_cell=9)), analyze(base))
+    assert report["phases"] == phases == own["phases"]
+    for i, want in enumerate(expect):
+        with Image.open(tmp_path / "out" / f"frame-{i:03d}.png") as im:
+            assert im.convert("RGBA").tobytes() == want.tobytes(), f"{i}번 칸이 기준 칸의 해부로 구운 칸이 아니다"
+    Image.new("RGBA", (base.width + 2, base.height)).save(tmp_path / "wide.png")
+    with pytest.raises(SystemExit, match="--reference"):
+        cli.main(["breathe", str(src), str(tmp_path / "wide"), *flags, "--reference", str(tmp_path / "wide.png")])
+    with pytest.raises(SystemExit, match="--avoid-region"):
+        cli.main(["breathe", str(src), str(tmp_path / "beat"), "--mode", "smooth", "--avoid-region", "0.3,0.7,0.7,0.9",
+                  "--fps", "24", "--loop-cells", "24", "--start-cell", "9"])
+    assert not any((tmp_path / name).exists() for name in ("wide", "beat"))
