@@ -239,7 +239,8 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
 
     A time between two source frames is made by `interpolate`, with what it added and the outline it
     lost measured (`rife.smear`), its own ghost read (`rife.ghost`), the holes it opened inside its
-    silhouette that neither source frame has there (`rife.hole`), and judged (`faults`); `between`
+    silhouette that neither source frame has there, in place or carried by the motion the two show
+    (`rife.hole`), and judged (`faults`); `between`
     auto keeps a made frame with no fault and takes the nearer source frame where it has one, rife
     keeps every made frame, nearest makes none and takes the nearer source frame (the motion keeps the
     filmed frames at up to half a frame off their time). Every made frame is listed in `smear` with
@@ -295,7 +296,7 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
             made = interpolate(a, b, frac)
             measure = {**rife_mod.smear(made, a, b), "outline_shift": rife_mod.outline_shift(made, a, b),
                        "ghost": rife_mod.ghost(made) if screen["reads"] else None,
-                       "crossfade": rife_mod.crossfade(made, a, b, frac), "hole": rife_mod.hole(made, a, b)}
+                       "crossfade": rife_mod.crossfade(made, a, b, frac), "hole": rife_mod.hole(made, a, b, frac)}
             wrong = faults(measure)
             keep = between == "rife" or not wrong
             taken = ({"between": [i % count, (i + 1) % count], "t": round(frac, 4)} if keep

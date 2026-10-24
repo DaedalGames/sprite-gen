@@ -1479,37 +1479,73 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   coverage apart (section 1), and where a step opens a gap between the legs in one source frame and
   not the other, the coverage run can carry that gap into a leg the colour run keeps whole: a
   transparent band through the leg, its fill on both sides. Nothing is added, no part coverage is
-  left to read, and the leg's own fill is all the line round the band — a fill darker than 70/255
+  left to read, and the leg's own fill is all the line round the band; a fill darker than 70/255
   (dark tights, a boot) is outline to the dark line, and one lighter than that is lost rank by rank
   only where it is 50/255 lighter than the source frames' lines at the same rank, which light lines
   elsewhere on the art (fur, hair drawn without a dark line) hide; the fault `outline` needs both.
   Neither reading is about a hole.
   - `hole`: of the made frame's pixels under solid (alpha under 0.5) that the outside of the
-    picture cannot reach without crossing its solid body, those with no pixel under solid in either
-    source frame within **4 px** (`rife.HOLE_REACH`, a square) — a gap between an arm and the body
-    that they have, kept or moved a little by the flow, is theirs — in regions at least **5 px**
-    thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or an antialiased crevice a
-    pixel or two wide opens away), as a fraction of its solid pixels.
+    picture cannot reach without crossing its solid body (enclosed holes), those with no pixel
+    under solid in either source frame within **4 px** (`rife.HOLE_REACH`, a square neighbourhood)
+    of where that pixel lay at that frame's time, read three ways: in place (the background,
+    still, and a gap kept, or opened by a step where the frame showing it open has it); carried
+    with the whole figure along the motion the two source frames show for the whole figure; and
+    carried with what lies round the hole along the motion the two source frames show round each
+    piece of hole the first two leave. Where the made frame sits at fraction `t` from source frame a
+    to source frame b, a pixel of it lay in a at `t` of the motion back and lies in b at `1 - t` of
+    it on (rounded so the two are the whole motion apart). Motions are measured only from the two
+    source frames, never from the made frame or RIFE's flow: for each candidate motion over a box
+    in made frame coordinates, each pixel is read in a where it lay and in b where it lies, taking
+    the motion with least mean absolute difference of premultiplied colour and coverage (ties
+    going to smaller motion). The whole figure's motion is read over the box round all three
+    frames' solid bodies. Each remaining piece's motion is read over the box round the piece,
+    widened each way by `max(t, 1 - t)` of the farthest motion followed. A motion is followed up to
+    20 % of the body's height each way (`rife.HOLE_TRAVEL`, 0.2), searched coarse to fine: pooled
+    in square blocks of a power of two where the range is at most 24 px each way
+    (`rife.HOLE_COARSE`, 24), then within 2 px of twice the coarser motion on each finer level down
+    to the pixel. Motions are measured only on frames keeping a hole after the in-place reading.
+    Regions at least **5 px** thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or
+    an antialiased crevice a pixel or two wide opens away) are taken after each step, as a fraction
+    of its solid pixels.
   - Over **0** (`interpolation_quality.HOLE_WARN`) the frame has a hole through a limb: the fault
-    `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` ("… opened a
-    transparent hole inside its outline over 2.69 % of its body, at least 5 px thick, where neither
-    source frame beside it has one — a gap through a limb, so the nearer source frame was taken
-    there"); `rife` keeps it, named. A hole that thick which neither source frame has near it is one
-    whatever its size: a gap a step opens between the legs lies where the source frame that shows it
-    open has it, and is that frame's; a gap the flow opens through a lock of hair is read the same
-    way as one through a leg.
+    `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` (it says the
+    frame opened a transparent hole inside its outline over the given share of its body, at least
+    5 px thick, where neither source frame beside it has one, a gap through a limb, and that the
+    nearer source frame was taken there); `rife` keeps it, named. A gap both source frames have,
+    carried by the body's motion, lies in the frame between on the way from where one source frame
+    has it to where the other has it; moved far enough it lies 5 px and more from where either
+    source frame has it in place, and a reading in place alone would take it for a hole and give
+    a correct frame way. A gap one source frame has, half open in the frame between while the figure
+    moves, lies beside where that frame has it in the same way. Following the motions keeps those
+    gaps as the source frames' own; a gap the flow opens through a lock of hair is read the same way
+    as one through a leg.
   - What it does not read: a band cut through a leg's edge rather than inside it reaches the
-    outside and is no hole (the outline rules read its edge as before); a hole within 4 px of a
-    gap a source frame has is read as that gap moved.
-  - Read only on the frames the alignment makes (`hole` in each `smear` row). The jump repair, the
-    eased retime and the overlapped wrap (section 2) do not read it, and neither do the versioned
-    measures of `video-loop-compare` and `video-loop-repair`.
-  - On the synthetic figure of `tests/video/test_inbetween_hole.py` — rectangles outlined in black,
-    legs filled darker than 70/255, one source frame with its legs side by side and the other with a
-    gap between them — the frame between with a band 8 px wide through its far leg reads
-    `outline_loss` 0 and `outline_shift` 11.3 %, no fault before this reading, and `hole` 2.69 %;
-    the frame drawn between, the same with the arm's gap 3 px on, and the same with a pinhole 3 px
-    wide through the leg read 0.
+    outside and is no hole (the outline readings read its edge as before); a hole within 4 px of a
+    gap a source frame has, in place or where the motion read carries it, is read as that gap. A
+    motion farther than 20 % of the body's height each way is not followed: a gap both source frames
+    have, carried farther between them, reads as a hole. One motion is read per box: the whole
+    figure's, then one per piece of hole. Where parts in the box move different ways, the motion read
+    is the one that agrees best over the box; a hole lying where that motion carries a gap either
+    source frame has is read as that gap, and a gap carried by a part that the rest of the box
+    outweighs can read as a hole.
+  - Read only on the frames the alignment makes (`hole` in each `smear` row). The jump repair of
+    `video-loop`, its eased retime and overlapped wrap (section 2) do not read it, and neither do the
+    versioned measures of `video-loop-compare` and `video-loop-repair`.
+  - On the synthetic figures of `tests/video/test_inbetween_hole.py`: figure 1 (rectangles outlined
+    in black, legs filled darker than 70/255, one source frame with legs side by side and the other
+    with a gap between them) has the frame between with a band 8 px wide and 40 px tall through its
+    far leg read `outline_loss` 0, `outline_shift` 11.3 %, `ghost` 0, and `hole` 2.69 % (its own 320
+    pixels as a share of the body); whole figure motion is 0 and the band box shows 5 px, neither
+    showing a gap where the band lay, so the band is read whole. The drawn frame, the arm gap moved
+    3 px, a pinhole 3 px wide, and an empty frame read `hole` 0. In figure 2 (a 120 by 180 px body
+    with an 8 by 40 px gap, moved 0 to 32 px across and diagonally), the gap from 24 px on lies
+    5 px and more from where either source frame has it in place (1.50 % in place alone), but whole
+    figure motion carries it: `hole` 0. In figure 3 (a body 90 px wide on legs in boots closing the
+    gap below), a half-open gap when moving 30 px lies 8 px and more beside where the parted frame
+    has it (300 px in place), but whole figure motion carries it: `hole` 0; with an 8 by 40 px band
+    cut through the moving body it reads `hole` 2.88 % (320 pixels) and `faults: ["outline", "hole"]`.
+    In figure 4 (a 200 by 180 px still body with a 40 px square part and 14 px square hole moving
+    32 px), whole figure motion is 0, but motion round the hole is 32 px, carrying it: `hole` 0.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings
