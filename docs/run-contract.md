@@ -246,19 +246,24 @@ with no stamp are dropped as usual, and `migrate-request` prints which rows thos
 Every verb that writes beside what it reads checks, before anything is made and with or without
 `--force`, that no input is something the run replaces or deletes. There is one judgment for
 this, `runio.refuse_overlap`, and every such verb calls it; section 4 covers `unpack-atlas` in
-detail. What counts as an input is each path given to read, and each file found in a folder
-given and then read (for example a frame in `--frames-dir`, or a link that the best candidate's
-copy follows in `--run-dir`). Each input is followed the way the system opens it
+detail. What counts as an input is each path given to read, and each file or folder found in a
+folder given and then read (for example a frame in `--frames-dir`, or each file, folder and link
+the best candidate's copy reads in `--run-dir`). Each input is followed the way the system opens it
 (`runio.follow_path`): every link and folder its path looks up counts. What counts as an output
 is each file the run writes, each folder it replaces or empties, and its report. A folder the
 run only adds files to is not an output. That is why the `--out-dir` of `video-loop` and
 `video-stop` is not itself compared: the keyed frames those verbs read usually lie inside it
-(`video-frames` writes them to `<out>/keyed/`). An input that is the same file or folder as an
-output, lies inside an output, or whose path goes through anything inside an output is refused,
-naming both the input and the output. Comparison is by real path and file identity
-(`runio.same_folder`, `runio.inside_folder`), so a link, or another spelling on a volume that
-ignores case, is the same entry. An input path with a link loop is refused by name. A path that
-only passes through an output and comes out of it again with `..` (for example
+(`video-frames` writes them to `<out>/keyed/`). Each output is compared at the path the run writes,
+opened the way the system opens it: a link already at that place is the entry it leads to
+(for example `attempt-1` in the `--out-dir` of `correction-loop`, a link to the run dir, is the
+run dir; before this change only `--out-dir` itself was compared, and the loop wrote its attempt
+into the run it read). A link at a file the run writes is refused as well when it leads to an
+input, even where the run would replace the link rather than write through it. An input that is
+the same file or folder as an output, lies inside an output, or whose path goes through anything
+inside an output is refused, naming both the input and the output. Comparison is by real path and
+file identity (`runio.same_folder`, `runio.inside_folder`), so a link, or another spelling on a
+volume that ignores case, is the same entry. An input path with a link loop is refused by name. A
+path that only passes through an output and comes out of it again with `..` (for example
 `out/cycle.source/../keyed`) is not refused.
 
 | Verb | Inputs | What the run replaces or deletes |
@@ -267,9 +272,13 @@ only passes through an output and comes out of it again with `..` (for example
 | `video-loop` | `--frames-dir` and every PNG found in it | `cycle/`, `cycle.source/`, `cycle.refused/`, `follow.source.png`, `<name>.strip.png`, `<name>.strip.json`, `<name>.gif`, `<name>.webp`, the report |
 | `video-stop` | `--frames-dir` and every PNG found in it; `--loop` and the strip PNG beside it | `<name>.strip.png`, `<name>.strip.json`, `<name>.gif`, `<name>.webp`, the report |
 | `video-frames` | `--clip`, `--reference` | `raw/` (its frames are replaced), `keyed/`, `keyed.refused/`, the report, `--source-manifest` |
-| `correction-loop` | `--run-dir`, and every link the best candidate's copy follows inside it | `--out-dir` and everything in it (the attempts, the candidates, `best-candidate/`, the report) |
+| `correction-loop` | `--run-dir`, and every file, folder and link the best candidate's copy reads in it | `--out-dir` and everything the loop writes in it: each attempt's folder and the files in it, each candidate a provider makes, `best-candidate/`, the report |
 | `logo` | `--mood`, `--lettering` | `lettering.png`, `logo.png`, `logo.rejected.png`, `logo.preview.png`, `mood.png` (when the run writes one), the report |
-| `video-extend`, `video-edit` | `--video` | `--out` |
+| `video-extend`, `video-edit` | `--video` | `--out`, the download staged beside it (`<out>.part`), the report |
+| `video-loop-compare` | every artifact given (`--baseline-*`, `--candidate-*`, `--origin-*`), the source inputs (`--source-*`) and every PNG in `--source-frames-dir`, `--repair-evidence` | the report |
+| `video-loop-repair` | `--baseline-*`, `--origin-*`, the source inputs (`--source-*`) and every PNG in `--source-frames-dir` | the report (the candidate's `--out-dir` must not exist yet) |
+| `video-source-manifest` | `--clip`, `--canvas`, `--frames-report`, `--frames-dir` and every PNG in it | `--out` |
+| `shadow` | `--source` and every file the asset loader reads for it | the frame PNGs, `shadow.png`, `shadow.asset.json` |
 
 Two verbs have an exception. In `logo`, `--mood` may be the folder's own `mood.png` and
 `--lettering` may be the folder's own `lettering.png`. That is a picture an earlier run made,
@@ -277,7 +286,8 @@ given back to start again from it; the run reads it and writes its own pixels ba
 output file given as `--mood` or `--lettering` is refused. In `correction-loop`, an `--out-dir`
 inside the run dir (the default, `<run-dir>/correction-loop`, is) is only added to, and the best
 candidate's copy of the run dir leaves it out. Before this change the copy copied itself into
-itself until the path was too long.
+itself until the path was too long. An out dir that already holds an earlier loop's attempts,
+best candidate and report is the loop's own, and a second loop into it is not refused.
 
 A folder a run writes into and then deletes is a new one of its own, made with `runio.new_stage`
 (named `.<name>.<pid>-<random><suffix>`). These are: the frames `video-loop` scales back for a
@@ -295,7 +305,10 @@ The verbs that check a single output against their inputs call the same two func
 `background-tile`, `inspect-motion`, `scene-inspect`, `scene-render`, `game-pack`, `ui-kit` and
 `video-sway-inspect`. `video-sway-inspect` now refuses an `--out-dir` that is the loop directory
 spelt in capitals on a volume that ignores case; before, it wrote its boards into the loop
-directory.
+directory. `video-loop-compare`, `video-loop-repair`, `video-source-manifest` and `shadow`
+compared their report or outputs with their inputs by resolved spelling; they now call
+`runio.refuse_overlap`, so a report or output spelt in capitals of an input on a volume that
+ignores case is refused (before, it was written over the input).
 
 ## 2-c. External consumers install from `curated/`, never from `frames/`
 
