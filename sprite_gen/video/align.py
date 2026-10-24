@@ -715,8 +715,7 @@ def _rebuild(loop_dir: Path, meta_path: Path, meta: dict[str, Any], frames: list
     delay_ms = max(20, round(1000 * cycle_seconds / len(cells)))
     gif_path, webp_path = loop_dir / f"{name}.gif", loop_dir / f"{name}.webp"
     save_clean_gif(cells, gif_path, duration_ms=delay_ms, loop=0, alpha_threshold=128)
-    loop_mod.write_webp(cells, webp_path, delay_ms=delay_ms, workdir=loop_dir / ".webp-frames")
-    shutil.rmtree(loop_dir / ".webp-frames", ignore_errors=True)
+    loop_mod.write_webp(cells, webp_path, delay_ms=delay_ms)
     # a GIF or WebP holds a frame shown twice in a row (`--between nearest` stretching a loop) as one
     # frame of twice the delay, so each is checked for one frame per run of identical cells
     runs = loop_mod.shown_runs(cells)

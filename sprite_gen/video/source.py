@@ -264,13 +264,14 @@ def add_arguments(parser: Any) -> None:
 
 def run(**kwargs: Any) -> int:
     """Receipt existing keyed output without repeating extraction; not a source attestation."""
-    from sprite_gen.spec.runio import atomic_write_text
+    from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
     clip, canvas, report, directory, out = (Path(kwargs[k]) for k in
                                            ("clip", "canvas", "frames_report", "frames_dir", "out"))
     files = sorted(directory.glob("*.png"))
     try:
-        if out.resolve() in {p.resolve() for p in (clip, canvas, report, *files)}:
-            raise ValueError("manifest cannot overwrite a source input")
+        # The manifest is written once every input is read: no input is that file (`runio.refuse_overlap`).
+        refuse_overlap({"--clip": clip, "--canvas": canvas, "--frames-report": report, "--frames-dir": directory,
+                        **{f"{f.name} in --frames-dir": f for f in files}}, {"--out": out}, verb="video-source-manifest")
         record = manifest(clip=clip, canvas=canvas, frames_report=report, files=files,
                           timestamps=timestamps(clip, json.loads(report.read_bytes())["stream_index"]))
         out.parent.mkdir(parents=True, exist_ok=True)

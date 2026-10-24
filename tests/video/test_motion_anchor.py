@@ -243,6 +243,7 @@ def test_the_search_window_reads_each_shift_as_one_patch_read_alone_did(case):
     assert batched[0] == {"search-boundary": "boundary", "flat": "none"}.get(case, "match")
 
 
+@pytest.mark.slow
 def test_a_960_cut_is_corrected_in_a_fraction_of_the_time_reading_one_patch_at_a_time_takes():
     """Performance watch: the search of a 960 px cut, regions of some 30 000 mask pixels as a 960 px walk's are. Read one
     patch at a time, each corrected cut took most of a walk's loop stage, and the seam gate corrects up to five

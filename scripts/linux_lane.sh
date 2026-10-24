@@ -126,8 +126,9 @@ if [ "$rife_only" = 1 ]; then
   step "RIFE tests (every test marked real_rife, none skipped)"
   rife_log=$(mktemp)
   trap 'rm -f "$rife_log"' EXIT
-  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it.
-  .venv/bin/python -m pytest -q -rs -m real_rife | tee "$rife_log"
+  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it. --full: a marked test that is
+  # also marked slow runs too.
+  .venv/bin/python -m pytest -q -rs --full -m real_rife | tee "$rife_log"
   ! grep -E '^SKIPPED' "$rife_log" >/dev/null || fail "a RIFE test skipped; this run is meant to measure them"
   echo "linux_lane: the RIFE gates passed at $sha"
   exit 0
@@ -157,8 +158,9 @@ test -f "$smoke/run/sprite-sheet-alpha.png"
 test -f "$smoke/run/manifest.json"
 
 step "tests"
-# Without RIFE, a skip of a test not marked real_rife fails unless tests/conftest.py names it.
-.venv/bin/python -m pytest -q ${rife_unmeasured:+--rife-unmeasured}
+# Every test (--full): a plain pytest is the fast bundle, the tests marked slow deselected. Without RIFE, a
+# skip of a test not marked real_rife fails unless tests/conftest.py names it.
+.venv/bin/python -m pytest -q --full ${rife_unmeasured:+--rife-unmeasured}
 
 if [ -n "$rife_unmeasured" ]; then
   echo "linux_lane: every gate but RIFE passed at $sha"

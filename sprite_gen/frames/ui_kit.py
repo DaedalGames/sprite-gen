@@ -42,6 +42,7 @@ from PIL import Image, ImageDraw
 
 from sprite_gen._deps import np
 from sprite_gen.frames.alpha_floor import clear_haze
+from sprite_gen.spec.runio import inside_folder, same_folder
 from sprite_gen.util.console import utf8_streams
 
 REFERENCE = 1024
@@ -1270,7 +1271,7 @@ def _publish(*, sheet: Path, out_dir: Path, alpha_floor: int = 64, alpha_edge: i
     report_path = Path(report).expanduser().resolve() if report is not None else out_dir / "ui-kit.json"
     if not sheet.is_file():
         raise ValueError(f"sheet is not a file: {sheet}")
-    if out_dir == sheet.parent or out_dir in sheet.parents or report_path == sheet:
+    if inside_folder(sheet, out_dir) or same_folder(report_path, sheet):
         raise ValueError("the output directory must not hold the sheet; choose a new directory")
     if report_path.suffix.lower() != ".json":
         raise ValueError("--report must be a .json path")

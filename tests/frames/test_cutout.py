@@ -9,11 +9,13 @@ in it, but the corner flood-fill keys by position so it must survive.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
+from sprite_gen import cli
 from sprite_gen.frames.cutout import cutout, estimate_background
 
 IVORY = (248, 247, 242)
@@ -75,6 +77,22 @@ def test_white_check_composites_written(tmp_path: Path) -> None:
     assert "white_check" in stats
     for name in ("cyan", "magenta", "yellow"):
         assert (check_dir / f"icon_cutout_{name}.png").exists()
+
+
+def test_the_cutout_command_writes_the_cut_beside_its_input_and_prints_what_it_wrote(tmp_path: Path, capsys) -> None:
+    """`sprite-gen cutout` from its argv to its files: the cut under the default name beside the input, the three
+    check composites beside the cut, and the printed stats naming them."""
+    src = tmp_path / "icon.png"
+    _make_icon().save(src)
+    assert cli.main(["cutout", str(src), "--white-check"]) == 0
+    out = tmp_path / "icon_cutout.png"
+    checks = [tmp_path / f"icon_cutout_{name}.png" for name in ("cyan", "magenta", "yellow")]
+    assert out.is_file() and all(check.is_file() for check in checks)
+    px = Image.open(out).convert("RGBA").load()
+    assert px[0, 0][3] == 0 and px[64, 64] == GREEN + (255,)
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["out"] == str(out) and printed["route"] == "matte"
+    assert printed["white_check"] == [str(check) for check in checks]
 
 
 def test_missing_background_raises(tmp_path: Path) -> None:

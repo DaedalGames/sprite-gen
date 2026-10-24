@@ -10,10 +10,14 @@
   6. 행당 변형 상한 초과는 조용히 깎지 않고 멈춘다
 """
 
+import re
+
+import numpy as np
 import pytest
 from PIL import Image
 
 from sprite_gen.effects.anatomy import analyze
+from sprite_gen.effects.anatomy import axis_x as axis_centroid
 from pathlib import Path
 
 from sprite_gen.effects.breathe import (DEFAULT_DEPTH, MAX_ROW_STRAIN, SMOOTH_CYCLE_FRAMES, TAPER,
@@ -193,6 +197,31 @@ def _small_outlined() -> Image.Image:
     for x, y in edge:
         px[x, y] = (0, 0, 0, 255)                               # 1px 검은 외곽선
     return im
+
+
+def _outlined_figure(h: int = 200) -> Image.Image:
+    """큰 도트 그림 — 둥근 머리, 목, 아래로 넓어지는 몸통, 옆으로 뻗은 팔, 1px 검은 외곽선, 눈.
+
+    외곽선이 비스듬해 정수 행·열 사상이 곳곳을 2px 로 겹치고 다듬기가 실제로 지우고 옮긴다. 팔은
+    부속이라 보호 가중이 켜진다. 다듬기·보호 가중·행 사상이 작은 픽스처보다 훨씬 많은 줄에서 돈다."""
+    w = int(h * 0.9)
+    pad = h // 10
+    tall = h - 2 * pad
+    yy, xx = np.mgrid[0:h, 0:w]
+    x, y = xx + 0.5 - w / 2.0, yy + 0.5 - pad
+    head = (x / (0.13 * tall)) ** 2 + ((y - 0.16 * tall) / (0.15 * tall)) ** 2 <= 1.0
+    neck = (np.abs(x) <= 0.05 * tall) & (y >= 0.29 * tall) & (y < 0.36 * tall)
+    torso = (y >= 0.34 * tall) & (y < tall) & (np.abs(x) <= (0.12 + 0.10 * (y - 0.34 * tall) / (0.66 * tall)) * tall)
+    arms = (y >= 0.40 * tall) & (y < 0.47 * tall) & (np.abs(x) <= 0.36 * tall)
+    figure = head | neck | torso | arms
+    inside = np.zeros_like(figure)
+    inside[1:-1, 1:-1] = figure[1:-1, 1:-1] & figure[:-2, 1:-1] & figure[2:, 1:-1] & figure[1:-1, :-2] & figure[1:-1, 2:]
+    a = np.zeros((h, w, 4), np.uint8)
+    a[figure] = (210, 185, 120, 255)
+    a[figure & ~inside] = (0, 0, 0, 255)
+    for ex in (-0.05 * tall, 0.05 * tall):
+        a[(np.abs(x - ex) <= 1.5) & (np.abs(y - 0.15 * tall) <= 1.5)] = (20, 20, 24, 255)
+    return Image.fromarray(a, "RGBA")
 
 
 def test_side_outline_survives_every_phase() -> None:
@@ -508,6 +537,59 @@ def test_clipping_the_cell_raises_instead_of_cropping_the_head() -> None:
     assert "셀 밖으로" in str(err.value)
 
 
+def _cut_bust(touch: bool = True) -> Image.Image:
+    """화면 왼쪽 변에 잘린 흉상 — 소매가 바깥 열을 38px 덮는다(`touch`). 몸통 축이 소매 쪽으로 끌려 있어
+    pixel 의 가로 늘임이 축 왼쪽을 밖으로 밀고, 소매가 셀 밖으로 나간다. 머리 위와 오른쪽에는 여백이 있다.
+    `touch=False` 면 소매가 변에서 1px 떨어져 있다 — 같은 밀림이지만 그림 자체의 테두리가 아니다."""
+    im = Image.new("RGBA", (120, 130), (0, 0, 0, 0))
+    px = im.load()
+
+    def fill(x0, y0, x1, y1, color):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                px[x, y] = color
+
+    fill(52, 8, 80, 40, (222, 184, 150, 255))                 # 머리
+    fill(60, 40, 72, 50, (222, 184, 150, 255))                # 목 (병목)
+    fill(34, 50, 98, 130, (170, 120, 96, 255))                # 몸통 — 화면 아래 변에 닿는다
+    fill(0 if touch else 1, 62, 34, 100, (90, 110, 170, 255))  # 소매 — 왼쪽 변
+    return im
+
+
+def _clip_refusal(src: Image.Image) -> str:
+    with pytest.raises(SystemExit) as err:
+        bake_breathe_sequence([src] * 12, dict(CFG))
+    return str(err.value)
+
+
+def test_a_clip_on_the_drawings_own_border_points_at_smooth() -> None:
+    """화면에 잘린 그림(큰 일러·영상 칸)을 pixel 이 거절할 때 — 거절은 그대로, 문구는 어느 변으로 몇 개가
+    나갔는지와, 그 변이 그림 자체의 테두리면(바깥 줄을 그 변 길이의 2 % 이상 덮으면, video-frames 와 같은
+    판정) smooth 를 말한다. 여백을 붙여 굽고 잘라 내는 우회는 밀려 나간 만큼을 조용히 잃는다.
+    smooth 는 같은 그림을 거절 없이 굽고 그 변을 그대로 둔다."""
+    src = _cut_bust()
+    message = _clip_refusal(src)
+    clipped = int(re.search(r"불투명 픽셀 (\d+)개가 잘린다", message).group(1))
+    assert f"왼쪽 변 밖 {clipped}" in message, message
+    assert "위 변 밖" not in message and "오른쪽 변 밖" not in message, message
+    assert "왼쪽 변 바깥 줄 38 px" in message, message
+    assert "--mode smooth" in message and "잘라 내지 마라" in message, message
+
+    smooth = state_breathe({"states": {"idle": {"breathe": {"mode": "smooth", "breaths": 1}}}}, "idle")
+    frames, _ = bake_breathe_sequence([src] * 12, smooth)
+    edge = [src.getpixel((0, y)) for y in range(src.height)]
+    for i, frame in enumerate(frames):
+        assert [frame.getpixel((0, y)) for y in range(frame.height)] == edge, f"{i}번 칸: 왼쪽 변이 움직였다"
+
+
+def test_a_clip_off_the_drawings_border_keeps_the_margin_advice() -> None:
+    """변에 닿지 않은 그림이 밀려 나가면 여백이 모자란 것이다 — smooth 를 권하지 않는다."""
+    message = _clip_refusal(_cut_bust(touch=False))
+    assert re.search(r"왼쪽 변 밖 \d+", message), message
+    assert "--mode smooth" not in message, message
+    assert "셀 여백을 늘리거나 depth 를 낮춰라" in message, message
+
+
 # ── 8. 얼굴이 몸통에 있는 실루엣 (목 없음) ─────────────────────────
 
 def test_face_on_the_body_pushes_the_boundary_below_the_face() -> None:
@@ -551,6 +633,61 @@ def test_face_detection_ignores_a_single_eye_paired_with_a_centred_mouth() -> No
     assert anat.face is not None
     # 눈쌍(44~52)이 이겨야 한다 — 입(56~62)까지 삼키면 bottom 이 훨씬 아래로 간다
     assert anat.face[0] < 56, f"눈쌍이 아니라 다른 짝이 이겼다: {anat.face}"
+
+
+TURNED_EYES = (70, 82)        # 3/4 흉상의 눈 행 (콘텐츠 기준, 아래 끝 제외)
+
+
+def _turned_bust(eyes: bool = True) -> Image.Image:
+    """화면을 채운 큰 흉상, 얼굴이 3/4 로 돌아갔다 — 작은 두 눈, 긴 꽁지머리, 목걸이 구슬 둘.
+
+    · 두 눈(120·140 px)은 그림 전체 불투명(76,420)의 0.2 % 에 못 미치고, 목 위 머리 불투명의 0.2 % 는 넘는다.
+    · 먼 눈은 속눈썹 줄(20x7, 비 2.86)이라 비 상한 2.5 를 넘는다 (3.0 안).
+    · 꽁지머리가 몸통 축을 화면 오른쪽으로 끌어, 먼 눈 가운데가 축에서 8 px — 콘텐츠 폭(240)의 0.05 에
+      못 미친다 (0.02 는 넘는다). 지금 규칙은 셋 중 어느 하나로도 이 쌍을 놓친다.
+    · 목걸이 구슬 둘(14x14)은 눈보다 크고 둘 다 축 왼쪽이다. 축을 사이에 두라는 것과 쌍 가운데가 축에
+      있으라는 두 대칭 조건을 빼면 이 둘이 쌍으로 잡혀 경계가 목 아래로 내려간다.
+    `eyes=False` 면 눈이 없다 — 구슬만 남는다."""
+    a = np.zeros((420, 400, 4), np.uint8)
+
+    def fill(x0, y0, x1, y1, color):
+        a[y0:y1, x0:x1] = color
+
+    fill(90, 200, 330, 420, (120, 140, 200, 255))      # 몸통 — 화면 아래 변에 닿는다
+    fill(140, 30, 262, 60, (150, 110, 90, 255))        # 앞머리
+    fill(250, 40, 300, 330, (150, 110, 90, 255))       # 꽁지머리 — 어깨 앞으로 늘어진다
+    fill(150, 40, 250, 170, (235, 205, 180, 255))      # 얼굴
+    fill(180, 170, 220, 200, (235, 205, 180, 255))     # 목 (병목)
+    image = Image.fromarray(a, "RGBA")
+    box = solid_alpha_bbox(image)
+    cx = box[0] + axis_centroid(image, box)            # 눈과 구슬은 불투명 위에 칠해 축을 안 옮긴다
+    dark = (20, 15, 25, 255)
+    y0 = box[1] + TURNED_EYES[0]
+    if eyes:
+        fill(cx - 43, y0, cx - 33, y0 + 12, dark)      # 가까운 눈 — 축 왼쪽 38 px
+        fill(cx - 2, y0 + 3, cx + 18, y0 + 10, dark)   # 먼 눈 — 속눈썹 줄, 축 오른쪽 8 px
+    for x in (cx - 80, cx - 40):                       # 목걸이 구슬 — 둘 다 축 왼쪽
+        fill(x, 215, x + 14, 229, (30, 25, 35, 255))
+    return Image.fromarray(a, "RGBA")
+
+
+def test_a_turned_face_on_a_large_bust_is_found_and_keeps_the_neck_boundary() -> None:
+    """지금 눈쌍 규칙이 못 찾을 때만 한 번 더 본다 — 면적 하한을 그림 전체 대신 목 위 머리로 재고, 비 상한
+    3.0, 축 거리 하한 0.02 w. 축을 사이에 두기·쌍 가운데가 축에·떨어져 있기·크기 비·행 겹침은 그대로라
+    목걸이 구슬은 짝이 되지 않는다. 얼굴이 목보다 위라 경계는 목 그대로다 — 경고만 사라진다."""
+    anat = analyze(_turned_bust())
+    assert anat.face is not None, anat.warnings
+    assert anat.face[0] == TURNED_EYES[0] and anat.face[1] >= TURNED_EYES[1], f"눈이 아닌 쌍: {anat.face}"
+    assert not any(w.startswith("face-absent") for w in anat.warnings), anat.warnings
+    assert (anat.rigid_row, anat.rigid_source) == (anat.neck_row, "neck"), "얼굴이 목 위인데 경계가 움직였다"
+
+
+def test_the_looser_eye_search_does_not_pair_a_necklace() -> None:
+    """눈이 없으면 목걸이 구슬 둘만 남는다 — 둘 다 축 한쪽이라 느슨한 규칙에서도 쌍이 아니다."""
+    anat = analyze(_turned_bust(eyes=False))
+    assert anat.face is None, f"목걸이가 얼굴로 잡혔다: {anat.face}"
+    assert any(w.startswith("face-absent") for w in anat.warnings)
+    assert anat.rigid_row == anat.neck_row
 
 
 # ── 9. Validator round 2 회귀 ───────────────────────────────────────

@@ -70,6 +70,24 @@ NOT_RIFE_SKIPS = {
     # lane's Linux volume tells the two spellings apart, so the layout the case measures cannot be made there.
     "tests/effects/test_breathe_publish.py::test_overlapping_folders_are_refused_before_anything_is_made"
     "[out_inside_frames_spelt_in_capitals]",
+    "tests/video/test_loop_inputs_kept.py::test_a_cut_never_writes_over_or_deletes_the_frames_it_reads"
+    "[out_spelt_in_capitals]",
+    "tests/video/test_frames_inputs_kept.py::test_frames_never_write_over_or_delete_the_clip_or_still_they_read"
+    "[source_manifest_spelt_in_capitals]",
+    "tests/gen/test_logo.py::test_a_given_lettering_spelt_in_capitals_is_its_own_file_and_is_cut_again",
+    "tests/gen/test_video_modes.py::test_the_result_is_never_published_over_the_clip_it_is_made_from[extend-capitals]",
+    "tests/gen/test_video_modes.py::test_the_result_is_never_published_over_the_clip_it_is_made_from[edit-capitals]",
+    "tests/video/test_follow_inspect.py::test_the_loop_directory_spelt_in_capitals_is_the_loop_directory",
+    "tests/video/test_loop_compare.py::test_a_report_spelt_in_capitals_of_an_input_is_refused",
+    "tests/video/test_source_restoration.py::test_a_report_spelt_in_capitals_of_an_input_is_refused",
+    "tests/video/test_source_restoration.py::test_a_manifest_spelt_in_capitals_of_an_input_is_refused",
+    "tests/effects/test_shadow.py::test_an_output_spelt_in_capitals_of_the_source_is_refused",
+    # os.kill(pid, 0) is a Ctrl+C to the console only on Windows, so only a Windows console holds what the case
+    # measures; the lane's Linux host has none (its POSIX twin, the signal-0 case, runs there).
+    "tests/spec/test_run_dir_lock.py::test_a_lock_holders_pid_is_judged_on_windows_without_a_ctrl_c_to_its_console",
+    # Only Windows makes the lock entry on a CreateFileW handle handed to a descriptor; on POSIX os.open gives the
+    # descriptor itself, so the lane's Linux host has no handle to close (its cross-platform twin, the descriptor case, runs).
+    "tests/spec/test_run_dir_lock.py::test_a_lock_entry_handle_that_cannot_become_a_descriptor_is_closed_on_windows",
 }
 
 
@@ -80,11 +98,30 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="the RIFE-less run of scripts/linux_lane.sh: a skip fails unless its test is marked real_rife "
         "or named in NOT_RIFE_SKIPS (tests/conftest.py)",
     )
+    parser.addoption(
+        "--full",
+        action="store_true",
+        help="run every test; without it a run is the fast bundle, the tests marked slow deselected. "
+        "The release lane (scripts/linux_lane.sh) runs with it",
+    )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """A test marked `real_rife` runs the real binary: skipped where `rife.locate()` finds none, and run
+def pytest_report_header(config: pytest.Config) -> str | None:
+    if not config.getoption("full"):
+        return "fast bundle: the tests marked slow are deselected; `pytest --full` runs every test"
+    return None
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Without `--full` the tests marked `slow` are deselected: a plain `pytest` is the fast bundle.
+
+    A test marked `real_rife` runs the real binary: skipped where `rife.locate()` finds none, and run
     by `scripts/linux_lane.sh --rife-only` (`-m real_rife`)."""
+    if not config.getoption("full"):
+        slow = [item for item in items if item.get_closest_marker("slow")]
+        if slow:
+            config.hook.pytest_deselected(items=slow)
+            items[:] = [item for item in items if not item.get_closest_marker("slow")]
     marked = [item for item in items if item.get_closest_marker("real_rife")]
     if not marked:
         return

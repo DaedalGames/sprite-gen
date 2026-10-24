@@ -20,6 +20,7 @@ from sprite_gen.scene.render import Renderer
 from sprite_gen.util.resample import resize_cell
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("scale", (2.0,))
 def test_a_scaled_layer_carries_no_colour_its_frame_did_not_have(tmp_path: Path, scale: float) -> None:
     src = figure()

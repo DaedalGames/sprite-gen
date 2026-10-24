@@ -37,7 +37,13 @@ EYE_ASPECT = (0.4, 2.5)
 EYE_MIN_AREA = 0.002       # 불투명 면적 대비
 EYE_MAX_AREA = 0.06
 EYE_TOP_LIMIT = 0.65       # 이 아래에서 시작하는 덩어리는 눈이 아니다
+EYE_AXIS = 0.05            # 눈 가운데가 몸통 축에서 떨어진 최소 거리 (콘텐츠 폭 비율)
 DARK_QUANTILE = 0.30       # 명도 하위 이만큼을 어두운 픽셀로 본다
+# 느슨한 눈쌍 — 위 규칙이 쌍을 못 찾을 때만 한 번 더 본다 (detect_face). 화면을 채운 큰 흉상은 눈이 그림
+# 전체의 EYE_MIN_AREA 에 못 미쳐 면적 하한을 목 위 머리로 재고, 3/4 로 돌린 얼굴의 먼 눈은 속눈썹 줄이라
+# 길쭉하고, 긴 머리가 무게중심을 끌어 몸통 축이 먼 눈 가까이 온다.
+EYE_LOOSE_ASPECT = 3.0
+EYE_LOOSE_AXIS = 0.02
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,15 @@ class Anatomy:
                 "max_half": self.max_half, "torso_source": self.torso_source,
                 "face": list(self.face) if self.face else None,
                 "warnings": list(self.warnings)}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Anatomy":
+        """`as_dict` 가 쓴 한 벌을 다시 읽는다 (breathe.json 의 resolved.anatomy) — 잰 자리(`origin`, `neck_span`)는 실리지
+        않으니 없다."""
+        keys = ("width", "height", "axis_x", "neck_row", "neck_source", "rigid_row", "rigid_source", "basis_row",
+                "torso_half", "max_half", "torso_source")
+        return cls(**{k: data[k] for k in keys}, face=tuple(data["face"]) if data.get("face") else None,
+                   warnings=tuple(data.get("warnings") or ()))
 
 
 # ── 실루엣 ──────────────────────────────────────────────────────────
@@ -195,12 +210,20 @@ def detect_neck(profile: list[int]) -> tuple[int, str]:
     return _steepest_widening(smooth, 0.05, 0.60), "shoulder-gradient"
 
 
-def detect_face(image: Image.Image, box: tuple[int, int, int, int], cx: int) -> tuple[int, int] | None:
+def detect_face(image: Image.Image, box: tuple[int, int, int, int], cx: int,
+                neck_row: int | None = None) -> tuple[int, int] | None:
     """좌우 대칭 눈쌍으로 얼굴 세로 구간 (top_row, bottom_row) 을 찾는다.
 
     눈은 가장 어두운 **작고 컴팩트한** 덩어리이면서 몸통 축에 대해 거울 대칭인 쌍이다.
     두 조건을 동시에 요구하는 게 핵심이다 — 어둡기만 보면 아웃라인이, 대칭만 보면
     좌우 팔이 걸린다(실측: 컴팩트 제약 없이 골렘의 양팔이 눈으로 잡혔다).
+
+    이 규칙이 쌍을 못 찾고 `neck_row` 가 있으면 한 번 더 본다 — 면적 하한을 그림 전체 대신 목 행
+    위(머리)의 불투명으로 재고, 가로세로 비 상한 EYE_LOOSE_ASPECT, 축 거리 하한 EYE_LOOSE_AXIS 로.
+    화면을 채운 3/4 흉상은 세 규칙에 동시에 걸린다: 눈이 그림 전체의 0.2 % 에 못 미치고, 먼 눈이
+    속눈썹 줄로 읽히고, 긴 머리가 끈 축 가까이에 있다. 축을 사이에 두기·쌍 가운데가 축에·떨어져
+    있기·크기 비·행 겹침은 그대로다 — 그 둘을 빼면 목걸이 쪽 엉뚱한 쌍이 잡혀 경계가 목 아래로
+    내려간다. 지금 규칙이 찾는 그림은 이 단계를 타지 않아 결과가 그대로다.
     못 찾으면 None — 그때는 목이 경계를 정한다."""
     px = image.load()
     x0, y0, x1, y1 = box
@@ -221,14 +244,30 @@ def detect_face(image: Image.Image, box: tuple[int, int, int, int], cx: int) -> 
         if v <= threshold:
             mask[idx] = True
 
+    found = _eye_pair(mask, w, h, cx, max(4, int(EYE_MIN_AREA * area)), int(EYE_MAX_AREA * area),
+                      EYE_ASPECT[1], EYE_AXIS)
+    if found is None and neck_row is not None:
+        head = sum(1 for _v, idx in lums if idx < neck_row * w)
+        found = _eye_pair(mask, w, h, cx, max(4, int(EYE_MIN_AREA * head)), int(EYE_MAX_AREA * area),
+                          EYE_LOOSE_ASPECT, EYE_LOOSE_AXIS)
+    if found is None:
+        return None
+    top, bot = found
+    # 눈 아래 입까지 여유를 준다 — 눈만 지키고 입이 흔들리면 표정이 깨진다.
+    return top, min(h - 1, bot + max(1, round((bot - top) * 0.7)))
+
+
+def _eye_pair(mask: list[bool], w: int, h: int, cx: int, min_area: int, max_area: int,
+              aspect: float, axis: float) -> tuple[int, int] | None:
+    """어두운 마스크에서 가장 큰 대칭 눈쌍의 세로 구간 (top_row, bottom_row) — 없으면 None.
+    `min_area`·`max_area` 는 눈 하나의 픽셀 수, `aspect` 는 가로세로 비 상한, `axis` 는 눈 가운데가
+    몸통 축에서 떨어진 최소 거리(콘텐츠 폭 비율)다."""
     blobs = []
-    for bx0, by0, bx1, by1 in mask_components(mask, w, h,
-                                              min_area=max(4, int(EYE_MIN_AREA * area)),
-                                              max_area=int(EYE_MAX_AREA * area)):
+    for bx0, by0, bx1, by1 in mask_components(mask, w, h, min_area=min_area, max_area=max_area):
         bw, bh = bx1 - bx0, by1 - by0
         if bh > EYE_MAX_EXTENT * h or bw > EYE_MAX_EXTENT * w:
             continue
-        if not EYE_ASPECT[0] <= bw / bh <= EYE_ASPECT[1]:
+        if not EYE_ASPECT[0] <= bw / bh <= aspect:
             continue
         if by0 > EYE_TOP_LIMIT * h:
             continue
@@ -241,7 +280,7 @@ def detect_face(image: Image.Image, box: tuple[int, int, int, int], cx: int) -> 
             da, db = amid - cx, bmid - cx
             # 눈은 축을 **사이에 두고** 있다. 이 조건이 없으면 한쪽 눈 + 축 위의 입이
             # 짝으로 잡혀 얼굴 구간이 입 아래까지 늘어난다 (실측: 버섯).
-            if da * db >= 0 or min(abs(da), abs(db)) < 0.05 * w:
+            if da * db >= 0 or min(abs(da), abs(db)) < axis * w:
                 continue
             if abs((amid + bmid) / 2 - cx) > 0.08 * w:       # 쌍의 중심이 축에 있나
                 continue
@@ -255,11 +294,7 @@ def detect_face(image: Image.Image, box: tuple[int, int, int, int], cx: int) -> 
             score = (a[4] + b[4], -abs(da + db))
             if best is None or score > best[0]:
                 best = (score, min(a[1], b[1]), max(a[3], b[3]) - 1)
-    if best is None:
-        return None
-    top, bot = best[1], best[2]
-    # 눈 아래 입까지 여유를 준다 — 눈만 지키고 입이 흔들리면 표정이 깨진다.
-    return top, min(h - 1, bot + max(1, round((bot - top) * 0.7)))
+    return None if best is None else (best[1], best[2])
 
 
 def torso_metrics(image: Image.Image, box: tuple[int, int, int, int], cx: int,
@@ -299,7 +334,7 @@ def analyze(image: Image.Image, rigid_row: int | None = None,
             cx = int(axis_x)
     profile = width_profile(image, box, cx)
     neck_row, neck_source = detect_neck(profile)
-    face = detect_face(image, box, cx)
+    face = detect_face(image, box, cx, neck_row)
 
     warnings: list[str] = []
     auto_cx = _axis_centroid(image, box)

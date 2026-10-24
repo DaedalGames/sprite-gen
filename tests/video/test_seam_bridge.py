@@ -118,6 +118,7 @@ def _cells(out: Path) -> list[np.ndarray]:
     return [np.asarray(Image.open(p)) for p in sorted((out / "cycle").glob("frame-*.png"))]
 
 
+@pytest.mark.slow
 def test_a_wrap_that_jumps_is_bridged_by_one_frame_and_the_loop_then_passes_the_gate(tmp_path):
     phases = _phases(2.6)
     keyed = _keyed(tmp_path, phases)
@@ -167,6 +168,7 @@ def test_the_fewest_frames_are_tried_first_and_a_straight_line_that_does_not_clo
     assert f"frames {N - 2}, {N - 1}, 0, 1 were made again by RIFE between frames {N - 3} and 2" in line
 
 
+@pytest.mark.slow
 def test_a_wrap_that_reads_as_a_step_needs_no_interpolator_and_is_cut_as_before(tmp_path):
     keyed = _keyed(tmp_path, _phases(1.0))
     off = _run(tmp_path / "off", keyed, repair="off")
@@ -272,6 +274,7 @@ def test_repair_on_without_rife_refuses_a_wrap_to_bridge(tmp_path, monkeypatch):
     assert report["status"] == "failed" and "rife-ncnn-vulkan not found" in report["error"]
 
 
+@pytest.mark.slow
 def test_repair_on_refusing_a_wrap_to_bridge_hands_nothing_over(tmp_path, monkeypatch):
     """A refused run hands nothing over (docs/video-pipeline.md section 4, `loop.refuse`): the seam bridge's refusal
     takes back what an earlier cut in the same folder handed over, as every other `video-loop` refusal does."""
@@ -324,6 +327,7 @@ def test_the_summary_names_the_frames_made_and_the_rife_that_made_them(tmp_path,
                                                      "tta": "", "binary_calls": 2}
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_rife_bridges_a_wrap_that_jumps_without_a_fault(tmp_path):
     rep = _run(tmp_path, _keyed(tmp_path, _phases(2.6)))

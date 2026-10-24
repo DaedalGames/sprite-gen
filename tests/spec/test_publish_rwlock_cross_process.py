@@ -95,6 +95,7 @@ def test_reader_process_blocks_until_publish_releases(run_dir: Path) -> None:
         child.finish()
 
 
+@pytest.mark.slow
 def test_two_process_readers_hold_shared_lock_concurrently(run_dir: Path) -> None:
     hold = 2.0
     child = ChildGuard(run_dir, "read", hold)

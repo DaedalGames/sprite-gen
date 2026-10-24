@@ -53,6 +53,24 @@ def edge_alpha_count(image: Image.Image, margin: int) -> int:
     return total
 
 
+# The sides a subject can leave its frame by — the bottom is the floor it stands on, contact there is expected.
+FRAME_SIDES = ("top", "left", "right")
+# The drawing's own border (`own_border`): a side the subject covers on its outermost row or column for this share of
+# its length. A drawing cut there (a sleeve, hair off the top) covers far more; a strand's tip grazing the edge covers less.
+BORDER_MIN_FRACTION = 0.02
+
+
+def own_border(subject: np.ndarray) -> tuple[list[str], dict[str, int]]:
+    """The drawing's own border — (sides, outer_px): the `FRAME_SIDES` whose outermost row or column `subject`, an
+    (h, w) bool mask of the subject's pixels, covers for at least BORDER_MIN_FRACTION of the side's length, and the
+    pixels it covers on each. `video-frames` accepts subject contact there in every frame of a clip; Breathe's pixel mode
+    names it when it refuses a frame pushed off the cell. The rule: docs/video-pipeline.md section 3."""
+    h, w = subject.shape
+    outer = {"top": int(subject[0].sum()), "left": int(subject[:, 0].sum()), "right": int(subject[:, -1].sum())}
+    length = {"top": w, "left": h, "right": h}
+    return [s for s in FRAME_SIDES if outer[s] and outer[s] >= BORDER_MIN_FRACTION * length[s]], outer
+
+
 _KEY_CHANNEL_LIT = 192  # a channel the key saturates
 _KEY_CHANNEL_DARK = 64  # a channel the key leaves dark — the one bar `is_key_family` / `is_border_key_candidate` reuse
 
@@ -643,6 +661,7 @@ def remove_chroma_background(
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
     decontam_edge_band: int = 0,
+    decontam_history: dict[str, Any] | None = None,
 ) -> Image.Image:
     """Key `chroma_key` out of `image` (hard cut + soft-alpha fringe unmix + trapped-spill despill).
 
@@ -655,8 +674,9 @@ def remove_chroma_background(
     `decontam="palette"` re-explains the edge afterwards with the subject's own
     colours (`sprite_gen.frames.decontam`; "auto" does so where it applies and reports
     why not elsewhere); "off" (the default) returns exactly what the passes above produce. `decontam_stats`, when given, receives what
-    that pass did; `decontam_palette` reuses a palette learned elsewhere, and
-    `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`).
+    that pass did; `decontam_palette` reuses a palette learned elsewhere,
+    `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`),
+    and `decontam_history` is a clip's record of its last frame for the video fit (`decontaminate`'s `history`).
     """
     if decontam != "off":
         from sprite_gen.frames import decontam as decontam_module
@@ -823,7 +843,8 @@ def remove_chroma_background(
     if decontam != "off":
         data, stats = decontam_module.decontaminate(source_rgb, data, keyed_mask, chroma_key, fit=decontam_fit,
                                                     alpha_depth=unmix_reach, palette=decontam_palette, mode=decontam,
-                                                    source_alpha=source_alpha, edge_band=decontam_edge_band)
+                                                    source_alpha=source_alpha, edge_band=decontam_edge_band,
+                                                    history=decontam_history)
         if decontam_stats is not None:
             decontam_stats.update(stats)
     # Back into the converted copy rather than a fresh Image.fromarray, so the

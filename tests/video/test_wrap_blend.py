@@ -338,6 +338,7 @@ def outputs(out_dir: Path, cells: str = "cycle") -> dict[str, bytes]:
 REDRAW = {"redraw": 0.0, "strands": 0.0, "breath": 6.0}  # the model's tone and 0.5 px of softness, nothing else
 
 
+@pytest.mark.slow
 def test_a_pin_that_redraws_the_first_frame_has_its_wrap_blended_to_under_a_step(tmp_path: Path) -> None:
     frames = character(**REDRAW)
     # The blend alone: an idle's wrap that jumps is the seam bridge's too (docs/loop-repair.md section 2), which cuts
@@ -361,6 +362,7 @@ def test_a_pin_that_redraws_the_first_frame_has_its_wrap_blended_to_under_a_step
 
 # --- 2. a ramp cell that does not stand where the pin stands ---------------------------------------------------------------
 
+@pytest.mark.slow
 def test_a_cell_whose_arm_is_not_yet_where_the_pin_holds_it_keeps_its_arm_as_filmed() -> None:
     frames = list(character("attack-late"))
     assert pin_closes(frames)
@@ -406,6 +408,7 @@ def _part_on_the_torso(d: int, mode: str = "move") -> tuple[list[np.ndarray], np
     return frames, ((frames[0] != base[0]).any(-1) | (frames[-1] != base[-1]).any(-1))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("d,mode", [(2, "move"), (8, "move"), (32, "move"), (16, "appear"), (16, "vanish")])
 def test_a_part_moved_on_a_redrawn_character_is_held_while_the_rest_is_blended(d: int, mode: str) -> None:
     frames, region = _part_on_the_torso(d, mode)
@@ -415,6 +418,7 @@ def test_a_part_moved_on_a_redrawn_character_is_held_while_the_rest_is_blended(d
     assert identical(out, frames, region)
 
 
+@pytest.mark.slow
 def test_the_checkpoints_part_on_a_flat_figure_is_cut_as_filmed_with_a_warning(tmp_path: Path, capsys) -> None:
     frames = []
     for t in range(N):
@@ -485,6 +489,7 @@ def test_a_strand_off_the_silhouette_is_held_over_white_where_black_alone_lets_i
 
 # --- 7. the softness match -----------------------------------------------------------------------------------------------
 
+@pytest.mark.slow
 @pytest.mark.parametrize("kw,expected", [
     ({}, {"sigma": 0.5, "blurred": "still"}),  # the model draws 0.5 px softer: the still is blurred
     ({"sigma_still": 0.5, "sigma_model": 0.0}, {"sigma": 0.5, "blurred": "pin"}),  # the still is the softer: the pin
@@ -509,6 +514,7 @@ def test_a_pin_that_is_the_first_frame_again_leaves_every_output_byte_for_byte(t
 
 # --- 9. cuts the blend does not read -------------------------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_a_cut_that_is_not_pinned_is_not_touched(tmp_path: Path) -> None:
     # The redraw's wrap reads 2.9x the mean step on the seam gate's thumbnail: the gate is opened past it for both cuts.
     frames = character(**REDRAW)
@@ -519,6 +525,7 @@ def test_a_cut_that_is_not_pinned_is_not_touched(tmp_path: Path) -> None:
     assert outputs(tmp_path / "auto") == outputs(tmp_path / "off")
 
 
+@pytest.mark.slow
 def test_a_pinned_cut_the_body_anchor_moves_is_not_touched(tmp_path: Path) -> None:
     frames = character(**REDRAW)
     # The blend alone, as in section 1: `--repair off` keeps the seam bridge from making frames round the redraw's wrap.
@@ -530,6 +537,7 @@ def test_a_pinned_cut_the_body_anchor_moves_is_not_touched(tmp_path: Path) -> No
 
 # --- 10. a pin the gate refuses ------------------------------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_a_pin_the_gate_refuses_fails_as_before_with_its_cut_as_filmed(tmp_path: Path) -> None:
     frames = list(character(**REDRAW))
     last = np.zeros_like(frames[-1])
@@ -547,6 +555,7 @@ def test_a_pin_the_gate_refuses_fails_as_before_with_its_cut_as_filmed(tmp_path:
 
 # --- 11. the after check -------------------------------------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_a_ramp_that_steps_past_the_cut_is_not_used_and_says_so() -> None:
     # A near-still cut that slides into the model's drawing over its whole length: each step carries a 72nd of the redraw,
     # each ramp cell takes a 13th of it back, a step the cut never takes.
@@ -596,6 +605,7 @@ GROUNDS = {
 }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", list(GROUNDS))
 def test_the_oblique_line_on_a_busier_quiet_ground_changes_by_three_levels_at_most(name: str) -> None:
     # Read on the gate and the ramp: decode noise on every frame lifts the cut's median step, so the ruler alone keeps

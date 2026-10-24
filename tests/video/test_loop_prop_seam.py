@@ -77,6 +77,7 @@ def _wrap_over_step(start: int, length: int, phase: float) -> float:
     return abs(_tip(start, phase) - _tip(start + length - 1, phase)) / inner
 
 
+@pytest.mark.slow
 def test_motion_auto_does_not_cut_where_the_staff_jumps(tmp_path):
     keyed = _keyed(tmp_path, [_walker(k) for k in range(73)])
     out = tmp_path / "out"
@@ -103,6 +104,7 @@ def test_motion_auto_does_not_cut_where_the_staff_jumps(tmp_path):
     assert not any("jumps into the loop's first frame" in line for line in report["jolt"]["warnings"])
 
 
+@pytest.mark.slow
 def test_a_window_whose_top_cannot_be_read_is_not_taken_as_closing(tmp_path):
     """One frame (50) has the staff's tip flung 90 px up: every window holding it has a frame with nothing
     in the top band, and its pop cannot be read. Such a window is neither calm nor chosen; before, it was
@@ -175,6 +177,7 @@ def test_a_refused_window_whose_top_cannot_be_read_is_not_listed_as_closing():
         assert (r["seam_pop"] is None) == (kinds[r["start"], r["length"]] == "unread") == ("seam_pop_skipped" in r)
 
 
+@pytest.mark.slow
 def test_a_cut_without_a_part_on_its_own_beat_is_chosen_as_before(tmp_path):
     """No staff: the wrap does not pop, nothing past the first choice is measured."""
     keyed = _keyed(tmp_path, [_walker(k, staff=False) for k in range(73)])
@@ -212,12 +215,13 @@ def test_seam_pop_is_the_wrap_over_the_median_when_the_wrap_is_the_largest_step(
 
 
 def test_a_kept_jump_up_or_down_at_the_wrap_is_a_warning_line(tmp_path, capsys):
-    """A fixed cut, nothing chosen again: the staff's tip rises along the cut and drops back at the wrap."""
+    """A fixed cut, nothing chosen again: the staff's tip rises along the cut and drops back at the wrap. Kept with the
+    seam pop gate off (`--seam-pop-max off`; on, it refuses the cut: tests/video/test_seam_pop_gate.py)."""
     frames = [_walker(k, phase=0.0, tip_dy=-(k % STEP)) for k in range(73)]
     out = tmp_path / "out"
     assert loop.main(["--frames-dir", str(_keyed(tmp_path, frames)), "--out-dir", str(out), "--state", "walk",
                       "--cycle", "fixed", "--start", "0", "--length", str(STEP), "--anchor", "none", "--repair", "off",
-                      "--seam-max", "1000"]) == 0
+                      "--seam-max", "1000", "--seam-pop-max", "off"]) == 0
     jolt = json.loads((out / "loop.loop.report.json").read_text())["jolt"]
     assert jolt["seam_pop"]["pops"] is True and jolt["seam_pop"]["y"]["wrap_is_largest"]
     line = [w for w in jolt["warnings"] if "jumps into the loop's first frame" in w]
@@ -251,6 +255,7 @@ def test_a_search_that_finds_nothing_reports_the_windows_it_refused():
         assert r["start"] >= 0 and r["length"] >= 12 and r["start"] + r["length"] <= 80
 
 
+@pytest.mark.slow
 def test_a_refused_motion_auto_cut_leaves_measured_windows_in_the_report(tmp_path):
     """The legs spread apart over the clip and never come back: the search refuses, and the report
     names windows to deliver from anyway (before, `cycle` was null and a forced cut took the whole clip)."""

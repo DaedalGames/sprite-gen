@@ -178,6 +178,7 @@ def test_a_boot_washed_lighter_on_art_painted_without_a_line_is_refused_on_the_d
     assert max(rife.outlined(a), rife.outlined(b)) < 0.1 and min(rife.outlined(_two_tone(*FAR[0])), rife.outlined(_walker(20, -20))) > 0.99
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_keeps_a_mid_tone_line_through_a_short_step_and_loses_it_crossing_far():
     """Through RIFE, the two-tone legs of a short step come out outlined on the rank reading at every

@@ -1,4 +1,5 @@
-"""Synthetic regressions for the opt-in edge decontamination pass (`decontam: "palette"`).
+"""Synthetic regressions for the edge decontamination pass (`decontam: "palette"`, and
+`auto`, the default of `video-frames` and `video-set`).
 
 Every scene here is drawn at 4x and box-downsampled, so each pixel's true coverage
 and true colour are known exactly, then composited on a painted key. Red hair
@@ -18,7 +19,8 @@ from PIL import Image, ImageDraw
 
 from sprite_gen.frames import decontam
 from sprite_gen.frames.cutout import cutout
-from sprite_gen.frames.extract import detect_background_key_rgb, hard_key_mask, remove_chroma_background
+from sprite_gen.frames.extract import (_key_channel_split, _key_excess_field, detect_background_key_rgb, hard_key_mask,
+                                       remove_chroma_background)
 from sprite_gen.video import frames as frames_mod
 
 SS = 4
@@ -29,12 +31,17 @@ LINEART = (92, 14, 24)
 HIGHLIGHT = (245, 118, 118)
 CLOTH = (236, 234, 230)
 GEM = (30, 110, 40)  # key-hued, yet farther than the hard cut from the painted key
+PROP = (30, 112, 46)  # a small key-hued part on the subject's edge: a charm, a ribbon
 KEY_ARGS = (96.0, 180.0, 18.0)  # the extract CLI's key / fringe thresholds
+PROP_BOX = (62, 24, 76, 36)  # x0, y0, x1, y1: on the hair block's top edge, half out on the key
 
 
 def _render(size=(176, 144), *, subject=HAIR, lineart=LINEART, highlight=HIGHLIGHT, strands=True, gem=False,
-            blue_dot=False, shift=0.0):
-    """(F, A): true colour and coverage of a hair block, a cloth block and thin strands."""
+            blue_dot=False, shift=0.0, widths=None, prop=False):
+    """(F, A): true colour and coverage of a hair block, a cloth block and thin strands.
+
+    `widths` (px) gives the strands their widths in turn; `prop` adds a small key-hued part
+    on the hair's top edge, a charm with a ribbon blowing off it, away from the strands."""
     w, h = size
     layers = []  # (mask at SS, colour)
 
@@ -61,8 +68,14 @@ def _render(size=(176, 144), *, subject=HAIR, lineart=LINEART, highlight=HIGHLIG
             a = math.radians(200 + i * 14)
             x0, y0 = 40, 45 + i * 7
             pts = [p(x0 + math.cos(a) * r * 0.9, y0 + math.sin(a) * r * 0.5 + (r / 30) ** 2) for r in range(0, 38, 2)]
-            m = canvas(); ImageDraw.Draw(m).line(pts, fill=255, width=max(1, int((0.7 + 0.35 * (i % 4)) * SS)))
+            width = (0.7 + 0.35 * (i % 4)) if widths is None else widths[i % len(widths)]
+            m = canvas(); ImageDraw.Draw(m).line(pts, fill=255, width=max(1, int(width * SS)))
             layers.append((m, highlight if i % 4 == 3 else subject))
+    if prop:
+        m = canvas(); draw = ImageDraw.Draw(m)
+        draw.ellipse([*p(PROP_BOX[0], PROP_BOX[1]), *p(PROP_BOX[2], PROP_BOX[3])], fill=255)
+        draw.line([p(PROP_BOX[2] - 2, PROP_BOX[1] + 2), p(PROP_BOX[2] + 10, PROP_BOX[1] - 10)], fill=255, width=2 * SS)
+        layers.append((m, PROP))
     if blue_dot:
         m = canvas(); ImageDraw.Draw(m).ellipse([*p(96, 67), *p(105, 76)], fill=255)
         layers.append((m, (40, 70, 230)))
@@ -104,11 +117,16 @@ def _key(raw: np.ndarray, key=(0, 255, 0), **kwargs) -> tuple[np.ndarray, dict]:
     return np.array(out), stats
 
 
+def _hard_cut(raw: np.ndarray, key=(0, 255, 0)) -> np.ndarray:
+    """The engine's hard-cut background of a raw frame: what the matte keys outright."""
+    painted = detect_background_key_rgb(Image.fromarray(raw, "RGB").convert("RGBA"), key)
+    keyed, _ = hard_key_mask(raw.astype(np.int32), np.full(raw.shape[:2], 255), key, painted, KEY_ARGS[0])
+    return keyed
+
+
 def _edge(raw: np.ndarray, key=(0, 255, 0)) -> tuple[np.ndarray, np.ndarray]:
     """(edge, interior): the pass's band+flank region and what lies deeper."""
-    image = Image.fromarray(raw, "RGB")
-    painted = detect_background_key_rgb(image.convert("RGBA"), key)
-    keyed, _ = hard_key_mask(raw.astype(np.int32), np.full(raw.shape[:2], 255), key, painted, KEY_ARGS[0])
+    keyed = _hard_cut(raw, key)
     depth = decontam._ring_depth(keyed, decontam.BAND_PX)
     flank = keyed & (decontam._ring_depth(~keyed, decontam.FLANK_PX) <= decontam.FLANK_PX)
     band = ~keyed & (depth <= decontam.BAND_PX)
@@ -306,8 +324,18 @@ def test_magenta_key_keeps_a_skin_tone_and_cleans_its_edge(video):
     off, _ = _key(raw, (255, 0, 255))
     pal, stats = _key(raw, (255, 0, 255), decontam="palette", decontam_fit="video" if video else "still")
     assert any(r > g + 40 for r, g, _b in stats["palette"])  # the skin tone is learned, not greyed toward G + 8
-    halo_off, halo_pal = _halo(off, F, A, edge), _halo(pal, F, A, edge)
-    assert halo_pal[0] <= 0.5 * halo_off[0] and halo_pal[1] <= 0.5 * halo_off[1]
+    if video:
+        # The video fit gives the keyed flank nothing (in a decoded frame its faint coverage is the codec's blur),
+        # and on this frame the flank's coverage is all that keeps half the halo: the band gets cleaner, the flank
+        # stays as the matte keyed it.
+        keyed = _hard_cut(raw, (255, 0, 255))
+        band = edge & ~keyed
+        halo_off, halo_pal = _halo(off, F, A, band), _halo(pal, F, A, band)
+        assert halo_pal[0] <= 0.9 * halo_off[0] and halo_pal[1] <= 0.9 * halo_off[1]
+        assert np.array_equal(off[keyed], pal[keyed])
+    else:
+        halo_off, halo_pal = _halo(off, F, A, edge), _halo(pal, F, A, edge)
+        assert halo_pal[0] <= 0.5 * halo_off[0] and halo_pal[1] <= 0.5 * halo_off[1]
     assert _recall(pal, A, edge) >= _recall(off, A, edge)
     assert np.array_equal(off[interior], pal[interior])
 
@@ -384,7 +412,8 @@ def test_video_frames_learn_one_palette_per_clip(tmp_path: Path):
     assert done["palette_source"] == "clip (learned on frame-0001.png)"
     assert all("decontam" in row for row in report["rows"])
     assert done["totals"]["changed_px"] == sum(row["decontam"]["changed_px"] for row in report["rows"])
-    off = frames_mod.key_frames(raws, tmp_path / "plain", key="green", check_edges=False, spill="full")
+    off = frames_mod.key_frames(raws, tmp_path / "plain", key="green", check_edges=False, spill="full",
+                                decontam="off")
     assert off["decontam"] == {"mode": "off", "applied_frames": 0}
     assert done["applied_frames"] == len(raws)
     assert all("decontam" not in row for row in off["rows"])
@@ -412,14 +441,15 @@ def test_video_frames_keep_the_frame_edge_as_the_matte_left_it(tmp_path: Path):
 
     Each blur row above the head fits a faint blend. Rows 3 to 5 lie within the flank,
     and row 3 inside the gate's edge band too: recovering it put the subject's grey on
-    the frame edge, and the gate read it as the key surviving the matte.
+    the frame edge, and the gate read it as the key surviving the matte. The video fit
+    gives the keyed flank no coverage at all now, so every blur row stays keyed.
     """
     raws = []
     for t in range(2):
         path = tmp_path / f"frame-{t + 1:04d}.png"
         Image.fromarray(_head_under_the_top_edge(t)).save(path)
         raws.append(path)
-    off = frames_mod.key_frames(raws, tmp_path / "plain", key="green", spill="full")
+    off = frames_mod.key_frames(raws, tmp_path / "plain", key="green", spill="full", decontam="off")
     on = frames_mod.key_frames(raws, tmp_path / "keyed", key="green", spill="full", decontam="palette")
     assert off["edge_contacts"] == on["edge_contacts"] == []
     assert on["decontam"]["applied_frames"] == 2 and on["decontam"]["edge_band"] == frames_mod.EDGE_ROWS
@@ -429,9 +459,9 @@ def test_video_frames_keep_the_frame_edge_as_the_matte_left_it(tmp_path: Path):
         plain = np.array(Image.open(tmp_path / "plain" / raw.name))[..., 3]
         keyed = np.array(Image.open(tmp_path / "keyed" / raw.name))[..., 3]
         assert not keyed[band & (plain == 0)].any()
-        # below the edge band the flank still gives the blur rows their coverage back
-        assert keyed[4:6][plain[4:6] == 0].any()
-    assert on["decontam"]["totals"]["recovered_px"] > 0
+        # nor below it: the blur rows under the edge band stay as the matte keyed them
+        assert not keyed[2:6][plain[2:6] == 0].any()
+    assert on["decontam"]["totals"]["recovered_px"] == 0
 
 
 def test_video_frames_rejects_an_unknown_mode(tmp_path: Path):
@@ -562,3 +592,397 @@ def test_gen_auto_leaves_native_alpha_and_opaque_images_alone(tmp_path: Path, mo
     assert _gen(tmp_path, monkeypatch, opaque, transparent=False, out=tmp_path / "opaque.png",
                 report=tmp_path / "opaque.json", decontam="auto") == 0
     assert opaque.calls == 1 and json.loads((tmp_path / "opaque.json").read_text())["chroma"] is None
+
+
+# --------------------------------------------------------------------------- video-frames default (auto)
+
+STRANDS_1_TO_3 = (1.0, 1.5, 2.0, 3.0)  # px: the strand widths a 4:2:0 decode blends with the key
+
+
+def _alpha_error(out, A, edge):
+    return float(np.abs(out[..., 3] / 255.0 - A)[edge].mean())
+
+
+def _key_part_lost(out, F, A, edge, key_rgb=(0, 255, 0)):
+    """Share of the edge's key-hued truth (a green part's rim) that lost half its key hue or coverage."""
+    keyed_channels, unkeyed_channels = _key_channel_split(key_rgb)
+    truth = _key_excess_field(F, keyed_channels, unkeyed_channels)
+    got = _key_excess_field(out[..., :3].astype(np.float64), keyed_channels, unkeyed_channels)
+    part = edge & (A >= 0.1) & (truth > 8)
+    lost = part & ((got < 0.5 * truth) | (out[..., 3] / 255.0 < 0.5 * A))
+    return float(lost.sum() / max(1, part.sum()))
+
+
+def _clip(tmp_path: Path, painted, frames=3, **render):
+    """A decoded clip: (raw frame files, [(F, A, raw)]) of the scene moving a fraction of a pixel a frame."""
+    files, truth = [], []
+    for t in range(frames):
+        F, A = _render(shift=0.4 * t, **render)
+        raw = _subsample_420(_composite_on(F, A, painted))
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(raw).save(path)
+        files.append(path)
+        truth.append((F, A, raw))
+    return files, truth
+
+
+def _keyed(directory: Path, path: Path) -> np.ndarray:
+    return np.array(Image.open(directory / path.name).convert("RGBA"))
+
+
+def _mean(metric, directory, files, truth, key=(0, 255, 0)):
+    return float(np.mean([metric(_keyed(directory, f), F, A, _edge(raw, key)[0])
+                          for f, (F, A, raw) in zip(files, truth)]))
+
+
+def test_video_frames_and_video_set_default_to_auto():
+    import inspect
+
+    from sprite_gen import cli
+    from sprite_gen.video import batch
+
+    parser = cli._build_parser()
+    assert parser.parse_args(["video-frames", "--clip", "c.mp4", "--out-dir", "o"]).decontam == "auto"
+    assert parser.parse_args(["video-set", "--out-dir", "o"]).decontam == "auto"
+    for function in (frames_mod.key_frames, frames_mod.run_frames, batch.run_item, batch.run_set):
+        assert inspect.signature(function).parameters["decontam"].default == "auto", function.__name__
+    # the row extractor and the still verbs keep the matte as it is unless asked
+    for argv in (["cutout", "x.png"], ["gen", "--out", "x.png", "--transparent"], ["extract", "--run-dir", "r"]):
+        assert parser.parse_args(argv).decontam in (None, "off"), argv
+
+
+def test_video_frames_off_is_the_engine_byte_for_byte(tmp_path: Path):
+    files, _ = _clip(tmp_path, GREEN_PAINTED, frames=2, widths=STRANDS_1_TO_3)
+    off = frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    assert off["decontam"] == {"mode": "off", "applied_frames": 0}
+    for path in files:
+        cutout(path, tmp_path / f"engine-{path.name}", key="green")
+        engine, _ = frames_mod.drop_specks(Image.open(tmp_path / f"engine-{path.name}").convert("RGBA"))
+        assert np.array_equal(_keyed(tmp_path / "off", path), np.array(engine))
+
+
+def test_video_set_hands_its_decontam_to_video_frames_and_lists_the_warning(tmp_path: Path, monkeypatch):
+    from sprite_gen.video import batch
+
+    seen = []
+
+    def frames_stub(clip, out, **kw):
+        seen.append(kw.get("decontam", "<left out>"))
+        return {"fps": 24, "frames": 10, "alpha_zero_pct_min": 50, "alpha_zero_pct_max": 60, "keyed_dir": str(out),
+                "decontam": {"mode": kw.get("decontam"), "applied_frames": 0, "reason": "a reason"}}
+
+    def video(image, prompt, out, report, **kw):
+        out.write_bytes(b"test-video")
+        report.write_text(json.dumps({"prompt": prompt}))
+        return 0
+
+    monkeypatch.setattr(batch.facing_mod.vision, "grok_inspect", lambda *a, **kw: ("left", {}))
+    monkeypatch.setattr(batch.frames_mod, "run_frames", frames_stub)
+    monkeypatch.setattr(batch.loop_mod, "run_loop", lambda *a, **kw: {
+        "cycle": {"length": 10, "period_global": 10, "ratio": 0.2},
+        "resampled_seam_ratio": 0.2, "n_out": 10, "gif": {"file": "loop.gif"},
+        "webp": {"file": "loop.webp"}, "strip": {"path": "strip.png"}})
+    monkeypatch.setattr(batch, "_staggered_start", lambda gap: None)
+    still = Path(__file__).parents[1] / "fixtures" / "facing" / "left.png"
+    common = dict(bases={"front": still}, states=["attack"], character=None, duration=3, resolution="720p",
+                  key="green", concurrency=1, force=False, gap=0, video_runner=video)
+    default = batch.run_set(root=tmp_path / "default", **common)
+    off = batch.run_set(root=tmp_path / "off", decontam="off", **common)
+    assert seen == ["auto", "off"]
+    assert default["warnings"] == ["front-attack: decontam auto did not run (a reason): the frames are the matte's, "
+                                   "the same as --decontam off"]
+    assert off["warnings"] == []
+
+
+def _white_clip(tmp_path: Path) -> list[Path]:
+    files = []
+    for t in range(2):
+        image = Image.new("RGB", (96, 96), (250, 250, 248))
+        ImageDraw.Draw(image).ellipse([24 + t, 24, 72 + t, 80], fill=(200, 40, 40))
+        image.save(tmp_path / f"frame-{t + 1:04d}.png")
+        files.append(tmp_path / f"frame-{t + 1:04d}.png")
+    return files
+
+
+def _thin_clip(tmp_path: Path) -> list[Path]:
+    files = []
+    for t in range(2):
+        bar = np.full((80, 160, 3), GREEN_PAINTED, np.uint8)
+        bar[38 + t:41 + t, 20:140] = HAIR
+        Image.fromarray(bar).save(tmp_path / f"frame-{t + 1:04d}.png")
+        files.append(tmp_path / f"frame-{t + 1:04d}.png")
+    return files
+
+
+@pytest.mark.parametrize("scene,reason", [(_white_clip, "the white matte has no key colour to remove"),
+                                          (_thin_clip, "deeper than")], ids=["white-key", "no-interior"])
+def test_video_frames_default_keeps_the_matte_where_the_pass_cannot_run_and_says_why(tmp_path: Path, scene, reason):
+    files = scene(tmp_path)
+    default = frames_mod.key_frames(files, tmp_path / "default", key="auto")
+    off = frames_mod.key_frames(files, tmp_path / "off", key="auto", decontam="off")
+    for path in files:
+        assert np.array_equal(_keyed(tmp_path / "default", path), _keyed(tmp_path / "off", path))
+    done = default["decontam"]
+    assert done["mode"] == "auto" and done["applied_frames"] == 0 and reason in done["reason"]
+    assert all(row["decontam"]["applied"] is False for row in default["rows"])
+    warning = frames_mod.decontam_warning(done)
+    assert warning.startswith("decontam auto did not run (") and reason in warning
+    assert warning.endswith("the same as --decontam off")
+    assert frames_mod.decontam_warning(off["decontam"]) is None
+
+
+def test_video_frames_default_on_brightness_alpha_is_off_with_its_reason(tmp_path: Path):
+    src = tmp_path / "frame-0001.png"
+    rgb = np.zeros((16, 16, 3), dtype=np.uint8)
+    rgb[4:12, 4:12] = (240, 120, 30)
+    Image.fromarray(rgb).save(src)
+    default = frames_mod.key_frames([src], tmp_path / "default", alpha_mode="brightness")
+    off = frames_mod.key_frames([src], tmp_path / "off", alpha_mode="brightness", decontam="off")
+    assert np.array_equal(_keyed(tmp_path / "default", src), _keyed(tmp_path / "off", src))
+    assert default["decontam"] == {"mode": "auto", "applied_frames": 0,
+                                   "reason": "brightness alpha has no key colour to remove"}
+    assert frames_mod.decontam_warning(default["decontam"]) is None
+    with pytest.raises(SystemExit, match="brightness alpha does not use --decontam"):
+        frames_mod.key_frames([src], tmp_path / "palette", alpha_mode="brightness", decontam="palette")
+
+
+def test_video_frames_default_halves_key_contamination_on_thin_red_strands(tmp_path: Path):
+    """Red strands 1 to 3 px wide on green, chroma shared by each aligned 2x2 block as a decode does."""
+    files, truth = _clip(tmp_path, GREEN_PAINTED, widths=STRANDS_1_TO_3)
+    off = frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    assert on["decontam"]["mode"] == "auto" and on["decontam"]["applied_frames"] == len(files)
+    assert on["decontam"]["palette_keyfree"] is True and on["decontam"]["key_material_share"] == 0
+    assert frames_mod.decontam_warning(on["decontam"]) is None
+    before = _mean(_toward_key, tmp_path / "off", files, truth)
+    after = _mean(_toward_key, tmp_path / "on", files, truth)
+    assert before > 0.05 and after <= 0.5 * before
+    halo = lambda out, F, A, edge: _halo(out, F, A, edge)[0]
+    halo_white = lambda out, F, A, edge: _halo(out, F, A, edge)[1]
+    for metric in (halo, halo_white):
+        assert _mean(metric, tmp_path / "on", files, truth) <= _mean(metric, tmp_path / "off", files, truth)
+    recall = lambda out, F, A, edge: _recall(out, A, edge)
+    assert _mean(recall, tmp_path / "on", files, truth) >= _mean(recall, tmp_path / "off", files, truth) - 0.05
+
+
+def _near_key_part(plain, raw):
+    """Where the video fit's guard keeps the matte: within `KEY_PART_GUARD_PX` of the opaque, key-hued interior."""
+    _edge_region, interior = _edge(raw)
+    green = plain[..., 1].astype(np.int32) - np.maximum(plain[..., 0], plain[..., 2]) > decontam.KEY_HUE_TINT
+    part = interior & (plain[..., 3] == 255) & green
+    return part, decontam._ring_depth(part, decontam.KEY_PART_GUARD_PX) <= decontam.KEY_PART_GUARD_PX
+
+
+def test_video_fit_leaves_the_rim_of_a_small_key_coloured_part_as_the_matte_keyed_it(tmp_path: Path):
+    """A green charm on red hair, too small for the palette to keep: no palette colour explains its rim,
+    and without the guard the rim was repainted the hair's colour."""
+    files, truth = _clip(tmp_path, GREEN_PAINTED, widths=STRANDS_1_TO_3, prop=True)
+    frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    auto = frames_mod.key_frames(files, tmp_path / "auto", key="green", decontam="auto")
+    lost_off = _mean(_key_part_lost, tmp_path / "off", files, truth)
+    assert lost_off > 0.3  # the matte itself keeps less than the whole rim
+    assert _mean(_key_part_lost, tmp_path / "auto", files, truth) <= lost_off + 0.1
+    for path, (_F, _A, raw) in zip(files, truth):
+        plain = _keyed(tmp_path / "off", path)
+        part, near = _near_key_part(plain, raw)
+        assert part.any() and (near & _edge(raw)[0]).any()
+        assert np.array_equal(_keyed(tmp_path / "auto", path)[near], plain[near])
+    done = auto["decontam"]
+    assert done["palette_keyfree"] is True and 0 < done["key_material_share"] <= decontam.KEY_MATERIAL_MAX_SHARE
+    assert done["totals"]["key_part_kept_px"] > 0
+
+
+def test_video_frames_default_keeps_a_small_key_coloured_part_and_still_cleans_the_strands(tmp_path: Path):
+    files, truth = _clip(tmp_path, GREEN_PAINTED, widths=STRANDS_1_TO_3, prop=True)
+    frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    assert on["decontam"]["mode"] == "auto" and on["decontam"]["applied_frames"] == len(files)
+    assert _mean(_key_part_lost, tmp_path / "on", files, truth) <= _mean(_key_part_lost, tmp_path / "off", files, truth) + 0.1
+    # away from the part and its ribbon, the strands are cleaned as on a subject without one. The ribbon's far
+    # end is thin, with no key-coloured interior beside it, and is repainted (docs/chroma-alpha.md, limits)
+    keyed_channels, unkeyed_channels = _key_channel_split((0, 255, 0))
+    before, after = [], []
+    for path, (F, A, raw) in zip(files, truth):
+        plain = _keyed(tmp_path / "off", path)
+        _part, near = _near_key_part(plain, raw)
+        green = (_key_excess_field(F, keyed_channels, unkeyed_channels) > decontam.KEY_HUE_TINT) & (A > 0)
+        elsewhere = _edge(raw)[0] & ~near & (decontam._ring_depth(green, decontam.BAND_PX) > decontam.BAND_PX)
+        before.append(_toward_key(plain, F, A, elsewhere))
+        after.append(_toward_key(_keyed(tmp_path / "on", path), F, A, elsewhere))
+    assert np.mean(before) > 0.05 and np.mean(after) <= 0.5 * np.mean(before)
+    warning = frames_mod.decontam_warning(on["decontam"])
+    assert "small key-coloured parts" in warning and warning.endswith("--decontam off keeps the matte as it is")
+
+
+@pytest.mark.parametrize("painted", [MAGENTA_PAINTED, GROK_MAGENTA], ids=["magenta", "grok-magenta"])
+def test_video_frames_default_on_magenta_lowers_halo_and_alpha_error(tmp_path: Path, painted):
+    files, truth = _clip(tmp_path, painted, widths=STRANDS_1_TO_3)
+    frames_mod.key_frames(files, tmp_path / "off", key="magenta", decontam="off")
+    on = frames_mod.key_frames(files, tmp_path / "on", key="magenta")
+    assert on["decontam"]["applied_frames"] == len(files)
+    key = (255, 0, 255)
+    for index in (0, 1):
+        halo = lambda out, F, A, edge: _halo(out, F, A, edge)[index]
+        assert _mean(halo, tmp_path / "on", files, truth, key) <= _mean(halo, tmp_path / "off", files, truth, key)
+    alpha = lambda out, F, A, edge: _alpha_error(out, A, edge)
+    assert _mean(alpha, tmp_path / "on", files, truth, key) <= _mean(alpha, tmp_path / "off", files, truth, key)
+
+
+def test_video_frames_default_keeps_the_frame_edge_as_the_matte_left_it(tmp_path: Path):
+    """The head 6 px under the top of the frame passes the edge gate with the default as with off."""
+    raws = []
+    for t in range(2):
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(_head_under_the_top_edge(t)).save(path)
+        raws.append(path)
+    off = frames_mod.key_frames(raws, tmp_path / "plain", key="green", spill="full", decontam="off")
+    on = frames_mod.key_frames(raws, tmp_path / "keyed", key="green", spill="full")
+    assert off["edge_contacts"] == on["edge_contacts"] == []
+    assert on["decontam"]["mode"] == "auto" and on["decontam"]["applied_frames"] == 2
+
+
+def test_a_few_key_hued_pixels_deep_inside_raise_no_warning():
+    """Codec noise can leave a few key-hued pixels inside a subject that has no key-coloured part: they guard no edge."""
+    noise = {"mode": "auto", "applied_frames": 6, "palette_keyfree": True, "key_material_share": 2e-05,
+             "totals": {"key_part_kept_px": 0}}
+    assert frames_mod.decontam_warning(noise) is None
+    assert "small key-coloured parts: 12 edge pixel(s)" in frames_mod.decontam_warning(
+        noise | {"totals": {"key_part_kept_px": 12}})
+
+
+def test_video_frames_prints_the_warning_line(tmp_path: Path, monkeypatch, capsys):
+    files = _white_clip(tmp_path)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"synthetic")
+    monkeypatch.setattr(frames_mod, "probe", lambda _: {"stream_index": 0, "fps": 24.0, "width": 96, "height": 96,
+                                                        "codec": "h264", "pix_fmt": "yuv420p", "audio_streams": 0})
+    monkeypatch.setattr(frames_mod, "extract", lambda clip, raw_dir, index: files)
+    assert frames_mod.run(clip=clip, out_dir=tmp_path / "out", key="auto") == 0
+    err = capsys.readouterr().err.strip().splitlines()
+    assert err == ["video-frames: warning: decontam auto did not run (the white matte has no key colour to remove): "
+                   "the frames are the matte's, the same as --decontam off"]
+    assert frames_mod.run(clip=clip, out_dir=tmp_path / "off", key="auto", decontam="off") == 0
+    assert capsys.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------- video fit over time
+
+def _noisy_420(rgb: np.ndarray, rng: np.random.Generator, sigma: float) -> np.ndarray:
+    """`_subsample_420` with a decoder's noise on top: luma per pixel, chroma per aligned 2x2 block (BT.601)."""
+    x = rgb.astype(np.float64)
+    luma = x @ np.array([0.299, 0.587, 0.114])
+    y = luma + rng.normal(0.0, sigma, luma.shape)
+    cb = (x[..., 2] - luma) * 0.564
+    cr = (x[..., 0] - luma) * 0.713
+    h, w = y.shape
+    for c in (cb, cr):
+        blk = c[: h // 2 * 2, : w // 2 * 2].reshape(h // 2, 2, w // 2, 2).mean((1, 3))
+        blk = blk + rng.normal(0.0, sigma, blk.shape)
+        c[: h // 2 * 2, : w // 2 * 2] = np.repeat(np.repeat(blk, 2, 0), 2, 1)
+    r = y + cr / 0.713
+    b = y + cb / 0.564
+    g = (y - 0.299 * r - 0.114 * b) / 0.587
+    return np.clip(np.round(np.stack([r, g, b], -1)), 0, 255).astype(np.uint8)
+
+
+def _still_clip(tmp_path: Path, frames=8, sigma=2.0) -> tuple[list[Path], tuple[np.ndarray, np.ndarray]]:
+    """The red-strand scene standing still while a decoder's noise changes every frame: (raw frame files, (F, A))."""
+    F, A = _render(widths=STRANDS_1_TO_3)
+    clean = _composite_on(F, A, GREEN_PAINTED)
+    files = []
+    for t in range(frames):
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(_noisy_420(clean, np.random.default_rng(1000 + t), sigma)).save(path)
+        files.append(path)
+    return files, (F, A)
+
+
+def _edge_change(directory: Path, files: list[Path]) -> tuple[float, float]:
+    """Mean and 99th percentile of the change of each edge pixel between consecutive keyed frames, composited on a
+    dark background; the edge is the pass's band and flank in either frame of the pair."""
+    dark = np.array([21.0, 17.0, 29.0])
+    shown, edges = [], []
+    for path in files:
+        out = _keyed(directory, path).astype(np.float64)
+        a = out[..., 3:4] / 255.0
+        shown.append(np.round(out[..., :3] * a + dark * (1 - a)))
+        edges.append(_edge(np.array(Image.open(path).convert("RGB")))[0])
+    change = np.abs(np.diff(np.stack(shown), axis=0)).mean(-1)
+    edge = np.stack(edges)
+    edge = edge[1:] | edge[:-1]
+    return float(change[edge].mean()), float(np.percentile(change[edge], 99))
+
+
+def test_video_frames_default_edge_changes_no_more_than_off_from_frame_to_frame(tmp_path: Path):
+    """A still scene under a decoder's noise. With the pass off the edge follows the noise smoothly; without the
+    hold, the noise carried edge pixels across the pass's tests and back, and each crossing changed the colour
+    written by far more than the noise did, so the edge sparkled where off does not."""
+    files, (F, A) = _still_clip(tmp_path)
+    frames_mod.key_frames(files, tmp_path / "off", key="green", decontam="off")
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    off_mean, off_p99 = _edge_change(tmp_path / "off", files)
+    on_mean, on_p99 = _edge_change(tmp_path / "on", files)
+    assert on_mean <= off_mean and on_p99 <= off_p99
+    # and the edge is still the hair's colour, not the olive the matte leaves
+    edges = [_edge(np.array(Image.open(path).convert("RGB")))[0] for path in files]
+    before = np.mean([_toward_key(_keyed(tmp_path / "off", path), F, A, edge) for path, edge in zip(files, edges)])
+    after = np.mean([_toward_key(_keyed(tmp_path / "on", path), F, A, edge) for path, edge in zip(files, edges)])
+    assert before > 0.05 and after <= 0.5 * before
+    totals = on["decontam"]["totals"]
+    assert totals["held_px"] > 0 and totals["settled_px"] > 0
+    assert on["rows"][0]["decontam"]["held_px"] == on["rows"][0]["decontam"]["settled_px"] == 0  # nothing to hold yet
+
+
+def _premultiplied(rgba: np.ndarray) -> np.ndarray:
+    """RGBA as what it adds to any background: colour times coverage, and the coverage, both 0-255."""
+    x = rgba.astype(np.float64)
+    return np.concatenate([x[..., :3] * x[..., 3:4] / 255.0, x[..., 3:4]], -1)
+
+
+def test_video_fit_spreads_a_changed_call_over_frames_on_a_still_edge(tmp_path: Path):
+    """One decoded frame, then another held still: the noise between them moved some edge pixels across the pass's
+    tests, past the hold. Shown at once, such a pixel changed by the whole gap between the matte's colour and the
+    fit's in one frame (kept to written, a tint to a blend, one palette colour to another): on a still edge, the rare
+    large jump that off does not have. The video fit moves it from what it showed toward its new call a step a frame
+    instead, never more than VIDEO_STEP while the source stands still, until it arrives."""
+    F, A = _render(widths=STRANDS_1_TO_3)
+    clean = _composite_on(F, A, GREEN_PAINTED)
+    first = _noisy_420(clean, np.random.default_rng(1000), 3.0)
+    held = _noisy_420(clean, np.random.default_rng(1001), 3.0)
+    files = []
+    for t in range(20):
+        path = tmp_path / f"frame-{t + 1:04d}.png"
+        Image.fromarray(first if t == 0 else held).save(path)
+        files.append(path)
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    shown = [_premultiplied(_keyed(tmp_path / "on", path)) for path in files]
+    moves = [np.abs(b - a).max(-1) for a, b in zip(shown[1:], shown[2:])]  # the source no longer changes
+    assert max(float(m.max()) for m in moves) > 2.0  # still on its way to the new calls ...
+    assert all(float(m.max()) <= decontam.VIDEO_STEP + 1.0 for m in moves)  # ... a step a frame (+1: uint8 rounding)
+    assert not moves[-1].any()  # ... and arrived
+    assert on["decontam"]["totals"]["blending_px"] > 0
+    assert on["rows"][0]["decontam"]["blending_px"] == 0  # the first frame shows its own calls
+
+
+def test_video_frames_give_a_frame_shown_twice_the_same_bytes(tmp_path: Path):
+    """The history holds and settles toward what a frame shows: a frame repeated comes out as it did."""
+    files, _ = _clip(tmp_path, GREEN_PAINTED, frames=1, widths=STRANDS_1_TO_3)
+    again = tmp_path / "frame-0002.png"
+    shutil.copyfile(files[0], again)
+    on = frames_mod.key_frames([files[0], again], tmp_path / "on", key="green")
+    assert np.array_equal(_keyed(tmp_path / "on", files[0]), _keyed(tmp_path / "on", again))
+    assert on["rows"][1]["decontam"]["settled_px"] > 0
+
+
+def test_video_fit_gives_the_keyed_flank_no_coverage(tmp_path: Path):
+    """In a decoded frame every keyed pixel near the subject reads as a faint blend (its blur), and the codec's
+    noise carried those across the floor and back from frame to frame: the dark gaps between strands filled with a
+    faint smear that came and went. The video fit leaves what the hard cut keyed transparent; the still fit does not."""
+    files, truth = _clip(tmp_path, GREEN_PAINTED, widths=STRANDS_1_TO_3)
+    on = frames_mod.key_frames(files, tmp_path / "on", key="green")
+    for path, (_F, _A, raw) in zip(files, truth):
+        assert not _keyed(tmp_path / "on", path)[..., 3][_hard_cut(raw)].any()
+    assert on["decontam"]["totals"]["recovered_px"] == 0
+    F, A = _render(widths=STRANDS_1_TO_3)
+    _, still = _key(_composite_on(F, A, GREEN_PAINTED), decontam="palette", decontam_fit="still")
+    assert still["recovered_px"] > 0

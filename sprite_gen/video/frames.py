@@ -71,7 +71,8 @@ from sprite_gen.frames.cutout import cutout
 from sprite_gen.frames.decontam import palette_from_stats
 from sprite_gen.frames.extract import _border_key_candidate_field, _key_channel_split, _painted_key_leans
 from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
+from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.console import utf8_streams
 
 EDGE_ROWS = 4  # rows/cols inspected at each edge
@@ -94,11 +95,7 @@ SPILL_REFERENCE_MAX = 0.005  # the still's own key material ≤ the engine's sma
 SPILL_REFERENCE_MARGIN = 1
 SPILL_REFERENCE_MAX_PIXELS = 6_000_000
 EDGE_MAX_PIXELS = 0  # any opaque pixel on the top/left/right edge band = contact
-SIDES = ("top", "left", "right")
-# The drawing's own border (`edge_border`): a side the first frame's subject covers on its outermost row or
-# column for this share of its length. A drawing cut there (a sleeve, hair off the top) covers far more; a
-# strand's tip grazing the edge covers less.
-BORDER_MIN_FRACTION = 0.02
+SIDES = FRAME_SIDES  # the top/left/right edge bands; the floor edge is expected contact
 # The body's rim the matte cut loose: on a border side, a key-only piece is accepted when it lies wholly within
 # RIM_REACH px of the frame's body (each way and diagonally) and holds fewer than SPECK_MIN_PX pixels — a few
 # pixels of a thin outline the key was blended into, left at the edge between strands. Anything larger or farther
@@ -114,10 +111,20 @@ SPECK_MIN_PX = 8
 SPECK_APART = 0.1
 # Edge decontamination (`sprite_gen.frames.decontam`). A decoded frame's chroma is blurred by
 # 4:2:0 while its luma is not, so frames use the video fit. One palette serves the whole clip,
-# learned on the first frame, so the colours an edge may take cannot change between frames.
+# learned on the first frame, so the colours an edge may take cannot change between frames, and
+# one history carries each frame's calls to the next (the pass's *Hold*, *Blend* and *Settle*), so
+# the codec's noise does not flip an edge pixel between colours from one frame to the next, and a
+# call that does change is shown a step a frame.
+# `auto` is the default: a thin strand on a chroma key comes out of the codec mixed with the key
+# (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
+# key, a subject with no interior) the frames keep the matte's bytes and the report says why;
+# brightness alpha has no key, so `auto` is off there.
 DECONTAM_MODES = ("off", "auto", "palette")
+DECONTAM_DEFAULT = "auto"
 DECONTAM_FIT = "video"
-DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px")
+DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
+                      "key_part_kept_px", "behind_kept_px", "held_px", "settled_px", "blending_px")
+BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
 
 
 def _require(binary: str) -> str:
@@ -331,17 +338,14 @@ def classify_edge_contact(raw: Image.Image, keyed: Image.Image, chroma_key: tupl
     return {"subject": int(pixels["contact"].sum()) - residual, "residual": residual, "rim": int(pixels["rim"].sum())}
 
 
-def _border(pixels: dict[str, np.ndarray] | None, size: tuple[int, int], frame: str) -> dict[str, Any]:
-    """The drawing's own border, read on the first frame's edge pixels (`_edge_pixels`; None: it touches no edge),
-    `size` (w, h): `edge_border` in the report."""
-    w, h = size
-    outer = {side: 0 for side in SIDES}
+def _border(pixels: dict[str, np.ndarray] | None, frame: str) -> dict[str, Any]:
+    """The drawing's own border (`extract.own_border`), read on the first frame's edge pixels that are the subject
+    (`_edge_pixels`; None: it touches no edge): `edge_border` in the report."""
+    sides, outer = [], {side: 0 for side in SIDES}
     if pixels is not None:
-        subject = pixels["contact"] & ~pixels["residual"]
-        outer = {"top": int(subject[0].sum()), "left": int(subject[:, 0].sum()), "right": int(subject[:, -1].sum())}
-    length = {"top": w, "left": h, "right": h}
-    return {"frame": frame, "sides": [s for s in SIDES if outer[s] and outer[s] >= BORDER_MIN_FRACTION * length[s]],
-            "outer_px": outer, "min_fraction": BORDER_MIN_FRACTION, "rim_reach": RIM_REACH, "rim_under_px": SPECK_MIN_PX}
+        sides, outer = own_border(pixels["contact"] & ~pixels["residual"])
+    return {"frame": frame, "sides": sides, "outer_px": outer, "min_fraction": BORDER_MIN_FRACTION,
+            "rim_reach": RIM_REACH, "rim_under_px": SPECK_MIN_PX}
 
 
 def _taken(pixels: dict[str, np.ndarray], sides: list[str]) -> np.ndarray:
@@ -429,13 +433,25 @@ def refused_dir(keyed_dir: Path) -> Path:
 
 
 def _withdraw(keyed_dir: Path) -> Path:
-    """Take back what an earlier run handed over, and give this run an empty working folder (returned): until this
-    run passes, `keyed_dir` holds nothing."""
-    work = keyed_dir.with_name(f".{keyed_dir.name}.work")
+    """Take back what an earlier run handed over, and give this run an empty working folder of its own beside it
+    (`runio.new_stage`: `.keyed.<pid>-<random>.work`, returned; a folder already there, an input's or another
+    run's, is never touched): until this run passes, `keyed_dir` holds nothing."""
     shutil.rmtree(keyed_dir, ignore_errors=True)
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
-    return work
+    keyed_dir.parent.mkdir(parents=True, exist_ok=True)
+    return new_stage(keyed_dir, ".work")
+
+
+def _refuse_overlap(clip: Path, reference: Path | None, out_dir: Path, target: Path, report_given: bool,
+                    receipt: Path | None) -> None:
+    """A run never writes over, moves or deletes what it reads: `--clip` and `--reference`, each with every link or
+    folder its path looks up, against what it replaces in `--out-dir` (`raw/`'s frames, `keyed/`, `keyed.refused/`),
+    its report and its source manifest (`runio.refuse_overlap`). Refused before anything is made."""
+    out = out_dir.expanduser().resolve()
+    outputs = {f"{n.name} in --out-dir": n for n in (out / "raw", out / "keyed", refused_dir(out / "keyed"))}
+    outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
+    if receipt is not None:
+        outputs["--source-manifest"] = Path(receipt).expanduser().resolve()
+    refuse_overlap({"--clip": clip, "--reference": reference}, outputs, verb="video-frames")
 
 
 def key_frames(
@@ -446,7 +462,7 @@ def key_frames(
     check_edges: bool = True,
     spill: str = "small",
     allow_subject: bool = False,
-    decontam: str = "off",
+    decontam: str = DECONTAM_DEFAULT,
     alpha_mode: str = "chroma",
 ) -> dict[str, Any]:
     """Key `raw_files` into `keyed_dir` and read their edges; the report. The frames are keyed in a working folder
@@ -455,7 +471,7 @@ def key_frames(
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness" and decontam != "off":
+    if alpha_mode == "brightness" and decontam == "palette":
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if alpha_mode == "chroma" and spill not in ("small", "full"):
         raise SystemExit(f"video-frames: key_frames takes a resolved spill mode (small|full), got {spill!r}")
@@ -470,6 +486,8 @@ def key_frames(
         shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
         work.rename(refused_dir(keyed_dir))
         raise
+    if alpha_mode == "brightness" and decontam == "auto":
+        report["decontam"] = {"mode": "auto", "applied_frames": 0, "reason": BRIGHTNESS_NO_KEY}
     shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
     work.rename(keyed_dir)
     return report
@@ -478,9 +496,11 @@ def key_frames(
 def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges: bool, spill: str, allow_subject: bool,
                 decontam: str) -> dict[str, Any]:
     clip_palette: dict[str, Any] | None = None
+    clip_history: dict[str, Any] = {}  # the last frame's calls, in clip order
     decontam_first: dict[str, Any] | None = None
     decontam_totals = {name: 0 for name in DECONTAM_STAT_KEYS}
     decontam_applied = 0
+    decontam_skipped: list[str] = []  # why `auto` left a frame as the matte keyed it, frame by frame
     # Full correction lowers the tint threshold as well as lifting the size cap.
     spill_max = SPILL_FULL_FRACTION if spill == "full" else None
     spill_tint = SPILL_FULL_MIN_TINT if spill == "full" else None
@@ -516,15 +536,19 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
                 "applied_frames": decontam_applied,
                 "totals": decontam_totals,
             }
+            if decontam_skipped:
+                report["decontam"] |= {"skipped_frames": len(decontam_skipped), "reason": decontam_skipped[0]}
         else:
             report["decontam"] = {"mode": decontam, "applied_frames": 0}
+            if decontam_skipped:
+                report["decontam"]["reason"] = decontam_skipped[0]
         return report
 
     for k, src in enumerate(raw_files):
         dst = keyed_dir / src.name
         stats = cutout(src, dst, key=key, spill_max_fraction=spill_max, spill_min_tint=spill_tint,
                        spill_require_hue=spill == "full", decontam=decontam, decontam_fit=DECONTAM_FIT,
-                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS)
+                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS, decontam_history=clip_history)
         image = Image.open(dst).convert("RGBA")
         # The specks go before anything reads the frame: the edge band, the coverage, the loop.
         image, specks = drop_specks(image)
@@ -546,6 +570,7 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
                 decontam_applied += 1
             else:
                 row["decontam"] = {"applied": False, "reason": done.get("reason")}
+                decontam_skipped.append(str(done.get("reason")))
         if check_edges:
             contact = edge_contact(image)
             touched = any(v > EDGE_MAX_PIXELS for v in contact.values())
@@ -558,7 +583,7 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
                 contact.update(subject=int(pixels["contact"].sum()) - residual, residual=residual, rim=int(pixels["rim"].sum()))
                 contact["key_painted"] = stats.get("chroma_key_painted")
             if policy == "border" and k == 0:
-                border = _border(pixels, (w, h), src.name)
+                border = _border(pixels, src.name)
                 if border["sides"]:
                     print(f"video-frames: the first frame's subject runs off the {_sides(border['sides'])} — read as the "
                           "drawing's own border, where contact is accepted in every frame (`edge_border` in the report)",
@@ -599,6 +624,34 @@ def _sides(sides: list[str]) -> str:
             f"{', '.join(sides[:-1])} and {sides[-1]} edges")
 
 
+def decontam_warning(decontam: dict[str, Any]) -> str | None:
+    """The line to read when the edge pass did less than the default promises, or met the key's
+    own colour: `auto` left frames as the matte keyed them, the subject owns key-coloured material,
+    or the guard kept the edge beside a small key-coloured part. None when there is nothing to look
+    at (the pass off, or brightness alpha)."""
+    mode = decontam.get("mode")
+    if mode in (None, "off") or decontam.get("reason") == BRIGHTNESS_NO_KEY:
+        return None
+    if not decontam.get("applied_frames"):
+        return (f"decontam {mode} did not run ({decontam.get('reason')}): the frames are the matte's, "
+                "the same as --decontam off")
+    notes = []
+    if decontam.get("skipped_frames"):
+        notes.append(f"it left {decontam['skipped_frames']} frame(s) as the matte keyed them ({decontam['reason']})")
+    share = float(decontam.get("key_material_share") or 0.0)
+    kept = int((decontam.get("totals") or {}).get("key_part_kept_px") or 0)
+    if not decontam.get("palette_keyfree", True):
+        notes.append(f"the subject owns key-coloured material ({share:.1%} of its interior), "
+                     "so an edge may be repainted in the key's colour too")
+    elif kept:
+        # a few key-hued interior pixels deep inside (codec noise) guard no edge and are not worth a line
+        notes.append(f"the subject has small key-coloured parts: {kept} edge pixel(s) beside them kept as the matte "
+                     "keyed them, and a thin detail of that colour farther out may be repainted")
+    if not notes:
+        return None
+    return f"decontam {mode}: {'; '.join(notes)} — look at those edges; --decontam off keeps the matte as it is"
+
+
 def _worst(contacts: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
     worst = max(contacts, key=lambda c: c["top"] + c["left"] + c["right"])
     return worst, f"(worst {worst['frame']}: top {worst['top']} / left {worst['left']} / right {worst['right']} px)"
@@ -632,19 +685,19 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
-def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = "off", source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
+def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness" and decontam != "off":
+    if alpha_mode == "brightness" and decontam == "palette":
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if source_manifest is not None and reference is None:
         raise SystemExit("video-frames: --source-manifest needs --reference (the source canvas)")
+    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
     if source_manifest is not None:
-        target = (report_path or out_dir / "frames.report.json").expanduser().resolve()
+        # Two of the run's own outputs, new paths both: what an input may be is `_refuse_overlap`'s.
         receipt = Path(source_manifest).expanduser().resolve()
-        if (receipt in (target, clip.expanduser().resolve(), Path(reference).expanduser().resolve())
-                or receipt.is_relative_to((out_dir / "keyed").expanduser().resolve())
+        if (receipt == target or receipt.is_relative_to((out_dir / "keyed").expanduser().resolve())
                 or receipt.is_relative_to((out_dir / "raw").expanduser().resolve())):
             raise SystemExit("video-frames: source manifest cannot overwrite source files or report")
     if spill not in SPILL_MODES:
@@ -653,13 +706,14 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
         raise SystemExit("video-frames: --spill auto needs --reference (the still the clip was made from)")
     if decontam not in DECONTAM_MODES:
         raise SystemExit(f"video-frames: unknown --decontam {decontam!r}; expected one of {', '.join(DECONTAM_MODES)}")
+    given = clip
     clip = clip.expanduser().resolve()
     if not clip.is_file():
         raise SystemExit(f"video-frames: clip not found: {clip}")
+    _refuse_overlap(given, reference, out_dir, target, report_path is not None, source_manifest)
     out_dir = out_dir.expanduser().resolve()
     raw_dir = out_dir / "raw"
     keyed_dir = out_dir / "keyed"
-    target = (report_path or (out_dir / "frames.report.json")).expanduser().resolve()
     # From here the run reads the clip: an earlier run's keyed frames are no longer handed over (`key_frames`).
     shutil.rmtree(keyed_dir, ignore_errors=True)
     meta = probe(clip)
@@ -702,7 +756,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-manifest", type=Path, help="write exact clip/canvas/keyed-file digests and source timestamps (requires --reference)")
     parser.add_argument("--spill", choices=SPILL_MODES, default="small", help="small: correct only small key-tinted clusters (default); full: every key tint in the subject is spill; auto: decide from --reference")
     parser.add_argument("--reference", type=Path, help="the still the clip was made from (required by --spill auto)")
-    parser.add_argument("--decontam", choices=DECONTAM_MODES, default="off", help="off: the matte as is (default); palette: re-explain key-tinted edges with the subject's own colours (one palette per clip, video fit); auto: the same where it applies, reasons recorded where not")
+    parser.add_argument("--decontam", choices=DECONTAM_MODES, default=DECONTAM_DEFAULT, help="auto (default): re-explain key-tinted edges with the subject's own colours (one palette per clip, video fit) where it applies, the reason recorded where not (a white key, a subject with no interior; brightness alpha is off); palette: the same, failing where it cannot run; off: the matte as is")
 
 
 def run(**kwargs: object) -> int:
@@ -710,10 +764,13 @@ def run(**kwargs: object) -> int:
                          allow_edge_contact=bool(kwargs.get("allow_edge_contact")), report_path=kwargs.get("report"),  # type: ignore[arg-type]
                          spill=str(kwargs.get("spill") or "small"), reference=kwargs.get("reference"),  # type: ignore[arg-type]
                          allow_subject_edge_contact=bool(kwargs.get("allow_subject_edge_contact")),
-                         decontam=str(kwargs.get("decontam") or "off"), source_manifest=kwargs.get("source_manifest"),
+                         decontam=str(kwargs.get("decontam") or DECONTAM_DEFAULT), source_manifest=kwargs.get("source_manifest"),
                          alpha_mode=str(kwargs.get("alpha_mode") or "chroma"))  # type: ignore[arg-type]
     summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    line = decontam_warning(payload["decontam"])
+    if line:
+        print(f"video-frames: warning: {line}", file=sys.stderr)
     return 0
 
 

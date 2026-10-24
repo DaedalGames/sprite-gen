@@ -79,6 +79,12 @@ PIP_OFF = (70, 60, 50, 255)
 KNOB = (180, 190, 210, 255)
 
 
+def slow_but(values, fast):
+    """``values`` for a parametrize: those ``fast`` takes stay in the fast bundle, the rest are marked slow and run by
+    `pytest --full` — the same property read on more samples, or the same sweep at more places."""
+    return [value if fast(value) else pytest.param(value, marks=pytest.mark.slow) for value in values]
+
+
 def fill(pixels, x0, y0, x1, y1, color):
     pixels[y0:y1, x0:x1] = color
 
@@ -389,6 +395,7 @@ REPORT_PLACES = [
 ]
 
 
+@pytest.mark.slow
 def test_a_report_anywhere_names_the_written_pngs_and_packs_the_same(tmp_path):
     image, _ = synthetic_sheet()
     sheet = tmp_path / "uikit.png"
@@ -721,7 +728,8 @@ def test_a_sheet_squeezed_from_the_top_by_any_accepted_amount_names_the_missing_
     assert_cut_as_drawn(report, elements, drawn, (1, 0, squeeze, 0))
 
 
-@pytest.mark.parametrize("subset", range(2 ** len(BAND)))
+# fast: no element left out, and each left out alone
+@pytest.mark.parametrize("subset", slow_but(range(2 ** len(BAND)), lambda subset: subset & (subset - 1) == 0))
 def test_every_set_of_missing_band_elements_under_a_random_accepted_drift_is_named_and_the_rest_cut_as_drawn(subset):
     # Each of the 256 sets of band elements left out, on a sheet drawn under a drift picked at random (seeded by the
     # set) within the accepted range: a scale and an offset along x and along y.
@@ -791,6 +799,7 @@ def two_way_sheet(dot):
     return Image.fromarray(pixels), drawn
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("dot", [(18, 18), (60, 18)])
 def test_a_drawing_that_fits_the_layout_two_ways_is_refused_with_its_own_reason(tmp_path, dot):
     # Where the layout puts the boxes, and with the layout squeezed to 0.9, every frame lies inside its own box, clear
@@ -987,7 +996,7 @@ def test_a_sheet_of_small_drawings_that_fits_the_layout_one_way_is_cut_as_drawn(
     assert sorted(p.name for p in out.iterdir()) == sorted([f"{name}.png" for name in drawn] + ["ui-kit.json"])
 
 
-@pytest.mark.parametrize("seed", range(512))
+@pytest.mark.parametrize("seed", slow_but(range(512), lambda seed: seed < 16))
 def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_cut_as_drawn_or_refused_as_two_readings(seed):
     # Small drawings anywhere inside their boxes leave the drift less certain, so a sheet may fit the layout under two
     # drifts that read it differently, and is then refused, naming both readings. It is never refused for another
@@ -997,7 +1006,7 @@ def test_a_sheet_of_small_drawings_under_a_random_accepted_drift_is_cut_as_drawn
     assert_read_as_drawn(image, drawn)
 
 
-@pytest.mark.parametrize("seed", range(256))
+@pytest.mark.parametrize("seed", slow_but(range(256), lambda seed: seed < 8))
 def test_full_size_frames_and_small_band_drawings_are_cut_as_drawn_or_refused_as_two_readings(seed):
     # The full-size frames pin the drift; the band's small drawings lie anywhere inside their boxes, off their centres.
     image, drawn = anchored_sheet(seed)
@@ -1034,7 +1043,7 @@ def counterexample_sheet(label):
     return synthetic_sheet(size=TALL, stray=True)[0], (1, 0, 1, 0)
 
 
-@pytest.mark.parametrize("label", COUNTEREXAMPLE_SHEETS)
+@pytest.mark.parametrize("label", slow_but(COUNTEREXAMPLE_SHEETS, lambda label: label in {"scattered-1", "anchored-0"}))
 def test_no_sampled_drift_reads_the_drawing_better_than_the_cut_found(label):
     # A search for counterexamples, which proves nothing when it finds none: thousands of drifts at random, uniform over
     # the drifts the cut considers and near the drift the sheet was drawn with and the cut's, evaluated here. None reads
@@ -1083,6 +1092,7 @@ def test_a_mark_between_two_boxes_whose_widened_boxes_touch_is_never_read_in_no_
         assert None not in reading.boxes and cost[0] <= refused.value.least + TIE + 1e-6, (reading, cost[0])
 
 
+@pytest.mark.slow
 @pytest.mark.timeout(10)
 def test_a_sheet_of_many_small_parts_is_cut_or_refused_in_seconds():
     # Every element a 4 px square (16 px, the smallest part kept) anywhere inside its moved box, with about half the
@@ -1260,8 +1270,8 @@ def files_of(state):
 @pytest.mark.parametrize("mode", ["raise", pytest.param("kill", marks=pytest.mark.skipif(
     not hasattr(os, "fork"), reason="a kill is a child process ended at the fault"))])
 @pytest.mark.parametrize("when", ["before", "after"])
-@pytest.mark.parametrize("start", ["absent", "empty", "empty, removed first"])
-@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+@pytest.mark.parametrize("start", slow_but(["absent", "empty", "empty, removed first"], lambda start: start == "absent"))
+@pytest.mark.parametrize("placement", slow_but(sorted(PUBLISH_PLACES), lambda placement: placement == "inside"))
 def test_a_failure_or_a_kill_at_any_step_of_the_publish_leaves_nothing_or_the_whole_kit(
         tmp_path, monkeypatch, placement, start, when, mode):
     # Each filesystem call of the publish fails once, just before it runs or just after it returned, in a copy of the
@@ -1361,8 +1371,8 @@ INTERRUPTS = {
 @pytest.mark.filterwarnings("ignore:unclosed file:ResourceWarning")
 @pytest.mark.parametrize("kind", sorted(INTERRUPTS))
 @pytest.mark.parametrize("granularity", ["line", "instruction"])
-@pytest.mark.parametrize("start", ["absent", "empty", "empty, removed first"])
-@pytest.mark.parametrize("placement", sorted(PUBLISH_PLACES))
+@pytest.mark.parametrize("start", slow_but(["absent", "empty", "empty, removed first"], lambda start: start == "absent"))
+@pytest.mark.parametrize("placement", slow_but(sorted(PUBLISH_PLACES), lambda placement: placement == "inside"))
 def test_an_interrupt_at_any_line_or_instruction_of_the_publish_leaves_nothing_or_the_whole_kit(
         tmp_path, monkeypatch, placement, start, granularity, kind):
     # Python may raise an interrupt at any instruction: a signal's handler runs between instructions, and so does a

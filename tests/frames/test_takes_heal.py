@@ -66,6 +66,7 @@ def _manifest(run_dir: Path) -> dict:
     return json.loads((run_dir / "frames" / "frames-manifest.json").read_text(encoding="utf-8"))
 
 
+@pytest.mark.slow
 def test_takes_extend_row_pool(tmp_path: Path) -> None:
     takes = [{"label": "alt", "frames": 2}]
     run_dir = _build_run(tmp_path, takes=takes)
@@ -126,6 +127,7 @@ def test_heal_keeps_stale_row_without_raw(tmp_path: Path) -> None:
     assert (run_dir / "frames" / "walk" / "frame-0.png").read_bytes() == frame_bytes
 
 
+@pytest.mark.slow
 def test_view_heals_and_downloads_live_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """뷰/다운로드 계약: 스냅샷 요청이 stale 캐시를 자가치유하고, 버튼 3종은
     현재 라이브 상태를 계산해 zip 으로 내려준다 (게임 적용 의미 없음)."""
@@ -211,6 +213,7 @@ def test_atlas_reuses_cells_for_identical_instances(tmp_path: Path) -> None:
     assert anim["durations_ms"] == [round(1000 / anim["fps"])] * 4
 
 
+@pytest.mark.slow
 def test_heal_isolates_failures_per_state(tmp_path: Path) -> None:
     """상태별 격리 (2026-07-22): 한 행의 재추출 실패가 다른 행의 스왑을 막지도,
     failed 보고에 연좌시키지도 않는다 (회귀 synthetic_fixture_a — 6행 실패가 33행

@@ -41,6 +41,8 @@ MODULE_DOMAIN = {
     'source': 'video',
     'rife_install': 'video',
     'clip_prompt': 'video',
+    'face_pack': 'video',
+    'face_bake': 'video',
     'prepare': 'gen',
     'extract': 'frames',
     'cutout': 'frames',

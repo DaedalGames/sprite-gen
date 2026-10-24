@@ -73,6 +73,7 @@ def drawn(loop_dir):
 
 # ---------------------------------------------------------------- F1: the floor is kept in every cell
 
+@pytest.mark.slow
 @pytest.mark.parametrize('floor', FLOORS)
 def test_f1_every_cell_of_every_region_keeps_the_floor(probes, tmp_path, floor):
     for name, (_, region) in (('X1', X1), ('X2', X2)):
@@ -123,6 +124,7 @@ def test_f2_where_the_floor_is_stricter_its_gain_stands(probes, tmp_path):
 
 # ---------------------------------------------------------------- F3: a floor the move already keeps changes no pixel
 
+@pytest.mark.slow
 def test_f3_a_floor_under_the_least_area_already_kept_draws_the_same_strip(probes, tmp_path):
     _, region = X2
     legacy_dir, legacy = followed(probes['X2'], tmp_path/'legacy', [region])
@@ -138,6 +140,7 @@ def test_f3_a_floor_under_the_least_area_already_kept_draws_the_same_strip(probe
 
 # ---------------------------------------------------------------- F4: the floor alone, by direction, is not shipped
 
+@pytest.mark.slow
 def test_f4_a_floor_of_nothing_is_the_fold_rule_not_the_direction_alone(probes, tmp_path):
     # Read by direction alone, X2's region may move twice as far before its picture stops; that stretches a
     # pixel to a twentieth of its area where the fold rule leaves it half. The floor never goes past the rule.
@@ -164,7 +167,7 @@ def test_the_floor_is_read_between_0_and_1(probes, tmp_path):
 def test_q1_the_bend_is_the_moves_steepest_tilt_and_a_lowered_region_moves_just_under_45_degrees(probes, tmp_path):
     _, region = X1
     record = follow_inspect.inspect_loop(probes['X1'], [region], tmp_path/'out', on_fold='lower')
-    assert record['schema_version'] == 2
+    assert record['schema_version'] == 3
     radius = min(region[2:])
     for cell in record['cells']:
         entry = cell['regions'][0]
@@ -218,6 +221,7 @@ def test_q1_regions_apart_or_held_have_no_seam(probes, tmp_path):
     assert [r['held'] for r in held['regions']] == [False, True] and held['seams'] == []
 
 
+@pytest.mark.slow
 def test_the_inspection_names_the_floor_and_the_read_on_in_its_id(probes, tmp_path):
     _, region = X1
     ids = {follow_inspect.inspect_loop(probes['X1'], [region], tmp_path/f'out-{floor}', on_fold='lower', stretch_floor=floor)['input_id']

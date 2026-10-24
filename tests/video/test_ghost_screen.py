@@ -141,6 +141,7 @@ def _cut(keyed: Path, out: Path, length: int) -> dict:
                              name="walk", report_path=None, cycle_mode="fixed", start=0, length=length, anchor="none", repair="off")
 
 
+@pytest.mark.slow
 def test_alignment_delivers_no_filmed_ghost_and_names_each_cell_it_passed_over(tmp_path):
     """Set length 22: S (20) lands on its ghost at a whole time, E (24) makes a frame next to its
     ghost, which carries it, and the nearer frame is that ghost. Both take the frame after it."""
@@ -177,6 +178,7 @@ def test_jump_repair_rejects_a_proposal_that_carries_a_ghost(monkeypatch):
     assert [f.tobytes() for f in out] == before
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_delivers_no_cell_carrying_a_filmed_ghost():
     """A filmed ghost resampled 4 to 8 through the real RIFE: before the screen the ghost itself was

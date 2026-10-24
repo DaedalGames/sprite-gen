@@ -58,7 +58,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import prompt_parts, refusal, retry
 from .base import announce_api_billing, print_json
@@ -493,6 +493,11 @@ def _ask_again(request_id: str, out: Path) -> str:
             "nothing was written")
 
 
+def _staged(out: Path) -> Path:
+    """Where a result is downloaded before it is published over `out`: `<out>.part` beside it."""
+    return out.with_name(out.name + ".part")
+
+
 def _submit_poll_publish(
     *,
     verb: str,
@@ -713,7 +718,7 @@ def _poll_publish(
     elapsed = time.monotonic() - started
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".part")
+    tmp = _staged(out)
     tmp.write_bytes(data)
     if accept is not None:
         try:
@@ -806,6 +811,12 @@ def generate_video(
     )
 
 
+def _published_at(out: Path) -> dict[str, Path]:
+    """What publishing a result over `--out` writes: the download staged beside it, then `--out` itself."""
+    out = out.expanduser().resolve()
+    return {"--out": out, f"{_staged(out).name} beside --out": _staged(out)}
+
+
 def _validate_extend(request: ExtendRequest, *, probe: Callable[[Path], float]) -> float:
     if not request.prompt.strip():
         raise SystemExit("video-extend: empty prompt; pass --prompt or --prompt-file")
@@ -817,6 +828,9 @@ def _validate_extend(request: ExtendRequest, *, probe: Callable[[Path], float]) 
         )
     clip = request.video.expanduser().resolve()
     _require_mp4_clip(clip, verb="video-extend")
+    # The result is downloaded to `<out>.part` and published over `--out`: the clip it continues is neither file (it would
+    # be written over or replaced), a link already at either followed.
+    refuse_overlap({"--video": request.video}, _published_at(request.out), verb="video-extend")
     seconds = probe(clip)
     low, high = EXTEND_INPUT_SECONDS
     if not (low <= seconds <= high + EXTEND_INPUT_SLACK_SECONDS):
@@ -886,6 +900,9 @@ def _validate_edit(request: EditRequest, *, probe: Callable[[Path], float]) -> f
         raise SystemExit(f"video-edit: only the classic {CLASSIC_MODEL} supports editing (the API answers 400 for {request.model})")
     clip = request.video.expanduser().resolve()
     _require_mp4_clip(clip, verb="video-edit")
+    # The result is downloaded to `<out>.part` and published over `--out`: the clip it edits is neither file (it would be
+    # written over or replaced), a link already at either followed.
+    refuse_overlap({"--video": request.video}, _published_at(request.out), verb="video-edit")
     seconds = probe(clip)
     if seconds > EDIT_INPUT_MAX_SECONDS:
         raise SystemExit(
@@ -1034,8 +1051,12 @@ def _read_prompt(args: argparse.Namespace) -> str:
     return (prompt or "").strip()
 
 
-def _publish_report(args: argparse.Namespace, make: Callable[[], VideoResult]) -> int:
+def _publish_report(args: argparse.Namespace, make: Callable[[], VideoResult], *, reads: dict[str, Path] | None = None,
+                    verb: str | None = None) -> int:
     report_path = Path(args.report).expanduser().resolve() if args.report else None
+    if reads and report_path is not None:
+        # The report is written once the result is made: what the run reads is never that file.
+        refuse_overlap(reads, {"--report": report_path}, verb=verb)
     try:
         result = make()
     except GenerationUnfinished as unfinished:
@@ -1071,12 +1092,12 @@ def _run(args: argparse.Namespace) -> int:
 
 def _run_extend(args: argparse.Namespace) -> int:
     request = ExtendRequest(video=args.video, prompt=_read_prompt(args), out=args.out, duration=args.duration)
-    return _publish_report(args, lambda: extend_video(request))
+    return _publish_report(args, lambda: extend_video(request), reads={"--video": request.video}, verb="video-extend")
 
 
 def _run_edit(args: argparse.Namespace) -> int:
     request = EditRequest(video=args.video, prompt=_read_prompt(args), out=args.out)
-    return _publish_report(args, lambda: edit_video(request))
+    return _publish_report(args, lambda: edit_video(request), reads={"--video": request.video}, verb="video-edit")
 
 
 def _run_resume(args: argparse.Namespace) -> int:

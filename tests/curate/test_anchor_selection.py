@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -112,20 +113,38 @@ def _request(run_dir: Path) -> dict:
     return json.loads((run_dir / "sprite-request.json").read_text(encoding="utf-8"))
 
 
-@pytest.fixture
-def direction_run(tmp_path: Path) -> Path:
-    return _build_direction_run(tmp_path)
+def _copy_run(built: Path, tmp_path: Path) -> Path:
+    """모듈이 한 번 추출한 런의 사본 — 테스트는 제 사본만 고친다."""
+    run_dir = tmp_path / "run"
+    shutil.copytree(built, run_dir)
+    return run_dir
+
+
+# 추출이 테스트 시간의 거의 전부다(런 하나에 1.5~2.6 s): 모듈에서 런마다 한 번 추출하고 테스트마다 복사한다.
+@pytest.fixture(scope="module")
+def _direction_built(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _build_direction_run(tmp_path_factory.mktemp("direction"))
+
+
+@pytest.fixture(scope="module")
+def _stage1_built(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _build_direction_run(tmp_path_factory.mktemp("stage1"), extract_states="down_idle,side_idle")
 
 
 @pytest.fixture
-def stage1_run(tmp_path: Path) -> Path:
+def direction_run(_direction_built: Path, tmp_path: Path) -> Path:
+    return _copy_run(_direction_built, tmp_path)
+
+
+@pytest.fixture
+def stage1_run(_stage1_built: Path, tmp_path: Path) -> Path:
     """**워크플로 stage-1 그대로**: 방향 앵커 행만 생성·추출됐고 액션 행은 아직 없다.
 
     앵커 소비자는 정의상 이 구간에서 돈다 (stage-2 행을 생성하려면 그 방향 앵커 ref 가
     먼저 필요하다). 플랜 초기 픽스처가 전부 '완전 추출된 런'이라 이 구간을 한 건도
     덮지 않았고, 그래서 `require_frames_manifest`(완성 소비자 게이트) 오사용이
     테스트를 통과했다 — validator 검증 2026-07-25 reject 의 근본 원인."""
-    return _build_direction_run(tmp_path, extract_states="down_idle,side_idle")
+    return _copy_run(_stage1_built, tmp_path)
 
 
 @pytest.fixture
@@ -390,6 +409,7 @@ def _post_curation(run_dir: Path, body: dict) -> int:
         srv.shutdown()
 
 
+@pytest.mark.slow
 def test_view_save_cannot_launder_a_stale_pin(direction_run: Path) -> None:
     """뷰 저장(무관한 편집)이 낡은 핀을 현재 세대로 **세탁하지 못한다**.
 
@@ -418,6 +438,7 @@ def test_view_save_cannot_launder_a_stale_pin(direction_run: Path) -> None:
     assert excinfo.value.kind == "pick-stale-generation"
 
 
+@pytest.mark.slow
 def test_explicit_repin_clears_the_stale_pin(direction_run: Path) -> None:
     """푸는 길은 **명시 재지정**뿐이다 (뷰의 stale 핀 버튼이 `repin: true` 를 싣는다)."""
     from sprite_gen.curate.curation import load_curation_report

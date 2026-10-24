@@ -171,6 +171,7 @@ def _premultiplied(frame: Image.Image) -> np.ndarray:
     return np.concatenate([colour * cover, cover], axis=-1)
 
 
+@pytest.mark.slow
 def test_read_makes_the_frame_as_every_call_and_reads_sixteen_single_passes_turned_back(monkeypatch, tmp_path):
     """`Rife.read`: the frame as `between` makes it, with the augmentation every call asks for, then the sixteen single
     passes with none — the pair flipped and transposed eight ways, each from a to b at t and from b to a at 1 - t. A binary
@@ -229,6 +230,7 @@ def test_real_rife_makes_the_frame_between_in_colour_and_alpha():
     assert interpolate.made == 1
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 def test_real_rife_between_crossing_legs_adds_no_black():
     """Two outlined legs walk through each other (the near one forward, the far one back): where they
@@ -323,6 +325,7 @@ def test_outline_loss_reads_a_melted_limb_and_not_a_moved_one():
     assert rife.smear(flat[2], flat[0], flat[1])["outline_loss"] <= 0.01
 
 
+@pytest.mark.slow
 @pytest.mark.real_rife
 @pytest.mark.timeout(900)  # 20 calls of the binary at 128 x 192, each run 16 ways (-x -z): seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_melts_legs_crossing_too_far_and_alignment_takes_the_nearer_frame_there():

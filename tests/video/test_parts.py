@@ -2,7 +2,8 @@
 """A part on its own beat told apart from the body (sprite_gen/video/parts.py): the tail's mask read from the clip's
 frames a cycle apart, on frames filmed and on frames made between two; whether it lies in front of the body or behind
 it; the tail of another drawing laid behind the body in place of a frame's own without changing a pixel of the body; and
-what is not laid — a tail in front of the body, a frame or a tail with no mask, an order read from nothing.
+what is not laid — a tail in front of the body, a frame or a tail with no mask, an order read from nothing; and the
+loops a mask runs, taken in place, answering as they did when every step made new arrays.
 
 Three walkers are drawn here, 26 frames a cycle with a bob, legs and arms swinging, over a clip of three cycles. Their
 sleeves and hands are the tail's orange; every part is outlined in a darker shade of its colour, as cel art is, and
@@ -226,6 +227,7 @@ def _bytes(frames) -> list[bytes]:
     return [np.asarray(f).tobytes() for f in frames]
 
 
+@pytest.mark.slow
 def test_a_tail_behind_the_body_is_read_where_it_is_drawn_on_every_frame():
     # Every frame of the clip, and frames made between two read at the time they show: none left out of the bounds.
     masker = _masker("side")
@@ -239,6 +241,79 @@ def test_a_tail_behind_the_body_is_read_where_it_is_drawn_on_every_frame():
     assert sum(_crossed(t) for t in range(N)) >= 4
 
 
+# parts.py's three hot loops as first written, making new arrays every step: what they take each step in place now must
+# give, byte for byte.
+def _shift_as_written(m, dy, dx, fill=0):
+    h, w = m.shape[:2]
+    out = np.full_like(m, fill)
+    out[max(0, dy):h + min(0, dy), max(0, dx):w + min(0, dx)] = m[max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)]
+    return out
+
+
+def _least_as_written(seed, cost_to):
+    d = np.where(seed, 0.0, np.inf).astype(np.float32)
+    for k in range(parts.ITERATIONS):
+        old = d
+        for c, (dy, dx) in zip(cost_to, parts.NB):
+            d = np.minimum(d, _shift_as_written(d, dy, dx, np.inf) + c)
+        if k % 25 == 24 and np.array_equal(d, old):
+            break
+    return d
+
+
+def _feet_as_written(self, a, b):
+    top = int(parts.FEET_ROWS * a.shape[0])
+    best = math.inf
+    r = self.feet_shift
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            bb = _shift_as_written(b, dy, dx)
+            d = np.abs(a - bb).max(-1)[top:]
+            on = ((a[..., 3] > 0.05) | (bb[..., 3] > 0.05))[top:]
+            v = np.sort(d[on])
+            if v.size:
+                best = min(best, float(v[: max(1, int(0.75 * v.size))].mean()))
+    return best
+
+
+def _far_as_written(self, a, b):
+    best = np.full(a.shape[:2], np.inf, np.float32)
+    for dy, dx in parts._disk(self.search):
+        best = np.minimum(best, np.abs(a - _shift_as_written(b, dy, dx)).max(-1))
+    return best
+
+
+def test_each_loop_a_mask_runs_gives_the_same_bytes_in_place_as_with_new_arrays_every_step(monkeypatch):
+    # Every call of the three loops a frame's mask makes, of a frame filmed and of one made between two, is answered as
+    # the loops first written answer it: the same dtype, the same bytes. The second least-cost reading's costs are
+    # float64 (each side's own colours), and its distances are read in that precision, as they were.
+    masker = _masker("side")
+    calls = []
+
+    def kept(name, loop):
+        def call(*args):
+            calls.append((name, args, loop(*args)))
+            return calls[-1][2]
+        return call
+
+    monkeypatch.setattr(parts, "_least", kept("least", parts._least))
+    monkeypatch.setattr(parts.Masker, "_feet", kept("feet", parts.Masker._feet))
+    monkeypatch.setattr(parts.Masker, "_far", kept("far", parts.Masker._far))
+    for t in (0, MADE[0]):
+        part, _, _ = masker.mask_read(masker._read(_frame(t, "side")), t)
+        assert part.any(), t
+    as_written = {"least": _least_as_written, "feet": _feet_as_written, "far": _far_as_written}
+    for name, args, got in calls:
+        want = as_written[name](*args)
+        if name == "feet":
+            assert got == want
+        else:
+            assert (got.dtype, got.shape, got.tobytes()) == (want.dtype, want.shape, want.tobytes()), name
+    assert {name for name, _, _ in calls} == {"least", "feet", "far"}
+    assert {args[1][0].dtype.name for name, args, _ in calls if name == "least"} == {"float32", "float64"}
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("reading", ["clip", "wrap"])
 @pytest.mark.parametrize("walker, rare", [("side", parts.RARE), ("back", parts.RARE), ("back_bushy", parts.RARE),
                                           ("side", parts.RARE / 2), ("side", 2 * parts.RARE),
@@ -255,6 +330,7 @@ def test_in_front_of_the_body_or_behind_it_is_read_from_the_clip(walker, rare, r
         assert read["order"] == "front" and read["front_share"] > parts.FRONT + 0.05, read
 
 
+@pytest.mark.slow
 def test_a_lay_reads_the_order_from_the_frames_beside_the_wrap_alone(monkeypatch):
     # A lay reads the rims of the clip's frames within WRAP of the wrap, on either side and in every cycle, and of no
     # other frame.

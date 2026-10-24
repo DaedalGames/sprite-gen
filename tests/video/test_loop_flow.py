@@ -228,6 +228,7 @@ def test_on_twos_a_flung_drawing_is_made_once_and_shown_for_both_its_frames():
     assert record["rounds"][0]["drawings"] == [[12, 13]] and record["hold"] == 2
 
 
+@pytest.mark.slow
 def test_a_group_with_a_frame_at_fault_keeps_every_frame_it_would_take_and_is_not_tried_again():
     frames = _loop(flung={12: 20, 13: 20})
     between = Between(frames)

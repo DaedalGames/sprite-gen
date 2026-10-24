@@ -6,16 +6,18 @@ picture it belongs to (a title screen, a poster), it is drawn as part of that wo
 materials and light. So a logo is made in three steps:
 
 1. **mood** — a title screen or poster in the brief's style with the title lettered in it
-   (`gen`, no reference). Its text is read back (`inspect_image`); a title the model dropped
-   or misspelt is refused here, before the next image is bought.
+   (`gen`, no reference). Its text is read back (`inspect_image`, a misreading read once more);
+   a title the model dropped or misspelt is refused here, before the next image is bought.
 2. **lettering** — that picture as the reference of an edit asking for only its lettering,
    the same letterforms, materials and effects, on a flat chroma key (`gen --ref`). The key
    is chosen from the title's colours in the mood image (the box its text check finds) unless
-   `--chroma-key` names one.
+   `--chroma-key` names one: never a key whose hue is one of the title's colours, and a title
+   in both keys' hues is refused here, before the lettering is bought.
 3. **matte** — the key removed by the logo matte (`frames.logo_matte`: soft glows and partial
-   alpha kept, no key hue left), trimmed to the lettering. The logo's text is read again on a
-   plain backdrop; letters that differ from the text asked are refused and the cut is kept
-   aside as `logo.rejected.png`.
+   alpha kept, no key hue left), trimmed to the lettering. A cut see-through inside its
+   letters (a colour of theirs in the key's hue, cut as a mix with it) is refused. The logo's
+   text is read again on a plain backdrop; letters that differ from the text asked are refused.
+   A refused cut is kept aside as `logo.rejected.png`.
 
 Nothing in this path draws a font. A step that cannot be done fails; it is never replaced.
 Every call is listed in the report with the route it ran on (a subscription login, or a
@@ -38,7 +40,7 @@ from PIL import Image
 
 import sprite_gen.gen as gen_pkg
 from sprite_gen.frames import logo_matte
-from sprite_gen.spec.runio import atomic_save_image, atomic_write_text
+from sprite_gen.spec.runio import atomic_save_image, atomic_write_text, new_stage, refuse_overlap, same_folder
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 from . import chroma as chroma_mod
@@ -66,6 +68,17 @@ MOOD_READ_PROMPT = READ_PROMPT[:-1] + (
     '. Add "box": [left, top, right, bottom], the box round the title lettering and its glow, each a share '
     "of the image's width or height from 0 to 1."
 )
+REFUSED = ("mismatch", "no-text")  # the verdicts a text check refuses on
+# Colour words a brief may name, per key whose hue the colour is (`logo_matte.key_hued` of its usual value; teal, cyan
+# and lavender are not): a colour the style or scene names is looked for in the title's box at a smaller share
+# (`logo_matte.choose_key`).
+KEY_COLOUR_WORDS = {
+    "green": ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
+    "magenta": ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
+}
+# How many readings one text check may take: a reading that would refuse is read again, up to this many, and one
+# that spells the text passes (docs/logo.md, the text check).
+MAX_READS = 2
 
 
 def _quoted(text: str) -> str:
@@ -190,6 +203,17 @@ def parse_answer(answer: str) -> tuple[list[str] | None, list[float] | None]:
     return lines, [float(v) for v in box] if box else None
 
 
+def named_colours(*texts: str | None) -> dict[str, list[str]]:
+    """The colour words of each key's hue the brief names (`KEY_COLOUR_WORDS`, a plural or an -ish or -y
+    ending kept), in the order written."""
+    brief = " ".join(text for text in texts if text)
+    found = {}
+    for key, words in KEY_COLOUR_WORDS.items():
+        pattern = re.compile(rf"\b(?:{'|'.join(words)})(?:e?s|ish|y)?\b", re.IGNORECASE)
+        found[key] = list(dict.fromkeys(match.group(0).lower() for match in pattern.finditer(brief)))
+    return found
+
+
 def route_of(auth_source: str | None) -> str:
     """Which way a call was paid: on a subscription login, or a per-call API charge."""
     if auth_source in SUBSCRIPTION_AUTH:
@@ -199,10 +223,10 @@ def route_of(auth_source: str | None) -> str:
     return "unknown"
 
 
-def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | None, *,
-              prompt: str = READ_PROMPT) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Ask the provider what the image spells, once. Returns (check, call). A call that fails or an answer
-    that cannot be read is `unverified` — said, never counted as a match."""
+def _read_once(backend, image: Path, workdir: Path, text: str, subtitle: str | None,
+               prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One reading: (check, call). A call that fails or an answer that cannot be read is `unverified` — said,
+    never counted as a match."""
     started = time.monotonic()
     try:
         answer, metadata = backend.inspect_image(image, workdir, prompt, label=READ_LABEL)
@@ -211,7 +235,7 @@ def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | No
         return {"verdict": "unverified", "reason": reason, "asked": [text, *([subtitle] if subtitle else [])]}, \
             {"error": reason, "elapsed_seconds": time.monotonic() - started}
     lines, box = parse_answer(answer)
-    who = {key: metadata.get(key) for key in ("model", "auth_source", "transport")}
+    who = {key: metadata.get(key) for key in ("model", "effort", "auth_source", "transport")}
     call = {**who, "elapsed_seconds": time.monotonic() - started}
     if lines is None:
         return {"verdict": "unverified", "reason": "invalid-vision-response",
@@ -219,10 +243,52 @@ def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | No
     return {**compare_text(lines, text, subtitle), **({"box": box} if box else {}), **who}, call
 
 
+def read_text(backend, image: Path, workdir: Path, text: str, subtitle: str | None, *,
+              prompt: str = READ_PROMPT) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Ask the provider what the image spells, and again while what it reads would refuse, up to `MAX_READS`
+    readings: one that spells the text passes; only readings that all differ refuse. A call that fails is not
+    asked again: the check is `unverified` when nothing was read before it, and a misreading before it stands.
+    Returns (check, calls): the deciding reading's check, with every reading in order under `readings`, and a
+    call per reading. The one rule both text checks decide by."""
+    taken: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    for number in range(1, MAX_READS + 1):
+        check, call = _read_once(backend, image, workdir, text, subtitle, prompt)
+        taken.append(check)
+        calls.append({**call, "reading": number})
+        if check["verdict"] not in REFUSED:
+            break
+    read = [check for check in taken if check["verdict"] != "unverified"]
+    deciding = next((check for check in read if check["verdict"] == "match"), read[-1] if read else taken[-1])
+    readings = [{"reading": number, **{key: check[key] for key in ("verdict", "read", "normalized_read", "box", "reason")
+                                        if key in check}} for number, check in enumerate(taken, 1)]
+    return {**deciding, "max_reads": MAX_READS, "readings": readings}, calls
+
+
+def _reads(check: dict[str, Any]) -> str:
+    """What a refused check's readings spelled, in order: "['IO']", or "['IO'] and then ['I0']"."""
+    return " and then ".join(repr(reading["read"]) for reading in check["readings"] if "read" in reading)
+
+
+def _in_hue(choice: dict[str, Any], *keys: str) -> str:
+    """Where the key was chosen and how much of it is in each key's hue, with the brief's words for it: "the
+    title's box in the mood image is 8.0 % green-hued (the brief names mint)"."""
+    where = "the title's box in the mood image" if choice["region"] == "lettering-box" else "the mood image"
+    shares = []
+    for key in keys:
+        score = choice["scores"][key]
+        named = f" (the brief names {', '.join(score['named'])})" if score["named"] else ""
+        shares.append(f"{score['hued_pct']:.1f} % {key}-hued{named}")
+    return f"{where} is {' and '.join(shares)}"
+
+
 def _call(step: str, provider: str, details: dict[str, Any], elapsed: float | None = None) -> dict[str, Any]:
     auth = details.get("auth_source")
     entry = {"step": step, "provider": provider, "model": details.get("model"), "auth_source": auth,
              "transport": details.get("transport"), "route": route_of(auth)}
+    for key in ("effort", "reading"):  # a text check's reading: its number and the effort it was read at
+        if key in details:
+            entry[key] = details[key]
     if elapsed is not None:
         entry["elapsed_seconds"] = round(float(elapsed), 3)
     if details.get("error"):
@@ -238,6 +304,20 @@ def _size(path: Path) -> list[int]:
 def _publish(image: Image.Image, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_save_image(image, path)
+
+
+def _refuse_overlap(files: dict[str, Path], report: Path, report_given: bool, *, mood: Path | None,
+                    lettering: Path | None) -> None:
+    """A run never writes over or deletes the pictures it is given: `--mood` and `--lettering`, each with every link or
+    folder its path looks up, against every file the run removes or writes in `--out-dir` and its report
+    (`runio.refuse_overlap`) — but for the file each is copied to, `mood.png` and `lettering.png`, where a picture the
+    run made is given back to cut it again (its own pixels are written back). Refused before anything is made."""
+    written = {f"{name} in --out-dir": path for name, path in files.items()
+               if name != "mood.png" or lettering is None or mood is not None}  # a given lettering alone writes no mood
+    written["--report" if report_given else "logo.report.json in --out-dir"] = report
+    for flag, given, own in (("--mood", mood, "mood.png"), ("--lettering", lettering, "lettering.png")):
+        refuse_overlap({flag: given}, {name: path for name, path in written.items() if name != f"{own} in --out-dir"},
+                       verb="logo")
 
 
 class _Refusal(Exception):
@@ -266,17 +346,16 @@ def make_logo(provider: str, *, text: str, out_dir: Path, subtitle: str | None =
         if given is not None and not Path(given).expanduser().is_file():
             raise SystemExit(f"logo: {flag} image not found: {given}")
     out_dir = Path(out_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    report_given = report_path is not None
     report_path = Path(report_path).expanduser().resolve() if report_path else out_dir / "logo.report.json"
     ratio = aspect_ratio or COMPOSITIONS[composition]["aspect_ratio"]
-    work = out_dir / ".logo-work"
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir()
     files = {name: out_dir / name for name in ("mood.png", "lettering.png", "logo.png", "logo.rejected.png",
                                                "logo.preview.png")}
-    inputs = {Path(given).expanduser().resolve() for given in (mood, lettering) if given is not None}
+    _refuse_overlap(files, report_path, report_given, mood=mood, lettering=lettering)
+    out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("lettering.png", "logo.png", "logo.rejected.png", "logo.preview.png"):
-        if files[name] not in inputs:  # a run never leaves an earlier run's result looking like its own
+        # a run never leaves an earlier run's result looking like its own; a --lettering given as its lettering.png is kept
+        if lettering is None or not same_folder(files[name], Path(lettering).expanduser()):
             files[name].unlink(missing_ok=True)
     report: dict[str, Any] = {
         "kind": REPORT_KIND, "status": "running", "text": text, "subtitle": subtitle, "language": language,
@@ -294,6 +373,7 @@ def make_logo(provider: str, *, text: str, out_dir: Path, subtitle: str | None =
         print(f"[logo] warning: {message}", file=sys.stderr)
 
     backend = gen_pkg._make_provider(provider, keep_session=False)
+    work = new_stage(out_dir / "logo-work", "")  # `.logo-work.<pid>-<random>`: the run's own, removed below
     try:
         if lettering is not None:
             key = _given_lettering(Path(lettering).expanduser(), mood, files, report, chroma_key)
@@ -370,11 +450,11 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
         report["calls"].append(_call("mood", result.provider, {**result.extra, "model": result.model},
                                      result.elapsed_seconds))
     report["files"]["mood"] = str(files["mood.png"])
-    check, call = read_text(backend, files["mood.png"], work, text, subtitle, prompt=MOOD_READ_PROMPT)
+    check, calls = read_text(backend, files["mood.png"], work, text, subtitle, prompt=MOOD_READ_PROMPT)
     report["text_check"]["mood"] = check
-    report["calls"].append(_call("mood-check", provider, call, call.get("elapsed_seconds")))
-    if check["verdict"] in ("mismatch", "no-text"):
-        raise _Refusal("mood-check", f"logo: the mood image reads {check['read']!r}, not {check['asked']!r} — the "
+    report["calls"] += [_call("mood-check", provider, call, call.get("elapsed_seconds")) for call in calls]
+    if check["verdict"] in REFUSED:
+        raise _Refusal("mood-check", f"logo: the mood image reads {_reads(check)}, not {check['asked']!r} — the "
                        "model dropped or changed the title; generate the mood image again (the lettering was "
                        "not bought)")
     if check["verdict"] == "unverified":
@@ -382,9 +462,18 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
 
     # 2. lettering
     with Image.open(files["mood.png"]) as mood_image:
-        choice = logo_matte.choose_key(mood_image, check.get("box"))
+        choice = logo_matte.choose_key(mood_image, check.get("box"), named_colours(style, scene))
     key = choice["key"] if chroma_key == "auto" else chroma_key
     report["steps"]["key"] = {**choice, "key": key, "source": "auto" if chroma_key == "auto" else "explicit"}
+    if key is None:
+        raise _Refusal("key", f"logo: the title's colours carry both keys' hues — "
+                       f"{_in_hue(choice, 'green', 'magenta')}; a letter in the key's hue comes out see-through on "
+                       "it, and there is no third key. Restyle the title without one of them, or name the key to lose "
+                       f"with --chroma-key (--mood {files['mood.png']} skips the mood image; the lettering was not "
+                       "bought)")
+    if chroma_key != "auto" and choice["scores"][key]["clashes"]:
+        warn(f"the {key} key named is one of the title's colours ({_in_hue(choice, key)}): its letters in that hue "
+             "come out see-through")
     prompt = lettering_prompt(text, subtitle=subtitle, composition=composition, language=language, key=key)
     result = gen_pkg.generate_image(provider, prompt, work / "lettering.png", refs=[files["mood.png"]],
                                     model=model, aspect_ratio=ratio, quality=quality, resolution=resolution,
@@ -416,22 +505,33 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
     report["steps"]["matte"] = stats
     report["steps"]["trim"] = trim_stats
     cover = logo_matte.coverage(logo)
-    report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key)}
+    inside = logo_matte.see_through_inside(logo)
+    report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key),
+                      "see_through_inside": inside}
+    other = "green" if key == "magenta" else "magenta"
     if cover["visible_opaque_share"] < logo_matte.SEE_THROUGH_WARN_SHARE:
-        other = "green" if key == "magenta" else "magenta"
         warn(f"only {cover['visible_opaque_share'] * 100:.0f}% of the visible lettering is opaque; if the letters "
              f"are drawn in the {key} key's colour, run again with --chroma-key {other}")
     _publish(logo_matte.preview(logo), files["logo.preview.png"])
     report["files"]["preview"] = str(files["logo.preview.png"])
-    reading = work / "logo-read.png"
-    _publish(logo_matte.reading_backdrop(logo), reading)
-    check, call = read_text(backend, reading, work, text, subtitle)
-    report["text_check"]["logo"] = check
-    report["calls"].append(_call("logo-check", report["provider"], call, call.get("elapsed_seconds")))
-    if check["verdict"] in ("mismatch", "no-text"):
+    if inside["wide"] and stats["method"] == "logo-unmix":
         _publish(logo, files["logo.rejected.png"])
         report["files"]["rejected"] = str(files["logo.rejected.png"])
-        raise _Refusal("logo-check", f"logo: the logo reads {check['read']!r}, not {check['asked']!r} — kept aside "
+        again = f" --mood {files['mood.png']}" if files["mood.png"].is_file() else ""
+        raise _Refusal("matte", f"logo: the logo is see-through inside its letters ({inside['pct_of_visible']:.1f} % "
+                       "of the visible lettering, walled in by opaque letters) — a colour of the letters is in the "
+                       f"{key} key's hue and was cut as a mix with it; kept aside as {files['logo.rejected.png'].name} "
+                       f"(see {files['logo.preview.png'].name}). Generate the lettering again on the other key "
+                       f"(--chroma-key {other}{again}), or restyle the title without that colour")
+    reading = work / "logo-read.png"
+    _publish(logo_matte.reading_backdrop(logo), reading)
+    check, calls = read_text(backend, reading, work, text, subtitle)
+    report["text_check"]["logo"] = check
+    report["calls"] += [_call("logo-check", report["provider"], call, call.get("elapsed_seconds")) for call in calls]
+    if check["verdict"] in REFUSED:
+        _publish(logo, files["logo.rejected.png"])
+        report["files"]["rejected"] = str(files["logo.rejected.png"])
+        raise _Refusal("logo-check", f"logo: the logo reads {_reads(check)}, not {check['asked']!r} — kept aside "
                        f"as {files['logo.rejected.png'].name}; generate the lettering again (--mood "
                        f"{files['mood.png']} skips the mood image)")
     _publish(logo, files["logo.png"])
@@ -472,8 +572,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                                                        "again: nothing is generated (its text is still read)")
     parser.add_argument("--chroma-key", choices=KEY_CHOICES, default="auto",
                         help="the key the lettering is redrawn on; auto (default) picks it from the title's colours "
-                             "in the mood image (the box its text check finds): the key no letter shares and a glow "
-                             "keeps the hue of longest. With --lettering, auto reads the key off its border")
+                             "in the mood image (the box its text check finds): never a key whose hue is one of the "
+                             "title's colours (a title in both is refused before the lettering is bought), else the "
+                             "key a glow keeps the hue of longest. With --lettering, auto reads the key off its border")
     parser.add_argument("--provider", choices=gen_pkg.PROVIDERS, default=None,
                         help="generation backend for both images and both text checks; resolved as `gen` resolves "
                              "it (openai only when chosen: it bills per call)")
