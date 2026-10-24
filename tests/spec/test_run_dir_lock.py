@@ -30,6 +30,8 @@
   8. 락 주인이 살았는지는 그 프로세스에 아무것도 보내지 않고 본다 — POSIX 는 이 계약 전과 같은 신호 0 이고, Windows 는
      콘솔에 Ctrl+C 를 보내지 않는다(거기서 os.kill(pid, 0) 은 CTRL_C_EVENT 다). 살아 있는 프로세스와 열 수 없는 남의
      프로세스는 살아 있고, 끝난 프로세스는 아니다
+  9. 락 항목을 만든 fd 는 os.open 이 주던 fd 와 같은 성질이다 — 자식에게 상속되지 않고, 쓰기만 되고, 쓴 바이트가 그대로
+     놓이고, 열린 동안 그 이름을 지울 수 있는지도 같다. Windows 에서 만든 핸들을 fd 로 넘기지 못하면 그 핸들은 닫힌다
 
 3–8 은 실제 프로세스로 잰다 — 락은 프로세스 사이의 계약이고, 종료 처리는 프로세스가 끝날 때만 돈다. 3·6·7 은
 docs/run-contract.md §7 의 세 경계 밖에서다: C fork 자식이 끝나거나 exec 할 때까지의 커널 락, 시그널 처리기에서 fork 한 뒤 끊긴
@@ -44,6 +46,7 @@ import json
 import os
 import queue
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -763,6 +766,64 @@ def test_a_writer_refuses_a_lock_name_that_is_not_a_lock_file_and_never_follows_
     with pytest.raises(SystemExit, match=r"run[/\\]\.sprite-gen\.lock is not a lock file"):
         cli.main(["export-pngs", "--run-dir", str(run)])
     assert _tree(tmp_path) == before, "락 이름 자리를 따라가 무엇을 지우거나 만들었다"
+
+
+def _descriptor(fd: int, path: Path) -> dict[str, object]:
+    """`path` 에 열린 쓰기 fd 의 성질 — 상속되는지, 읽으면 어떻게 끝나는지, 쓴 바이트가 그대로 놓이는지, 열린 동안 그 이름을
+    지울 수 있는지. fd 는 닫는다."""
+    got: dict[str, object] = {"inheritable": os.get_inheritable(fd)}
+    try:
+        got["read"] = os.read(fd, 1)
+    except OSError as exc:
+        got["read"] = errno.errorcode.get(exc.errno, exc.errno)
+    os.write(fd, b"a\nb\r\n")
+    got["bytes"] = path.read_bytes()
+    try:
+        os.unlink(path)
+        got["unlink-while-open"] = "removed"
+    except PermissionError as exc:
+        got["unlink-while-open"] = getattr(exc, "winerror", None) or exc.errno
+    finally:
+        os.close(fd)
+    return got
+
+
+def test_the_lock_entry_is_made_on_a_descriptor_like_the_one_os_open_gives(tmp_path) -> None:
+    """락 항목을 만드는 fd(Windows 는 이름 자체를 여는 CreateFileW 의 핸들을 넘긴 fd)는 os.open(O_CREAT|O_EXCL|O_WRONLY) 이
+    주던 fd 와 같은 성질이고, 이름에 새로 만든 그 일반 파일이다."""
+    made_path, plain_path = tmp_path / "made", tmp_path / "plain"
+    made = runio._make_entry(made_path)
+    entry, seen = os.fstat(made), os.lstat(made_path)
+    assert stat.S_ISREG(seen.st_mode) and (entry.st_dev, entry.st_ino) == (seen.st_dev, seen.st_ino)
+    got = _descriptor(made, made_path)
+    plain = _descriptor(os.open(plain_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)), plain_path)
+    assert got == plain, f"made {got} / os.open {plain}"
+    assert got["inheritable"] is False and got["bytes"] == b"a\nb\r\n", got
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 의 CreateFileW 핸들 — POSIX 는 os.open 이 바로 fd 다")
+def test_a_lock_entry_handle_that_cannot_become_a_descriptor_is_closed_on_windows(tmp_path, monkeypatch) -> None:
+    """Windows 에서 락 항목의 핸들을 fd 로 넘기지 못하면(fd 표가 찼다) 그 오류로 끝나고 핸들은 닫힌다 — 열린 핸들은 그 이름을
+    지우지 못하게 막는데(공유 삭제 없음), 실패 뒤에는 지워지고 다시 만들어진다. 만든 빈 항목은 os.fstat 이 실패할 때처럼
+    남는다(주인을 확인할 수 없는 락)."""
+    lock = tmp_path / runio.LOCK_FILENAME
+    held = runio._make_entry(lock)
+    with pytest.raises(PermissionError):  # 열린 핸들은 지우기를 막는다 — 아래의 지우기가 닫힘을 잰다
+        os.unlink(lock)
+    os.close(held)
+    os.unlink(lock)
+
+    def full(handle: int, flags: int) -> int:
+        raise OSError(errno.EMFILE, os.strerror(errno.EMFILE))
+
+    monkeypatch.setattr(runio.msvcrt, "open_osfhandle", full)
+    with pytest.raises(OSError) as failed:
+        runio._make_entry(lock)
+    monkeypatch.undo()
+    assert failed.value.errno == errno.EMFILE
+    assert lock.read_bytes() == b""
+    os.unlink(lock)  # 핸들이 남았으면 PermissionError(WinError 32)
+    os.close(runio._make_entry(lock))
 
 
 def test_an_old_lock_file_whose_holder_cannot_be_verified_is_reclaimed(tmp_path) -> None:

@@ -73,6 +73,9 @@ NOT_RIFE_SKIPS = {
     # os.kill(pid, 0) is a Ctrl+C to the console only on Windows, so only a Windows console holds what the case
     # measures; the lane's Linux host has none (its POSIX twin, the signal-0 case, runs there).
     "tests/spec/test_run_dir_lock.py::test_a_lock_holders_pid_is_judged_on_windows_without_a_ctrl_c_to_its_console",
+    # Only Windows makes the lock entry on a CreateFileW handle handed to a descriptor; on POSIX os.open gives the
+    # descriptor itself, so the lane's Linux host has no handle to close (its cross-platform twin, the descriptor case, runs).
+    "tests/spec/test_run_dir_lock.py::test_a_lock_entry_handle_that_cannot_become_a_descriptor_is_closed_on_windows",
 }
 
 

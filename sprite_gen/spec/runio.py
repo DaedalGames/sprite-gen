@@ -130,6 +130,14 @@ if fcntl is None and os.name == "nt":  # pragma: no cover - Windows-only backend
         _OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         _SYNCHRONIZE, _WAIT_SIGNALED, _WAIT_TIMEOUT = 0x00100000, 0x00000000, 0x00000102
         _ERROR_ACCESS_DENIED, _ERROR_INVALID_PARAMETER = 5, 87
+        # 락 항목은 이름에 놓인 링크를 따라가지 않고 만든다(`_make_entry`) — 이름 자체를 여는 FILE_FLAG_OPEN_REPARSE_POINT
+        _CreateFileW = _kernel32.CreateFileW
+        _CreateFileW.restype = wintypes.HANDLE
+        _CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                 wintypes.DWORD, wintypes.HANDLE]
+        _GENERIC_WRITE, _FILE_SHARE_READ_WRITE, _CREATE_NEW = 0x40000000, 0x00000001 | 0x00000002, 1
+        _FILE_ATTRIBUTE_NORMAL, _FILE_FLAG_OPEN_REPARSE_POINT = 0x00000080, 0x00200000
+        _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
         _LOCK_IMPL = "LockFileEx"
     except (ImportError, OSError, AttributeError):
         _LOCK_IMPL = None
@@ -477,6 +485,38 @@ def _read_entry(lock_path: Path) -> tuple[_LockEntry | None, float]:
     return _LockEntry(got.st_dev, got.st_ino, b"".join(chunks)), got.st_mtime
 
 
+def _make_entry(lock_path: Path) -> int:
+    """락 이름에 새 일반 파일을 만들어 쓰기 fd 를 돌려준다 — 이름에 무엇이 있으면(링크·폴더도) 따라가지도 만들지도 않고
+    FileExistsError. POSIX 는 O_CREAT|O_EXCL 이고 open(2) 은 이름의 링크를 따라가지 않는다. Windows 의 os.open 은 같은 플래그를
+    CreateFileW 의 CREATE_NEW 로 넘기는데, 없는 이름에 닿는 링크는 따라가 그 자리에 파일을 만들고, 대상 글자를 읽을 수 없는
+    링크(`/` 로 적힌 대상)는 EINVAL, 폴더는 EACCES 로 끝난다. 그래서 CreateFileW 를 FILE_FLAG_OPEN_REPARSE_POINT 로 불러 이름
+    자체를 연다 — 링크는 어떤 것이든 ERROR_FILE_EXISTS 다. 폴더(폴더 링크·junction 도)는 그래도 ERROR_ACCESS_DENIED 라, 그
+    이름에 일반 파일이 아닌 항목이 정말 있을 때만 FileExistsError 로 읽고 아니면(런 폴더에 쓸 수 없다) 그 오류 그대로다. 핸들은
+    os.open 의 fd 처럼 상속되지 않고(보안 속성 없음) 쓰기만 되며, 바이너리 fd 로 넘긴다. 넘기지 못하면 핸들을 닫고 그 오류다 —
+    만든 빈 항목은 os.fstat 이 실패할 때처럼 남는다(주인을 확인할 수 없는 락)."""
+    if os.name == "nt":  # pragma: no cover - Windows-only backend
+        handle = _CreateFileW(str(lock_path), _GENERIC_WRITE, _FILE_SHARE_READ_WRITE, None, _CREATE_NEW,
+                              _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT, None)
+        if handle == _INVALID_HANDLE_VALUE:
+            error = ctypes.get_last_error()
+            failed = OSError(0, ctypes.FormatError(error), str(lock_path), error)  # winerror 로 errno 와 하위 클래스가 정해진다
+            if error == _ERROR_ACCESS_DENIED:
+                try:
+                    taken = not stat.S_ISREG(os.lstat(lock_path).st_mode)
+                except OSError:
+                    taken = False
+                if taken:
+                    raise FileExistsError(errno.EEXIST, "the lock name is not a file (a folder or a link)",
+                                          str(lock_path)) from failed
+            raise failed
+        try:
+            return msvcrt.open_osfhandle(handle, 0)  # O_TEXT 가 없으면 바이너리, 접근은 핸들의 것(쓰기)
+        except BaseException:
+            _CloseHandle(handle)
+            raise
+    return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+
+
 def _remove_if_same(lock_path: Path, entry: _LockEntry, by: int) -> bool:
     """락 이름에 있는 것이 `entry` — 프로세스 `by` 가 만들었거나 회수하려고 판정한 바로 그 항목(일반 파일, 같은 장치·inode,
     같은 내용)이고 `by` 가 지금 이 프로세스일 때만 지운다. 부모의 기록을 물려받은 fork 자식은(파이썬 fork 훅을 거치지 않는
@@ -573,8 +613,8 @@ def acquire_run_dir_lock(run_dir: Path, owner: str) -> Path:
     me = os.getpid()
     with _entry_guard(lock_path.parent):
         for _ in range(_LOCK_ROUNDS):
-            try:  # never follows a link at the name (open(2))
-                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+            try:  # never follows a link at the name (`_make_entry`)
+                fd = _make_entry(lock_path)
                 break
             except FileExistsError:
                 pass
