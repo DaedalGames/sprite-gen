@@ -284,17 +284,19 @@ def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_
 @pytest.mark.slow
 def test_a_cut_of_two_steps_that_does_not_close_leaves_the_searchs_cut(tmp_path):
     """On threes, a big tail on its own beat: the search's cut is one the count does not refute (it plays feet held
-    together past a pass: uncertain), and every cut of two steps leaves the tail open at the wrap, out of phase, its
-    seam over the gate. The search's cut stands and the loop passes; the record and a warning line name the two-step
-    cut declined (the parent engine took it, and the seam gate failed the loop)."""
+    together past a pass: uncertain), and no cut of two steps joins the walk at its own point. The seam gate reads the
+    first tried between its drawings and passes it (read frame by frame, every one tried was over the gate), but out
+    of phase it is no two-step cut that closes. The search's cut stands and the loop passes; the record and a warning
+    line name the two-step cut declined (the parent engine took it, and the seam gate failed the loop)."""
     report = _cut(tmp_path / "out", _keyed(tmp_path, _tailed))
     c = report["cycle"]
     counted = c["step_count"]
     assert report["status"] == "passed" and report["drawings"]["hold"] == 3
     assert counted["chosen_by"] == "search" and counted["search"]["verdict"] == "uncertain"
     assert [c["start"], c["length"]] == counted["search"]["cut"] and "steps" not in c
-    assert counted["declined"]["gated"] is False and counted["declined"]["seam"] > report["seam_max"]
-    assert all(t["seam"] > report["seam_max"] for t in counted["seam_gate"]["tried"])
+    declined = counted["declined"]
+    assert declined["gated"] is False and abs(declined["phase"]) > crossings.PHASE_TOLERANCE
+    assert [t["seam"] for t in counted["seam_gate"]["tried"]] == [declined["seam"]] and declined["seam"] <= report["seam_max"]
     assert any("the search's cut" in w and "stands" in w for w in report["jolt"]["warnings"])
 
 
