@@ -112,8 +112,9 @@ def test_a_pixels_jitter_of_a_walk_that_barely_moves_is_not_held_to_the_bound(tm
     """The gait fallback's walk going away from the camera, its feet rising a whole crop row every three or four frames:
     on a walk that barely moves, the step with a row in it is over 2.5 times the loop's mean step, its drawing moved one
     pixel, and with that pixel taken back an ordinary step. It is a pixel's jitter in any colour: the loop passes, held
-    to its largest step that is none, and `step_gate.jitter` names the steps."""
-    code, report, _ = gait.run(tmp_path, _coloured([gait.walking_away(k) for k in range(73)], colour))
+    to its largest step that is none, and `step_gate.jitter` names the steps. Cut with its feet where they were filmed
+    (`--size-hold off`: the gait fallback holds its size alone), as the size hold cut it before it held the feet too."""
+    code, report, _ = gait.run(tmp_path, _coloured([gait.walking_away(k) for k in range(73)], colour), "--size-hold", "off")
     assert code == 0 and report["status"] == "passed"
     gate = report["step_gate"]
     assert gate["largest_ratio"] <= loop_mod.STEP_RATIO_MAX and "kept" not in gate
