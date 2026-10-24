@@ -1641,7 +1641,8 @@ def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor:
     return wrap_blend_mod.apply(frames, pin, fps=fps, seam_max=seam_max)
 
 
-def _size_hold(frames: list[Image.Image], *, lo: int, hi: int) -> tuple[list[Image.Image] | None, dict[str, Any], Any]:
+def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
+               cut: tuple[int, int] | None = None) -> tuple[list[Image.Image] | None, dict[str, Any], Any]:
     """A walk or run held at its first frame's size, and its feet on the first frame's row, before its cut is chosen
     (`--size-hold auto`): the frames held (None: the clip changes size by less than SIZE_HOLD_MIN, read one cycle on,
     and is cut as filmed), the report's `size_hold`, and where a box of a frame as filmed lands in its held frame
@@ -1651,7 +1652,9 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int) -> tuple[list[Ima
     the first and the loop pops at the wrap; a walk away from the camera climbs the frame as well, and held at its size
     with its feet where they were filmed it pops up instead. The change is read one cycle on, so a first pose that
     settles into the walk is not taken for a body that shrinks, nor for feet that climb (gait_fallback.cycle_drift,
-    foot_drift)."""
+    foot_drift). A cut the caller names (`cut`: start, length) is held only where it shows the change itself, a cycle
+    of its length apart (`gait_fallback.at_cut`), and its feet are moved only where it shows them move: a clip whose
+    frames that are not the walk read a change the cut does not make is cut as filmed (`size_hold.at_cut`, `why`)."""
     measured = gait_fallback.cycle_drift(frames, min_lag=lo, max_lag=hi)
     hold: dict[str, Any] = {"applied": False, "min": gait_fallback.SIZE_HOLD_MIN,
                             **{k: measured[k] for k in ("height_first_px", "height_last_px", "drift", "method",
@@ -1659,6 +1662,15 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int) -> tuple[list[Ima
     if abs(measured["drift"]) < gait_fallback.SIZE_HOLD_MIN:
         return None, hold, None
     feet = gait_fallback.foot_drift(frames, measured)
+    if cut is not None:
+        seen = hold["at_cut"] = gait_fallback.at_cut(frames, measured, feet, start=cut[0], length=cut[1])
+        if not seen["size"]:
+            hold["why"] = ("the cut does not change size a cycle of its length apart as the clip reads it (frames that are "
+                           "not the walk, or a clip too short to show its cycle twice): cut as filmed")
+            return None, hold, None
+        if feet["held"] and not seen["feet"]:
+            feet = {**feet, "held": False, "lift": None,
+                    "why": "the cut's feet do not move a cycle of its length apart as the clip reads them"}
     lift = feet.pop("lift")
     pad = gait_fallback.undo_padding(frames, measured, lift)
     held = gait_fallback.undo_scale(frames, measured, pad=pad, lift=lift)
@@ -1916,7 +1928,7 @@ def _cut_loop(
                 # A walk or run cut the caller names is held as a search's cut is (`_size_hold`), read over the whole clip,
                 # and cut on the frames held: the cut's distances, its count and the seam the gate reads are the frames
                 # that play. The clip is then the clip held (a fixed cut leaves no lead-in out).
-                held, report_base["size_hold"], box_of = _size_hold(gait_frames, lo=lo, hi=hi)
+                held, report_base["size_hold"], box_of = _size_hold(gait_frames, lo=lo, hi=hi, cut=(start, length))
                 if held is not None:
                     gait_frames = held
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())

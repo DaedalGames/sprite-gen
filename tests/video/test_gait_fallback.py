@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 from sprite_gen.video import gait_fallback, loop
+from tests.video import test_ghost_given_way as ghost_clips
+from tests.video import test_stop as stop_clips
 
 FOOT = (140, 170)
 
@@ -383,6 +385,8 @@ def test_a_walk_cut_again_by_hand_is_held_at_its_size_and_its_feet(tmp_path, cli
     hold = report['size_hold']
     assert hold['applied'] is True and abs(hold['drift']) >= gait_fallback.SIZE_HOLD_MIN
     assert hold['feet']['held'] is (clip == 'walking away')
+    # The cut shows the change itself, a cycle of its length apart.
+    assert hold['at_cut']['pairs'] == 24 and hold['at_cut']['size'] is True and hold['at_cut']['feet'] is (clip == 'walking away')
     assert report['resampled_seam_ratio'] <= loop.SEAM_RATIO_MAX
     assert all(wrap <= inner for wrap, inner in edges.values()), edges
     assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
@@ -418,6 +422,35 @@ def test_a_walk_that_keeps_its_size_is_cut_as_filmed_either_way(tmp_path, cut):
     assert held['applied'] is False and 'feet' not in held and 'padding_ltrb' not in held
     for path in ('loop.strip.png', 'loop.gif', 'cycle/frame-000.png', 'cycle/frame-023.png'):
         assert (outputs[0]/path).read_bytes() == (outputs[1]/path).read_bytes(), path
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('clip', ['another motion first', 'a short clip'])
+def test_a_cut_by_hand_that_keeps_its_size_is_not_held_for_what_the_clip_reads(tmp_path, clip):
+    """Read over the whole clip, frames that are not the walk the cut is can read a change of size the walk never makes:
+    a run filmed from a standing still that raises and waves its arm and crouches before it sets off
+    (tests/video/test_stop.py) reads 6.9 % smaller by the end, and a walk of 26 frames cut 20 long, too short for the
+    reading to try a lag of its cycle, reads 2.5 % larger. The cut shows no change a cycle of its length apart
+    (`size_hold.at_cut`), so it is cut as filmed: the same bytes as with `--size-hold off`, and the report says why."""
+    if clip == 'another motion first':
+        keyed, run_from = stop_clips.clip(tmp_path, other=8)
+        start, length, state, pairs = run_from+stop_clips.PERIOD, stop_clips.PERIOD, 'run', stop_clips.PERIOD
+    else:
+        keyed = ghost_clips._keyed(tmp_path, 'short', ())
+        start, length, state, pairs = 0, ghost_clips.L, 'walk', 6
+    frames = [Image.open(p).convert('RGBA') for p in sorted(keyed.glob('*.png'))]
+    how = ('--cycle', 'fixed', '--start', str(start), '--length', str(length), '--anchor', 'none', '--seam-max', '1000')
+    outputs = {}
+    for mode in ('auto', 'off'):
+        (tmp_path/mode).mkdir()
+        code, _, outputs[mode] = run(tmp_path/mode, frames, '--size-hold', mode, cut=how, state=state)
+        assert code == 0, code
+    hold = json.loads((tmp_path/'auto'/'loop.json').read_text())['size_hold']
+    assert hold['applied'] is False and abs(hold['drift']) >= gait_fallback.SIZE_HOLD_MIN
+    seen = hold['at_cut']
+    assert seen['pairs'] == pairs and seen['change'] == 0 and seen['size'] is False and 'why' in hold
+    for path in ('loop.strip.png', 'cycle/frame-000.png'):
+        assert (outputs['auto']/path).read_bytes() == (outputs['off']/path).read_bytes(), path
 
 
 @pytest.mark.slow

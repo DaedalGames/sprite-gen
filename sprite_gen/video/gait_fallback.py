@@ -69,6 +69,10 @@ SIZE_HOLD_MIN = 0.01
 # Under it the feet's row is the box's rounding; a walk away from the camera whose ground recedes up the frame
 # climbs by several percent of the body.
 FOOT_HOLD_MIN = 0.01
+# The share of the change the clip reads over one of a fixed cut's cycles that the cut must show itself, the same way,
+# to be held (`at_cut`): a walk that grows or shrinks shows the whole change at the cut (0.94 to 1.07 of it on the
+# tests' walkers), frames that are not the walk read into the clip's change show none of it.
+AT_CUT_SHARE = 0.5
 # How far off the one-cycle-on model a frame is when it is not yet walking at the clip's size: a first frame
 # whose height and size are both this far off, the same way, opens a lead-in, and the frames whose height
 # stays this far off, that way, are in it (`lead_in`).
@@ -225,6 +229,42 @@ def foot_drift(frames: list[Image.Image], measured: dict) -> dict:
     held = abs(change) >= FOOT_HOLD_MIN * float(measured["height"][0])
     return {**base, "change_px": round(change, 2), "held": held,
             "lift": -rate * np.arange(n, dtype=np.float64) if held else None}
+
+
+def at_cut(frames: list[Image.Image], measured: dict, feet: dict, *, start: int, length: int) -> dict:
+    """Whether a cut the caller names (`--cycle fixed`) changes size, and moves its feet, one cycle on as the clip reads
+    them (`cycle_drift`, `foot_drift`), read on the cut itself at the cycle the caller named: each frame of the cut
+    against the frame `length` later, or `length` earlier where the cut runs to the clip's end.
+
+    The clip's reading is over every frame, so frames that are not the walk the cut is (a standing start, another
+    motion before the walk, a long run-up), or a clip too short to show the walk's cycle twice inside the lags the
+    reading may try, can read a change the walk does not make; the cut's own frames a cycle apart show it or do not.
+    `change` is the median of the cut's height ratios (`coverage_heights`) less 1 and `feet_px` the median move of its
+    feet's row over the same pairs, both over one cycle; `expected` and `feet_expected_px` are the clip's reading
+    carried over one cycle. `size` (`feet`): the cut shows at least AT_CUT_SHARE of the expected change, the same way.
+    No pair (the clip does not show the cut's frames a cycle apart): neither."""
+    n = len(frames)
+    pairs = [(k, k + length) for k in range(start, start + length) if k + length < n]
+    if not pairs:
+        pairs = [(k - length, k) for k in range(start, start + length) if k - length >= 0]
+    expected = (1 + measured["drift"]) ** (length / (n - 1)) - 1
+    feet_expected = feet["change_px"] * length / (n - 1)
+    record = {"pairs": len(pairs), "share": AT_CUT_SHARE, "expected": round(expected, 4),
+              "feet_expected_px": round(feet_expected, 2)}
+    if not pairs:
+        return {**record, "change": None, "feet_px": None, "size": False, "feet": False}
+    heights = coverage_heights(frames)
+    bottoms = subject_boxes(frames)[:, 3]
+    ratios = np.array([heights[b] / heights[a] for a, b in pairs])
+    moves = np.array([bottoms[b] - bottoms[a] for a, b in pairs])
+    change = float(np.median(ratios[np.isfinite(ratios)]) - 1) if np.isfinite(ratios).any() else 0.0
+    moved = float(np.median(moves[np.isfinite(moves)])) if np.isfinite(moves).any() else 0.0
+
+    def shows(seen: float, whole: float) -> bool:
+        return seen * whole > 0 and abs(seen) >= AT_CUT_SHARE * abs(whole)
+
+    return {**record, "change": round(change, 4), "feet_px": round(moved, 2), "size": shows(change, expected),
+            "feet": shows(moved, feet_expected)}
 
 
 def lead_in(frames: list[Image.Image], *, min_lag: int, max_lag: int) -> dict:
