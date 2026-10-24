@@ -1720,7 +1720,8 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
     settles into the walk is not taken for a body that shrinks, nor for feet that climb (gait_fallback.cycle_drift,
     foot_drift). A cut the caller names (`cut`: start, length) is held only where it shows the change itself, a cycle
     of its length apart (`gait_fallback.at_cut`), and its feet are moved only where it shows them move: a clip whose
-    frames that are not the walk read a change the cut does not make is cut as filmed (`size_hold.at_cut`, `why`)."""
+    frames that are not the walk read a change the cut does not make is cut as filmed (`size_hold.at_cut`, `why`).
+    Held, its record carries the move each frame of the cut was held by (`size_hold.cut_frames`)."""
     measured = gait_fallback.cycle_drift(frames, min_lag=lo, max_lag=hi)
     hold: dict[str, Any] = {"applied": False, "min": gait_fallback.SIZE_HOLD_MIN,
                             **{k: measured[k] for k in ("height_first_px", "height_last_px", "drift", "method",
@@ -1741,6 +1742,10 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
     pad = gait_fallback.undo_padding(frames, measured, lift)
     held = gait_fallback.undo_scale(frames, measured, pad=pad, lift=lift)
     hold.update(applied=True, padding_ltrb=list(pad), feet=feet)
+    if cut is not None:
+        # The move each frame of the cut was held by, exact (`gait_fallback.frame_hold`): `video-loop-repair` holds the
+        # cut's source frames by it again before it reads them (sprite_gen/video/source.py).
+        hold["cut_frames"] = [gait_fallback.frame_hold(k, measured, lift) for k in range(cut[0], cut[0] + cut[1])]
     return held, hold, partial(gait_fallback.held_box, measured=measured, pad=pad, lift=lift)
 
 
@@ -2605,7 +2610,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              f"cut is gated by its pin. --seam-max does not lift it. off: no gate — over {repair_mod.SEAM_POP_REFERENCE:g} "
                              "is a warning line (docs/loop-repair.md section 3, \"The seam pop\")")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the body faces in the frames (default right): the jolt index's hair, and the size reading video-loop-compare's jump guard reads, are behind it; the jump repair reads the flow either way")
-    parser.add_argument("--size-hold", choices=SIZE_HOLD_MODES, default="auto", help="walk/run, --anchor motion-auto or --cycle fixed: auto (default) scales a clip whose height, read one cycle on, changes by 1 %% or more over the clip back to its first frame's size about its feet, and moves its feet to the first frame's row where they climb or sink by 1 %% of the height or more, applied before the cycle search or over the whole clip before a fixed cut is read (a fixed cut is held only where the cut itself shows the change a cycle of its length apart; recorded as size_hold; a held cut is not restored from source frames); off: the frames as filmed, except motion-auto's gait fallback, which after a first search that finds nothing still scales back a change of 3 %% or more by the same reading, its feet where they were filmed (recorded as gait_fallback)")
+    parser.add_argument("--size-hold", choices=SIZE_HOLD_MODES, default="auto", help="walk/run, --anchor motion-auto or --cycle fixed: auto (default) scales a clip whose height, read one cycle on, changes by 1 %% or more over the clip back to its first frame's size about its feet, and moves its feet to the first frame's row where they climb or sink by 1 %% of the height or more, applied before the cycle search or over the whole clip before a fixed cut is read (a fixed cut is held only where the cut itself shows the change a cycle of its length apart; recorded as size_hold, with each frame's move on a held fixed cut (size_hold.cut_frames), which video-loop-repair holds the source frames by again); off: the frames as filmed, except motion-auto's gait fallback, which after a first search that finds nothing still scales back a change of 3 %% or more by the same reading, its feet where they were filmed (recorded as gait_fallback)")
     parser.add_argument("--steps", type=int, choices=STEPS, default=None,
                         help="--anchor motion-auto: how many steps the cut it takes without this holds, as counted by whoever looked "
                              "at the loop (how often each foot lands) — the report's `cycle.step_screen` names a cut that may be one "
