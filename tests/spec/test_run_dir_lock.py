@@ -2,9 +2,11 @@
 """런 폴더 단일 writer 락(`runio.acquire_run_dir_lock`)은 락 이름의 항목 그 자체다.
 
 지키는 것 (구현이 아니라 계약):
-  1. 락 이름(`.sprite-gen.lock`) 자리가 링크(닿는 곳이 오래된 파일이든 없는 이름이든)나 폴더면, 락을 잡는 동사는
-     그 항목을 대며 곧바로 거절하고 링크를 따라가 읽거나 만들거나 지우지 않는다 — 락을 회수해도 링크 너머의
-     파일은 지워지지 않는다 (unpack-atlas 의 배치는 tests/frames/test_unpack_atlas_publish.py 7)
+  1. 락 이름(`.sprite-gen.lock`) 자리가 링크(닿는 곳이 오래된 파일이든 없는 이름이든 폴더든, 상대 경로든 절대
+     경로든)나 폴더면, 락을 잡는 동사는 그 항목을 대며 곧바로 거절하고 링크를 따라가 읽거나 만들거나 지우지 않는다 —
+     락을 회수해도 링크 너머의 파일은 지워지지 않는다. Windows 도 같은 거절이다(거기서 os.open 의 O_CREAT|O_EXCL 은
+     없는 이름에 닿는 링크를 따라가 그 자리에 파일을 만들고, 폴더에는 EACCES 다) (unpack-atlas 의 배치는
+     tests/frames/test_unpack_atlas_publish.py 7)
   2. 주인을 확인할 수 없는 오래된 락 파일은 회수한다
   3. 한 프로세스는 자기가 만든 바로 그 락 항목만, 아직 쥐고 있을 때만 지운다 — 명시 해제한 writer 가 끝날 때 그 뒤
      이름에 들어선 것(다음 writer 의 살아 있는 락, 그 자리에 놓인 링크)은 그대로다. 쥔 채 끝나면(해제하지 않았거나,
@@ -738,7 +740,8 @@ def _wait_gone(pid: int | None, timeout: float = 10.0) -> None:
 
 
 @pytest.mark.timeout(10)  # 거절은 곧바로다 — 회수를 되풀이하며 멈추면 이름 붙은 실패가 된다
-@pytest.mark.parametrize("entry", ["link-to-an-old-file", "link-to-no-file", "old-folder"])
+@pytest.mark.parametrize("entry", ["link-to-an-old-file", "link-to-no-file", "absolute-link-to-no-file",
+                                   "link-to-a-folder", "old-folder"])
 def test_a_writer_refuses_a_lock_name_that_is_not_a_lock_file_and_never_follows_it(tmp_path, entry) -> None:
     run, outside = tmp_path / "run", tmp_path / "outside"
     run.mkdir()
@@ -747,6 +750,10 @@ def test_a_writer_refuses_a_lock_name_that_is_not_a_lock_file_and_never_follows_
     if entry == "old-folder":
         lock.mkdir()
         _aged(lock)
+    elif entry == "absolute-link-to-no-file":  # 운영체제가 읽는 대상 — Windows 의 os.open 은 이 링크를 따라가 그 자리에 만든다
+        lock.symlink_to(outside / "keep.txt")
+    elif entry == "link-to-a-folder":
+        lock.symlink_to(outside, target_is_directory=True)
     else:
         if entry == "link-to-an-old-file":
             (outside / "keep.txt").write_bytes(b"not a lock\n")
