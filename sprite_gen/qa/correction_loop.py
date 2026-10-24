@@ -91,9 +91,17 @@ def _written(out_dir: Path, *, passes: int, preserve_best: bool) -> list[Path]:
     return [*written, *([out_dir / BEST_CANDIDATE] if preserve_best else []), out_dir / REPORT]
 
 
+def _take_away(path: Path) -> None:
+    """Remove what an earlier loop left at `path`, one of the loop's own outputs, never following a link: a link or a
+    file is unlinked, a folder removed with what it holds (`shutil.rmtree` unlinks the links in it)."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def _copy_run_dir(source: Path, target: Path, skipped: Callable[[Path], bool]) -> None:
-    if target.exists():
-        shutil.rmtree(target)
+    _take_away(target)
 
     def ignore(folder: str, names: list[str]) -> set[str]:
         return {name for name in names if skipped(Path(folder) / name)}
@@ -173,6 +181,9 @@ def run_loop(
         if not provider_command:
             raise SystemExit("correction loop needs --provider-command, or use --dry-run for an inspect/score/hint demo")
         next_run_dir = _candidate(out_dir, attempt + 1)
+        # The provider makes the run dir there: an earlier loop's candidate is taken away first, so nothing it held (a
+        # link into the run among it) is written through.
+        _take_away(next_run_dir)
         prompt_file = files["hints"]
         # The template is split first and each argument filled in after, so a substituted
         # path is never re-read as shell syntax: POSIX splitting would drop the backslashes
