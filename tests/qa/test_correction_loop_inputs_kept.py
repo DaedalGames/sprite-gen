@@ -129,6 +129,30 @@ def test_a_candidate_the_provider_would_make_over_the_run_is_refused_before_it_r
     assert _state(tmp_path) == before, f"거절했는데 무엇이 생기거나 바뀌었다 ({said})"
 
 
+def test_an_earlier_candidate_holding_a_link_into_the_run_is_taken_away_before_the_provider_runs(tmp_path,
+                                                                                               fixture_run_dir) -> None:
+    """앞선 루프가 남긴 `candidate-2/` 는 루프 제 출력이다 — 그 안에 런으로 가는 링크가 있어도 공급자가 그 링크를 지나
+    런 위에 쓰지 않는다: 공급자를 부르기 전에 그 자리를 비운다(링크는 따라가지 않고 지운다)."""
+    made = tmp_path / "made"  # 공급자가 내놓는 런 — 원래 런과 바이트가 다르다
+    shutil.copytree(fixture_run_dir, made)
+    (made / "raw" / "idle.png").write_bytes((made / "raw" / "walk.png").read_bytes())
+    (tmp_path / "loop" / "candidate-2" / "raw").mkdir(parents=True)
+    (tmp_path / "loop" / "candidate-2" / "raw" / "idle.png").symlink_to(fixture_run_dir / "raw" / "idle.png")
+    provider = shlex.join([sys.executable, "-c", "import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], dirs_exist_ok=True)",
+                           str(made), "{next_run_dir}"])
+    read = _readable(fixture_run_dir)
+    try:
+        result = run_loop(fixture_run_dir, states="walk", out_dir=tmp_path / "loop", max_passes=2, pass_score=1000.0,
+                          provider_command=provider)
+        said = f"rc=0, best {result['preserved_best']}"
+    except (SystemExit, OSError) as stopped:
+        said = f"{type(stopped).__name__}: {str(stopped)[:300]}"
+    assert _readable(fixture_run_dir) == read, f"공급자가 앞선 후보 안의 링크를 지나 런 위에 썼다 ({said})"
+    assert said.startswith("rc=0"), f"앞선 후보가 있는 out 으로 돌지 못했다 ({said})"
+    candidate = tmp_path / "loop" / "candidate-2"
+    assert not (candidate / "raw" / "idle.png").is_symlink() and _readable(candidate) == _readable(made), \
+        "새 후보가 공급자가 내놓은 런 그대로가 아니다"
+
 # ── 2. 기본 out 은 런 안 — 더할 뿐, 복사는 그 폴더를 뺀다 ──────────────────────────
 
 def test_the_default_out_dir_inside_the_run_is_left_out_of_the_best_candidates_copy(fixture_run_dir) -> None:
