@@ -395,14 +395,15 @@ def test_a_walk_cut_again_by_hand_is_held_at_its_size_and_its_feet(tmp_path, cli
 @pytest.mark.slow
 @pytest.mark.parametrize('outside', [0, 1, 5])
 @pytest.mark.parametrize('end', ['after', 'before'])
-def test_a_walk_cut_by_hand_is_held_whatever_the_clip_holds_beyond_the_cut(tmp_path, end, outside):
+def test_a_walk_cut_by_hand_is_held_with_a_few_frames_beyond_the_cut(tmp_path, end, outside):
     """A cut the caller names reads its change on each of its frames, against the frame its length later or, where the
     clip ends before that, its length earlier: a frame the clip holds beyond the cut is the partner of one frame of it
     and no more. The walk away cut on the last cycle of 72 frames, the clip run on past it by the cut's own first
     frames again (or cut on its first cycle, the clip opened by the cut's last frames), which show no change against
-    it: held on 24 pairs however many of them there are, and the loop closes. Read on the frames with a partner later
+    it: held on 24 pairs with none, one or five of them, and the loop closes. Read on the frames with a partner later
     alone, one frame after the cut left one pair, which read no change, and the shrink the other 23 show went unheld:
-    refused at 7.94, where the cut passes at 1.19 with nothing after it."""
+    refused at 7.94, where the cut passes at 1.19 with nothing after it. Some half the cut's length of such frames are
+    the partners of half its frames and can bring the median under the share; this does not reach that far."""
     frames = [walking_away(k) for k in range(72)]
     if end == 'after':
         clip, start = frames+[frames[48+j].copy() for j in range(outside)], 48
