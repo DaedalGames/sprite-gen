@@ -215,12 +215,13 @@ def test_seam_pop_is_the_wrap_over_the_median_when_the_wrap_is_the_largest_step(
 
 
 def test_a_kept_jump_up_or_down_at_the_wrap_is_a_warning_line(tmp_path, capsys):
-    """A fixed cut, nothing chosen again: the staff's tip rises along the cut and drops back at the wrap."""
+    """A fixed cut, nothing chosen again: the staff's tip rises along the cut and drops back at the wrap. Kept with the
+    seam pop gate off (`--seam-pop-max off`; on, it refuses the cut: tests/video/test_seam_pop_gate.py)."""
     frames = [_walker(k, phase=0.0, tip_dy=-(k % STEP)) for k in range(73)]
     out = tmp_path / "out"
     assert loop.main(["--frames-dir", str(_keyed(tmp_path, frames)), "--out-dir", str(out), "--state", "walk",
                       "--cycle", "fixed", "--start", "0", "--length", str(STEP), "--anchor", "none", "--repair", "off",
-                      "--seam-max", "1000"]) == 0
+                      "--seam-max", "1000", "--seam-pop-max", "off"]) == 0
     jolt = json.loads((out / "loop.loop.report.json").read_text())["jolt"]
     assert jolt["seam_pop"]["pops"] is True and jolt["seam_pop"]["y"]["wrap_is_largest"]
     line = [w for w in jolt["warnings"] if "jumps into the loop's first frame" in w]
