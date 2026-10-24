@@ -606,6 +606,43 @@ def test_overwriting_any_input_is_refused(case,tmp_path):
     assert paths['meta'].read_bytes()==old and not (tmp_path/'unsafe').exists()
 
 
+def test_a_report_spelt_in_capitals_of_an_input_is_refused(case,tmp_path):
+    """On a volume that ignores case `B.JSON` is `b.json`: a repair report so named is the input it would replace."""
+    paths,_,_=case
+    baseline,origin,src=cli_args(case)
+    spelt=paths['meta'].with_name(paths['meta'].name.upper())
+    if not spelt.exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다')
+    old=evidence.digest(paths['meta'].read_bytes())
+    try:
+        main(['video-loop-repair',*baseline,*origin,*src,'--out-dir',str(tmp_path/'unsafe'),'--report',str(spelt)])
+        said='written'
+    except SystemExit as refusal:
+        said=str(refusal)
+    assert evidence.digest(paths['meta'].read_bytes())==old, f'수리 보고서가 대문자 철자의 입력 위에 써졌다 ({said})'
+    assert 'video-loop-repair: --baseline-meta and --report are the same file' in said, said
+    assert not (tmp_path/'unsafe').exists()
+
+
+def test_a_manifest_spelt_in_capitals_of_an_input_is_refused(case,tmp_path):
+    """On a volume that ignores case `FRAMES.JSON` is `frames.json`: a source manifest so named is the frames report it
+    reads."""
+    _,inputs,_=case
+    freport=inputs['source_frames_report']
+    spelt=freport.with_name(freport.name.upper())
+    if not spelt.exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다')
+    old=evidence.digest(freport.read_bytes())
+    try:
+        main(['video-source-manifest','--clip',str(inputs['source_clip']),'--canvas',str(inputs['source_canvas']),
+              '--frames-report',str(freport),'--frames-dir',str(inputs['source_frames_dir']),'--out',str(spelt)])
+        said='written'
+    except SystemExit as refusal:
+        said=str(refusal)
+    assert evidence.digest(freport.read_bytes())==old, f'원천 매니페스트가 대문자 철자의 입력 위에 써졌다 ({said})'
+    assert 'video-source-manifest: --frames-report and --out are the same file' in said, said
+
+
 def test_legacy_ambiguous_projection_cannot_choose_one_crop():
     # Severe downscaling erases differences between several integer crops.
     # A single best-looking crop is insufficient evidence.

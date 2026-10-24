@@ -297,6 +297,51 @@ def test_the_result_is_never_published_over_the_clip_it_is_made_from(tmp_path: P
     assert api.calls == []
 
 
+@pytest.mark.parametrize("verb", ["extend", "edit"])
+def test_the_download_is_never_staged_through_a_link_to_the_clip(tmp_path: Path, verb: str) -> None:
+    """The result is downloaded to `<out>.part` before it is published over `--out`: a `<out>.part` already there as a
+    link to the input clip is refused before any call — the download would be written through it, over the clip."""
+    given = MP4 + b"the input clip"
+    api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/5.mp4", "duration": 5}, "model": "grok-imagine-video"})
+    clip, out = tmp_path / "take.mp4", tmp_path / "result.mp4"
+    request = _ext(tmp_path, video=clip, out=out) if verb == "extend" else _edit(tmp_path, video=clip, out=out)
+    _clip(tmp_path, "take.mp4", given)
+    (tmp_path / "result.mp4.part").symlink_to(clip)
+    make = video.extend_video if verb == "extend" else video.edit_video
+    try:
+        make(request, probe=_probe(5.0, 10.0), **api.kw())
+        said = "published"
+    except SystemExit as refusal:
+        said = str(refusal)
+    assert clip.read_bytes() == given, f"video-{verb} 이 <out>.part 링크를 지나 입력 클립 위에 내려받았다 ({said}, calls {len(api.calls)})"
+    assert re.search(rf"video-{verb}: --video and result\.mp4\.part beside --out are the same file", said), said
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("verb", ["extend", "edit"])
+def test_the_report_is_never_written_over_the_clip_it_is_made_from(tmp_path: Path, monkeypatch, verb: str) -> None:
+    """`--report` naming the input clip is refused before any call: the report is written once the result is made, and
+    would replace the clip."""
+    given = MP4 + b"the input clip"
+    api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/6.mp4", "duration": 5}, "model": "grok-imagine-video"})
+    monkeypatch.setattr(video, "resolve_credential", lambda **_: CRED)
+    monkeypatch.setattr(video, "http_json", api.call)
+    monkeypatch.setattr(video, "http_download", api.download)
+    monkeypatch.setattr(video.time, "sleep", lambda s: None)
+    monkeypatch.setattr(video, "probe_duration_seconds", lambda clip, *, verb: 11.0 if clip.name.endswith(".part") else 6.0)
+    clip = _clip(tmp_path, "take.mp4", given)
+    run = video.run_extend if verb == "extend" else video.run_edit
+    try:
+        run(video=clip, prompt="go on", prompt_file=None, out=tmp_path / "result.mp4", report=clip,
+            **({"duration": 5} if verb == "extend" else {}))
+        said = "written"
+    except SystemExit as refusal:
+        said = str(refusal)
+    assert clip.read_bytes() == given, f"video-{verb} 이 입력 클립 위에 보고서를 썼다 ({said}, calls {len(api.calls)})"
+    assert re.search(rf"video-{verb}: --video and --report are the same file", said), said
+    assert api.calls == []
+
+
 def test_edit_accepts_exactly_the_limit(tmp_path: Path) -> None:
     api = _FakeApi()
     video.edit_video(_edit(tmp_path), probe=lambda clip: 8.7, **api.kw())

@@ -169,6 +169,27 @@ def test_cli_writes_unknown_successfully_and_refuses_corrupt_input_or_overwrite(
         main(args + ["--report", str(output)])
 
 
+def test_a_report_spelt_in_capitals_of_an_input_is_refused(tmp_path):
+    """On a volume that ignores case `STRIP.JSON` is `strip.json`: a report so named is the input it would replace."""
+    a, b = _artifact(tmp_path, "a"), _artifact(tmp_path, "b")
+    _edit(b["report"], lambda d: d.pop("source"))
+    args = ["video-loop-compare"]
+    for side, paths in (("baseline", a), ("candidate", b)):
+        for key, path in paths.items():
+            args.extend([f"--{side}-{key}", str(path)])
+    report = a["meta"].with_name(a["meta"].name.upper())
+    if not report.exists():
+        pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다")
+    kept = hashlib.sha256(a["meta"].read_bytes()).hexdigest()
+    try:
+        main(args + ["--report", str(report)])
+        said = "written"
+    except SystemExit as refusal:
+        said = str(refusal)
+    assert hashlib.sha256(a["meta"].read_bytes()).hexdigest() == kept, f"비교 보고서가 대문자 철자의 입력 위에 써졌다 ({said})"
+    assert "video-loop-compare: --baseline-meta and --report are the same file" in said, said
+
+
 def test_gait_evidence_is_observation_for_fixed_and_automatic(tmp_path):
     for kind in ("fixed", "periodic"):
         r = evidence.gait_observation(_frames(), {"start": 0, "length": 12, "kind": kind})

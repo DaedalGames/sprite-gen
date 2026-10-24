@@ -78,6 +78,10 @@ NOT_RIFE_SKIPS = {
     "tests/gen/test_video_modes.py::test_the_result_is_never_published_over_the_clip_it_is_made_from[extend-capitals]",
     "tests/gen/test_video_modes.py::test_the_result_is_never_published_over_the_clip_it_is_made_from[edit-capitals]",
     "tests/video/test_follow_inspect.py::test_the_loop_directory_spelt_in_capitals_is_the_loop_directory",
+    "tests/video/test_loop_compare.py::test_a_report_spelt_in_capitals_of_an_input_is_refused",
+    "tests/video/test_source_restoration.py::test_a_report_spelt_in_capitals_of_an_input_is_refused",
+    "tests/video/test_source_restoration.py::test_a_manifest_spelt_in_capitals_of_an_input_is_refused",
+    "tests/effects/test_shadow.py::test_an_output_spelt_in_capitals_of_the_source_is_refused",
 }
 
 
