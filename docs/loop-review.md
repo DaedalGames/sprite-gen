@@ -196,9 +196,10 @@ then names the windows the search measured and refused (`status: "refused"`, `wi
 `context_repeat_over_step`, `drift_line_residual_analysis_px`, `seam_pop`, and `refused`, why),
 best score first, those whose top could not be read (`seam_pop: null`, `seam_pop_skipped`) after
 those whose top closes, and those whose top jumps at the wrap last, so a caller that must deliver
-anyway (a forced `--cycle fixed`) cuts one the engine measured rather than the whole clip. The scaled-back frames are
-written to `<out-dir>/.gait-fallback-frames` and removed once the strip is built or the run
-fails.
+anyway (a forced `--cycle fixed`) cuts one the engine measured rather than the whole clip. The
+scaled-back frames are written to a new folder of the run's own in the out dir,
+`.gait-fallback-frames.<pid>-<random>`, and removed however the run ends. A
+`.gait-fallback-frames` folder already there is never touched.
 
 Measured on six stored 3 s front walks that had failed with `no periodic cycle found`: four
 loop now. A long kimono, which hides the legs, walked a 38 to 39 frame cycle (one clip also

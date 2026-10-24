@@ -56,7 +56,7 @@ def damage(im, zoom=1):
 
 def exports(paths, fs, delay=42):
     save_clean_gif(fs, paths['gif'], duration_ms=delay, alpha_threshold=128)
-    loop.write_webp(fs, paths['webp'], delay_ms=delay, workdir=paths['webp'].parent/'webp-temp')
+    loop.write_webp(fs, paths['webp'], delay_ms=delay)
 
 
 def cleaned(frame):
@@ -276,7 +276,7 @@ def test_actual_playback_mismatch_and_byte_hashes(case,tmp_path):
     paths=outputs(r)
     # Same strip, differently timed WebP: even a rewritten receipt is rejected.
     c,_=restoration.read_loop(paths)
-    loop.write_webp(c.frames,paths['webp'],delay_ms=60,workdir=tmp_path/'bad-webp')
+    loop.write_webp(c.frames,paths['webp'],delay_ms=60)
     c,_=restoration.read_loop(paths); r['candidate_artifacts']=c.artifacts
     assert compare_result(case,r)['verdict']=='unknown'
     for key,p in paths.items(): assert c.artifacts[key]['sha256']==evidence.digest(p.read_bytes())
@@ -601,9 +601,46 @@ def test_overwriting_any_input_is_refused(case,tmp_path):
     paths,_,_=case
     baseline,origin,src=cli_args(case)
     old=paths['meta'].read_bytes()
-    with pytest.raises(SystemExit,match='cannot overwrite'):
+    with pytest.raises(SystemExit,match='--baseline-meta and --report are the same file'):
         main(['video-loop-repair',*baseline,*origin,*src,'--out-dir',str(tmp_path/'unsafe'),'--report',str(paths['meta'])])
     assert paths['meta'].read_bytes()==old and not (tmp_path/'unsafe').exists()
+
+
+def test_a_report_spelt_in_capitals_of_an_input_is_refused(case,tmp_path):
+    """On a volume that ignores case `B.JSON` is `b.json`: a repair report so named is the input it would replace."""
+    paths,_,_=case
+    baseline,origin,src=cli_args(case)
+    spelt=paths['meta'].with_name(paths['meta'].name.upper())
+    if not spelt.exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다')
+    old=evidence.digest(paths['meta'].read_bytes())
+    try:
+        main(['video-loop-repair',*baseline,*origin,*src,'--out-dir',str(tmp_path/'unsafe'),'--report',str(spelt)])
+        said='written'
+    except SystemExit as refusal:
+        said=str(refusal)
+    assert evidence.digest(paths['meta'].read_bytes())==old, f'수리 보고서가 대문자 철자의 입력 위에 써졌다 ({said})'
+    assert 'video-loop-repair: --baseline-meta and --report are the same file' in said, said
+    assert not (tmp_path/'unsafe').exists()
+
+
+def test_a_manifest_spelt_in_capitals_of_an_input_is_refused(case,tmp_path):
+    """On a volume that ignores case `FRAMES.JSON` is `frames.json`: a source manifest so named is the frames report it
+    reads."""
+    _,inputs,_=case
+    freport=inputs['source_frames_report']
+    spelt=freport.with_name(freport.name.upper())
+    if not spelt.exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다')
+    old=evidence.digest(freport.read_bytes())
+    try:
+        main(['video-source-manifest','--clip',str(inputs['source_clip']),'--canvas',str(inputs['source_canvas']),
+              '--frames-report',str(freport),'--frames-dir',str(inputs['source_frames_dir']),'--out',str(spelt)])
+        said='written'
+    except SystemExit as refusal:
+        said=str(refusal)
+    assert evidence.digest(freport.read_bytes())==old, f'원천 매니페스트가 대문자 철자의 입력 위에 써졌다 ({said})'
+    assert 'video-source-manifest: --frames-report and --out are the same file' in said, said
 
 
 def test_legacy_ambiguous_projection_cannot_choose_one_crop():

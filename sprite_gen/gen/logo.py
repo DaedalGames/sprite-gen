@@ -40,7 +40,7 @@ from PIL import Image
 
 import sprite_gen.gen as gen_pkg
 from sprite_gen.frames import logo_matte
-from sprite_gen.spec.runio import atomic_save_image, atomic_write_text
+from sprite_gen.spec.runio import atomic_save_image, atomic_write_text, new_stage, refuse_overlap, same_folder
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 from . import chroma as chroma_mod
@@ -306,6 +306,20 @@ def _publish(image: Image.Image, path: Path) -> None:
     atomic_save_image(image, path)
 
 
+def _refuse_overlap(files: dict[str, Path], report: Path, report_given: bool, *, mood: Path | None,
+                    lettering: Path | None) -> None:
+    """A run never writes over or deletes the pictures it is given: `--mood` and `--lettering`, each with every link or
+    folder its path looks up, against every file the run removes or writes in `--out-dir` and its report
+    (`runio.refuse_overlap`) — but for the file each is copied to, `mood.png` and `lettering.png`, where a picture the
+    run made is given back to cut it again (its own pixels are written back). Refused before anything is made."""
+    written = {f"{name} in --out-dir": path for name, path in files.items()
+               if name != "mood.png" or lettering is None or mood is not None}  # a given lettering alone writes no mood
+    written["--report" if report_given else "logo.report.json in --out-dir"] = report
+    for flag, given, own in (("--mood", mood, "mood.png"), ("--lettering", lettering, "lettering.png")):
+        refuse_overlap({flag: given}, {name: path for name, path in written.items() if name != f"{own} in --out-dir"},
+                       verb="logo")
+
+
 class _Refusal(Exception):
     def __init__(self, stage: str, message: str) -> None:
         super().__init__(message)
@@ -332,17 +346,16 @@ def make_logo(provider: str, *, text: str, out_dir: Path, subtitle: str | None =
         if given is not None and not Path(given).expanduser().is_file():
             raise SystemExit(f"logo: {flag} image not found: {given}")
     out_dir = Path(out_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    report_given = report_path is not None
     report_path = Path(report_path).expanduser().resolve() if report_path else out_dir / "logo.report.json"
     ratio = aspect_ratio or COMPOSITIONS[composition]["aspect_ratio"]
-    work = out_dir / ".logo-work"
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir()
     files = {name: out_dir / name for name in ("mood.png", "lettering.png", "logo.png", "logo.rejected.png",
                                                "logo.preview.png")}
-    inputs = {Path(given).expanduser().resolve() for given in (mood, lettering) if given is not None}
+    _refuse_overlap(files, report_path, report_given, mood=mood, lettering=lettering)
+    out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("lettering.png", "logo.png", "logo.rejected.png", "logo.preview.png"):
-        if files[name] not in inputs:  # a run never leaves an earlier run's result looking like its own
+        # a run never leaves an earlier run's result looking like its own; a --lettering given as its lettering.png is kept
+        if lettering is None or not same_folder(files[name], Path(lettering).expanduser()):
             files[name].unlink(missing_ok=True)
     report: dict[str, Any] = {
         "kind": REPORT_KIND, "status": "running", "text": text, "subtitle": subtitle, "language": language,
@@ -360,6 +373,7 @@ def make_logo(provider: str, *, text: str, out_dir: Path, subtitle: str | None =
         print(f"[logo] warning: {message}", file=sys.stderr)
 
     backend = gen_pkg._make_provider(provider, keep_session=False)
+    work = new_stage(out_dir / "logo-work", "")  # `.logo-work.<pid>-<random>`: the run's own, removed below
     try:
         if lettering is not None:
             key = _given_lettering(Path(lettering).expanduser(), mood, files, report, chroma_key)

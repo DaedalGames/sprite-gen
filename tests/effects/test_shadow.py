@@ -280,6 +280,23 @@ def test_outputs_cannot_overwrite_input_files(tmp_path, filename):
     assert {path: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
+def test_an_output_spelt_in_capitals_of_the_source_is_refused(tmp_path):
+    """On a volume that ignores case `SHADOW.png` is `shadow.png`: a source so named is the strip the run writes."""
+    source = tmp_path / "SHADOW.png"
+    _silhouette().save(source)
+    if not (tmp_path / "shadow.png").exists():
+        pytest.skip("대소문자를 가리는 볼륨 — 철자가 다르면 다른 파일이다")
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    try:
+        shadow.run(source=source, out_dir=tmp_path)
+        said = "written"
+    except ValueError as refusal:
+        said = str(refusal)
+    assert source.read_bytes() == before["SHADOW.png"], f"그림자가 대문자 철자의 원본 위에 써졌다 ({said})"
+    assert "--source and shadow.png in --out-dir are the same file" in said, said
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
 def test_output_cannot_overwrite_a_frame_referenced_by_descriptor(tmp_path):
     source = _asset_files(tmp_path)
     data = json.loads(source.read_text())

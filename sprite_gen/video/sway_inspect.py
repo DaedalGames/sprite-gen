@@ -60,7 +60,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.effects import breathe as breathe_mod
-from sprite_gen.spec.runio import atomic_write_set
+from sprite_gen.spec.runio import atomic_write_set, inside_folder, same_folder
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import sway
 from sprite_gen.util.console import utf8_streams
@@ -286,7 +286,7 @@ def inspect_loop(loop_dir: Path, regions: list[tuple[float, ...]], out_dir: Path
                                 gain_across=gain_across)
     ask = request.ask
     out_dir = out_dir.expanduser().resolve()
-    if out_dir == request.loop_dir or request.loop_dir in out_dir.parents:
+    if same_folder(out_dir, request.loop_dir) or inside_folder(out_dir, request.loop_dir):
         raise SystemExit(f"{verb}: --out-dir {out_dir} is in the loop directory; an inspection writes nothing there")
     scale, columns = int(scale), int(columns)
     if scale < 1 or columns < 1:

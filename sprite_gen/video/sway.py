@@ -1003,7 +1003,7 @@ def sway_loop(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float |
         staged = {path: stage / path.name for path in (strip_path, gif_path, webp_path, meta_path)}
         joined.save(staged[strip_path])
         save_clean_gif(out, staged[gif_path], duration_ms=delay_ms, loop=0, alpha_threshold=128)
-        loop_mod.write_webp(out, staged[webp_path], delay_ms=delay_ms, workdir=stage / ".webp-frames")
+        loop_mod.write_webp(out, staged[webp_path], delay_ms=delay_ms)
         # a cell left as it was beside its twin (a filmed ghost given way to the frame beside it) is one frame of both
         shown = loop_mod.shown_runs(out)
         record = {

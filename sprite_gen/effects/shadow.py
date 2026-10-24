@@ -15,6 +15,7 @@ from PIL import Image, ImageFilter
 from sprite_gen.spec.runio import (
     acquire_run_dir_lock,
     atomic_write_set,
+    refuse_overlap,
     release_run_dir_lock,
 )
 from sprite_gen.util.hexcolor import parse_hex
@@ -168,10 +169,13 @@ def _png_bytes(image: Image.Image) -> bytes:
 
 
 def _validate_targets(targets, sources):
-    protected = {Path(path).resolve() for path in sources}
+    source, *read = sources
+    try:  # no source is a file the run writes (`runio.refuse_overlap`)
+        refuse_overlap({"--source": source, **{f"{path} (read for --source)": path for path in read}},
+                       {f"{target.name} in --out-dir": target for target in targets})
+    except SystemExit as overlap:
+        raise ValueError(f"shadow output would overwrite source: {overlap}") from None
     for target in targets:
-        if target.resolve() in protected:
-            raise ValueError(f"shadow output would overwrite source: {target}")
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise ValueError(f"shadow output must be a regular file: {target}")
 
