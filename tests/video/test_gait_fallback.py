@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 from sprite_gen.video import gait_fallback, loop
+from tests.video import test_ghost_given_way as ghost_clips
+from tests.video import test_stop as stop_clips
 
 FOOT = (140, 170)
 
@@ -63,13 +65,17 @@ def settling(k, *, settle=10, rise=6, grow=0.0, frames=73):
     return out
 
 
-def run(tmp_path, frames, *extra):
+# A cut again by hand (`--cycle fixed`), as the recut path cuts a walk: one cycle from frame 24.
+FIXED = ('--cycle', 'fixed', '--start', '24', '--length', '24', '--anchor', 'body')
+
+
+def run(tmp_path, frames, *extra, cut=('--anchor', 'motion-auto'), state='walk'):
     keyed = tmp_path/'keyed'
     keyed.mkdir()
     for k, image in enumerate(frames):
         image.save(keyed/f'{k:03}.png')
     output = tmp_path/'out'
-    args = ['--frames-dir', str(keyed), '--out-dir', str(output), '--state', 'walk', '--anchor', 'motion-auto', '--repair', 'off',
+    args = ['--frames-dir', str(keyed), '--out-dir', str(output), '--state', state, *cut, '--repair', 'off',
             '--report', str(tmp_path/'loop.json'), *extra]
     try:
         code = loop.main(args)
@@ -180,6 +186,8 @@ def test_a_walk_toward_the_camera_is_held_at_its_size_before_the_first_search(tm
     heights = gait_fallback.subject_boxes([Image.open(p).convert('RGBA') for p in cells])
     assert np.ptp(heights[:, 3]-heights[:, 1]) <= 6
     assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
+    # Its feet stand on one row as filmed: they are left there.
+    assert hold['feet'] == {'min': gait_fallback.FOOT_HOLD_MIN, 'method': 'one-cycle-on', 'change_px': 0.0, 'held': False}
 
 
 @pytest.mark.slow
@@ -292,12 +300,240 @@ def test_the_held_loop_of_a_shrinking_walk_keeps_its_crown(tmp_path):
     frames = [walking_away(k) for k in range(73)]
     code, report, output = run(tmp_path, frames)
     assert code == 0
-    assert report['size_hold']['applied'] is True and report['size_hold']['padding_ltrb'][1] > 0
+    hold = report['size_hold']
+    # Its feet climb 20 px: held on the first frame's row, the crown scaled back up stays in the frame.
+    assert hold['applied'] is True and hold['feet']['held'] is True and -21 <= hold['feet']['change_px'] <= -19
     first = frames[0].getchannel('A').getbbox()
     cells = sorted((output/'cycle').glob('frame-*.png'))
     boxes = gait_fallback.subject_boxes([Image.open(p).convert('RGBA') for p in cells])
     # Every cell stands about as tall as the first frame did: no cell lost its crown.
     assert np.all(np.abs((boxes[:, 3]-boxes[:, 1])-(first[3]-first[1])) <= 6)
+    # And the loop closes at its feet: the wrap moves them no more than a step inside does.
+    edges = wrap_and_inner(output)
+    assert edges['bottom'][0] <= edges['bottom'][1], edges
+
+
+def test_the_feet_are_read_one_cycle_on():
+    frames = [walking_away(k) for k in range(73)]
+    feet = gait_fallback.foot_drift(frames, gait_fallback.cycle_drift(frames, min_lag=12, max_lag=36))
+    # The feet climb 20 px over the clip (a whole crop row every three or four frames, read a cycle on: 21); each frame
+    # is moved back down to the first frame's row by its share.
+    assert feet['method'] == 'one-cycle-on' and feet['held'] is True and -21 <= feet['change_px'] <= -19
+    assert feet['lift'][0] == 0 and np.allclose(feet['lift'], -feet['change_px']*np.arange(73)/72)
+    # A walker that keeps its row, whatever its size, is left where it stands.
+    for clip in ([walker(k) for k in range(73)], [walker(k, grow=-0.07) for k in range(73)]):
+        feet = gait_fallback.foot_drift(clip, gait_fallback.cycle_drift(clip, min_lag=12, max_lag=36))
+        assert feet['change_px'] == 0.0 and feet['held'] is False and feet['lift'] is None
+    # A first pose that stands on longer legs and settles: a line through every frame's feet reads them climbing
+    # (the settle pulls it down by 2.7 px), one cycle on they stand where they did.
+    settle = [settling(k, grow=0.025) for k in range(73)]
+    fitted = gait_fallback.scale_drift(settle)['foot_y']
+    assert fitted[-1]-fitted[0] < -2
+    feet = gait_fallback.foot_drift(settle, gait_fallback.cycle_drift(settle, min_lag=12, max_lag=36))
+    assert feet['change_px'] == 0.0 and feet['held'] is False
+
+
+@pytest.mark.slow
+def test_held_with_its_feet_a_walk_away_stands_on_the_first_frames_row():
+    frames = [walking_away(k) for k in range(73)]
+    measured = gait_fallback.cycle_drift(frames, min_lag=12, max_lag=36)
+    lift = gait_fallback.foot_drift(frames, measured)['lift']
+    pad = gait_fallback.undo_padding(frames, measured, lift)
+    held = gait_fallback.subject_boxes(gait_fallback.undo_scale(frames, measured, pad=pad, lift=lift))
+    first = gait_fallback.subject_boxes(frames[:1])[0]
+    # The first frame's height and row, every frame (moved into the frame by the room above it).
+    assert np.all(np.abs((held[:, 3]-held[:, 1])-(first[3]-first[1])) <= 2)
+    assert np.all(np.abs(held[:, 3]-(first[3]+pad[1])) <= 1)
+    # The feet held where the crown was carried past the top: it is not, and needs no room there.
+    assert pad[1] == 0 < gait_fallback.undo_padding(frames, measured)[1]
+    # A box of a frame as filmed is laid where its part is held: the head, by its colour.
+    k = 48
+    pixels = np.asarray(frames[k])
+    orange = (np.abs(pixels[..., :3].astype(int)-(210, 150, 60)).max(axis=-1) <= 8) & (pixels[..., 3] == 255)
+    ys, xs = np.nonzero(orange)
+    box = (int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1)
+    laid = gait_fallback.held_box(box, k, measured, pad, lift)
+    held_k = np.asarray(gait_fallback.undo_scale(frames, measured, pad=pad, lift=lift)[k])
+    ys, xs = np.nonzero((np.abs(held_k[..., :3].astype(int)-(210, 150, 60)).max(axis=-1) <= 8) & (held_k[..., 3] == 255))
+    assert all(abs(a-b) <= 1 for a, b in zip(laid, (xs.min(), ys.min(), xs.max()+1, ys.max()+1)))
+
+
+def wrap_and_inner(output):
+    """The cut's frames (cycle/ or cycle.refused/): for the body's height, top and bottom (its solid box), the change
+    at the wrap (last frame into the first) and the largest change from one frame to the next inside."""
+    folder = output/'cycle' if (output/'cycle').is_dir() else output/'cycle.refused'
+    boxes = gait_fallback.subject_boxes([Image.open(p).convert('RGBA') for p in sorted(folder.glob('frame-*.png'))])
+    return {name: (abs(v[-1]-v[0]), np.abs(np.diff(v)).max())
+            for name, v in (('height', boxes[:, 3]-boxes[:, 1]), ('top', boxes[:, 1]), ('bottom', boxes[:, 3]))}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('clip', ['walking away', 'shrinking 2 %'])
+def test_a_walk_cut_again_by_hand_is_held_at_its_size_and_its_feet(tmp_path, clip):
+    """A cut the caller names (`--cycle fixed`, the recut path) of a walk that changes size: held over the whole clip
+    before the cut is read, as a search's cut is, so the loop's last frame is the size of its first and stands on its
+    row — at the wrap the body's height, crown and feet change no more than from one frame to the next inside, and
+    the seam the gate reads on the frames held closes. Cut as filmed, the walk away jumped 6 px in height at the wrap
+    (1 inside) and was refused at 6.83, the 2 % walk 1 px (1) at 3.80."""
+    frames = [walking_away(k) for k in range(73)] if clip == 'walking away' else [walker(k, grow=-0.02) for k in range(73)]
+    code, report, output = run(tmp_path, frames, cut=FIXED)
+    edges = wrap_and_inner(output)
+    # The feet first, whatever the gate said: held at its size alone, the walk away's last frame stands 6 px above its
+    # first (1 px a frame inside) and the seam reads 10.03 — its size moved into its place.
+    assert edges['bottom'][0] <= edges['bottom'][1], edges
+    assert code == 0 and report['status'] == 'passed', code
+    hold = report['size_hold']
+    assert hold['applied'] is True and abs(hold['drift']) >= gait_fallback.SIZE_HOLD_MIN
+    assert hold['feet']['held'] is (clip == 'walking away')
+    # The cut shows the change itself, a cycle of its length apart.
+    assert hold['at_cut']['pairs'] == 24 and hold['at_cut']['size'] is True and hold['at_cut']['feet'] is (clip == 'walking away')
+    assert report['resampled_seam_ratio'] <= loop.SEAM_RATIO_MAX
+    assert all(wrap <= inner for wrap, inner in edges.values()), edges
+    assert not list(output.glob(f'.{loop.FALLBACK_FRAMES}*'))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('outside', [0, 1, 5])
+@pytest.mark.parametrize('end', ['after', 'before'])
+def test_a_walk_cut_by_hand_is_held_with_a_few_frames_beyond_the_cut(tmp_path, end, outside):
+    """A cut the caller names reads its change on each of its frames, against the frame its length later or, where the
+    clip ends before that, its length earlier: a frame the clip holds beyond the cut is the partner of one frame of it
+    and no more. The walk away cut on the last cycle of 72 frames, the clip run on past it by the cut's own first
+    frames again (or cut on its first cycle, the clip opened by the cut's last frames), which show no change against
+    it: held on 24 pairs with none, one or five of them, and the loop closes. Read on the frames with a partner later
+    alone, one frame after the cut left one pair, which read no change, and the shrink the other 23 show went unheld:
+    refused at 7.94, where the cut passes at 1.19 with nothing after it. Some half the cut's length of such frames are
+    the partners of half its frames and can bring the median under the share; this does not reach that far."""
+    frames = [walking_away(k) for k in range(72)]
+    if end == 'after':
+        clip, start = frames+[frames[48+j].copy() for j in range(outside)], 48
+    else:
+        clip, start = [frames[24-outside+j].copy() for j in range(outside)]+frames, outside
+    code, report, output = run(tmp_path, clip, cut=('--cycle', 'fixed', '--start', str(start), '--length', '24', '--anchor', 'body'))
+    seen = report['size_hold']['at_cut']
+    assert seen['pairs'] == 24 and seen['size'] is True and seen['feet'] is True, seen
+    assert report['size_hold']['applied'] is True
+    assert code == 0 and report['status'] == 'passed', code
+    assert report['resampled_seam_ratio'] <= loop.SEAM_RATIO_MAX
+    edges = wrap_and_inner(output)
+    assert all(wrap <= inner for wrap, inner in edges.values()), edges
+
+
+@pytest.mark.slow
+def test_a_walk_cut_again_by_hand_as_filmed(tmp_path):
+    """`--size-hold off`: the cut the caller names is the frames as filmed — the cut's frames are the clip's, pixel for
+    pixel — and the report says so."""
+    frames = [walking_away(k) for k in range(73)]
+    code, report, output = run(tmp_path, frames, '--size-hold', 'off',
+                               cut=('--cycle', 'fixed', '--start', '24', '--length', '24', '--anchor', 'none'))
+    assert report['size_hold'] == {'applied': False, 'why': '--size-hold off'}
+    folder = output/'cycle' if (output/'cycle').is_dir() else output/'cycle.refused'
+    cells = sorted(folder.glob('frame-*.png'))
+    assert [Image.open(p).convert('RGBA').tobytes() for p in cells] == [im.tobytes() for im in frames[24:48]]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('cut', ['fixed', 'motion-auto'])
+def test_a_walk_that_keeps_its_size_is_cut_as_filmed_either_way(tmp_path, cut):
+    """No change of size: held or not, the loop is the same bytes, and the report says it was not held."""
+    frames = [walker(k) for k in range(73)]
+    how = FIXED if cut == 'fixed' else ('--anchor', 'motion-auto')
+    outputs = []
+    for mode in ('auto', 'off'):
+        (tmp_path/mode).mkdir()
+        code, report, output = run(tmp_path/mode, frames, '--size-hold', mode, cut=how)
+        assert code == 0
+        outputs.append(output)
+    assert report['size_hold'] == {'applied': False, 'why': '--size-hold off'}
+    held = json.loads((tmp_path/'auto'/'loop.json').read_text())['size_hold']
+    assert held['applied'] is False and 'feet' not in held and 'padding_ltrb' not in held
+    for path in ('loop.strip.png', 'loop.gif', 'cycle/frame-000.png', 'cycle/frame-023.png'):
+        assert (outputs[0]/path).read_bytes() == (outputs[1]/path).read_bytes(), path
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('clip', ['another motion first', 'a short clip'])
+def test_a_cut_by_hand_that_keeps_its_size_is_not_held_for_what_the_clip_reads(tmp_path, clip):
+    """Read over the whole clip, frames that are not the walk the cut is can read a change of size the walk never makes:
+    a run filmed from a standing still that raises and waves its arm and crouches before it sets off
+    (tests/video/test_stop.py) reads 6.9 % smaller by the end, and a walk of 26 frames cut 20 long, too short for the
+    reading to try a lag of its cycle, reads 2.5 % larger. The cut shows no change a cycle of its length apart
+    (`size_hold.at_cut`), so it is cut as filmed: the same bytes as with `--size-hold off`, and the report says why."""
+    if clip == 'another motion first':
+        keyed, run_from = stop_clips.clip(tmp_path, other=8)
+        start, length, state, pairs = run_from+stop_clips.PERIOD, stop_clips.PERIOD, 'run', stop_clips.PERIOD
+    else:
+        keyed = ghost_clips._keyed(tmp_path, 'short', ())
+        start, length, state, pairs = 0, ghost_clips.L, 'walk', 6
+    frames = [Image.open(p).convert('RGBA') for p in sorted(keyed.glob('*.png'))]
+    how = ('--cycle', 'fixed', '--start', str(start), '--length', str(length), '--anchor', 'none', '--seam-max', '1000')
+    outputs = {}
+    for mode in ('auto', 'off'):
+        (tmp_path/mode).mkdir()
+        code, _, outputs[mode] = run(tmp_path/mode, frames, '--size-hold', mode, cut=how, state=state)
+        assert code == 0, code
+    hold = json.loads((tmp_path/'auto'/'loop.json').read_text())['size_hold']
+    assert hold['applied'] is False and abs(hold['drift']) >= gait_fallback.SIZE_HOLD_MIN
+    seen = hold['at_cut']
+    assert seen['pairs'] == pairs and seen['change'] == 0 and seen['size'] is False and 'why' in hold
+    for path in ('loop.strip.png', 'cycle/frame-000.png'):
+        assert (outputs['auto']/path).read_bytes() == (outputs['off']/path).read_bytes(), path
+
+
+@pytest.mark.slow
+def test_an_idle_cut_by_hand_is_not_held(tmp_path):
+    # The hold is a walk's or a run's: an idle that changes size is cut as filmed, and its report has no `size_hold`.
+    code, report, _ = run(tmp_path, [walker(k, grow=-0.07) for k in range(73)], '--seam-max', '1000',
+                          cut=('--cycle', 'fixed', '--start', '24', '--length', '24'), state='idle')
+    assert code == 0 and 'size_hold' not in report
+
+
+def receding(k, *, climb=96, frames=73):
+    """A walker going away from the camera over ground that climbs the frame fast: 15 % smaller by the end and its feet
+    `climb` px higher, 32 px over a cycle of 24 frames — further than the motion anchor's fine search looks
+    (motion_anchor.SEARCH_RADIUS, 28 rows)."""
+    image = walker(k, grow=-0.15, frames=frames)
+    out = Image.new('RGBA', (image.width, image.height+climb))
+    out.alpha_composite(image, (0, climb-round(climb*k/(frames-1))))
+    return out
+
+
+@pytest.mark.slow
+def test_a_walk_away_whose_feet_climb_past_the_fine_search_is_held_on_its_row(tmp_path):
+    """Held at its size about feet left where they were filmed, the loop's last frame stands 32 px above its first: the
+    motion anchor's fine search, 28 rows, reaches no match there, the cut is left uncorrected, and the gate refused its
+    wrap at 13.03. Held on the first frame's row as well, the cut's frames stand where its first does, the anchor
+    corrects what is left, and the loop closes."""
+    code, report, output = run(tmp_path, [receding(k) for k in range(73)], '--overlap-wrap', 'off')
+    assert code == 0 and report['status'] == 'passed', code
+    hold = report['size_hold']
+    assert hold['applied'] is True and hold['feet']['held'] is True and -97 <= hold['feet']['change_px'] <= -95
+    assert report['motion_anchor']['method'] == 'masked-ncc-boundary-velocity-v1'
+    assert report['resampled_seam_ratio'] <= loop.SEAM_RATIO_MAX
+    edges = wrap_and_inner(output)
+    assert edges['bottom'][0] <= edges['bottom'][1], edges
+
+
+@pytest.mark.slow
+def test_a_walk_cut_by_hand_on_named_regions_reads_them_held(tmp_path):
+    """`--anchor motion` names its regions on the cut's first frame as filmed: held, they are read where those parts
+    stand in the frame held (`size_hold.anchor_regions`), the head on the head."""
+    frames = [walking_away(k) for k in range(73)]
+    pixels = np.asarray(frames[24])
+    boxes = []
+    for colour in ((210, 150, 60), (20, 90, 180)):  # the head, the torso
+        ys, xs = np.nonzero((np.abs(pixels[..., :3].astype(int)-colour).max(axis=-1) <= 8) & (pixels[..., 3] == 255))
+        boxes.append((int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1))
+    regions = [v for box in boxes for v in ('--anchor-region', ','.join(map(str, box)))]
+    code, report, _ = run(tmp_path, frames, *regions,
+                          cut=('--cycle', 'fixed', '--start', '24', '--length', '24', '--anchor', 'motion'))
+    hold = report['size_hold']
+    assert hold['applied'] is True
+    measured = gait_fallback.cycle_drift(frames, min_lag=12, max_lag=36)
+    lift = gait_fallback.foot_drift(frames, measured)['lift']
+    laid = [list(gait_fallback.held_box(box, 24, measured, tuple(hold['padding_ltrb']), lift)) for box in boxes]
+    assert hold['anchor_regions'] == laid and report['motion_anchor']['regions'] == laid
+    assert code == 0, code
 
 
 @pytest.mark.slow

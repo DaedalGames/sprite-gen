@@ -13,10 +13,13 @@ Two things a front or back gait does that the first search cannot see past:
   `LONG_CYCLE_FRACTION` of the clip: it is still seen once whole and repeating for the rest.
 
 Only a failed search reaches the long window. The size is also held before the first search
-(`video-loop --size-hold auto`, the default for `--anchor motion-auto`): a clip that changes size
-by `SIZE_HOLD_MIN` or more is scaled back first, so the loop is cut on frames of one size and its
-last frame leads into its first. What was done is recorded in the report (`size_hold`,
-`gait_fallback`).
+(`video-loop --size-hold auto`, the default for `--anchor motion-auto` and for a fixed cut of a walk
+or run, before the cut is read): a clip that changes size by `SIZE_HOLD_MIN` or more is scaled back
+first, so the loop is cut on frames of one size and its last frame leads into its first. The hold
+holds the feet too where they climb or sink in the frame (`foot_drift`): a walk away from the camera
+shrinks as the ground recedes up the frame, and held at its size about feet left where they were
+filmed its last frame stands higher than its first. What was done is recorded in the report
+(`size_hold`, `gait_fallback`).
 
 The hold reads the change one cycle on (`cycle_drift`), not off a line fitted through the
 clip: a clip that starts from a standing pose and settles into the walk over its first steps
@@ -61,6 +64,15 @@ SCALE_DRIFT_MIN = 0.03
 # hair; above it a clip filmed from its first frame only grows or shrinks enough that the loop's
 # last frame is a different size from its first, and the loop pops at the wrap.
 SIZE_HOLD_MIN = 0.01
+# How far the feet climb or sink in the frame over the clip, read one cycle on (`foot_drift`), as a share of the
+# first frame's height, at which a clip the size hold holds has its feet held on the first frame's row as well.
+# Under it the feet's row is the box's rounding; a walk away from the camera whose ground recedes up the frame
+# climbs by several percent of the body.
+FOOT_HOLD_MIN = 0.01
+# The share of the change the clip reads over one of a fixed cut's cycles that the cut must show itself, the same way,
+# to be held (`at_cut`): a walk that grows or shrinks shows the whole change at the cut (0.94 to 1.07 of it on the
+# tests' walkers), frames that are not the walk read into the clip's change show none of it.
+AT_CUT_SHARE = 0.5
 # How far off the one-cycle-on model a frame is when it is not yet walking at the clip's size: a first frame
 # whose height and size are both this far off, the same way, opens a lead-in, and the frames whose height
 # stays this far off, that way, are in it (`lead_in`).
@@ -189,6 +201,73 @@ def cycle_drift(frames: list[Image.Image], *, min_lag: int, max_lag: int) -> dic
             "height_last_px": round(float(height[-1]), 2), "height": height}
 
 
+def foot_drift(frames: list[Image.Image], measured: dict) -> dict:
+    """How far the subject's feet climb (negative) or sink in the frame over the clip, read one cycle on, and how far
+    each frame's feet are moved to stand on the first frame's row when the size is held (`lift`, for `undo_padding`
+    and `undo_scale`).
+
+    A walk away from the camera shrinks and its feet climb the frame: the ground recedes toward the horizon. Held at
+    its first frame's size about feet that stay where they were filmed, the loop's last frame stands higher than its
+    first and the wrap jumps up. The motion anchor's fine search does not reach that jump once the feet climb further
+    over the cut than it looks (`motion_anchor.SEARCH_RADIUS`, rows), and the body anchor moves the frames sideways
+    only. The bottom of each frame's subject is compared with the frame one, two, … lags later (`measured["lag"]`,
+    `cycle_drift`'s: the pose a cycle on), and the median of those changes per frame is the rate, as for the size: a
+    first pose that stands on longer legs and settles into the walk is outvoted, where a line through every bottom
+    reads it as feet that climb. `change_px` is that rate carried over the clip. `lift` is each frame's move back to
+    the first frame's row, None where the change is under FOOT_HOLD_MIN of the first frame's height (the feet stay
+    where they were filmed) or the clip is too short to read a cycle on."""
+    n = len(frames)
+    base = {"min": FOOT_HOLD_MIN, "method": "one-cycle-on"}
+    lag = measured["lag"]
+    if lag is None:
+        return {**base, "change_px": 0.0, "held": False, "lift": None}
+    bottoms = subject_boxes(frames)[:, 3]
+    rates = np.concatenate([(bottoms[span:] - bottoms[:-span]) / span for span in range(lag, n, lag)])
+    rates = rates[np.isfinite(rates)]
+    rate = float(np.median(rates)) if len(rates) else 0.0
+    change = rate * (n - 1)
+    held = abs(change) >= FOOT_HOLD_MIN * float(measured["height"][0])
+    return {**base, "change_px": round(change, 2), "held": held,
+            "lift": -rate * np.arange(n, dtype=np.float64) if held else None}
+
+
+def at_cut(frames: list[Image.Image], measured: dict, feet: dict, *, start: int, length: int) -> dict:
+    """Whether a cut the caller names (`--cycle fixed`) changes size, and moves its feet, one cycle on as the clip reads
+    them (`cycle_drift`, `foot_drift`), read on the cut itself at the cycle the caller named: each frame of the cut
+    against the frame `length` later, or `length` earlier where the clip ends before that. Each frame has one partner,
+    so a frame the clip holds beyond the cut is the partner of one frame of it, never the reading of the rest: read on
+    the frames with a partner later alone, one frame after a cut on the clip's last cycle left one pair to read it.
+
+    The clip's reading is over every frame, so frames that are not the walk the cut is (a standing start, another
+    motion before the walk, a long run-up), or a clip too short to show the walk's cycle twice inside the lags the
+    reading may try, can read a change the walk does not make; the cut's own frames a cycle apart show it or do not.
+    `change` is the median of the cut's height ratios (`coverage_heights`) less 1 and `feet_px` the median move of its
+    feet's row over the same pairs, both over one cycle; `expected` and `feet_expected_px` are the clip's reading
+    carried over one cycle. `size` (`feet`): the cut shows at least AT_CUT_SHARE of the expected change, the same way.
+    `pairs` is how many of the cut's frames have a partner; none (the clip holds no frame a cycle from any): neither."""
+    n = len(frames)
+    pairs = [(k, k + length) if k + length < n else (k - length, k)
+             for k in range(start, start + length) if k + length < n or k - length >= 0]
+    expected = (1 + measured["drift"]) ** (length / (n - 1)) - 1
+    feet_expected = feet["change_px"] * length / (n - 1)
+    record = {"pairs": len(pairs), "share": AT_CUT_SHARE, "expected": round(expected, 4),
+              "feet_expected_px": round(feet_expected, 2)}
+    if not pairs:
+        return {**record, "change": None, "feet_px": None, "size": False, "feet": False}
+    heights = coverage_heights(frames)
+    bottoms = subject_boxes(frames)[:, 3]
+    ratios = np.array([heights[b] / heights[a] for a, b in pairs])
+    moves = np.array([bottoms[b] - bottoms[a] for a, b in pairs])
+    change = float(np.median(ratios[np.isfinite(ratios)]) - 1) if np.isfinite(ratios).any() else 0.0
+    moved = float(np.median(moves[np.isfinite(moves)])) if np.isfinite(moves).any() else 0.0
+
+    def shows(seen: float, whole: float) -> bool:
+        return seen * whole > 0 and abs(seen) >= AT_CUT_SHARE * abs(whole)
+
+    return {**record, "change": round(change, 4), "feet_px": round(moved, 2), "size": shows(change, expected),
+            "feet": shows(moved, feet_expected)}
+
+
 def lead_in(frames: list[Image.Image], *, min_lag: int, max_lag: int) -> dict:
     """The frames the clip opens on before its subject walks at the clip's size. There are some when the
     first frame's height (`coverage_heights`) and size (the square root of its summed coverage) are
@@ -258,13 +337,13 @@ def size_change(first: tuple[float, float, float] | None, cut: list[tuple[float,
             "breadth": round(float(off[2]), 4), **base}
 
 
-def undo_padding(frames: list[Image.Image], measured: dict) -> tuple[int, int, int, int]:
+def undo_padding(frames: list[Image.Image], measured: dict, lift: np.ndarray | None = None) -> tuple[int, int, int, int]:
     """Left, top, right, bottom room every frame needs so `undo_scale` cuts nothing.
 
     A clip that shrinks is scaled up about its feet, and what was near the top of the frame (the
     crown) or its sides is carried past the edge. Each frame's subject box is mapped the way
-    `undo_scale` maps it; the room is how far the furthest one reaches past each edge. All
-    frames get the same room, so they stay one size. Nothing reaches out: (0, 0, 0, 0)."""
+    `undo_scale` maps it (with the same `lift`); the room is how far the furthest one reaches past
+    each edge. All frames get the same room, so they stay one size. Nothing reaches out: (0, 0, 0, 0)."""
     boxes = subject_boxes(frames)
     height, foot_x, foot_y = measured["height"], measured["foot_x"], measured["foot_y"]
     width, rows = frames[0].size
@@ -274,16 +353,21 @@ def undo_padding(frames: list[Image.Image], measured: dict) -> tuple[int, int, i
             continue
         s = float(height[0] / height[k])
         ax, ay = float(foot_x[k]), float(foot_y[k])
+        # Where the feet stand once held: where they were filmed, or `lift` lower on the first frame's row.
+        ty = ay if lift is None else ay + float(lift[k])
         reach[0] = max(reach[0], -(ax + (x0 - ax) * s))
-        reach[1] = max(reach[1], -(ay + (y0 - ay) * s))
+        reach[1] = max(reach[1], -(ty + (y0 - ay) * s))
         reach[2] = max(reach[2], ax + (x1 - ax) * s - width)
-        reach[3] = max(reach[3], ay + (y1 - ay) * s - rows)
+        reach[3] = max(reach[3], ty + (y1 - ay) * s - rows)
     # A pixel's bilinear footprint reaches one past its mapped edge.
     return tuple(int(np.ceil(r)) + 1 if r > 0 else 0 for r in reach)  # type: ignore[return-value]
 
 
-def undo_scale(frames: list[Image.Image], measured: dict, pad: tuple[int, int, int, int] | None = None) -> list[Image.Image]:
-    """Each frame scaled to the first frame's fitted height about its fitted foot point.
+def undo_scale(frames: list[Image.Image], measured: dict, pad: tuple[int, int, int, int] | None = None,
+               lift: np.ndarray | None = None) -> list[Image.Image]:
+    """Each frame scaled to the first frame's fitted height about its fitted foot point, and moved
+    `lift[k]` px down (up, negative) where it is given (`foot_drift`), so the feet stand on the first
+    frame's row; without it they stay where they were filmed.
 
     Coverage and colour are resampled apart (`transform_cell`), so the soft edge neither picks
     up the colour under fully transparent pixels nor rings into a colour the frame did not have:
@@ -294,16 +378,33 @@ def undo_scale(frames: list[Image.Image], measured: dict, pad: tuple[int, int, i
     in every frame it reached. With no room needed the frames keep their size and bytes.
     """
     height, foot_x, foot_y = measured["height"], measured["foot_x"], measured["foot_y"]
-    left, top, right, bottom = undo_padding(frames, measured) if pad is None else pad
+    left, top, right, bottom = undo_padding(frames, measured, lift) if pad is None else pad
     out = []
     for k, frame in enumerate(frames):
         s = float(height[0] / height[k])
         ax, ay = float(foot_x[k]), float(foot_y[k])
-        # Output (x, y) reads input anchor + (x - room - anchor) / s.
-        inverse = (1 / s, 0.0, ax * (1 - 1 / s) - left / s, 0.0, 1 / s, ay * (1 - 1 / s) - top / s)
+        # Output (x, y) reads input anchor + (x - room - anchor) / s; held, y - room - anchor - lift.
+        ry = ay * (1 - 1 / s) - top / s
+        if lift is not None:
+            ry -= float(lift[k]) / s
+        inverse = (1 / s, 0.0, ax * (1 - 1 / s) - left / s, 0.0, 1 / s, ry)
         size = (frame.width + left + right, frame.height + top + bottom)
         out.append(transform_cell(frame, size, inverse))
     return out
+
+
+def held_box(box: tuple[int, int, int, int], k: int, measured: dict, pad: tuple[int, int, int, int],
+             lift: np.ndarray | None = None) -> tuple[int, int, int, int]:
+    """Where `undo_scale` lays a box of frame `k` as filmed (x0, y0, x1, y1), in whole pixels that cover it: a region
+    named on the frames as filmed, read on the held ones."""
+    height, foot_x, foot_y = measured["height"], measured["foot_x"], measured["foot_y"]
+    left, top = pad[0], pad[1]
+    s = float(height[0] / height[k])
+    ax, ay = float(foot_x[k]), float(foot_y[k])
+    ty = ay if lift is None else ay + float(lift[k])
+    x0, y0, x1, y1 = box
+    return (int(np.floor(left + ax + (x0 - ax) * s)), int(np.floor(top + ty + (y0 - ay) * s)),
+            int(np.ceil(left + ax + (x1 - ax) * s)), int(np.ceil(top + ty + (y1 - ay) * s)))
 
 
 def long_window(lo: int, n: int, fps: float) -> int:

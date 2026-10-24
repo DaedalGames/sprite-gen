@@ -228,13 +228,7 @@ long, `--steps 2` keeps it and says so ([loop repair](loop-repair.md) section 3,
 ### The gait fallback: a slow walk, or a walk toward the camera
 
 When the local search finds no cycle, `motion-auto` looks once more, for two things a
-front or back gait does that the first search cannot see past. (Since 2.24.0 a clip that changes
-size by 1 % or more, read one cycle on, is held at its first frame's size before the first
-search — [video-pipeline.md](video-pipeline.md) section 4, `size_hold` — so the fallback below
-seldom finds anything left to scale back unless `--size-hold off` was passed. It reads the size
-the way the hold does, one cycle on, so the two never disagree about a clip. A clip's lead-in —
-its first frames, where the video model reframed a small subject — is left out of both searches,
-[video-pipeline.md](video-pipeline.md) section 4, "A lead-in".)
+front or back gait does that the first search cannot see past. (A clip that changes size by 1 % or more, read one cycle on, is held at its first frame's size before the first search ([video-pipeline.md](video-pipeline.md) section 4, `size_hold`), and its feet are held on the first frame's row where they climb or sink by 1 % of the height or more over the clip, so the fallback below seldom finds anything left to scale back unless `--size-hold off` was passed. The fallback still scales the size alone with the feet left where they were filmed. That is what `--size-hold off` leaves in place: with `off`, a clip the first search does not cut is still scaled back at 3 % or more. Both read the size one cycle on, so the two never disagree about a clip. A clip's lead-in, where the video model reframed a small subject, is left out of both searches ([video-pipeline.md](video-pipeline.md) section 4, "A lead-in").)
 
 - **It walked toward the camera, or away from it.** Asked to walk in place, a front walk
   sometimes comes closer, and the body grows through the clip, so the same pose never matches
