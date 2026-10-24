@@ -363,14 +363,11 @@ and a true cycle half a drawing late are **the same picture**. So
 `video-loop` cuts the period it always cut, and only **records** what a half or a third of it shows
 (`cycle.fundamental`, `sprite_gen/video/period.py`).
 
-**The size is held before the search** (`--anchor motion-auto`, `--size-hold auto`, the default).
-A walk or run filmed from its first frame only (no end frame) often grows or shrinks as it plays:
-a front walk comes a little closer with every step, a back walk goes away. The loop is then cut on
-frames that change size, so the frame one cycle after the first is not the first's size and the
-loop pops at the wrap.
+**The size is held before the search or cut** (`--size-hold auto`, the default). A walk or run clip filmed from its first frame only often grows or shrinks as it plays, so the frame one cycle after the first is not the first's size and the loop pops at the wrap. Under `--size-hold auto`, a walk or run cut automatically with `--anchor motion-auto` (before the cycle search) or cut by hand with `--cycle fixed` under any anchor (before the cut is read, over the whole clip) is held at its first frame's size. When a clip's height changes by 1 % or more over the clip, read one cycle on, frames are scaled back to the first frame's size about their feet. Where the size is held and the feet climb or sink by 1 % of the first frame's height or more over the clip, frames are also shifted so their feet stand on the first frame's row. This stops a receding walk's jump at the wrap from moving into place: the motion anchor's fine search corrects a climb within 28 rows over the cut but leaves the cut uncorrected when feet climb further than that, and the body anchor moves frames sideways only.
 
-`--size-hold off` searches
-the frames as filmed.
+The cut's seam and step count are measured on the held frames. The report records `size_hold` with `padding_ltrb`, and records `size_hold.feet` when size is held. Fixed cuts with `--anchor motion` record the shifted target boxes in `size_hold.anchor_regions`. Automatic searches under `--anchor body`, `feet`, or `none`, `--cycle pinned`, and cuts of states that are not a walk or run are not held. A held cut is not restored from its source frames by `video-loop-repair`.
+
+Passing `--size-hold off` on a fixed cut keeps the filmed frames pixel for pixel and records `size_hold: {"applied": false, "why": "--size-hold off"}`. Under `--anchor motion-auto`, `--size-hold off` searches the filmed frames first, but if the first search finds no cycle, the gait fallback still scales back a size change of 3 % or more with feet left where filmed and searches again.
 
 **A lead-in is left out of the search** (walk and run, `--cycle auto` or `periodic`). A video
 model may reframe a small subject in a clip's first frames: the body grows (or shrinks) by a third
