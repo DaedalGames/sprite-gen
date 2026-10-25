@@ -134,6 +134,7 @@ def _follows(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
     return a.copy()  # a frame the interpolator drew whole, outlined as its neighbours
 
 
+@pytest.mark.slow
 def test_a_held_loop_stretched_past_what_an_interpolator_bridges_is_named_for_a_retake(tmp_path, capsys):
     """A cycle of 16 frames on twos (8 drawings) stretched to 24: 8 drawings a second, three frames
     apart, and the frames between them melt — a take to film again. The set is still aligned."""
@@ -166,6 +167,7 @@ def test_a_held_loop_whose_frames_between_are_all_made_is_not_named(tmp_path):
     assert not any("film this direction again" in w for w in report["warnings"])
 
 
+@pytest.mark.slow
 def test_between_nearest_and_rife_name_the_frames_not_made(tmp_path):
     """nearest makes no frame, so every one between drawings is taken; rife keeps a melted frame, a fault."""
     nearest = align.align_set([_cut(tmp_path / "n", "NE", 16, 2), _cut(tmp_path / "n", "S", 24, 1)], length=24, between="nearest")
@@ -186,6 +188,7 @@ def test_a_held_loop_squeezed_past_on_twos_is_not_named(tmp_path):
     assert len(row["nearest_at"]) > 0 and row["retake"] is None
 
 
+@pytest.mark.slow
 def test_the_clips_hold_is_read_from_the_strip_and_the_cycle_is_the_fallback(tmp_path):
     """`video-loop` writes the clip's hold into the strip metadata, and the alignment reads it there; a
     loop cut before that record is measured on its own cycle, read as a ring."""

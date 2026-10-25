@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PIL import Image
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
+from sprite_gen.util.console import utf8_streams
 
 
 def is_visible_magenta(r: int, g: int, b: int, a: int, args: argparse.Namespace) -> bool:
@@ -80,6 +81,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

@@ -161,7 +161,8 @@ def test_key_tinted_pixels_beside_a_touching_subject_are_accepted_with_it(tmp_pa
 
 
 def test_the_default_policy_is_unchanged(tmp_path: Path) -> None:
-    files = _frames(tmp_path, residual=False, touch_top=True)
+    # a subject that reaches the edge after the first frame: the clip framed too tight, as it always was
+    files = _frames(tmp_path, residual=False, touch_top=True, touch_from=1)
     with pytest.raises(SystemExit, match="framed too tight"):
         frames_mod.key_frames(files, tmp_path / "keyed", key="green")
     assert frames_mod.key_frames(files, tmp_path / "keyed2", key="green", check_edges=False)["edge_policy"] == "off"

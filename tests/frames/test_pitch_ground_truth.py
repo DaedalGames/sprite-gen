@@ -100,6 +100,7 @@ def test_fractional_pitch_roundtrips_to_the_original_logical_art(scale):
     assert _mismatch(snapped, art) <= art.width * art.height // 100
 
 
+@pytest.mark.slow
 def test_integer_pitch_still_snaps_exactly():
     art = _logical_art()
     for scale in (12, 16, 20):

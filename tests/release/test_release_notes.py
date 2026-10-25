@@ -208,7 +208,7 @@ def test_the_anchor_matches_githubs_slug_rules() -> None:
 
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(ROOT / "scripts" / "release_notes.py"), *args],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
 
 
 def test_the_cli_writes_title_body_and_assets(tmp_path: Path) -> None:

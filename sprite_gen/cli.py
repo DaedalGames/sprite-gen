@@ -11,7 +11,7 @@ from sprite_gen import _modules, gen
 from sprite_gen.audio import sound
 from sprite_gen.background import tile
 from sprite_gen.curate import anchor
-from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, compose_layers, export_aseprite, export_pngs
+from sprite_gen.compose import compose_atlas, compose_cycle, compose_gif, export_aseprite, export_pngs
 from sprite_gen.compose import game_pack
 from sprite_gen.qa import correction_loop, inspect, preview, score, motion
 from sprite_gen.qa import handed as handed_check
@@ -25,17 +25,21 @@ from sprite_gen.video import clip_prompt as video_prompt
 from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
 from sprite_gen.video import follow_inspect as video_follow_inspect
+from sprite_gen.video import sway as video_sway
+from sprite_gen.video import sway_inspect as video_sway_inspect
 from sprite_gen.video import set_sheet as video_set_sheet
 from sprite_gen.video import stop as video_stop
 from sprite_gen.video import compare as video_compare
 from sprite_gen.video import restoration as video_restoration
 from sprite_gen.video import source as video_source
 from sprite_gen.video import rife_install
-from sprite_gen.effects import recolor, shadow
+from sprite_gen.video import face_bake, face_pack
+from sprite_gen.effects import breathe, recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
 from sprite_gen.workflow import guide, preferences
+from sprite_gen.util.console import utf8_streams
 
 
 def _parse_frames(value: str) -> list[int]:
@@ -237,13 +241,6 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         compose_cycle.run,
     ),
     "compose-gif": ("Compose selected sprite frames into a clean transparent GIF.", _add_compose_gif, compose_gif.run),
-    # Same rule as `curation` / `recolor`: the subcommand reuses the module's own
-    # argument declaration, so the three launch forms cannot drift apart.
-    "compose-layers": (
-        "Bake a rig run's declared composite stacks into <run-dir>/layers/.",
-        compose_layers.add_arguments,
-        compose_layers.run,
-    ),
     "unpack-atlas": (
         "Unpack a composed sprite sheet back into a curator-ready run directory.",
         _add_unpack_atlas,
@@ -269,7 +266,7 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     # and everything through it) normalize retired keys in memory and leave the file byte
     # for byte — a query must never rewrite a canonical run.
     "migrate-request": (
-        "Migrate a run's retired sprite-request fit keys to the current schema.",
+        "Migrate a run's retired sprite-request keys to the current schema.",
         migrate_request.add_arguments,
         migrate_request.run,
     ),
@@ -385,16 +382,16 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         video_align.add_arguments,
         video_align.run,
     ),
-    "video-follow": (
-        "A soft part of a looping body follows the body's motion: an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align).",
-        video_follow.add_arguments,
-        video_follow.run,
+    "video-sway": (
+        "The Sway layer: a soft part of a looping body sways with the body's motion, an ellipse of the strip moved as a damped mass on the body's own bob (after video-cycle-align), or of a cycle's frames at their own size (--frames, --out); on the breath, late behind the Breathe layer's chest (--breathe). Old name video-follow, still run.",
+        video_sway.add_arguments,
+        video_sway.run,
     ),
-    # The same request as video-follow, answered by the same code, written down instead of over the loop.
-    "video-follow-inspect": (
-        "Where video-follow carries each region in every cell and what it would change there, with nothing moved: a record and two boards of every cell, for whoever says what is inside an ellipse.",
-        video_follow_inspect.add_arguments,
-        video_follow_inspect.run,
+    # The same request as video-sway, answered by the same code, written down instead of over the loop.
+    "video-sway-inspect": (
+        "Where video-sway carries each region in every cell and what it would change there, with nothing moved: a record and two boards of every cell, for whoever says what is inside an ellipse. Old name video-follow-inspect, still run.",
+        video_sway_inspect.add_arguments,
+        video_sway_inspect.run,
     ),
     "video-set-sheet": (
         "The directions of one set on one sheet: rows in compass order (S SW W NW N NE E SE), one cell holding every body box, one ground line under every cell, no row scaled; an optional centre picture stood on the same line at the rows' standing height.",
@@ -405,6 +402,18 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "A walk or run that stops: the clip's own start played backwards from where it reaches the loop to the still it was filmed from, cut as a one-shot strip beside the loop (seam, drift, speed and refusals reported).",
         video_stop.add_arguments,
         video_stop.run,
+    ),
+    # The face layer (docs/face-parts.md): a talking clip's lower face cut to be laid on body motions, and a line baked
+    # with the pack's own player.
+    "video-face": (
+        "A face pack: a talking clip's lower face (mouth, jaw, cheeks) cut into smile and neutral sets, anchored on every frame of the body motions it is laid on, with the player that picks its frames to a voice.",
+        face_pack.add_arguments,
+        face_pack.run,
+    ),
+    "face-bake": (
+        "Bake a line ahead: a body motion with the face layer talking to a voice, picked by the pack's player (node), as frames, sound and a report; a jump the laying put in is refused.",
+        face_bake.add_arguments,
+        face_bake.run,
     ),
     "rife": (
         "install: download the pinned RIFE (rife-ncnn-vulkan, sha256-checked) into the user data directory, where the loop repair finds it.",
@@ -438,6 +447,13 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         recolor.add_palette_arguments,
         recolor.run_palette,
     ),
+    # The Breathe layer for frames that are not a curation run (a video loop's cells): the sidecar's values, its
+    # normalization and its bake, so the same values give the same bytes either way.
+    "breathe": (
+        "Lay the Breathe layer over a folder of loop frames: pixel (default) or smooth (large illustrations, video frames); smooth can choose its beat to miss the hands (--avoid-region).",
+        breathe.add_arguments,
+        breathe.run,
+    ),
     "inspect": ("Inspect sprite rows for frame-count, identity, and motion defects.", _add_inspect, inspect.run),
     "score": ("Score a sprite inspect report and emit correction hints.", _add_score, score.run),
     "correction-loop": (
@@ -445,6 +461,14 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         _add_correction_loop,
         correction_loop.run,
     ),
+}
+
+
+# Old verb names, kept: each parses its new verb's arguments and runs its own module's `run`, which does the same
+# and says the old name in what it prints.
+VERB_ALIASES: dict[str, tuple[str, Callable[..., int]]] = {
+    "video-follow": ("video-sway", video_follow.run),
+    "video-follow-inspect": ("video-sway-inspect", video_follow_inspect.run),
 }
 
 
@@ -481,12 +505,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<tool>")
     for name, (description, add_args, _run) in COMMANDS.items():
-        sp = sub.add_parser(name, description=description)
+        aliases = [old for old, (new, _old_run) in VERB_ALIASES.items() if new == name]
+        sp = sub.add_parser(name, aliases=aliases, description=description)
         add_args(sp)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "_retired_pp", False):
@@ -496,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     kwargs = vars(args).copy()
     kwargs.pop("_retired_pp", None)
     command = kwargs.pop("command")
-    _description, _add_args, run_fn = COMMANDS[command]
+    run_fn = VERB_ALIASES[command][1] if command in VERB_ALIASES else COMMANDS[command][2]
     return run_fn(**kwargs)
 
 

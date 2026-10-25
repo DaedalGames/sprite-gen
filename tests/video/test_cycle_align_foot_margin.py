@@ -9,6 +9,8 @@ the margin), 4 levels by 0.0314 (over it), the default 60 by far more."""
 
 from __future__ import annotations
 
+import pytest
+
 from sprite_gen.video import align
 
 from tests.video.test_cycle_align import _cycle
@@ -33,6 +35,7 @@ def test_a_shade_that_clears_the_margin_names_the_foot_as_before():
     assert clear["feet"] == shaded["feet"] == ["right", "left"]
 
 
+@pytest.mark.slow
 def test_a_low_margin_loop_is_listed_for_whoever_looks_and_the_others_stay_named(tmp_path):
     dirs = [_cut(tmp_path, "S", view="front"), _cut(tmp_path, "E", view="side"),
             _cut(tmp_path, "L", view="side", far_darker=FAINT), _cut(tmp_path, "C", view="side", far_darker=CLEAR)]

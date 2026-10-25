@@ -22,6 +22,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.frames.extract import require_frames_manifest
 from sprite_gen.spec.runio import REQUEST_FILENAME, load_request, read_guard
 from sprite_gen.util.gif_utils import delay_ticks_to_duration_ms, save_clean_gif
+from sprite_gen.util.console import utf8_streams
 
 
 def checker(size: tuple[int, int], square: int = 16) -> Image.Image:
@@ -155,6 +156,7 @@ def run(**kwargs: object):
     return _run(namespace_from_kwargs(_build_parser(), kwargs))
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     return _run(args)

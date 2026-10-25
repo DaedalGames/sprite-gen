@@ -207,8 +207,10 @@ def test_video_set_passes_shape_and_anchor_through(tmp_path: Path, monkeypatch, 
         Image.new("RGB", (32, 32), (0, 255, 0)).save(out)
         return {"shape": shape or "square", "canvas": [32, 32], "offset": [0, 0]}
 
-    def fake_frames(clip, out_dir, *, key, allow_edge_contact, report_path, spill, reference, allow_subject_edge_contact=False):
+    def fake_frames(clip, out_dir, *, key, allow_edge_contact, report_path, spill, reference, allow_subject_edge_contact=False,
+                    decontam):
         seen["spill"] = (spill, Path(reference).name)
+        seen["decontam"] = decontam
         keyed = Path(out_dir) / "keyed"
         keyed.mkdir(parents=True, exist_ok=True)
         _symmetric_walker(Path(out_dir), period=12, n=30)
@@ -236,8 +238,8 @@ def test_video_set_passes_shape_and_anchor_through(tmp_path: Path, monkeypatch, 
     Image.new("RGB", (32, 32), (0, 255, 0)).save(base)
     payload = batch_mod.run_set(bases={"side": base}, states=[state], root=tmp_path / "set", character=None, duration=6, resolution="720p", key="green", concurrency=1, force=False, gap=0.0, video_runner=fake_video, shape="wide", anchor=anchor)
     assert payload["ok"] == 1
-    # the frames step is told to judge spill from the item's own canvas still
-    assert seen == {"shape": "wide", "anchor": anchor, "spill": ("auto", "canvas.png")}
+    # the frames step is told to judge spill from the item's own canvas still, and gets the set's decontam (auto)
+    assert seen == {"shape": "wide", "anchor": anchor, "spill": ("auto", "canvas.png"), "decontam": "auto"}
     if anchor == "motion-auto":
         assert payload["items"][0]["loop"]["motion_anchor"]["applied"] is False
         assert "uncorrected" in (tmp_path / "set/table.md").read_text()

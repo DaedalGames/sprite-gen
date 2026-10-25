@@ -14,7 +14,7 @@ __all__ = [
     "audio",    # provider-backed sound generation and browser exports
     "frames",   # sheet -> frames extraction (+ inverse unpack)
     "curate",   # curation decisions / sidecar / anchors
-    "compose",  # bake atlas / cycle / gif / layers / export
+    "compose",  # bake atlas / cycle / gif / export
     "effects",  # per-frame transforms: breathe, recolor, interpolate, reroll
     "qa",       # inspect / score / correction-loop / preview
     "serve",    # webview servers (curation, compose) + SPAs

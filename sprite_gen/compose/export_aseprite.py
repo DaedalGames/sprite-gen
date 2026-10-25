@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, atomic_write_text, read_guard
+from sprite_gen.util.console import utf8_streams
 
 DEFAULT_OUTPUT = Path("exports/aseprite.json")
 DEFAULT_SPLIT_DIR = Path("exports/aseprite")
@@ -235,6 +236,7 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

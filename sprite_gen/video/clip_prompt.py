@@ -32,6 +32,7 @@ from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video import play as play_mod
 from sprite_gen.video.body_plan import Body
+from sprite_gen.util.console import utf8_streams
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
 START_STILL_KEYS = ("green", "magenta")
@@ -164,6 +165,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-prompt", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

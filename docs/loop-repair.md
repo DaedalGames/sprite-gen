@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch, the latter in this process or on a GPU elsewhere), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the jolt index and its gate, cycle alignment across a direction set · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch, the latter in this process or on a GPU elsewhere), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the seam bridge (the wrap of a loop that is not a walk), the jolt index and its gate, cycle alignment across a direction set, the redrawn wrap of a pinned clip (`--wrap-blend`) · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -192,7 +192,7 @@ cut before RIFE existed still cuts — and nothing is left unsaid:
 
 | Where | Default without RIFE | Asked for by name |
 |---|---|---|
-| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced | `--repair on`: fails with the install line |
+| `video-loop` jump repair (section 2) | `--repair auto`: a jump is cut as filmed, and each filmed ghost is given way to the clean frame beside it (its own `warning:` line). Where a jump is left, `jump_repair` reads `why`, `rife` (what was not found), `install` and `unmade` (the frames, neighbours and `off` of the group the flow search stopped at), and one `video-loop: warning:` line on stderr says the jump frame was not repaired. `applied` is false only where nothing was replaced. For the seam bridge, the wrap is cut as filmed: `jump_repair` reads `why`, `rife`, `install`, and `unmade` (the `frames`, `anchors`, and `line` of the run it stopped at). One `video-loop: warning:` line says no frame was made round the wrap and names `sprite-gen rife install`. | `--repair on`: fails with the install line |
 | `video-set` cycle alignment (section 4) | `--align-cycles auto`: the state is skipped and every loop keeps its own length; `cycle_align.<state>` reads `applied: false` with `why`, `rife`, `install`; the set report lists it under `warnings`; one `video-set: warning:` line | `video-cycle-align`: fails with the install line |
 
 With `SPRITE_GEN_RIFE_BACKEND=torch`, PyTorch not installed or no model where the backend looks is RIFE
@@ -397,7 +397,7 @@ below; a frame made is the whole picture at one time, so the legs take the time 
 and on every walker measured the loop keeps the flow repair). Before all of it, a cut two steps
 long whose wrap a part on its own beat leaves open has the frames beside its wrap made again between
 the clip's frames a cycle apart and its own ([the overlapped
-wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below).
+wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below). A loop of any other state is not read for its flow; where its wrap jumps, frames round it are made again ([the seam bridge](#the-seam-bridge-a-loop-that-is-not-a-walk-whose-wrap-jumps) below).
 
 | Rule | Value | Why |
 |---|---|---|
@@ -456,6 +456,8 @@ made for the source projection and for restoration, which never restores it ([th
 guard](loop-comparison.md#the-ghost-guard)). `--repair off` gives nothing way: the cut's ghosts are
 delivered as filmed, named (section 4).
 
+Under `--repair auto` (the default) or `on`, jump repair takes out a group of one or two drawings that lie 3.0 or more usual steps off the line between neighbours (`repair.FLOW_LIMIT`) and has RIFE make them again. A group whose made frames have a fault is refused and keeps its frames as filmed in `refused`. When the loop as it plays still reads a drawing of a refused group at or over the limit, that drawing is in `jump_repair.unfixed` too: `frames`, `off`, `turn`, `into`, `out`, `window` (read on the playing loop) and `refused`. Every drawing in `unfixed` prints the warning line `video-loop: warning: frame <frame> of the loop lies <off>x its window's usual step off the walk's flow after the jump repair: the group that would bring it back was refused (<faults>), so it plays as filmed — a jump played as filmed; --unfixed refuse refuses such a loop (docs/loop-repair.md section 2)`. Flag `--unfixed warn|refuse` (default `warn`) can refuse such a loop with `video-loop: loop frames left off the flow — ` followed by those words, the cut, and `; the motion does not play smoothly — regenerate the clip`. The `--unfixed` flag is caller choice and is not lifted by `--seam-max`.
+
 The flow is read again after each group, on the union box of the loop as filmed; a refused group is
 never tried again in that run, and nothing is made from or beside it. The circular last/first
 adjacency rule and the call budget hold across the wrap. The shared `interpolation_quality` policy
@@ -485,6 +487,12 @@ step of nothing as one that closes whatever the cut. On the source frames the ce
 filmed; on the rendered cells, the cell of the strip the cut makes with that frame as filmed. A loop
 that only gave its ghosts way to the frames beside them is gated on its source frames, as filmed.
 `--anchor body` reads its `seam_ratio_after_anchor` the same way.
+Where the source frames refuse the wrap, the body anchor moved the cells (`wrap_dx_px` not 0), and
+no frame was made, the gate reads the cells that play again. Where the repair made a frame, the gate
+reads the wrap alone, but here the cut passes on them (`seam_measurement: rendered-cells`) when the
+wrap and the largest step of the loop, each against the mean step, are both within `--seam-max`
+(default 2.0); otherwise the refusal is the source frames' own. See
+[loop review](loop-review.md#the-body-anchor-and-the-seam-gate).
 
 To compare an active result with a final candidate after all processing, use
 [`video-loop-compare`](loop-comparison.md); a seam pass alone is not an improvement.
@@ -499,8 +507,7 @@ so does a filmed ghost between two clean frames under `--repair on`. Under `--re
 filmed ghost then gives way to the clean frame beside it (`no_proposal: "no interpolator"`), and
 only a jump left (`unmade`: the `frames`, `neighbours` and `off` of the group the search stopped at)
 sets `why`, `rife` and `install`.
-`--repair off` cuts the loop as filmed and records `jump_repair: {"applied": false, "why":
-"--repair off"}`. Other states are not touched (`"why": "not a gait state (…)"`).
+`--repair off` cuts the loop as filmed and records `jump_repair: {"applied": false, "why": "--repair off"}`. A loop of another state has its wrap read (the seam bridge, below); a cut played once is not touched (`"why": "not a gait state (...)"`).
 
 Until the flow reading picked the frames, the size reading did: a step whose change of coverage,
 over the whole box or the hair behind the body, was at least 1.4 times the loop's median remade
@@ -882,6 +889,52 @@ off)", no `tries`, `calls` 0) with the `warning:` line every skipped wrap has, a
 as filmed, the loop failing on its seam as where every run is refused. The jump repair, the eased retime and
 the gate are as with it on; `--repair off` turns it off with the rest.
 
+### The seam bridge: a loop that is not a walk, whose wrap jumps
+
+A user expects an idle loop, jump, attack, or generic in-place action to be smoothed at its wrap like a walk. A walk's flow repair reads every frame against the line between its neighbours. An idle's own motion (a blink, an eye half shut, a mouth that opens) leaves that line too, so flow repair would remake those frames and take out the motion. A loop that is not a walk is therefore not read for its flow; its wrap alone is read, leaving the walk path unchanged.
+
+The seam bridge (`repair.seam_bridge`, driven from `loop.run_loop`) runs under `--repair auto` (the default) or `on` for any state that is not a gait (not walk or run). It runs on a cut that plays as a loop, and skips cuts played once (`--cycle once`, `once-return`, or an effect's lifetime), which retain `"why": "not a gait state (...)"`. A pinned clip (`--cycle pinned`) whose pin the gate refuses is skipped (`skipped`: "the pin does not close: the clip is refused on it"), because the clip is refused on its pin whatever its wrap shows. It runs after the anchor (`--anchor`) and the wrap blend (section 6), reads the wrap as blended, and runs before `cycle/`, the strip, the GIF and the WebP are written.
+
+| Rule | Value | Why |
+|---|---|---|
+| When | `--repair auto` or `on`; a state other than walk or run; a cut played as a loop; not a pinned clip whose pin the gate refuses | a cut played once (`--cycle once`, `once-return`, an effect's lifetime) needs no wrap; a clip refused on its pin is refused whatever its wrap shows |
+| The reading | On the frames as they play, cropped to their union box, on the seam gate's analysis thumbnail (`loop.cell_features`, the reading `loop.wrap_on_cells` uses); the wrap step is compared with the mean of the three steps either side of it (`repair.SURGE_AROUND`, 3) | a loop whose steps are uneven (a body moving only in whole pixels, with many zero-step frames) would otherwise read an ordinary wrap as a jump |
+| Not a jump | The wrap ratio is at most `--seam-max` (default 2.0), or the wrap step is at most `loop.PIN_NOISE_MAX` (0.005) | `skipped`: "the wrap reads as a step of the loop"; a wrap step at most 0.005 is re-render noise on a near-still loop where large ratios show nothing; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| Drawn on twos or threes | The cut is drawn on twos or threes (`cycle_drawings.hold` over 1, read on the cut) | `skipped`: "drawn on twos or threes: a frame made round the wrap would split a drawing"; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| Too short | A loop under 12 frames (`repair.BRIDGE_MIN_FRAMES`) | `skipped`: "a loop of N frames, under 12: no steps either side of the widest stretch"; under 12 frames cannot fit the widest stretch and three steps either side without sharing; nothing is made, no interpolator is looked for, and the loop is the bytes `--repair off` gives |
+| How many frames and which | One frame, then two, then four (`repair.BRIDGE_WIDTHS`, fewest first), ceil(m/2) frames before the wrap and floor(m/2) after (`repair.bridge_run`): for a 48-frame loop, frame 47; frames 47 and 0; frames 46, 47, 0, and 1 | testing the fewest frames first keeps as much filmed motion as possible while centring the repair across the wrap |
+| The straight line | The straight line between the two anchors (their thumbnails mixed in equal steps); rejected if any step along that line exceeds `--seam-max` times the mean of the three steps either side (`rejected_for: "line"`) | stops before making frames if even an even blend across the anchors jumps |
+| How each frame is made | Made by RIFE between the anchors either side of the run, at its own time between them (`repair.between_time`) | the loop keeps its length and every frame its time |
+| Faults | Checked for smear, outline, ghost (ghost screen on the stretch and three frames either side, empty); `rejected_for: "fault"`. Frames with `crossfade` over 0.015 are kept with a `warning:` line | avoids taking interpolation artifacts, matching the shared policy of section 4, while keeping slight cross-fading inside outlines |
+| Taken | The first run where no frame has an interpolation fault and every step of the stretch is within `--seam-max` times the mean of the three steps either side (`rejected_for: "seam"` otherwise) | ends search on the smallest valid bridge; if none is taken, the filmed loop is kept for the seam gate to judge as before |
+| How many calls | At most 1 + 2 + 4 = 7 plain RIFE calls per loop | at most one call per frame across candidate widths |
+| Without RIFE | Under `--repair auto`, wrap is cut as filmed, `jump_repair` records `why`, `rife`, `install`, and `unmade`, and a warning line names `sprite-gen rife install`; under `--repair on`, fails with the install command | RIFE is looked for only when a frame is to be made |
+
+| Case | Wrap reading | Bridge action | Gate result |
+|---|---|---|---|
+| J = 2.6 | 2.65 against steps beside it | Bridged by one frame (frame 47, halfway between frames 46 and 0; stretch reads 1.65) | Passes at 1.55 on rendered cells (refused at 2.41 with `--repair off`) |
+| J = 5 | 4.63 against steps beside it | One frame: straight line reads 2.77, none made. Two frames: made, stretch reads 2.35, refused. Four frames (46, 47, 0, 1 at times 0.2, 0.4, 0.6, 0.8 between frames 45 and 2): stretch reads 1.85, taken | Passes at 1.84 (refused at 4.30 as filmed) |
+| J = 12 | 10.68 against steps beside it | Straight lines read 5.43, 3.76, 2.57; nothing made | Refused at 10.22 as before |
+| J = 1 (closed loop) | 1.10 against steps beside it | Not bridged; no interpolator looked for | Same bytes as `--repair off` |
+| Whole pixels (x = round(6 sin), closed loop) | 2.06 against loop mean step, 1.51 against steps beside it | Not bridged | Read by the bridge alone |
+| Near-still loop (shading patch) | 57 times steps beside it, wrap step is 0.00035 (under 0.005) | Not bridged | Read by the bridge alone |
+| Drawn on twos (J = 2.6) | 4.47 against steps beside it | Skipped: drawn on twos or threes | Refused at 3.00 as filmed |
+| Real RIFE (rife-v4.6 with augmentation, J = 2.6) | 2.65 against steps beside it | Closed by one frame without faults | Passes gate |
+
+Cost: at most seven plain RIFE calls per loop, one per frame. From the RIFE table in section 1 (a 960 x 960 frame on Modal `cpu=2`), a frame takes 4.3 to 6.2 s with no augmentation, and 44.0 to 60.5 s with `-x -z`. Seven frames take 30 to 43 s with augmentation off, and five to seven minutes with `-x -z`. A CPU host sets `SPRITE_GEN_RIFE_TTA=` (empty: no augmentation). The readings take little time, evaluating a few thumbnails and running the ghost screen on the stretch and the three frames either side rather than the whole loop.
+
+Limits:
+- Anchors up to five frames apart can tear a small part that a large part swings across, and no fault check above detects it (on the third walker of `tests/video/test_loop_overlap.py`, a big tail across a hand, the reading `rife.torn` names it; it costs 34 calls of the binary a frame and the bridge does not run it). The walk flow repair, over two or three frames, takes the same risk; that is why the bridge stops at four frames.
+- A wrap where only a small part changes (such as a mouth alone) reads as a step on the whole body thumbnail and is not bridged.
+- A blink or mouth movement inside the frames made is not kept: the frames made show the move between the anchors (at most four frames, or a sixth of a second at 24 fps).
+- A wrap that needs more than four frames to close is not bridged: the loop is refused by the gate as before; regenerate the clip.
+
+The report record stays `jump_repair` (so source projection and restoration, which read `jump_repair.replaced` and `jump_repair.facing`, read it as they read a walk's), with `reading: "seam"`, `limit`, `floor`, `around` (3), `widths` ([1, 2, 4]), `facing`, `replaced` (the frames made, in play order), `calls`, and `applied`. Where it read the wrap, it records `seam` (the wrap over the mean of the steps beside it), `wrap` (the wrap step itself), and `hold`. Where it was not tried, it records `skipped`. Each try in `tries` records `width`, `frames`, `anchors`, `line`, and where frames were made, `made` (per frame: `frame`, `t`, `proposal`, `faults`, `look`), `faults`, `look`, and `after` (the stretch's largest step over the mean of the steps beside it, read again), along with `outcome` (`accepted` or `rejected`) and `rejected_for` (`line`, `fault`, `seam`). Where a run was taken, it records `width` and `seam_after`. Where a frame was made, `interpolator` records `{"kind": "rife-ncnn-vulkan", binary, model, tta, binary_calls}` or `{"kind": "injected"}`.
+
+The CLI summary carries `jump_repair` with `reading`, `seam`, `replaced`, `seam_after` (and `why`) where the wrap was read as a jump. `video-set`'s item record for a loop left unrepaired for want of RIFE carries `seam` where a walk's carries `off_max_before`.
+
+Warning lines: where frames were made, one line names them, the anchors, and says to look at them in the loop or cut it with `--repair off`. Where the wrap jumps and nothing was taken, one line says which widths were tried and why each was refused, cut as filmed. Where RIFE was not found under `--repair auto`, one line says no frame was made round the wrap and names `sprite-gen rife install`. Where a frame made cross-fades two drawings inside its outline (`crossfade` over 0.015), it is kept and named in a `warning:` line.
+
 ## 3. The jolt index — reported on every walk, a gate only when asked
 
 A loop whose steps change unevenly jolts even when no single step is a jump. Every walk or run
@@ -894,7 +947,7 @@ loop's report carries `jolt`, measured on the loop as it will play (after sectio
 | `step_max_over_median` | the largest step over the median (what section 2 repairs) |
 | `head.x`, `head.y` | the head's place frame by frame in % of the body's height over the loop: x (sideways) the coverage centroid of the top fifth, y (up and down) the body's top line. Each: `step_max_pct` (largest move in one frame), `step_median_pct`, `max_over_median`, `range_pct`, `worst_into_frame` |
 | `reference`, `warnings` | the reference bounds (jolt index **0.43**, head sideways step **0.75** % of the body height) and what exceeds them, in words |
-| `seam_pop` | the top band's jump into the loop's first frame over the loop's median step ("The seam pop" below); a pop over its bound adds a line to `warnings` |
+| `seam_pop` | the top band's jump into the loop's first frame over the loop's median step ("The seam pop" below); a pop over `--seam-pop-max` refuses the loop, the gate's word in `seam_pop_gate` ("The seam pop gate" below). |
 | `gate`, `gated`, `over`, `passed` | the bounds the caller passed, whether they were enforced, what exceeded them |
 | `measured` | `after the jump repair` or `as filmed` |
 
@@ -902,7 +955,8 @@ loop's report carries `jolt`, measured on the loop as it will play (after sectio
 lists the reason under `warnings`, and `video-loop` prints a
 `video-loop: warning: … (reference bound; the loop is kept …)` line on stderr. The aim is fewer
 refilms — section 2 repairs what it can without a new clip — and the reference bounds rest on
-too few judged takes to refilm on (below).
+too few judged takes to refilm on (below). The seam pop is the exception: it is a gate by default
+("The seam pop gate" below).
 
 **A gate only when asked.** `--jolt-max` and/or `--head-step-max` turn the bound passed into a
 gate on the repaired loop: beyond it the loop fails with
@@ -972,7 +1026,8 @@ plays:
   within the usual 15 % of the best and the smallest pop (`cycle.seam_pop`: `first_choice`,
   `applied`, `measured`, `unread`, `chosen`). A first choice that does not pop is kept, and nothing past it
   is measured, so a loop without such a part is cut exactly as before. If every candidate read pops,
-  the first choice is kept (`why`) and the warning below says so. Once the first choice pops, the held
+  the first choice is kept (`why`), and the gate then reads it as every motion-auto cut is read before
+  it is cut ("The seam pop gate" below). Once the first choice pops, the held
   part is read below its top too, and the cut may come out two steps long ("The held side" below).
 - **A cut whose top cannot be read is not one that closes.** A frame with nothing in the top band
   (a tip flung far above the rest in one frame) leaves the cut without a jump to read: it is
@@ -980,11 +1035,13 @@ plays:
   `seam_pop: null` with `seam_pop_skipped` — and counted under `unread`, apart from `measured`.
   It is never chosen on; a first choice that cannot be read is kept, nothing past it is measured,
   and `jolt.warnings` says the head could not be tracked.
-- **A pop that stays is a warning line** — `video-loop: warning: the top of the silhouette jumps
-  into the loop's first frame up or down … (over 10x): a part held above the head swings on its
-  own beat and does not close at this cut`, in `jolt.warnings` like the bounds above. A sideways
-  jump into frame 0 that the head bound already names is not said twice. A fixed or `--cycle
-  periodic` cut is not chosen again; the warning is all it gets. Nothing fails on it.
+- **A pop over the bound fails the loop:** a walk or run loop whose pop is over the bound is refused
+  ("The seam pop gate" below). When the gate refuses, the pop is not also printed as a warning line
+  and is not in `jolt.warnings`: the refusal says it. With the gate off, a pop over 10 is the warning
+  line `video-loop: warning: the top of the silhouette jumps into the loop's first frame up or down …
+  (over 10x): a part held above the head swings on its own beat and does not close at this cut` in
+  `jolt.warnings`, as before. A sideways jump into frame 0 that the head bound already names is not
+  said twice. A fixed or `--cycle periodic` cut is not chosen again, and the gate refuses it.
 - **The bound** sits between walks holding a staff that swings on its own beat and walks without
   one, both on the cut as it plays and on the source frames the cut is chosen from. The synthetic
   walker of `tests/video/test_loop_prop_seam.py` — steps every 24 frames, a staff above its head swaying every 61 — reads 12 to 18 at the cuts the area
@@ -992,6 +1049,26 @@ plays:
 - **What it does not see**: a held part that never reaches the top band (a spear held level, a
   sword at the hip). The lower end of a staff whose top closes while the shaft still swings about the
   hand is read by the held side below, behind this pop.
+
+### The seam pop gate
+
+The seam pop gate refuses any walk or run loop whose seam pop exceeds `--seam-pop-max BOUND|off` (default 10, the existing constant `repair.SEAM_POP_REFERENCE`). The metric `jolt.seam_pop` measures how far the top band of the silhouette (the head, or a part held above it such as a staff, a flag, or a raised spear) jumps from the loop's last frame into its first, over the loop's median step (`pop`), read on the loop as it plays, after jump repair. A pop exactly at the bound passes. The gate applies to every walk or run loop whose cut is gated by its seam ratio, whatever chose the cut (`--cycle fixed`, a periodic search, `--anchor motion-auto`) and whether or not the repair ran (`--repair off` included). When the gate refuses, the failure line is `video-loop: loop seam pop <pop> exceeds <bound> (<kind> length <L> frames from <start>): the top of the silhouette jumps into the loop's first frame up or down <percent> % of the body height, <ratio>x its median step — the loop does not close at its top; cut it where it does, or regenerate the clip`. It names the pop, the bound, the cut (kind, length, first frame) and, in words, how far and how many times its median step the top jumps, up or down and/or sideways: each axis whose largest step is the wrap and whose wrap is over the bound. The pop is not also printed as a warning line and is omitted from `jolt.warnings`.
+
+The report gains `seam_pop_gate` on every walk or run loop, printed in the CLI summary and retained in failed reports:
+
+| Field | What |
+|---|---|
+| `verdict` | `passed`, `refused`, `unreadable`, `off`, or `not-applicable` |
+| `max` | The bound, or `null` when off |
+| `pop` | The pop read, or `null` when unreadable |
+| `why` | Explains why the top band could not be read for `unreadable`, or `a pinned cut is gated by its pin` for `not-applicable` |
+
+- **Check order:** The seam pop gate is checked after the seam gate and the step gate. A cut those refuse is refused by them, with the same line as before.
+- **Unreadable top band:** A loop whose top band cannot be read (a frame with nothing in the top band, for example `a loop frame has no head to track`) is not refused: `seam_pop_gate.verdict` is `unreadable` with `why`, and the existing warning line that the head could not be tracked is still printed. It is never passed quietly.
+- **Pinned clips:** A pinned clip (`--cycle pinned`) is not gated by it: its gate is its pin, as for the seam ratio. Its verdict is `not-applicable`, with `why` set to `a pinned cut is gated by its pin`.
+- **Disabling and `--seam-max`:** `--seam-pop-max off` turns the gate off: the pop is reported, and a pop over 10 is the warning line `video-loop: warning: the top of the silhouette jumps into the loop's first frame up or down … (over 10x): a part held above the head swings on its own beat and does not close at this cut` as before. The flag `--seam-max` does not lift this gate. A `--seam-max` past 2.5 lifts the step gate and the fixed cut's step count refusal because those read the same distance the seam ratio reads; the seam pop reads the place of the top band, a measure in the family of `--jolt-max` and `--head-step-max`.
+- **Pre-cut checks under `--anchor motion-auto`:** Before a cut is taken, candidate cuts are read as the gate reads the loop, their frames corrected as the cut will be (`loop.corrected_cut`, one correction a cut for the seam and the pop: `loop.CutOnCells`) and checked for wrap jump (`repair.seam_pop_of`), short of jump repair. First, the search cut, after the top band has chosen again where it popped, is read; where the gate would refuse it, the next candidate in search order (equivalent cuts earliest first, then the rest best first) is read, taking the first of up to four cuts (`local_cycle.SEAM_TRIES`) the gate does not refuse. Where the gate would refuse all four, the first choice stays and the gate refuses it on the loop. This is recorded in `cycle.seam_pop_gate` (`max`, `tried`, `applied`, `why`). Second, among cuts of two steps chosen by foot crossings, cuts passing the seam gate are read for pop; the first of four cuts passing both gates is taken, adding `pop`, `pop_gate`, and `pop_skipped` to `step_count.seam_gate.tried` and `step_count.search`. Every motion-auto run corrects the search cut once before cutting it.
+- **Byte for byte identity and synthetic results:** With the gate off, or wherever the gate passes, the gate changes no cut and no file: loop files are byte for byte what the previous engine gives, save an `--anchor motion-auto` cut taken in place of a first choice the gate would have refused before the cut. In synthetic tests on a standing rod walk, a fixed cut whose tip drops 11 px reads a pop of 11.0 and is refused, while a 9 px drop reads 9.0 and passes. Under `--anchor motion-auto`, the pop read before the cut equals the loop's own reading (6.0 drawn a frame each, 5.0 on twos), allowing a bound of 3 to drop that cut for the next candidate with pop 0.0.
 
 ### The held side — a staff that closes at the top and swings below the hand
 
@@ -1150,7 +1227,11 @@ far the wrap is from joining the same point of the walk, in frames, the worst ov
   whose seam the gate will pass is taken, read as the gate reads it before anything is cut
   (`loop.seam_on_cells`: the cut corrected as it will be, its wrap over its step on the analysis
   thumbnail; `step_count.seam_gate.tried`): the correction of one cut can leave a jump at its wrap that
-  no reading of the clip shows. Each reading is a whole correction, six fine searches of the motion
+  no reading of the clip shows. For the cuts of two steps that foot crossings choose among, a cut whose
+  seam passes the seam gate is now read for its pop too: of the first four cuts, the first that both
+  gates pass is taken, the search's own cut stands only where both pass it, and
+  `step_count.seam_gate.tried` rows and `step_count.search` gain `pop`, `pop_gate`, and, where
+  unreadable, `pop_skipped` ("The seam pop gate" above). Each reading is a whole correction, six fine searches of the motion
   anchor, and the cut taken is corrected once more, so a gate that tries all four corrects five cuts;
   the search reads a row of its shifts at once, to the values one patch at a time gives ([loop
   review](loop-review.md#explicit-xy-motion-correction)). A part on a beat of its own — a tail, a staff — that closes on no cut of
@@ -1193,6 +1274,16 @@ legs drawn alike does. And a walk whose feet do stand together through most of a
 nearer than a frame apart, is cut as the search cuts it — one step long, as before the count: neither the
 pixels nor the crossings tell its step from its cycle there, and only someone who counts the steps (`--steps`)
 settles it. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+
+### The step gate: every step between drawings, and a fixed cut's count
+
+On every walk or run loop that plays round (not a single play cut), after the seam gate passes, the strip cells are read between their drawings: a loop drawn on twos or threes shows each drawing for two or three frames (`repair.flow_drawings` finds them), so read frame by frame it steps nothing and then two or three steps at each drawing, making its largest step two or three times its mean even when playing evenly. Each drawing first cell is read on analysis features the seam gate reads (`loop._small_features`), taking the step from each drawing to the next and from the last drawing into the first across the wrap. The largest of these steps, wrap included, over the mean of the others must be at most `STEP_RATIO_MAX` (2.5) (`loop.drawing_steps`). Because a pixel of jitter can look large against a tiny mean step, a step over 2.5 is exempt from the bound when it is a pixel's jitter (`loop.step_jitter`): the move that aligns its drawing with the previous drawing while producing the least coverage difference (`stop.register`, read on alpha so colour has no effect) is at most `STEP_JITTER_PX` (1.5) pixels of the frames as filmed. Each such pixel is the strip's `scale` in cell pixels, and the allowed move is never less than one cell pixel. With that move taken back, the step must also be within 2.5 of the mean. The gate holds the largest step that is not a pixel's jitter to the bound. On synthetic frames, a walk going away from the camera has a step where the feet rise a whole crop row that measures 2.5 to 3.6 times the mean as drawn, black or grey. Its move is one pixel, the step taken back is at most 1.3 times the mean, and the loop passes. A frame of a walk cut 400 px tall moved 2 px and back moves 6 cell pixels, or 2.0 pixels of the frames as filmed, and fails in every colour. Measured instead as a mean RGBA difference, that jump reads 0.057 in colour, 0.025 in a grey near the backdrop and 0.021 in black. Past the bound, the loop fails with `video-loop: loop step ratio <ratio> exceeds 2.5 (<kind> length <L> frames from <start>, into frame <frame>, read between its <n> drawings); the loop jumps inside — regenerate the clip`. Where jump repair says why the step jumps, the line says it before ` — regenerate the clip`: `: frame <frame> lies off the walk's flow, and the jump repair's frame there was refused (<faults>), so it plays as filmed`, or `: frame <frame> lies off the walk's flow, and no group of up to 2 drawings brings it back`. The report records `step_gate` on every walk or run loop, passed or failed: `read` (`drawings`), `drawings`, `hold`, `mean_step`, `largest_ratio`, `largest_from` and `largest_into` (the cut frames from and into which the largest step that is not a pixel's jitter runs, each the first frame of its drawing), `wrap_ratio`, `max` (the bound used), `jitter` for steps over 2.5 that are a pixel's jitter (each step's `from` and `into` frames, its `ratio`, its `move` in cell pixels and `ratio_moved_back`, with the larger first), `lifted`, and `kept` when a lifted gate kept a loop over 2.5; a loop with fewer than three drawings records `skipped` instead.
+
+`--cycle fixed --start S --length L` of a walk or run now reads clip foot crossings (`crossings.read`) and judges the cut (`Reading.judge`), as `--anchor motion-auto` already does for the cut it takes. The report records this as `cycle.step_count` (the reading record, `chosen_by: caller`, and `cut` with `verdict`, `code`, `k`, `phase`, `ring`). A walk loops on two steps; a cut whose crossings count an odd number of steps (one, three) swaps legs at the wrap however close frames look, failing with `video-loop: loop step count refutes the fixed cut <start>/<L> — the clip's crossings count one step, each seen where a walk loops on two, and an odd count swaps the legs at the wrap; cut it again two steps long (about <2 steps> frames)`. An even count of four steps is not refused. The exemption from `--anchor motion-auto` applies (`local_cycle.same_picture_count`, shared by both now): where feet are seen together over half a step at a pass (`crossings.HIDE_SHARE`) and the clip one cut on is the same picture (at most `local_cycle.SAME_PICTURE_MAX`, 1.0 playback steps along the cut), the count missed a crossing; verdict reads `uncertain`, code `same-picture`, recorded with `same_picture`, and the cut is not refused. A fixed cut gets no `steps` field and leaves its strip unchanged.
+
+The step gate stands where the seam gate does. Its bound is the larger of 2.5 and `--seam-max`. Setting `--seam-max` past 2.5 lifts it with the seam: every step bound is then `--seam-max`, a loop whose largest step is over 2.5 is kept with the warning line `video-loop: warning: the loop's largest step between drawings is <ratio>x their mean (into frame <frame>), over 2.5: it jumps inside — kept, as --seam-max <seam-max> lifts the step gate` (and `step_gate.kept`, `step_gate.lifted: true`), and a fixed cut counted an odd number of steps is kept with `video-loop: warning: the clip's crossings count the fixed cut <start>/<L> one step, each seen: a walk loops on two steps, and an odd count swaps the legs at the wrap — kept, as --seam-max <seam-max> lifts the step gate` (and `cycle.step_count.lifted`, which records `seam_max`). A forced delivery with `--seam-max 1000` therefore passes as before, with these lines.
+
+The seam gate failure line keeps its first words up to `the cycle does not close — `. Where warning lines name a part on a beat of its own (an `--anchor motion-auto` cut two steps long by clip crossings whose wrap the gate refuses while asking for an overlapped wrap, or a step count warning that no two step cut joins the walk within its phase), the rest of the line says so instead of `regenerate with a complete return to the starting pose`, for example: `video-loop: loop seam ratio <ratio> exceeds 2.0 (periodic length <L> frames from <start>); the cycle does not close — the cut covers two steps by the clip's crossings, and a part on a beat of its own (a tail, a held prop) closes on no cut of two steps: the overlapped wrap was not made (turned off (--overlap-wrap off)) — regenerate with that part moving on the walk's beat`. The middle part names what became of the overlapped wrap: not made (and why, as `wrap_overlap.skipped` says), RIFE not installed, refused (each run reasons, as warning lines give them), or made and still not closing. Elsewhere the line is as before. Every refusal by one of these three readings records `seam_refusal` in the report: `{"reading": "wrap", "ratio", "max", "reason": "own-beat" or null, "overlap_wrap": "made" | "skipped" | "rife not installed" | "refused" | null}`, `{"reading": "steps", "ratio", "max", "into", "reason": "repair-refused" | "unfixed" | null, "frames", "refused"}` (the last two where a reason was found), and `{"reading": "count", "cut", "verdict", "k", "why", "two_steps"}`.
 
 ### The step screen — a slow walk cut one step long
 
@@ -1358,10 +1449,12 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   `--align-between`. `auto` runs RIFE for every frame between two source frames, as `rife` does,
   and needs it installed the same way.
 - **Smear and melt, per made frame**: `cycle_align.smear` lists every frame RIFE made, with its
-  `method` — `rife` (kept) or `nearest` (a source frame beside it taken instead) — its `faults`,
-  its own ghost reading (`ghost`, below; `null` where the screen does not read the loop), its
-  cross-fade reading and what to `look` at (`crossfade`, below — named, never judged), and what
-  it has that neither source frame beside it has (`rife.smear`):
+  `method` — `rife` (kept) or `nearest` (a source frame beside it taken instead) — its `faults`, its
+  own ghost reading (`ghost`, below; `null` where the screen does not read the loop), its cross-fade
+  reading and what to `look` at (`crossfade`, below — named, never judged), the holes it opened
+  inside its silhouette that neither source frame has there (`hole`, below), the line one source
+  frame draws that runs at part strength in its own place in the made frame as a double outline
+  (`doubled`, below), and what it has that neither source frame beside it has (`rife.smear`):
   - `dark_excess`: dark pixels (luma under 70/255) inside the body beyond the darker neighbour's
     count, as a fraction of its solid pixels — a black smear raises it, a dark part that only
     moved (a hat, a watch) does not. Over 0.1 % it is the fault `smear`.
@@ -1509,7 +1602,18 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   - Over **0.015** (`interpolation_quality.CROSSFADE_LOOK`) the frame is named to look at: its
     `smear` row's `look` is `["crossfade"]`, and a kept frame (`method: rife`) gets a line in
     `warnings` ("frame 14 (made by RIFE) may cross-fade two drawings inside its outline …; kept").
-    It is no fault: `auto` keeps it, it gives nothing way, and the retake rule does not count it.
+    It is no fault: `auto` keeps it, it gives nothing way, and the retake rule does not count it. A
+    cross-fade that leaves the two drawings' lines at part strength inside the silhouette over a
+    long enough run is now a double outline (`doubled`, the bullet below), a fault of its own, and
+    gives way for that; the cross-fade reading still only names it. Before the double outline was
+    read, the alignment kept such frames because the cross-fade reading is no fault, for the reason
+    in the next sub-bullet, which is about that reading and still holds; it was never a choice to
+    keep frames with doubled lines. The clean drawing between far-apart drawings, which the
+    cross-fade reading reads over its line, reads no double outline (0 in grey and in black
+    outlines) and is kept; separately, on the synthetic legs of `tests/video/test_crossfade.py`, the
+    frames a RIFE stand-in cross-fades across the legs' long steps (its colour run blends, its
+    coverage run is the union) now give way under `auto`, each still named to look at; under `rife`
+    they are kept and named.
   - Why a reading and not a fault: checked against frames labelled by eye, it does not part them.
     On drawn walks the frame seen cross-faded read well over the line and the frames seen clean
     under it; on synthetic legs (the walker of `tests/video/test_crossfade.py`, its palette varied
@@ -1552,6 +1656,410 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     blends their guesses part-covered, which the augmentation, combining them inside the binary, does
     not. Nor can the binary's own augmented calls be read for it: a call with `-x` from a to b and one
     from b to a agree where the single passes do not.
+- **A hole through a limb, per made frame** (`rife.hole`): RIFE runs a frame's colour and its
+  coverage apart (section 1), and where a step opens a gap between the legs in one source frame and
+  not the other, the coverage run can carry that gap into a leg the colour run keeps whole: a
+  transparent band through the leg, its fill on both sides. Nothing is added, no part coverage is
+  left to read, and the leg's own fill is all the line round the band; a fill darker than 70/255
+  (dark tights, a boot) is outline to the dark line, and one lighter than that is lost rank by rank
+  only where it is 50/255 lighter than the source frames' lines at the same rank, which light lines
+  elsewhere on the art (fur, hair drawn without a dark line) hide; the fault `outline` needs both.
+  Neither reading is about a hole.
+  - `hole`: of the made frame's pixels under solid (alpha under 0.5) that the outside of the picture
+    cannot reach without crossing its solid body (enclosed holes), a pixel is the source frames' own
+    in either of two readings, where either source frame has a pixel under solid within **4 px**
+    (`rife.HOLE_REACH`, a square neighbourhood) of where that pixel lay at that frame's time: in
+    place (the background, still, and a gap kept, or opened by a step where the frame showing it
+    open has it); or carried with the whole figure along the motion the two source frames show for
+    the whole figure. Where the made frame sits at fraction `t` from source frame a to source frame
+    b, a pixel of it lay in a at `t` of the motion back and lies in b at `1 - t` of it on (rounded
+    so the two are the whole motion apart). The whole figure's motion is measured only from the two
+    source frames, never from the made frame or RIFE's flow: over the box round all three frames'
+    solid bodies, each pixel of the box is read in a where it lay and in b where it lies, and the
+    motion with the least mean absolute difference of premultiplied colour and coverage is taken
+    (ties going to the smaller motion). It is followed up to 20 % of the body's height each way
+    (`rife.HOLE_TRAVEL`, 0.2), searched coarse to fine: pooled in square blocks of a power of two
+    where the range is at most 24 px each way (`rife.HOLE_COARSE`, 24), then within 2 px of twice
+    the coarser motion on each finer level down to the pixel. Third, whatever carried it, a hole
+    those two readings leave is the source frames' own, all its pixels, where it is one hole of each
+    source frame: the pairing. It reads holes, not a motion. A hole here is one 8-connected piece of
+    a frame's enclosed pixels: the made frame's count where they keep a pixel when opened by a 5 px
+    square (`rife.HOLE_THICK`); a source frame's where they keep one opened by a 3 px square
+    (`rife.HOLE_SOURCE_THICK`, 3), since a gap can be a little thinner at a source frame's time.
+    Each hole is read for its area (its pixels), its centroid, its shape (the logarithms of its
+    pixels' two principal second moments, each plus 1/12, over its area, so turning and growing
+    leave it as it is) and the colour round it (the mean premultiplied colour of that frame's solid
+    pixels from 5 to 8 px out). A hole of the made frame is paired with a hole of a and a hole of b
+    where the two source frames' holes have areas within 4 times of each other
+    (`rife.HOLE_PAIR_AREA`, 4.0), shapes within 2 times on each moment (`rife.HOLE_PAIR_SHAPE`, 2.0)
+    and colours round them within 0.12 on each channel (`rife.HOLE_COLOUR`, 0.12, on 0 to 1), and
+    their centroids lie at most sqrt(2) times the reach the figure's motion is followed (20 % of the
+    body's height each way, so diagonally) plus 4 px apart; and where the made frame's hole has its
+    area within 25 % of their range (`rife.HOLE_AREA`, 0.25: at least 0.75 times the smaller, at
+    most 1.25 times the larger), its shape within 1.3 times of theirs on each moment
+    (`rife.HOLE_SHAPE`, 1.3), the colour round it within 0.12 of each, and its centroid within 4 px
+    plus 0.1 of their distance (`rife.HOLE_PATH`, 0.1) of the point at `t` on the line from the
+    centroid of a's hole to that of b's. The pairing reads only the made frame's holes that the
+    first two readings (in place, and carried with the whole figure) leave, that is, holes keeping a
+    pixel those two readings do not give the source frames. A hole every pixel of which those two
+    readings give the source frames takes no pair: it is theirs already, whichever of their holes it
+    lies by. Pairs are taken one to one: no hole of the made frame, of a or of b is in two pairs
+    taken, so each source frame's hole explains one of the holes paired. Of all sets of pairs that
+    can be taken together, the set taken pairs the most holes; of those, the one with the least
+    summed cost. The same frames always give the same set. The cost of a pair is the sum of: the
+    logarithm of how far the made frame's hole's area is out of the range of the two source frames'
+    holes' areas, its distance from the point at `t` over what it may be, how far its shape is out,
+    the colour differences of the made frame's hole and of the two source frames' holes each over
+    0.12, and the two source frames' holes' distance over what it may be. So alike holes moving
+    together each keep their own two holes, however near their ways run. Pairs that share a hole,
+    directly or through other pairs, form a group, searched apart. First an exact depth first search
+    asks whether one set pairs every hole of the group: from the hole with the fewest pairs still
+    free, it tries each of that hole's free pairs, cheapest first, and leaves no hole unpaired; it
+    cuts a branch where a hole left has no free pair, or where the holes left cannot each keep a
+    hole of a, or a hole of b, of its own among the holes their free pairs hold (a bipartite
+    matching, checked for each source frame). Where it finds such a set, every hole of the group is
+    paired. Where that search ends without such a set, a second exact depth first search finds the
+    set pairing the most: from the hole with the fewest pairs still free, it tries each free pair
+    cheapest first and then leaving the hole unpaired; it cuts branches that cannot pair more holes
+    than the best set found, or as many at no less cost, and stops at a set pairing every hole. Each
+    search takes at most 5000 steps per group (`rife.HOLE_PAIR_STEPS`, 5000). Where the first runs
+    past them, the second runs; a group whose second search runs past them pairs none of its holes,
+    and the frame gives way to the nearer source frame. Where every hole of a row or grid of alike
+    holes pairs, the first search takes one step per hole and one more (a grid of 196 holes, 197
+    steps). On the synthetic frames no group runs past 5000 steps; the most taken is 258, by the
+    second search, on a grid of 36 holes 24 px apart one of whose holes a source frame shuts (that
+    frame gives way in any case). On random groups of 8 to 96 alike holes, each with its own two
+    holes and up to five more pairs within three places of its own, at random costs, the second
+    search alone runs past 5000 steps before finding a set pairing all of them on 651 of 4000
+    groups, and such a frame would give way though every hole has its own two; with the first search
+    before it, on 17. That remaining case is a named bound of the reading. The made frame is never
+    used to measure a motion and RIFE's flow is never read. The motion and the pairing are read only
+    on frames keeping a hole after the in-place reading, and the pairing only on frames keeping one
+    after the second reading. Regions at least **5 px** thick (`rife.HOLE_THICK`, opened by a square
+    that wide: a pinhole or an antialiased crevice a pixel or two wide opens away) are taken after
+    each step, as a fraction of its solid pixels.
+  - Over **0** (`interpolation_quality.HOLE_WARN`) the frame has a hole through a limb: the fault
+    `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` (it says the
+    frame opened a transparent hole inside its outline over the given share of its body, at least 5
+    px thick, where neither source frame beside it has one, a gap through a limb, and that the
+    nearer source frame was taken there); `rife` keeps it, named. A gap both source frames have,
+    carried by the body's motion, lies in the frame between on the way from where one source frame
+    has it to where the other has it; moved far enough it lies 5 px and more from where either
+    source frame has it in place, and a reading in place alone would take it for a hole and give a
+    correct frame way. A gap one source frame has, half open in the frame between while the figure
+    moves, lies beside where that frame has it in the same way. A hole both source frames have that
+    a part carries, while the figure's motion does not, is kept by the pairing: a part moving over a
+    body that stays, plain or patterned, a part turning, growing, sheared or swinging. No motion of
+    the whole figure carries it: the body that stays outweighs the small part, and a turned or grown
+    gap lies where no motion of the whole picture puts it. It is one hole of each source frame,
+    alike in area, shape and the colour round it, and it lies on its way between theirs, so whatever
+    carried it, it is theirs. The pairing tells the hole by what it is, not by where a motion takes
+    it. Following the whole figure's motion and pairing the holes keep those gaps as the source
+    frames' own; a gap the flow opens through a lock of hair is read the same way as one through a
+    leg.
+  - What it does not read: a band cut through a leg's edge rather than inside it reaches the outside
+    and is no hole (the outline readings read its edge as before); a hole within 4 px of a hole a
+    source frame has, in place or where the whole figure's motion carries it, is read as that hole,
+    whatever it is: in a row of alike holes moving along the row about as far as they are apart, a
+    hole more lies within 4 px of a source frame's hole in place and is read as theirs (a row of
+    four holes 8 px square, 24 px apart, on a plate moving 32 px along the row); and in a column of
+    three holes 8 px square, 24 px apart, on a plate moving 32 px down, the middle hole shut in the
+    second source frame, in the frame between the middle hole lies against holes of both source
+    frames, so the in-place reading reads it as theirs, though it is one hole more than the second
+    source frame has (the last hole pairs with its own two; the frame between is kept: figure 10). A
+    hole the pairing's bounds let through is the source frames' own: one moved off its way by no
+    more than 4 px and 0.1 of the distance between the two source frames' holes (6 px across and 6
+    px along the way of a plate moving 48 px is 8.5 px, where 8.8 px is let through), or one larger
+    or smaller than both of theirs by up to a quarter. The pairing's bounds are where a hole stops
+    being theirs, and past them the frame gives way to the nearer source frame: a hole unlike both
+    source frames' holes (its area more than a quarter out of the range of theirs, or its shape more
+    than 1.3 times out of theirs); a hole off its way between theirs (farther from the point at `t`
+    than 4 px and 0.1 of their distance, as a plate drawn 12 px across its way, or drawn where it is
+    at t 0.8 in a frame made at t 0.5); two source frames' holes farther apart than sqrt(2) times
+    the reach and 4 px (77.5 px on a body 260 px high: a plate whose centre moves 80 px, or one
+    swung 60 degrees from a point 100 px above it, its centre moving 100 px); and two source frames'
+    holes whose areas differ more than 4 times (a plate grown 2.2 times as it moves). A gap only one
+    source frame has, that neither the in-place reading nor the whole figure's motion carries, has
+    nothing to pair with and gives way: a gap only one source frame opens (closed in the other, half
+    open in the frame between) on a part moving over a body that stays, plain or patterned (pinned
+    by a test). The reading cannot tell such a gap from a band the coverage run carried out of one
+    source frame's gap into a limb: both show one source frame's gap and nothing in the other. The
+    pairing reads only the holes the first two readings leave. Among them each source frame's hole
+    explains one: a hole more than the source frames have among them gives way, as a hole more in a
+    row of holes moving with their plate, midway between two of them or past the row's end, or one
+    of the row moved to a midway (figure 8). A hole more than the source frames have, left by the
+    first two readings, is read as theirs where it pairs with one source frame's hole and the
+    other's alike hole whose own holes in the frame between the first two readings already give the
+    source frames (those holes take no pair, so their source holes are free for it). One more midway
+    between two holes of a row standing still, or of a row the whole figure carries, lies where one
+    source frame's hole and the other's next one put it, and pairs with them (figure 12; and figure
+    8's row standing still, drawn a pixel taller, with one hole more midway). A twin of a gap the
+    whole figure carries pairs with the gap's own two where it lies within the gap's way; being 5 px
+    or more from the gap (or the second reading would take it for the gap), it needs the gap's width
+    and 5 px to be within 4 px and 0.1 of how far the gap moves, so only a narrow gap moving far has
+    one: a gap 5 px wide moving 67.9 px (48 px across and 48 down), its twin 10 px beside it; 11 px
+    beside, it gives way, and a gap 8 px wide with its twin 13 px beside it gives way (figure 12).
+    On that frame the outline readings give the frame way, readings of their own. A half-open gap
+    the whole figure carries (figure 3) is kept by the second reading.
+  - Read only on the frames the alignment makes (`hole` in each `smear` row). The jump repair of
+    `video-loop`, its eased retime and overlapped wrap (section 2) do not read it, and neither do the
+    versioned measures of `video-loop-compare` and `video-loop-repair`.
+  - On the synthetic figures of `tests/video/test_inbetween_hole.py`: figure 1 (rectangles outlined
+    in black, legs filled darker than 70/255, one source frame with legs side by side and the other
+    with a gap between them) has the frame between with a band 8 px wide and 40 px tall through its
+    far leg read `outline_loss` 0, `outline_shift` 11.3 %, `ghost` 0, and `hole` 2.69 % (its own 320
+    pixels as a share of the body); the whole figure's motion is 0, so neither of the first two
+    readings shows a gap where the band lay; the only enclosed hole both source frames have is the
+    gap between the arm and the body (320 pixels), which the made frame keeps where it was, so the
+    in-place reading gives the made frame's arm gap to the source frames, and it takes no pair; the
+    band is left by the first two readings, and its only possible pair, the two source frames' arm
+    gaps, does not fit: the band lies 25 times farther from the point at t 0.5 between those gaps
+    than its way lets through, and the colour round it differs from theirs 6 times as much as is let
+    through, so the band has no pair and is read whole. The drawn frame, the arm gap moved 3 px, a
+    pinhole 3 px wide, and an empty frame read `hole` 0. In figure 2 (a 120 by 180 px body with an 8
+    by 40 px gap, moved 0 to 32 px across and diagonally), the gap from 24 px on lies 5 px and more
+    from where either source frame has it in place (1.50 % in place alone), but whole figure motion
+    carries it: `hole` 0. In figure 3 (a body 90 px wide on legs in boots closing the gap below), a
+    half-open gap when moving 30 px lies 8 px and more beside where the parted frame has it (300 px
+    in place), but whole figure motion carries it: `hole` 0; with an 8 by 40 px band cut through the
+    moving body it reads `hole` 2.88 % (320 pixels) and `faults: ["outline", "hole"]`. In figure 4
+    (a 200 by 180 px still body with a 40 px square part and 14 px square hole moving 32 px), the
+    whole figure's motion is 0, so the first two readings leave the hole; it is one hole of each
+    source frame, alike and on its way 32 px between theirs, so it is paired: `hole` 0. In figure 5
+    (a body that stays, patterned, with a part on it and a hole through the part's middle, the part
+    moved from one source frame to the next, each frame between drawn exactly at its place): (i) the
+    checkpoint validator's frame: a body 200 by 180 px with stripes 3 px wide every 6 px (a lighter
+    colour by 40 levels), on a 260 by 220 px canvas, a part 24 px square with a hole 10 px square,
+    moved 32 px across: the whole figure's motion is 0 and the in-place reading leaves the hole
+    whole, 100 pixels or 0.28 % of the body (a motion read over the box round the hole would take
+    one that lays the stripes on themselves); the hole is one hole of each source frame, alike and
+    on its way, so it is paired: `hole` 0, and both made cells are kept as made, byte for byte. (ii)
+    A body 240 by 260 px on a 300 by 300 px canvas in five patterns (stripes 3, 2 and 6 px wide
+    every 6, 4 and 12 px running up and down; stripes 3 px wide every 6 px running across; checks 4
+    px square) at contrasts 15, 40 and 120, parts 24, 40 and 60 px square with holes 10, 17 and 25
+    px square: moved 32 and 48 px across and diagonally at `t` 0.5, and moved 16, 32 and 48 px
+    across and diagonally at `t` 0.25 and 0.75 over the 3 px stripes at contrast 40, every one of
+    these frames reads `hole` 0 (the moves listed in the test are those where a motion read over the
+    box round the hole takes the body's stillness, or the stripes laid on themselves, on some
+    pattern). Resampled to eight frames (`t` 0.25, 0.5 and 0.75 each way), parts of 24, 40 and 60 px
+    moved 32 px diagonally and the 24 px part moved 48 px over stripes at contrast 120 keep every
+    made frame, byte for byte. In figure 6 (a torso 120 by 260 px that stays, patterned in blocks 4
+    px square each lighter by its own whole number up to 200 levels, with an arm beside its right
+    edge: the upper arm and the forearm lie along that edge and are joined by the arm's outer side,
+    so the gap between arm and torso, 16 by 12 px, has the torso's edge on its left and the arm on
+    its other three sides; the arm reaches 48 px above and 52 px below the gap and moves 40 px down
+    from one source frame to the next), the gap lies where the arm covers it in the other source
+    frame, so the in-place reading leaves it, and the whole figure's motion is 0 (a motion read over
+    the box round it would take the torso's stillness); it is one gap of each source frame, alike
+    and on the arm's way, so it is paired: `hole` 0 at `t` 0.25, 0.5 and 0.75, and resampled to
+    eight every made frame is kept, byte for byte. The boundary, pinned by a test: a part 30 px
+    square moving 32 px across a body that stays, a hole 14 px square open through it in one source
+    frame and closed in the other, 8 px square in the frame between (half open): over a plain body
+    and over the 3 px stripes alike it reads `hole` 0.10 % (its 64 pixels) and both made cells are
+    given way to the nearer source frame, with `faults: ["hole"]`; the second source frame has no
+    hole on the part to pair it with. In figure 7 (a body 240 by 260 px on a 300 by 300 px canvas
+    that stays, in stripes 3 px wide every 6 px (a lighter colour by 40 levels) or plain, with a
+    plate on it (|u| < 24 and |v| < 28 px in its own axes) and a gap through the plate (|u| < 6, |v|
+    < 16, so 11 by 31 px on whole pixels); each frame between drawn exactly at its place in one
+    motion from one source frame to the next: the plate's centre moves across, and the plate turns,
+    grows or is sheared about it, or the plate swings from a point 100 px above its centre), (i) the
+    third checkpoint validator's frame: the plate turns 60 degrees as it moves 48 px over the
+    stripes. No motion of the whole figure carries the turned gap, and the in-place reading leaves
+    it whole, 0.55 % of the body; it is one hole of each source frame, alike and on its way, so it
+    is paired: `hole` 0, and resampled to four, and to eight (`t` 0.25, 0.5 and 0.75 each way),
+    every made frame is kept, byte for byte. The plate turned 90 degrees, grown 2 times and sheared
+    by 0.6 as it moves 48 px, and swung 45 degrees (its centre moving 76.5 px, within sqrt(2) times
+    52 plus 4, or 77.5 px, on this body), are kept the same way over the stripes; over the plain
+    body each reads `hole` 0 (plain, the plate swung 45 degrees is given way for `smear`, a reading
+    of its own). (ii) The plate turned 0 to 90 degrees, grown 1.1 to 2 times, or sheared by 0.15 to
+    0.6 as it moves 0, 24 or 48 px, or swung 10 to 45 degrees, over the stripes and over the plain
+    body at `t` 0.5, and turned as it moves over the stripes at `t` 0.25: all 125 frames read `hole`
+    0. (iii) The boundaries, over either body: the plate moving 48 px, drawn with its gap 16 by 40
+    px (1.9 times their area, where a quarter more is let through) it reads `hole` 1.04 %; with its
+    gap 18 by 18 px (its larger moment 2.8 times smaller over its area, where 1.3 times is let
+    through), 0.52 %; the plate drawn 12 px across its way, 0.55 %; the plate drawn where it is at
+    `t` 0.8 in a frame made at `t` 0.5 (14.4 px along its way, where 8.8 px is let through), 0.30 %;
+    the plate growing 2.2 times as it moves 48 px (the source frames' gaps more than 4 times apart
+    in area, where 4 times is let through), 0.55 %; the plate moving 80 px (its centre 80 px from
+    one source frame to the next, where 77.5 px is let through on this body), 0.55 %; and the plate
+    swung 60 degrees, its centre moving 100 px, 0.55 %. Each frame gives way to the nearer source
+    frame, with `hole` among its faults. In figure 8 (the same body with a plate 120 by 40 px on it
+    and a row of four holes 8 px square through the plate, 24 px apart, the plate moving 32 px down
+    from one source frame to the next), the frame between drawn exactly reads `hole` 0 and is kept
+    as made; so is the frame between with the row drawn a pixel taller, where a hole of one source
+    frame and the next but one of the other have their midpoint as near each of the made frame's
+    holes as its own two: the pairing takes the set that pairs the most holes, so each hole keeps
+    its own two. Drawn with one hole more, midway between two of the row's holes, or between the
+    last two, or past the row's end, or with one of the row's holes moved 12 px to a midway, the
+    frame between reads `hole` 0.10 % (the 64 pixels of one hole) and gives way to the nearer source
+    frame: each source frame's hole explains one hole of the made frame. Standing still, with the
+    row drawn a pixel taller in the frame between, the in-place reading gives the row's holes to the
+    source frames, and the frame between reads `hole` 0 and is kept as made; the frame with one hole
+    more midway is described with figure 12. In figure 9 (the same body with a plate on it and a row
+    of two, three or four holes 8 px square through the plate, 12 px apart, moving on a curved way
+    from one source frame (t 0) to the next (t 1): int(40 t + 20 t (1 - t)) px across and int(32 t)
+    px down at time t, the plate moving with the holes, or staying while the holes move through it;
+    with two holes it is the fourth checkpoint validator's frame), the frame between is drawn
+    exactly, at t 0.5: each of its holes lies 5 px beside the midpoint of where the two source
+    frames have that hole; 4 px and 0.1 of their distance (51 px), 9.1 px in all, are let through.
+    The first hole lies 1 px from the midpoint of the second hole in the first source frame and the
+    first hole in the second source frame: that pair of source holes is the cheaper for it, and
+    taken, it would leave the second hole with nothing to pair with. The set of pairs taken pairs
+    the most holes, so each hole keeps its own two: the frame between reads `hole` 0, and resampled
+    to four frames, both made cells are kept, byte for byte. This holds for two, three and four
+    holes, the plate moving or staying (with three and four holes, each hole but the last is
+    likewise cheaper with the next one's hole in the first source frame). Boundaries, pinned by a
+    test, with two and four holes, the plate moving or staying: with one hole more before the row,
+    on the first hole's way (it could take the first hole's two, but then the first and the second
+    cannot both keep theirs: each source frame's holes pair as many of the made frame's holes as
+    they number, and no more), the frame between reads `hole` 0.10 % (the 64 pixels of one hole) and
+    gives way to the nearer source frame; with the row's last hole shut in the second source frame
+    (it has nothing there to pair with), it reads 0.10 % and gives way. With both searches limited
+    to one step (`rife.HOLE_PAIR_STEPS` set to 1), neither finds a set within it, so neither hole of
+    figure 9's two-hole frame is paired: it reads `hole` 0.21 % (both holes, 128 pixels) and gives
+    way. In figure 10 (the same body with a plate 40 by 90 px on it and a column of three holes 8 px
+    square through the plate, 24 px apart, the plate moving 32 px down from one source frame to the
+    next; the middle hole shut in the second source frame), the frame between is drawn exactly at t
+    0.5, its holes 16 px down. Each of its holes lies against the next hole down in the first source
+    frame and the hole before it in the second: the in-place reading gives the frame between's first
+    and middle holes to the source frames (of the first it leaves only a strip 4 px high, thinner
+    than 5 px, which does not count; the middle one lies against the first source frame's last hole
+    and the second source frame's first hole), and leaves the last hole whole, which lies against
+    nothing in the second source frame, where the middle hole is shut. Those two take no pair; the
+    last hole pairs with its own two holes (the last hole of each source frame), and the frame
+    between reads `hole` 0 and is kept as made. The middle hole is one hole more than the second
+    source frame has, which the in-place reading takes for theirs because it lies within 4 px of
+    their holes: what the reading does not tell (see figure 12 and the sub-item on what it does not
+    read), pinned by a test. In figure 11 (the same body with a plate 105 px square on it; through
+    the plate a hole 8 px square that the first source frame and the frame between have in place and
+    the second source frame shuts, and beside it a hole 8 px square moving from (100, 100) to (152,
+    148), 52 px across and 48 px down; it is the fifth checkpoint validator's frame), the frame
+    between is drawn at t 0.5, the moving hole at its exact midpoint, 10 px from the hole in place:
+    within the moving hole's way (4 px and 0.1 of its 70.8 px, 11.1 px in all). The in-place reading
+    gives the hole in place to the source frames, so it takes no pair, and the moving hole pairs
+    with its own two; the frame between reads `hole` 0, and resampled to four frames both made cells
+    are kept, byte for byte; so are they with the hole in place kept by the second source frame
+    instead (open in the frame between and the second source frame, shut in the first). Figure 12 (a
+    body 200 by 260 px outlined in black on a 400 by 400 px canvas, moving whole from one source
+    frame to the next, with holes through it) pins what the reading does not tell: with a row of
+    four holes 8 px square, 24 px apart, the body moving 32 px down, and one hole more midway
+    between the middle two in the frame between, the second reading carries the row's holes to the
+    source frames without pairs, and the hole more pairs with one source frame's hole and the
+    other's next one, whose midpoint it is, reading `hole` 0 and kept as made (so is figure 8's row
+    standing still, drawn a pixel taller, with one hole more midway, where the in-place reading
+    gives the row to the source frames and the hole more pairs the same way, and figure 10's
+    column); with a gap 5 by 30 px, moving 48 px across and 48 px down (67.9 px), and an alike gap
+    10 px beside it in the frame between (5 px of the body between them), the second reading carries
+    the gap, while the gap more lies 10 px from the point at t 0.5 between the source gaps, within 4
+    px and 0.1 of their 67.9 px (10.8 px), pairing to read `hole` 0 either way, though outline
+    readings give this frame way to the nearer source frame; a gap more 11 px beside is off that
+    way, reading `hole` 0.29 % and giving way with `hole` among its faults, as does an 8 px wide gap
+    with its twin 13 px beside it (5 px of the body between them again), at 0.45 %. In the test on
+    triples alone (no frame), twenty alike holes, each with its own two holes and up to five more
+    pairs with holes of the source frames within three places of its own at seeded random costs,
+    have one set pairing every hole: each group of pairs sharing a hole is searched first for a set
+    pairing every hole, then, where there is none, for the set pairing the most, each search at most
+    5000 steps (`rife.HOLE_PAIR_STEPS`); the search for the set pairing the most, cheapest first,
+    runs past 5000 steps and would pair none, whereas the search for a set pairing every hole finds
+    one in 29 steps, pairing all twenty; where that search too runs past the steps, the other
+    answers, and here pairs none.
+- **A double outline, per made frame** (`rife.doubled`): Where RIFE's flow does not follow a line
+  (on drawn art, the top of a boot that one source frame tilts, showing the oval of its opening, and
+  the other plants flat, showing a straight band), it can fade the line out in place instead of
+  moving it. The made frame then shows that source frame's line, lighter, in the source frame's own
+  place, beside the line the made frame drew: a double outline. Its coverage is whole, so the ghost
+  screen (part coverage, alpha 0.1 to 0.9, in regions **5 px** thick) reads nothing; the faded line
+  is lighter than 70/255, so the dark count (`dark_excess`) adds nothing; the line is inside the
+  body, not on the coverage edge, so both outline readings (`outline_loss`, `outline_shift`, which
+  read the coverage edge) pass it; it has no enclosed transparent pixels, so `hole` reads 0. The
+  cross-fade reading names whole drawings blended where the made frame keeps under 60 % of the
+  source frames' strong edges in a window; a frame that moved most of a part and left one line faded
+  keeps its edges, and the cross-fade reading is a reading to look at, never a fault, in any case.
+  - `doubled`: `rife.doubled(made, a, b)` takes the made frame between source frame a and source
+    frame b, with no fraction needed. A frame's line is its solid pixels (alpha 0.5 and over) darker
+    by more than 50/255 (`rife.OUTLINE_SHIFT`, the same contrast the rank outline reading uses) than
+    its own luma closed by a square 2.5 % of the made frame's body height wide (`rife.DOUBLED_WIDE`,
+    0.025; off the solid body the luma counts as white). A dark stroke narrower than that window
+    goes in the closing and is a line; a dark fill wider than it stays and is no line. A pixel of
+    one source frame's line is left at part strength in the made frame when all of these hold: the
+    three frames are solid there; the other source frame draws no line within **4 px** of it
+    (`rife.DOUBLED_SHARED`, 4, a square neighbourhood): a line both draw is theirs at any strength;
+    the other source frame is lighter there than this line by more than 50/255; the made frame is
+    darker there than the other source frame by more than 50/255 (the line is still seen); and the
+    made frame is darker than the other by no more than 0.8 of the line's contrast (the line's
+    contrast is how much lighter the other source frame is than the line there; `rife.DOUBLED_PART`,
+    0.8), both at the pixel and at its darkest pixel within **2 px** (`rife.OUTLINE_REACH`, 2): no
+    line at full strength beside it, as there is beside the soft edge of a line the flow moved. Such
+    pixels count where they make a region **3 px** thick (opened by a 3 px square,
+    `rife.DOUBLED_THICK`, 3). Widened by **3 px**, those that touch make one run. A run's length is
+    sqrt(12) times the square root of the larger second moment of its pixels, which is a straight
+    run's own length. The reading is the longest run's length as a share of the made frame's body
+    height: 0 where the made frame has no solid body, or where the two source frames nowhere differ
+    by more than 50/255 inside all three bodies. It is read inside the box round where the source
+    frames differ, padded so that every pixel there reads as in the whole frame.
+  - Over **0.03** (`interpolation_quality.DOUBLED_WARN`, 0.03 of the body's height) the frame shows
+    a double outline: the fault `doubled`. `auto` takes the nearer source frame there and writes a
+    line in `warnings`; the line says the made frame left a line one source frame beside it draws at
+    part strength in its own place, over a run of the given share of its body high, a double
+    outline, and that the nearer source frame was taken there (`--between auto`). `rife` keeps it,
+    named. The report's `smear` rows carry `doubled` on every made frame.
+  - What is the source frames' own, kept (each a named bound): a line both source frames draw within
+    **4 px** of each other is theirs, at any strength in the made frame (a static line the flow
+    softened, a hem both draw with two lines); a line the made frame carries at more than 0.8 of its
+    contrast is that source frame's own drawing there (a light crease one source frame draws,
+    carried at its own strength, is kept); the soft edge of a line the flow moved lies within **2
+    px** of the line at full strength, so it is not read; a line left less than 50/255 darker than
+    what the other source frame shows there is not seen and not read; a dark patch wider than the
+    closing window is no line; a run 3 % of the body high or shorter is not a fault; and only pixels
+    where all three frames are solid are read, as part coverage is the ghost screen's.
+  - A line only one source frame draws, with no line of the other's within **4 px** (a crease that
+    comes or goes, an eyelid's line, a line a passing leg covers or uncovers), left at part
+    strength, is read the same way and is a double outline: the flow did not follow it and faded it.
+    This is a fault by the definition, not an exception. What the reading does not tell: a part the
+    made frame draws smeared along its way, where the smear reaches back over a line one source
+    frame draws there at part strength, reads as that line left. And lines left where one source
+    frame is not solid (on the silhouette's edge) are not read, so a cross-fade whose doubled lines
+    lie mostly on the silhouette's edge can read under the line.
+  - Where **0.03** sits: set by eye on drawn walks, between the frames seen with a line doubled (a
+    boot's top faded out where one source frame tilts it, beside the top the frame drew), which read
+    over it, and the frames seen as clean or only soft, which read under it. It is a reference, not
+    a measured optimum, and a frame near it is worth a look.
+  - Read only on the frames the alignment makes (`doubled` in each `smear` row). The jump repair of
+    `video-loop`, its eased retime and overlapped wrap (section 2) do not read it, and neither do
+    the versioned measures of `video-loop-compare` and `video-loop-repair`.
+  - Synthetic numbers (`tests/video/test_inbetween_doubled.py`): a figure on a 200 by 260 px canvas,
+    a coat over two legs in boots, outlined **3 px** in near-black, a hand beside the coat; the near
+    boot lifted 18 px in the first source frame and planted in the second. The boot's line is 0.69
+    darker than the boot's fill. The frame drawn between, with the first source frame's near-boot
+    lines laid over it at 0.45 of their strength: `outline_loss` 0, `outline_shift` 0, `ghost` 0,
+    `hole` 0, `crossfade` 0, no fault before; `doubled` 0.102 (the run's own length is the boot's
+    width). Resampled from two frames to four under `auto`, both made cells (1 and 3) take the
+    nearer source frame; under `rife` they are kept, named. The same with both source frames' lines
+    at half, and the frame whose colour is the plain blend of the two inside the drawing's coverage,
+    read over the line too. A crease the first source frame draws across the still near boot and the
+    second does not: left at 0.3, 0.45 or 0.6 of its contrast it reads `doubled` and gives way; left
+    at 0.25 it is lighter than 50/255 under the boot and reads 0; the frame that draws it, and the
+    frame that does not, read 0 and keep their bytes. Read 0 and delivered as the very frame made:
+    the drawing between; the same blurred (radius 1.5 px) or smeared along the step; a hand moving
+    60 px over the coat, drawn, blurred or smeared along its way (t 0.35 to 0.65); boots both source
+    frames draw with a second line; a hem both draw with two lines, softened to 60 % in the frame
+    between; a light crease one source frame draws, carried at its own strength. The bounds, where
+    each turns: left at 0.28 of its contrast the made frame there is 0.1960 darker than the boot,
+    just under 50/255, which is 0.1961, and reads 0; at 0.30 it is 0.2076 darker and is read; at
+    0.80 it reads, at 0.82 it is the source frame's own line and reads 0; with the boot moved 8 px,
+    the pixels of its old line that the reading keeps are too thin to hold a 3 px square, so the
+    opening by 3 px removes them and it reads 0; moved 9 px they hold one and it reads (0.092); a
+    dark patch 10 px square one source frame draws is no line, a stroke **3 px** wide is; left over
+    6 columns the run is 0.0294 of the body, under the line, over 7 columns 0.0343, over it. What it
+    does not tell: the hand smeared along its way from t 0.3 to 0.7 of its 60 px move reaches back
+    over the line the first source frame draws there and reads 0.063. The walker of
+    `tests/video/test_crossfade.py`, legs closing from 16 to 3 degrees: its drawing between, which
+    the cross-fade reading reads over its line in grey (the reason that reading is no fault), reads
+    `doubled` 0 in grey and in black outlines and keeps its bytes; its colour blended inside the
+    drawing's coverage reads 0.098 in grey and 0.37 in black and gives way. Legs closing from 10 to
+    5 degrees, the cross-fade's lines left inside all three silhouettes run 0.0195 of the body (the
+    rest of its doubled edge lies on the silhouette, where one source frame is not solid): under the
+    line, kept.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings
@@ -1715,10 +2223,10 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   cannot be made leaves the set as it was. The first alignment also records the strip as cut,
   before anything is rewritten (`cycle_align.origin`: its file's sha256 — `follow.source.png`'s
   where a follow-through moved it —, cell size, scale, crop origin, `sample_indices`, each cell's
-  pixels by sha256, and the body's motion as `video-follow` reads it there, `reading`), and every
+  pixels by sha256, and the body's motion as `video-sway` reads it there, `reading`), and every
   later alignment keeps it as it is. A loop aligned before this record existed has none, and gets
   none: its cut is no longer there to read. With `cells_from` it lets a follow-through whose
-  regions were read on the cut be carried to the aligned loop (`video-follow --read-on`,
+  regions were read on the cut be carried to the aligned loop (`video-sway --read-on`,
   docs/video-pipeline.md section 6). Neither record changes a pixel of the strip, GIF or WebP.
 - **Frames between are kept for later passes** (`--between-cache DIR`): every frame RIFE makes between
   two source frames is stored in `DIR`. A later alignment given the same `DIR` takes a kept frame instead
@@ -1778,9 +2286,9 @@ only an item of a walk or run filmed in two or more directions is taken, any oth
 filming), or as `video-cycle-align --foot` on the set's loops. A foot given for an item that failed,
 or whose state was not aligned, is named in that state's `feet_unused` and a warning.
 Cutting a loop again with `video-loop` removes its `cycle.source/`, so the next alignment reads
-the new cut. An alignment also clears a follow-through (`video-follow`, which moved the old
+the new cut. An alignment also clears a follow-through (`video-sway`, which moved the old
 cells): `follow.source.png` and the strip's `follow` record are removed and the loop's row says
-`follow_cleared`; run `video-follow` again after it, with `--read-on` naming the strip the regions
+`follow_cleared`; run `video-sway` again after it, with `--read-on` naming the strip the regions
 were read on.
 
 How much RIFE that is, on the 2026-10-03 sets (the experiment's `finalize.py`): resampling to
@@ -1829,6 +2337,63 @@ this set.
 
 A side-by-side video of the takes as filmed and as this engine leaves them, the numbers, and the
 scripts that made them are kept with the experiment's material in the maintainer's notes.
+
+## 6. The redrawn wrap: a pinned clip whose last frame the model drew again
+
+When `video-loop --cycle pinned` cuts a clip generated with its first frame given to the video model as the last frame too, the cut retains every frame except the last. The pin gate checks that the last frame lands near the first on a small thumbnail and passes, because the pinned last frame holds the first frame's pose. The video model draws that frame again: softer or sharper, in another tone, or with hair strands a pixel over. Because the redraw remains, the wrap from the last cell back to the first shows this redraw as a single jump in sharpness, whereas every other step in the loop shows motion.
+
+The wrap blend (`video-loop --wrap-blend auto`, the default) takes the first frame's drawing back over the cut's last half second, applying only where the two ends differ by a redraw. Passing `--wrap-blend off` cuts as filmed, but the seam bridge (section 2) can still make frames round the wrap of a loop that is not a walk or run; for such a loop, pass `--repair off --wrap-blend off` for the earlier bytes. The step is implemented in `sprite_gen/video/wrap_blend.py` (`measure`, `gate`, `blend`, `apply`) and called from `loop.run_loop`. It runs on the frames as filmed after the anchor and after `source_projection`, before any repair reads the wrap, and before `cycle/`, the strip, the GIF and the WebP are written.
+
+| Rule | Value | Why |
+|---|---|---|
+| When | `--cycle pinned`, `--anchor none`, the pin gate passes, `--wrap-blend auto` | Idle and attack clips that `video-set` films pinned are cut this way. An anchor that moves the cells (`--anchor body`) puts them off the place the pinned frame holds, so they are not blended and the report says why. A pin the gate refuses fails the clip whatever its wrap shows, so it is not tried (the cut is written as filmed and the failure message is unchanged). Other cuts (auto, periodic, fixed, one-shot, once, once-return, lifetime) are not read and their report has no `wrap_blend`. |
+| The ruler (`measure`) | The first cell against the pinned last frame (the pinned frame cleaned as the cut's frames are: RGB under alpha 0 scrubbed, detached specks dropped), at full size, over the first cell's opaque inside (alpha 250 and up, eroded 3 px), composited on a dark ground (RGB 20, 16, 28), the mean of the largest channel difference; divided by the cut's median step read the same way (the wrap left out). This is the residual ratio. | The difference between the two drawings of one pose is the redraw itself; a sharpness measure such as the variance of the Laplacian does not separate this jump from the clip's own frame to frame changes in sharpness. The ruler reads one frame at a time, so a long cut at full size is never held whole. |
+| Not a redraw | Residual ratio at most `--seam-max` (default 2.0) | Nothing is done, the bytes are the same as `off`, and `wrap_blend.why` says so, because a pin that draws the first frame as it is needs nothing. |
+| The ramp | The last K cells, K = min(round(0.5 s x fps), floor(L / 4)) for a cut of L cells (12 at 24 fps); K under 2: nothing | Half a second takes the jump over a dozen ordinary steps; a short cut keeps three quarters of itself as filmed. |
+| The shape (`blend`) | The residual ramp: the difference e = first cell minus pinned frame, premultiplied RGBA, is added to the ramp cells: j/(K+1) of e on the j-th ramp cell (j = 1..K). Per pixel the ramp starts from the first ramp cell on which the pixel stands through to the end, and ramps over the cells left. | Each pose stays the cell's own; its drawing turns into the first cell's by the wrap. Mixing the ramp cells toward the first cell moves the pose as well as the drawing, producing ghost copies of moving parts. |
+| What the two ends hold apart (`gate`, the two ends) | Never ramped: a pixel is held where (a) after one softness match for the clip, the values one end holds lie more than 12 levels outside what the other end holds within 1 px, on a 7x7 mean or along a 7 px run (across, down or along either diagonal), over black or over white; or (b) presence: a value one end holds lies more than 12 outside the other end's 1 px range while the other end's own 1 px range is under half (kappa 0.5) of this end's, in any of seven channels (premultiplied RGBA and RGB over white), raw values, no window. The softness match (`equalize`) blurs the sharper end by 0, 0.35, 0.5 or 0.7 px, whichever brings the two ends nearest over the figure. | A ramp of the difference draws whatever the two ends hold in different places a second time. A redraw (a line drawn softer or half a pixel over) keeps a share of its range in the other frame; a line, a dot or a part moved 2 px or more does not, whatever its direction, length, spacing or width. The presence test has no window and no list of directions because an earlier gate with only (a) let a 1 px line at slope 1/3 through, thinning under 12 in the 7x7 mean and in every one of the four runs, and drew it twice. |
+| Over black and over white | Gate evaluated over both black and white grounds | A sprite lands on any ground. Over black alone, a silhouette's transparent neighbour (0, 0, 0, 0) puts every dark value in range: a dark strand against the silhouette that moved out on the transparent ground would be drawn twice. |
+| Ramp cell standing where pin stands (`gate`, each ramp cell) | Cell 7x7 mean difference to the pinned frame is within 1.5 x the redraw's + 2, and tests (a) without the softness match and (b) hold against the pinned frame; a pixel that does not stand on a ramp cell is not ramped on it | A part that is still moving inside the last half second (an arm coming down, a blink) is the filmed part. |
+| Widen and feather | What is held is widened 3 px and the weight is feathered with a 7x7 mean; a pixel whose weight is 0 is the filmed pixel, byte for byte | The 3 px widening is exactly the feather's reach (a 7x7 mean reaches 3 px), so a pixel the gate holds keeps weight 0 under the feather and no ramp seeps into it; the feather then lets the ramp fade out at the edge of what is held instead of stopping in a hard edge. |
+| The after check | The blend is used only where every step into and through the ramp is within the larger of the cut's own largest step and `--seam-max` x the median step, and the wrap shrinks. Otherwise the cut is written as filmed, `wrap_blend.after_check` is "refused", and a `video-loop: warning:` line says the wrap blend was not used, why, with the numbers. | A blend that steps more than the cut does trades the wrap's jump for a jump inside the loop. |
+| Wrap still over `--seam-max` after blend | Blended, and a `warning:` line says so with the share of the figure held as filmed | The blend passed the after check (no step past the cut's own, the wrap smaller), so it is kept; what the two ends hold apart is filmed and still jumps at the wrap, which the line names so a person looks at the wrap. |
+| Order in `video-loop` | After the anchor and after `source_projection` (which records the cut before the blend), on the frames as filmed, before any repair reads the wrap, and before `cycle/`, the strip, the GIF and the WebP are written | The blend reads where each cell stands against the pinned frame, so it runs on the frames as filmed, after the anchor has placed them; `source_projection` keeps the record of the cut before it; any repair that reads the wrap then reads the wrap the blend leaves, not the redraw's jump; `cycle/`, the strip, the GIF and the WebP all carry the same blended cells. |
+
+Mixing the ramp cells toward the first cell (the conventional wrap blend) moves the pose as well as the drawing, so a part that moves inside the ramp receives a translucent second copy. On a synthetic attack whose arm is raised until four frames before the pin, mixing toward the first cell lays a resting-arm ghost over the raised arm (128 levels from the ideal frame), and a synthetic eye blink near the end gives an eye ghost (133 levels). Adding only the residual difference e (first cell minus pinned frame) as j/(K+1) ensures each pose stays the cell's own while its drawing turns into the first frame's drawing by the wrap.
+
+The test character in `tests/video/test_wrap_blend.py` is a synthetic pinned idle of 73 frames (72 cells and the pin, K = 12 at 24 fps), 160 x 224, whose frames after the first are the model's drawing of it (another cloth texture, hair strands up to 0.6 px over, 0.5 px softer, another tone), so the pin, the ruler and the after check pass and the gate alone stands between a structure on it and the ramp. A flat figure has no redraw, so its cases are read on the gate and the ramp alone.
+
+| Case | Reading |
+|---|---|
+| Tone and 0.5 px softness redrawn, the character breathing 6 px | residual 7.24x the median step; wrap 7.31x to 0.57x; largest ramp step 1.56x against the bound 2.0x; only the 12 ramp cells, the strip, the GIF and the WebP differ from `off` |
+| The whole redraw, with a 1 px line of contrast 24 at slope 1/3 moved 8 px on a flat patch of the torso | wrap 19.90x to 4.26x; the line's pixels are the filmed bytes |
+| An arm raised until four frames before the pin | where the arm is 40 degrees or more from the pin's it is the filmed arm; on the last cell (20 degrees off) its fringe changes by 1 level at most |
+| A 14x14 part moved 2 to 64 px on the flat figure, or only in the first frame, or only from frame 6 | byte for byte |
+| A 10x10 part moved 2 to 32 px on the redrawn character, or only in one end | byte for byte, the rest blended |
+| The 14x14 part (contrast 120) moved 16 px on the flat figure, nothing else redrawn | residual 2.34x; the gate holds the part, the ramp does not shrink the wrap: cut as filmed, warning line |
+| A 1 px line of contrast 24, 48, 96 moved 2, 8, 32 px on the flat figure | byte for byte |
+| Stripes every 5 px redrawn 0.8 px over and swinging 3 px inside the ramp | the swing is filmed |
+| A dark strand against the silhouette moved 7 px out on the transparent ground | byte for byte; over black alone it would be ramped |
+| Dots of 1 to 3 px, dotted lines, a ring, a wave, a cross, an anti-aliased, a light and a one-channel line moved 8 px on a flat patch, a line only in the first frame or only from frame 6 | 2 levels at most (0 for most; 1 for the ring and the wave; 2 for the anti-aliased line) |
+| The slope 1/3 line over decode noise of 4 levels on every frame, a 4 level/px gradient, the widest softness match (0.7 px), static grain of 3, a 1 px checker of plus or minus 4 | 3 levels at most (0 or 1 measured); with the noise the median step rises and the ruler alone keeps that clip as filmed (residual 1.44x) |
+| A strand on the transparent ground off the silhouette moved 3 and 8 px | byte for byte |
+| The character sliding into the model's drawing over the whole clip (each step a 72nd of the redraw) | largest ramp step 6.66x against the bound 3.37x: not used, cut as filmed, warning line |
+| The idle-still fixture, whose pin draws the first frame as it is | residual 0.0x: nothing done, every output the same bytes |
+
+Cost: On a synthetic cut of 145 frames at 800 x 1120 (the test character scaled 5x), on an Apple M4 Max under a 1-minute load of about 15: the whole step takes 6.3 to 7.1 s, of which the ruler (every step of the cut at full size) takes 2.9 s. The pinned frame's grounds and 1 px ranges are computed once a clip; the K ramp cells are held as float RGBA (15 MB each at that size), one 7-channel ground and its 1 px range taking three 26 MB arrays a frame. No interpolator is called.
+
+Limits (what the gate reads as a redraw, and so ramps):
+1. A structure of contrast 12 or less, or one that does not stand 12 above its ground's own 1 px range: a faint part of contrast 8 changes by 7, of 11 by 10; a contrast 12 line by 11; on a 1 px checker of plus or minus 6 a contrast 24 line by 9 and a dotted line by 22.
+2. A move under 1 px in both x and y: a 14x14 part moved 1 px changes its edge column by 111; a 45 degree line moved (1, -1) by 22.
+3. Masking: where the other end has drawing of its own within 1 px of at least half this end's range (texture, an edge, a crossing structure): a 1 px line moved on the textured cloth keeps up to 36 levels (contrast 24), 7 (48), 3 (96), mostly hidden in the texture.
+4. Steep gradients: on 8 levels/px a contrast 24 line changes by 5 to 9, on 12 levels/px by 22.
+5. Noise only on the frames after a clean first frame (6 levels): 8 to 10 on a line. The pipeline does not make this case: the cut's first frame is the clip's own decoded first frame.
+6. The softness match blurs 0.7 px at most: a line moved on a redraw 1.0 px softer than the first frame keeps 8.6 (contrast 24), 1.9 (48), 0.6 (96).
+7. Redrawn hair strands are held by the presence test, so the wrap shrinks less than a ramp of everything would: on the synthetic idle the wrap ends at 7.35x where ramping all but the window test's holds would end at 2.2x.
+
+The loop report records `wrap_blend` on every pinned cut: `applied`, `why`, `K`, `cells` (the cells changed), `residual_ratio`, `wrap_ratio_before`, `wrap_ratio_after`, `ramp_step_max_ratio`, `bound_ratio` (all over the median step), `pose_share` (the share of the figure the two ends hold apart), `presence_share` (of the figure, what the presence test holds), `never_settled` (the share of the figure that never stands where the pin stands in the ramp), `equalize` (`sigma`, `blurred`: "still", "pin" or "none"), `after_check` ("passed" or "refused"), and `seconds`. Where it was not tried, `applied` is false and `why` records the reason ("--wrap-blend off", "--anchor body moves the cells off the place the pinned frame holds", or "the pin does not close: the clip is refused on it"). Other cuts (auto, periodic, fixed, one-shot, once, once-return, lifetime) are not read and their report has no `wrap_blend`. Strip metadata (`<name>.strip.json`) carries `wrap_blend: {cells, K}` where it applied, and the CLI summary carries `wrap_blend` (`applied`, `why`, `residual_ratio`, `wrap_ratio_before`, `wrap_ratio_after`). Because `source_projection` records the cut before the blend, reading a strip whose cells were changed by the blend is reported as processing that cannot be reproduced (`source-processing-unsupported`).
+
+A `video-loop: warning:` line is emitted under two conditions. When the after check refuses the blend because a step into or through the ramp exceeds the bound or the wrap does not shrink, the cut is written as filmed, `wrap_blend.after_check` is set to "refused", and the warning states that the wrap blend was not used, why, and the measured numbers. When the wrap remains over `--seam-max` after blending because the two ends hold a part apart, the blend is applied anyway and a warning line reports that condition along with the share of the figure held as filmed.
 
 ## Related
 

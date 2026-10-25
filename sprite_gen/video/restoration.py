@@ -37,7 +37,7 @@ from sprite_gen._deps import np
 from sprite_gen.frames.cutout import KEY_TARGETS
 from sprite_gen.frames.decontam import _cap_key_hue
 from sprite_gen.frames.extract import _key_channel_split, _key_excess_field, _SPILL_FULL_MIN_TINT
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util import resample
 from sprite_gen.video import evidence, playback, repair, rife, source
 from sprite_gen.video.compare import KIND as COMPARISON_KIND, Loop
@@ -537,8 +537,7 @@ def _write_candidate(paths: dict[str, Path], out: Path, name: str, baseline: Loo
             indices, delay = playback.mapping(baseline)
             selected = [frames[k] for k in indices]
             save_clean_gif(selected, stage / names["gif"], duration_ms=delay, alpha_threshold=128)
-            write_webp(selected, stage / names["webp"], delay_ms=delay, workdir=stage / ".webp")
-            shutil.rmtree(stage / ".webp")
+            write_webp(selected, stage / names["webp"], delay_ms=delay)
         stage.rename(out)
     finally:
         if stage.exists():
@@ -609,10 +608,14 @@ def run(**kwargs: Any) -> int:
         output = Path(kwargs["report"])
         out = Path(kwargs["out_dir"])
         name = kwargs.get("name", "loop")
-        protected = [*paths.values(), *origin.values(), *inputs.values(), *inputs["source_frames_dir"].glob("*.png")]
-        protected += [out / (name + ext) for ext in (".strip.png", ".strip.json", ".loop.json", ".gif", ".webp")]
-        if output.resolve() in {p.resolve() for p in protected}:
-            raise ValueError("repair report cannot overwrite an input")
+        # The report is written once the candidate is: no input is that file (`runio.refuse_overlap`), nor is a file of
+        # the candidate (two of the run's own outputs, new paths both — the candidate folder must be new).
+        refuse_overlap({**{f"--baseline-{k}": p for k, p in paths.items()}, **{f"--origin-{k}": p for k, p in origin.items()},
+                        **{"--" + k.replace("_", "-"): p for k, p in inputs.items()},
+                        **{f"{p.name} in --source-frames-dir": p for p in inputs["source_frames_dir"].glob("*.png")}},
+                       {"--report": output}, verb="video-loop-repair")
+        if output.resolve() in {(out / (name + ext)).resolve() for ext in (".strip.png", ".strip.json", ".loop.json", ".gif", ".webp")}:
+            raise ValueError("repair report cannot overwrite the candidate it writes")
         payload = restore(paths, origin, source.Source.read(**inputs), out_dir=out,
                           name=name, proposal_index=kwargs.get("proposal_index", 1))
         output.parent.mkdir(parents=True, exist_ok=True)

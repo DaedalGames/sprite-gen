@@ -21,6 +21,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from conftest import run_script
@@ -140,6 +141,7 @@ def test_legacy_unstamped_sidecar_drops_all_and_the_save_backs_it_up(fixture_run
     assert backup and (run / backup).read_text(encoding="utf-8") == original_text
 
 
+@pytest.mark.slow
 def test_take_append_prefix_rule(tmp_path: Path) -> None:
     """테이크가 뒤에 추가돼도(현재 세그먼트의 접두) 기존 행 큐레이션은 유효하다.
     takes 는 pixel_perfect 계약이므로 pp 런을 test_takes_heal 과 같은 방식으로 만든다."""

@@ -9,7 +9,9 @@ from pathlib import Path
 from sprite_gen._deps import np
 
 from sprite_gen.scene.model import Scene, load_scene
-from sprite_gen.spec.runio import LOCK_FILENAME, RWLOCK_SUFFIX, acquire_run_dir_lock, atomic_write_set, release_run_dir_lock
+from sprite_gen.spec.runio import (LOCK_FILENAME, RWLOCK_SUFFIX, acquire_run_dir_lock, atomic_write_set, release_run_dir_lock,
+                                   same_folder)
+from sprite_gen.util.console import utf8_streams
 
 
 # The wrap of a loop may be no worse than twice the largest ordinary transition
@@ -109,7 +111,7 @@ def output_path(out, scene: Scene) -> Path:
     if path.name == LOCK_FILENAME or path.name.endswith(RWLOCK_SUFFIX):
         raise ValueError("inspection output must not use a reserved lock name")
     protected = [Path(p) for p in scene.source_fingerprints]
-    if path in protected or (path.exists() and any(p.exists() and path.samefile(p) for p in protected)):
+    if any(same_folder(path, p) for p in protected):
         raise ValueError("inspection output cannot overwrite scene inputs")
     if path.exists() and not path.is_file():
         raise ValueError("inspection output must be a file")
@@ -147,6 +149,7 @@ def run(spec, out=None, require_loop=False):
 
 
 def main():
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args()))

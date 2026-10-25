@@ -13,6 +13,8 @@
 # Run it from a clean clone of the commit being measured, on x86-64 Linux with:
 #   - Python 3.14 (`python3.14` on PATH, or named by SPRITE_GEN_LANE_PYTHON),
 #   - ffmpeg, and img2webp from libwebp >= 1.5 (its `-exact` flag),
+#   - Node.js (`node` on PATH), which runs the curator's JavaScript in tests/effects/test_breathe_*.py
+#     (not needed by `--rife-only`),
 #   - a Vulkan loader with a CPU driver (Mesa lavapipe is enough).
 # The host's tools are not installed by this script: a missing one ends the run by name. The
 # environment it creates lives in the clone (.venv, ignored), as the quickstart's does.
@@ -93,8 +95,9 @@ torch_gates() {
   SPRITE_GEN_RIFE_BACKEND=torch SPRITE_GEN_RIFE_DEVICE=cpu .venv/bin/sprite-gen rife install
   step "RIFE torch tests (every test marked torch_rife, none skipped)"
   torch_log=$(mktemp)
-  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it.
-  SPRITE_GEN_RIFE_DEVICE=cpu .venv/bin/python -m pytest -q -rs -m torch_rife | tee "$torch_log"
+  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it. --full: a marked test that is
+  # also marked slow runs too.
+  SPRITE_GEN_RIFE_DEVICE=cpu .venv/bin/python -m pytest -q -rs --full -m torch_rife | tee "$torch_log"
   ! grep -E '^SKIPPED' "$torch_log" >/dev/null || fail "a torch_rife test skipped; this run is meant to measure them"
   rm -f "$torch_log"
 }
@@ -116,6 +119,8 @@ command -v img2webp >/dev/null || fail "img2webp (libwebp >= 1.5) is not on PATH
 # their whole input (no `grep -q`): under pipefail an early-exiting grep kills the writer with
 # SIGPIPE and the pipeline reads as a failure.
 img2webp -h 2>&1 | grep -- -exact >/dev/null || fail "img2webp has no -exact flag; libwebp must be 1.5 or newer"
+# Without node the curator's JavaScript tests skip, which no run of this lane would measure.
+[ "$rife_only" = 1 ] || command -v node >/dev/null || fail "node (Node.js) is not on PATH; the curator's JavaScript tests run it"
 /sbin/ldconfig -p | grep 'libvulkan\.so\.1' >/dev/null || fail "no Vulkan loader (libvulkan.so.1)"
 git diff --quiet && git diff --cached --quiet || fail "the checkout has uncommitted changes"
 [ ! -e .venv ] || fail ".venv already exists; run from a fresh clone"
@@ -130,6 +135,7 @@ fi
 sha=$(git rev-parse HEAD)
 echo "commit $sha"
 echo "$("$PYTHON" --version), $(ffmpeg -version | head -1 | cut -d' ' -f1-3)"
+[ "$rife_only" = 1 ] || echo "node $(node --version)"
 
 step "install (clean environment, as the quickstart does)"
 "$PYTHON" -m venv .venv
@@ -142,9 +148,9 @@ if [ "$rife_only" = 1 ]; then
   step "RIFE tests (every test marked real_rife, none skipped)"
   rife_log=$(mktemp)
   trap 'rm -f "$rife_log"' EXIT
-  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it. Those marked torch_rife as
-  # well run with the torch backend's.
-  .venv/bin/python -m pytest -q -rs -m "real_rife and not torch_rife" | tee "$rife_log"
+  # No test marked: pytest exits 5 ("no tests ran"), and the lane with it. --full: a marked test that is
+  # also marked slow runs too. Those marked torch_rife as well run with the torch backend's.
+  .venv/bin/python -m pytest -q -rs --full -m "real_rife and not torch_rife" | tee "$rife_log"
   ! grep -E '^SKIPPED' "$rife_log" >/dev/null || fail "a RIFE test skipped; this run is meant to measure them"
   torch_gates
   echo "linux_lane: the RIFE gates passed at $sha"
@@ -175,9 +181,10 @@ test -f "$smoke/run/sprite-sheet-alpha.png"
 test -f "$smoke/run/manifest.json"
 
 step "tests"
-# Without RIFE, a skip of a test not marked real_rife or torch_rife fails unless tests/conftest.py names it.
-# PyTorch is not installed yet: the tests marked torch_rife skip here and run in torch_gates.
-.venv/bin/python -m pytest -q ${rife_unmeasured:+--rife-unmeasured}
+# Every test (--full): a plain pytest is the fast bundle, the tests marked slow deselected. Without RIFE, a
+# skip of a test not marked real_rife or torch_rife fails unless tests/conftest.py names it. PyTorch is not
+# installed yet: the tests marked torch_rife skip here and run in torch_gates.
+.venv/bin/python -m pytest -q --full ${rife_unmeasured:+--rife-unmeasured}
 
 if [ -z "$rife_unmeasured" ]; then
   torch_gates

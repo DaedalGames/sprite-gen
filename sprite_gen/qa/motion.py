@@ -29,8 +29,9 @@ from sprite_gen._deps import np
 from PIL import Image
 
 from sprite_gen.spec.assets import sequence_identity
-from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock
+from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock, same_folder
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
+from sprite_gen.util.console import utf8_streams
 
 if TYPE_CHECKING:
     from sprite_gen.spec.assets import FrameSequence
@@ -413,7 +414,7 @@ def add_arguments(parser):
 def _output_path(out, source, sequence):
     path = Path(out).expanduser().resolve()
     protected = {Path(source).expanduser().resolve(), *(Path(p).resolve() for p in sequence.source_files)}
-    if path in protected or (path.exists() and any(p.exists() and path.samefile(p) for p in protected)):
+    if any(same_folder(path, p) for p in protected):
         raise ValueError("motion report must not overwrite an asset source file")
     if path.name == ".sprite-gen.lock" or path.name.endswith(".sg-rwlock"):
         raise ValueError("motion report must not overwrite an output lock")
@@ -457,6 +458,7 @@ def run(**kwargs) -> int:
 
 
 def main(argv=None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

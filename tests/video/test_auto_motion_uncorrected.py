@@ -30,6 +30,7 @@ def write_source(path, **kwargs):
     return path
 
 
+@pytest.mark.slow
 def test_real_boundary_match_emits_verified_unchanged_cycle_and_exposes_it(tmp_path, capsys):
     keyed = write_source(tmp_path / "keyed")
     out = tmp_path / "out"
@@ -57,6 +58,7 @@ def test_real_boundary_match_emits_verified_unchanged_cycle_and_exposes_it(tmp_p
         loop.main(fixed)
 
 
+@pytest.mark.slow
 def test_uncertain_match_does_not_accept_bad_uncorrected_seam(tmp_path, monkeypatch):
     keyed = write_source(tmp_path / "keyed", bounce=3, drift=2)
     def uncertain(*args, **kwargs):

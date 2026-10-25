@@ -275,7 +275,8 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
                   spill_min_tint: float | None = None,
                   spill_require_hue: bool = False, decontam: str = "off", decontam_fit: str = "still",
                   decontam_palette: dict[str, Any] | None = None, decontam_edge_band: int = 0,
-                  background_key: tuple[int, int, int] | None = None) -> tuple[Image.Image, dict[str, Any]]:
+                  background_key: tuple[int, int, int] | None = None,
+                  decontam_history: dict[str, Any] | None = None) -> tuple[Image.Image, dict[str, Any]]:
     """Magenta/green key background → reuse the verified `extract` chroma engine (no drift).
 
     The engine keys from the background colour it detects on the borders
@@ -288,13 +289,14 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
     Public because `video-canvas` normalizes a still's background through this
     exact matte, so the canvas and `video-frames` agree by construction.
     `decontam` is the engine's edge decontamination pass (`extract.remove_chroma_background`);
-    what it did comes back under `decontam` in the stats.
+    what it did comes back under `decontam` in the stats. `decontam_history` is a clip's record of
+    its last frame for the video fit, handed on to the pass.
     """
     from sprite_gen.frames.extract import detect_background_key_rgb, remove_chroma_background
 
     target = KEY_TARGETS[kind]
     if background_key is None:
-        painted = detect_background_key_rgb(image, target)
+        painted = detect_background_key_rgb(image, target, _EXTRACT_KEY_THRESHOLD)
     else:
         painted = (int(background_key[0]), int(background_key[1]), int(background_key[2]))
     extra: dict[str, Any] = {}
@@ -307,7 +309,8 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
     decontam_stats: dict[str, Any] = {}
     if decontam != "off":
         extra.update(decontam=decontam, decontam_fit=decontam_fit, decontam_palette=decontam_palette,
-                     decontam_stats=decontam_stats, decontam_edge_band=decontam_edge_band)
+                     decontam_stats=decontam_stats, decontam_edge_band=decontam_edge_band,
+                     decontam_history=decontam_history)
     # the colour detected above, not a second detection of the same borders
     result = remove_chroma_background(
         image, target, _EXTRACT_KEY_THRESHOLD, _EXTRACT_FRINGE_THRESHOLD, _EXTRACT_FRINGE_DELTA,
@@ -340,6 +343,7 @@ def cutout(
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_edge_band: int = 0,
+    decontam_history: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Cut a uniform-background imported image to a clean transparent RGBA PNG.
 
@@ -351,7 +355,8 @@ def cutout(
     where it applies and records why not elsewhere; "palette" demands it and fails where
     it cannot run (the white matte has no key colour to remove). `decontam_edge_band`
     keeps what the matte left transparent along the top, left and right edges
-    transparent (`video-frames` passes its edge band). Returns a stats dict. Raises SystemExit if the key is unknown, the background cannot be
+    transparent (`video-frames` passes its edge band), and `decontam_history` carries a
+    clip's last frame to the next (`video-frames` keeps one per clip). Returns a stats dict. Raises SystemExit if the key is unknown, the background cannot be
     located, or any transparent pixel keeps non-zero RGB (No Silent Fallback).
     """
     if key not in ("auto", "white", "magenta", "green"):
@@ -367,7 +372,8 @@ def cutout(
         result, route_stats = extract_route(image, route, spill_max_fraction=spill_max_fraction,
                                             spill_min_tint=spill_min_tint, spill_require_hue=spill_require_hue,
                                             decontam=decontam, decontam_fit=decontam_fit,
-                                            decontam_palette=decontam_palette, decontam_edge_band=decontam_edge_band)
+                                            decontam_palette=decontam_palette, decontam_edge_band=decontam_edge_band,
+                                            decontam_history=decontam_history)
     else:
         if decontam == "palette":
             raise SystemExit(f"cutout: --decontam {decontam} needs a chroma key background (magenta/green); "

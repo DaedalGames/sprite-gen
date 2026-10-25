@@ -53,6 +53,7 @@ from sprite_gen.frames.extract import remove_chroma_background
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen.util.resample import resize_cell
+from sprite_gen.util.console import utf8_streams
 
 CHROMA_KEYS = {
     "magenta": (255, 0, 255),
@@ -447,6 +448,7 @@ def _parse_grid(value: str) -> tuple[int, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sheet", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)

@@ -214,7 +214,7 @@ def test_module_entrypoint_reports_and_signals_a_failed_loop(tmp_path):
     spec = ramp_scene(tmp_path)
     out = tmp_path / "inspection.json"
     result = subprocess.run([sys.executable, "-m", "sprite_gen.scene.inspect_scene", "--spec", str(spec), "--out", str(out), "--require-loop"],
-                            capture_output=True, text=True, check=False)
+                            capture_output=True, encoding="utf-8", check=False)
     assert result.returncode == 1, result.stderr
     report = json.loads(result.stdout)
     assert report == json.loads(out.read_text())

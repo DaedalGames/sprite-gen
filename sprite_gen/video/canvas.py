@@ -44,6 +44,7 @@ from sprite_gen._deps import np
 from sprite_gen.frames.cutout import KEY_TARGETS, extract_route
 from sprite_gen.frames.extract import is_border_key_candidate
 from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.util.console import utf8_streams
 
 SHAPE_SQUARE = "square"
 SHAPE_TALL = "tall"
@@ -397,6 +398,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog="sprite-gen video-canvas", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

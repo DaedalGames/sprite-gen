@@ -155,6 +155,7 @@ def test_region_discovery_refuses_blank_input():
         auto_motion.discover([Image.new('RGBA', (100, 100)) for _ in range(6)], reference_index=0)
 
 
+@pytest.mark.slow
 def test_actual_cli_auto_selects_corrects_and_verifies_animation(tmp_path):
     source = [walker(k) for k in range(73)]
     keyed = tmp_path/'keyed'

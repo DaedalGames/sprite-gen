@@ -23,13 +23,13 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.util.hexcolor import format_hex, parse_hex
 from sprite_gen.curate.anchor import anchor_ref_rel
 from sprite_gen.frames.extract import color_distance
-from sprite_gen.compose.layers import require_valid_layer_request
 from sprite_gen.spec.layout import TAXONOMY, guide_rel, prompt_rel, raw_rel
 from sprite_gen.spec.subject import SUBJECTS
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 
 from .base import flags_over_spec
+from sprite_gen.util.console import utf8_streams
 
 
 # Default safe margin is proportional to the cell dimension (floored), not a fixed
@@ -502,12 +502,6 @@ def normalize_states(raw: dict[str, Any] | None, bodies: list[Body] | None = Non
             "action": str(entry.get("action") if raw and "action" in entry
                           else defaults.get(state, DEFAULT_STATES.get(state, {}).get("action", state))),
         }
-        # A row's track kind is request truth (docs/layer-tracks.md §3.2) and is
-        # carried only when declared: an undeclared row IS `base`, and writing
-        # that default into every request would turn every new run into a layer
-        # run (`has_layer_contract`).
-        if entry.get("track") is not None:
-            normalized[state]["track"] = entry["track"]
     return normalized
 
 
@@ -515,17 +509,16 @@ def normalize_states(raw: dict[str, Any] | None, bodies: list[Body] | None = Non
 # `sprite-request.json` from these lists rather than passing the request through,
 # so anything outside them is dropped — which is how `states.<state>.takes`, a
 # documented first-class key, ended up having to be hand-written into the file
-# after the fact (docs/layer-tracks.md §2 B1). The lists are the one place that
-# rule is written down, and `dropped_key_notes` makes every drop observable
-# instead of silent.
+# after the fact. The lists are the one place that rule is written down, and
+# `dropped_key_notes` makes every drop observable instead of silent.
 REQUEST_KEYS_CARRIED = ("cell", "states", "style", "subject",
-                        "directions", "fit", "rig", "layers", "body_plan")
+                        "directions", "fit", "body_plan")
 # Written by prepare itself, from CLI flags and from measuring the base image. An
 # incoming copy is not carried either, but it is restated rather than lost, so the
 # note names it separately: `character` comes from --character-id/--description/
 # --base-image, `chroma_key` from --chroma-key + the base image.
 REQUEST_KEYS_REGENERATED = ("version", "kind", "engine", "character", "chroma_key", "layout")
-STATE_KEYS_CARRIED = ("frames", "fps", "loop", "action", "track")
+STATE_KEYS_CARRIED = ("frames", "fps", "loop", "action")
 
 
 def dropped_key_notes(raw_request: dict[str, Any]) -> list[str]:
@@ -1058,14 +1051,6 @@ def _run(args: argparse.Namespace):
     if directions:
         states = ensure_direction_anchors(directions, states)
     cell = normalize_cell(dict(raw_request.get("cell", {})), CELL_SIZE_DEFAULT, None)
-
-    # Layer keys are carried explicitly (docs/layer-tracks.md §7) and validated
-    # before the run dir is touched: the layer validator is filesystem-free, so a
-    # malformed rig fails with every violation at once instead of leaving a
-    # scaffolded run whose first bake is the thing that reports it.
-    layer_keys = {key: raw_request[key] for key in ("rig", "layers")
-                  if raw_request.get(key) is not None}
-    require_valid_layer_request({"cell": cell, "states": states, **layer_keys})
     for note in dropped_key_notes(incoming):
         print(f"[prepare] {note}", file=sys.stderr)
 
@@ -1113,9 +1098,6 @@ def _run(args: argparse.Namespace):
     fit = dict(raw_request.get("fit", {}))
     if fit:
         request["fit"] = fit
-    # Optional layer declaration, validated above. Absent = a non-layer run whose
-    # emitted key set is exactly what it was before the feature existed.
-    request.update(layer_keys)
 
     for directory in (out_dir / "references" / "layout-guides", out_dir / "prompts",
                       out_dir / "raw", out_dir / "frames"):
@@ -1160,6 +1142,7 @@ RETIRED_PP_MESSAGE = (
 
 
 def main() -> int:
+    utf8_streams()
     parser = _build_parser()
     args = parser.parse_args()
     if getattr(args, "_retired_pp", False):

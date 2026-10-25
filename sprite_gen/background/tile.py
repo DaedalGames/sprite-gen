@@ -28,7 +28,8 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock
+from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock, same_folder
+from sprite_gen.util.console import utf8_streams
 
 
 MAX_CANDIDATES = 32
@@ -347,7 +348,8 @@ def inspect_tile_xy(image: Image.Image) -> dict[str, Any]:
 
 
 def _same_file(a: Path, b: Path) -> bool:
-    return a == b or (a.exists() and b.exists() and a.samefile(b))
+    """One path, or one file by identity (`runio.same_folder`): the PNG and its report may both be new paths."""
+    return a == b or same_folder(a, b)
 
 
 def _validate_paths(source: Path, out: Path, report: Path) -> None:
@@ -426,6 +428,7 @@ def run(**kwargs: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

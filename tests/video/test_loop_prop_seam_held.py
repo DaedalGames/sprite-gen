@@ -119,6 +119,7 @@ def staffless(staffless_cut, tmp_path) -> tuple[Path, dict]:
     return root, json.loads((root / "out" / "loop.loop.report.json").read_text())
 
 
+@pytest.mark.slow
 def test_motion_auto_takes_two_steps_where_the_held_staff_closes_only_there(held):
     root, report = held
     cycle = report["cycle"]
@@ -144,6 +145,7 @@ def test_motion_auto_takes_two_steps_where_the_held_staff_closes_only_there(held
     assert not any("held part" in line for line in report["jolt"]["warnings"])
 
 
+@pytest.mark.slow
 def test_a_held_part_that_swings_with_the_step_is_cut_one_step_long(tmp_path):
     """A pennant at the tip sways on a beat of its own (53 frames) and pops at the first choice; the
     staff stands straight above the hand and swings with the step below it, so a one-step cut whose
@@ -159,6 +161,7 @@ def test_a_held_part_that_swings_with_the_step_is_cut_one_step_long(tmp_path):
     assert _foot_miss(cycle["start"], cycle["length"], STEP) <= 0.5
 
 
+@pytest.mark.slow
 def test_a_held_part_no_window_closes_is_kept_on_the_top_bands_choice_and_warned(tmp_path):
     """The foot swings every 37 frames: neither one step nor two closes it. The cut is the top band's,
     and the jolt says the held part does not close."""
@@ -171,6 +174,7 @@ def test_a_held_part_no_window_closes_is_kept_on_the_top_bands_choice_and_warned
     assert len(lines) == 1 and "right side" in lines[0]
 
 
+@pytest.mark.slow
 def test_an_explicit_max_len_is_not_widened_by_a_window_two_steps_long(tmp_path):
     """--max-len 25 is the caller's ceiling: the windows two steps long (47-49 frames) that would close
     the staff are over it and are not read. The cut is the top band's, one step long, and the jolt says
@@ -358,6 +362,7 @@ def test_shape_rank_reads_no_held_side_when_the_first_choice_does_not_pop():
 
 # --- the set ----------------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is(held, staffless):
     """The loop cut two steps long is one cycle: it returns half way at its second step, which is no
     suspect (status `steps`), and it is resampled to the set's length like the rest — the set's length

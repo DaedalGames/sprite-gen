@@ -145,7 +145,6 @@ _LAUNCHED_ELSEWHERE = {
     "run_correction_loop.py",
     "unpack_atlas_run.py",
     "serve_curation.py",
-    "compose_layers.py",
     "recolor.py",
 }
 
@@ -157,7 +156,7 @@ def _run(args: list[str], *, numpy_blocked: bool, tmp_path: Path) -> subprocess.
         env["PYTHONPATH"] = os.pathsep.join(
             [str(tmp_path), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     return subprocess.run(
-        [sys.executable, *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
+        [sys.executable, *args], cwd=ROOT, env=env, capture_output=True, encoding="utf-8", timeout=180)
 
 
 def test_the_scanned_entrypoints_are_the_real_ones() -> None:

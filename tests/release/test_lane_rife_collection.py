@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from xml.etree import ElementTree
 
+import pytest
+
 from sprite_gen.video import rife
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,19 +83,20 @@ def _rife_less_env(tmp_path: Path) -> dict[str, str]:
 def _collect(tmp_path: Path, name: str, env: dict[str, str]) -> dict[str, list[bool]]:
     out = tmp_path / f"{name}.json"
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-qq", "-p", "rife_probe", "-p", "no:cacheprovider"],
+        [sys.executable, "-m", "pytest", "--collect-only", "--full", "-qq", "-p", "rife_probe", "-p", "no:cacheprovider"],
         cwd=ROOT,
         env={**env, "RIFE_PROBE_OUT": str(out)},
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 0, f"collection with {name} failed:\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     return json.loads(out.read_text())
 
 
+@pytest.mark.slow
 def test_every_test_rife_decides_is_marked_real_rife(tmp_path):
     (tmp_path / "rife_probe.py").write_text(PROBE)
-    # The whole suite, as the lane collects it: no PYTEST_ADDOPTS selecting a part.
+    # The whole suite, as the lane collects it: `--full`, and no PYTEST_ADDOPTS selecting a part.
     base = _rife_less_env(tmp_path)
     base["PYTHONPATH"] = os.pathsep.join(filter(None, [str(tmp_path), base.get("PYTHONPATH")]))
     stand_in = _stand_in(tmp_path / "with")
@@ -173,6 +176,7 @@ def test_in_a_skipped_file():
 '''
 
 
+@pytest.mark.slow
 def test_the_rife_less_run_fails_each_unmarked_skip_by_name(tmp_path):
     probes = {"test_guards.py": GUARDS, "test_guarded_file.py": GUARDED_FILE}
     for name, text in probes.items():
@@ -187,7 +191,7 @@ def test_the_rife_less_run_fails_each_unmarked_skip_by_name(tmp_path):
         cwd=ROOT,
         env=_rife_less_env(tmp_path),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     output = f"{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}"
     assert report.is_file(), output

@@ -14,9 +14,9 @@ Vulkan). The image holds the whole suite's tools as the Linux lane's host does (
 node, git). Then, on one T4:
 
   - the install's check frame on CUDA (`sprite-gen rife install --backend torch` again, SPRITE_GEN_RIFE_DEVICE=cuda);
-  - with --whole-suite, the whole suite in that environment, PyTorch in it, on CUDA (`pytest --rife-unmeasured`: the
-    tests marked real_rife skip, the binary not being reachable, and any other skip fails unless tests/conftest.py
-    names it, as in the Linux lane's RIFE-less run);
+  - with --whole-suite, the whole suite in that environment, PyTorch in it, on CUDA (`pytest --full --rife-unmeasured`:
+    the tests marked slow run too, the tests marked real_rife skip, the binary not being reachable, and any other skip
+    fails unless tests/conftest.py names it, as in the Linux lane's RIFE-less run);
   - every test marked torch_rife and not real_rife, on CUDA, none skipped. Those marked both set this machine's binary
     beside the torch backend: the Linux lane runs them.
 
@@ -126,7 +126,8 @@ def gates(sha: str, whole_suite: bool) -> dict:
              [f"{VENV}/bin/sprite-gen", "rife", "install", "--backend", "torch", "--dir", RIFE_DIR], env).returncode != 0:
         rec["why"] = "the install's check frame failed"
         return rec
-    pytest = [f"{VENV}/bin/python", "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider"]
+    # --full: every test, those marked slow too (a plain pytest is the fast bundle).
+    pytest = [f"{VENV}/bin/python", "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider", "--full"]
     if whole_suite and _step(steps, "the whole suite (PyTorch in the environment, on CUDA; the binary not reachable)",
                              [*pytest, "--basetemp", tempfile.mkdtemp(), "--rife-unmeasured"], env).returncode != 0:
         rec["why"] = "the whole suite failed"

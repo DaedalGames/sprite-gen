@@ -20,8 +20,9 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.spec.runio import atomic_write_text
-from sprite_gen.video import evidence, follow, repair, rife
+from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
+from sprite_gen.video import evidence, repair, rife, sway
+from sprite_gen.video import loop as loop_mod
 from sprite_gen.video.interpolation_quality import faults
 
 METRIC_VERSION = "same-sample-defects-v1"
@@ -134,7 +135,7 @@ class Loop:
         return {"artifacts": self.artifacts, "frames": len(self.frames), "cell": list(self.frames[0].size),
                 "timing": {"delay_ms": self.delay, "duration_ms": self.delay * len(self.frames) if self.delay else None},
                 "source_cut": self.meta.get("source_cut"), "producer": self.source_report.get("producer"),
-                "gait": self.source_report.get("gait"), "follow": "follow" in self.meta,
+                "gait": self.source_report.get("gait"), "follow": loop_mod.sway_recorded(self.meta),
                 "pixels_sha256": evidence.digest(b"".join(f.tobytes() for f in self.frames))}
 
 
@@ -147,7 +148,7 @@ def _measure(loop: Loop) -> dict[str, Any]:
     quality = [rife.smear(f, frames[k - 1], frames[(k + 1) % len(frames)]) for k, f in enumerate(frames)]
     body: dict[str, Any]
     try:
-        y, x, height, worn = follow.body_motion(frames)
+        y, x, height, worn = sway.body_motion(frames)
         body = {"x_px": x.tolist(), "y_px": y.tolist(), "height_px": height, "worn_px": worn}
     except ValueError as exc:
         body = {"unknown": str(exc)}
@@ -281,7 +282,7 @@ def run(**kwargs: Any) -> int:
         from sprite_gen.video import restoration, source
         origin = {k: kwargs.get(f"origin_{k}") for k in restoration.ARTIFACTS}
         restoration_mode = any(kwargs.get(k) is not None for k in (*source.INPUTS, "repair_evidence")) or any(origin.values())
-        protected = [p for row in paths.values() for p in row.values()]
+        protected: dict[str, Path] = {}
         if restoration_mode:
             inputs = source.input_paths(kwargs)
             # The origin is never guessed from the current baseline, not even on a first request.
@@ -292,12 +293,14 @@ def run(**kwargs: Any) -> int:
                 paths[side].update({k: Path(kwargs[f"{side}_{k}"]) for k in ("gif", "webp")})
             paths["origin"] = {k: Path(p) for k, p in origin.items()}
             evidence_path = Path(kwargs["repair_evidence"])
-            protected += [*inputs.values(), evidence_path, *inputs["source_frames_dir"].glob("*.png")]
-            protected += [p for row in paths.values() for p in row.values()]
+            protected.update({"--" + k.replace("_", "-"): p for k, p in inputs.items()})
+            protected.update({f"{p.name} in --source-frames-dir": p for p in inputs["source_frames_dir"].glob("*.png")})
+            protected["--repair-evidence"] = evidence_path
         elif any(kwargs.get(f"{s}_{k}") for s in paths for k in ("gif", "webp")):
             raise ValueError("playback comparison requires source inputs and repair evidence")
-        if any(output.resolve() == p.resolve() for p in protected):
-            raise ValueError("comparison report cannot overwrite an input artifact")
+        # The report is written once every artifact is read: no input is that file (`runio.refuse_overlap`).
+        refuse_overlap({**{f"--{side}-{k}": p for side, row in paths.items() for k, p in row.items()}, **protected},
+                       {"--report": output}, verb="video-loop-compare")
         if restoration_mode:
             a, ap = restoration.read_loop(paths["baseline"])
             b, bp = restoration.read_loop(paths["candidate"])

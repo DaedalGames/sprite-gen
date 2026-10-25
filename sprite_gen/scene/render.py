@@ -22,8 +22,10 @@ from PIL import Image
 
 from sprite_gen.scene.model import Scene, load_scene
 from sprite_gen.spec.assets import finite
-from sprite_gen.spec.runio import LOCK_FILENAME, acquire_run_dir_lock, atomic_write_set, relative_posix, release_run_dir_lock
+from sprite_gen.spec.runio import (LOCK_FILENAME, acquire_run_dir_lock, atomic_write_set, inside_folder, relative_posix,
+                                   release_run_dir_lock, same_folder)
 from sprite_gen.util.resample import resize_cell
+from sprite_gen.util.console import utf8_streams
 
 
 FORMATS = ("png", "mp4", "gif")
@@ -208,7 +210,7 @@ def encode_frames(work: Path, scene: Scene, formats: set, settings: dict):
 
 def _validate_output(output: Path, scene: Scene):
     # A scene output directory is dedicated; never overwrite source assets or scene specs.
-    if any(p == output or output in p.parents for p in map(Path, scene.source_fingerprints)):
+    if any(same_folder(p, output) or inside_folder(p, output) for p in map(Path, scene.source_fingerprints)):
         raise ValueError("output directory contains scene inputs; choose a separate output directory")
     if output.exists() and not output.is_dir():
         raise ValueError("scene output must be a directory")
@@ -326,6 +328,7 @@ def run(**kwargs):
 
 
 def main():
+    utf8_streams()
     parser = argparse.ArgumentParser(description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args()))

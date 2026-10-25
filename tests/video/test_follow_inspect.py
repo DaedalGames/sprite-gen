@@ -141,6 +141,22 @@ def test_the_loop_directory_is_read_and_not_written(tmp_path):
     assert snapshot(loop_dir) == followed
 
 
+def test_the_loop_directory_spelt_in_capitals_is_the_loop_directory(tmp_path):
+    """On a volume that ignores case, `LOOP` is `loop`: an out dir spelt so is the loop directory, or inside it."""
+    loop_dir = strip_dir(tmp_path/'loop')
+    if not (tmp_path/'LOOP').exists():
+        pytest.skip('대소문자를 가리는 볼륨 — 철자가 다르면 다른 폴더다')
+    as_cut = snapshot(loop_dir)
+    for inside in (tmp_path/'LOOP', tmp_path/'LOOP'/'inspect'):
+        try:
+            follow_inspect.inspect_loop(loop_dir, [CHEST], inside)
+            said = 'written'
+        except SystemExit as refusal:
+            said = str(refusal)
+        assert snapshot(loop_dir) == as_cut, f'{inside.name}: the inspection wrote into the loop directory ({said})'
+        assert 'is in the loop directory; an inspection writes nothing there' in said, said
+
+
 def test_inspecting_first_changes_nothing_video_follow_writes(tmp_path):
     inspected, plain = strip_dir(tmp_path/'inspected'), strip_dir(tmp_path/'plain')
     inspect(inspected, [CHEST], tmp_path/'out', on_fold='lower')
@@ -235,6 +251,7 @@ def test_each_region_has_its_gain_and_one_held_is_still_carried(tmp_path):
     assert [int(c.sum()) for c in changed] == [cell['changed_px'] for cell in record['cells']]
 
 
+@pytest.mark.slow
 def test_regions_are_recorded_in_the_order_given_and_cells_in_the_strips(tmp_path):
     reach = unit(tmp_path)
     crown = (66.0, 20.0, folding_at(1.755, reach), folding_at(1.755, reach))
@@ -259,6 +276,7 @@ def test_regions_are_recorded_in_the_order_given_and_cells_in_the_strips(tmp_pat
     assert len({tuple(box) for box in boxes}) == N and boxes[0][0] < boxes[1][0] and boxes[0][1] == boxes[1][1] < boxes[one['boards']['columns']][1]
 
 
+@pytest.mark.slow
 def test_what_was_read_names_the_evidence_and_another_cut_is_another(tmp_path):
     loop_dir = strip_dir(tmp_path/'loop')
     first = inspect(loop_dir, [CHEST], tmp_path/'a')
@@ -294,6 +312,7 @@ def test_what_was_read_names_the_evidence_and_another_cut_is_another(tmp_path):
     assert noted['cells'] == first['cells'] and slower['follow']['dy_px'] != first['follow']['dy_px']
 
 
+@pytest.mark.slow
 def test_what_the_answer_is_asked_with_is_in_the_id_and_how_the_boards_are_drawn_is_not(tmp_path):
     loop_dir = strip_dir(tmp_path/'loop')
     base = inspect(loop_dir, [CHEST], tmp_path/'base')
@@ -424,17 +443,19 @@ def test_a_part_that_crosses_an_ellipse_is_shown_and_not_judged(tmp_path):
 
 
 def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
-    description, add_arguments, run = cli.COMMANDS['video-follow-inspect']
+    verb, run = cli.VERB_ALIASES['video-follow-inspect']       # the old name, kept: the new verb's arguments
+    description, add_arguments, _ = cli.COMMANDS[verb]
     assert run is follow_inspect.run and 'nothing moved' in description
     loop_dir, out = strip_dir(tmp_path/'loop'), tmp_path/'out'
     asked = ['--loop-dir', str(loop_dir), '--region', '60,72,18,16', '--region', '66,20,9,9', '--gain', '50', '--on-fold', 'lower',
              '--freq', '2.5', '--zeta', '0.5']
     parsers = [argparse.ArgumentParser(), argparse.ArgumentParser()]
-    cli.COMMANDS['video-follow'][1](parsers[0])
+    cli.COMMANDS[cli.VERB_ALIASES['video-follow'][0]][1](parsers[0])
     add_arguments(parsers[1])
     followed, inspected = vars(parsers[0].parse_args(asked)), vars(parsers[1].parse_args([*asked, '--out-dir', str(out)]))
-    assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == {'board'}
-    assert {key: inspected[key] for key in followed if key != 'board'} == {key: value for key, value in followed.items() if key != 'board'}
+    own = {'board', 'frames', 'out', 'fps', 'reference'}  # video-sway's own: its board, and the frames path beside the loop directory
+    assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == own
+    assert {key: inspected[key] for key in followed if key not in own} == {key: value for key, value in followed.items() if key not in own}
     capsys.readouterr()
     assert cli.main(['video-follow-inspect', *asked, '--out-dir', str(out), '--columns', '6']) == 0
     printed, said = capsys.readouterr()

@@ -14,6 +14,7 @@ skip 사유를 남긴다.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,8 @@ from sprite_gen.effects.breathe import (MAX_ROW_STRAIN, anatomy_fingerprint,  # 
                                 row_strain)
 from sprite_gen.frames.extract import solid_alpha_bbox  # noqa: E402
 from sprite_gen.serve.serve_curation import CURATOR_DIR  # noqa: E402
-from tests.effects.test_breathe import CFG, _dome, _humanoid, _key, _small_outlined, _winged  # noqa: E402
+from tests.effects.test_breathe import (CFG, _cut_bust, _dome, _humanoid, _key, _outlined_figure,  # noqa: E402
+                                        _small_outlined, _winged)
 
 CURATOR_BREATHE = CURATOR_DIR / "src" / "breathe.js"
 PHASES = [i / 12 for i in range(12)]
@@ -95,8 +97,11 @@ def _rgba(image):
     (_dome, {"depth_x": 0.12}),
     (_dome, {"depth": 0.10, "depth_x": 0.0}),
     (_dome, {"depth": 0.10, "torso_half": 6}),
+    # 큰 도트 그림 — 다듬기·부속 보호·행 사상이 수백 줄에서 돈다. 굽기를 numpy 로 바꿔도 미러(바꾸지
+    # 않은 화소 순회)와 바이트가 같은지 여기서 본다.
+    (_outlined_figure, {}),
 ], ids=["humanoid", "winged", "small-outlined-thinning",
-        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band"])
+        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band", "outlined-figure"])
 def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path):
     src = build()
     cfg = {**CFG, **overrides}
@@ -119,7 +124,7 @@ def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path
     harness.write_text(HARNESS, encoding="utf-8")
 
     proc = subprocess.run([shutil.which("node"), str(harness), str(payload_path)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js_frames = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -162,7 +167,7 @@ def test_the_mirror_refuses_exactly_what_the_bake_refuses(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -173,6 +178,45 @@ def test_the_mirror_refuses_exactly_what_the_bake_refuses(tmp_path):
             f"미러는 {'거부' if not got['ok'] else '통과'} — 계약이 한쪽에만 있다")
         if not got["ok"]:
             assert got["refused"], f"BreatheRefused 가 아닌 예외로 죽었다: {got['message']}"
+
+
+def _wording(message: str) -> str:
+    """거절 문구에서 두 쪽이 같아야 하는 부분 — 굽기만 붙이는 머리말과 콘텐츠 상자를 뺀다."""
+    return re.sub(r" \(셀 [^)]*\)", "", message.removeprefix("breathe: "))
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
+@pytest.mark.parametrize("touch", [True, False], ids=["border", "off-border"])
+def test_the_mirror_words_a_clip_as_the_bake_does(touch, tmp_path):
+    """미러의 거절 문구도 굽기와 같다 — 나간 변과 변별 개수, 그 변이 그림 자체의 테두리면 smooth 안내.
+    큐레이터 미리보기가 굽기와 다른 까닭을 말하면 사용자는 둘 중 어느 말을 믿을지 모른다."""
+    src = _cut_bust(touch)
+    cfg = dict(CFG)
+    cfg["anatomy"] = freeze_anatomy(src, cfg, _key())
+    said = {}
+    for phase in PHASES:
+        try:
+            phase_frame(src, cfg, phase)
+        except SystemExit as exc:
+            said[phase] = str(exc)
+    assert said, "이 픽스처는 굽기가 거부하는 위상을 가져야 의미가 있다"
+
+    payload = {
+        "script": str(CURATOR_BREATHE), "width": src.width, "height": src.height,
+        "cfg": {"depth": cfg["depth"], "breaths": cfg["breaths"], "lag": cfg["lag"], "anatomy": cfg["anatomy"]},
+        "cases": [{"phase": p, "rgba": _rgba(src)} for p in said],
+        "out": str(tmp_path / "js.json"),
+    }
+    (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
+    proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
+    assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
+    js = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
+    for (phase, message), got in zip(said.items(), js):
+        assert not got["ok"] and got["refused"], f"위상 {phase:.4f}: 굽기는 거부했는데 미러는 {got}"
+        assert _wording(got["message"]) == _wording(message), f"위상 {phase:.4f}"
+    assert ("--mode smooth" in message) == touch
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
@@ -216,7 +260,7 @@ def test_the_mirror_matches_on_frames_other_than_the_frozen_one(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     js = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))
 
@@ -262,7 +306,7 @@ def test_the_mirror_refuses_the_same_strain_cap(tmp_path):
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))[0]
     assert not got["ok"] and got["refused"], \
@@ -297,7 +341,7 @@ def test_the_mirror_refuses_a_stale_anatomy_against_a_manual_rigid_row(tmp_path)
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "harness.cjs").write_text(HARNESS, encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     for phase, got in zip(PHASES, json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))):
         assert not got["ok"] and got["refused"], (
@@ -310,7 +354,7 @@ def test_the_mirror_refuses_a_stale_anatomy_against_a_manual_rigid_row(tmp_path)
                       "rigid_row": override, "anatomy": fresh["anatomy"]}
     (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
-                           str(tmp_path / "payload.json")], capture_output=True, text=True)
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
     assert proc.returncode == 0
     for phase, got in zip(PHASES, json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))):
         assert got["ok"], f"갱신 후에도 거부한다: {got['message']}"
@@ -365,7 +409,7 @@ def test_the_mirror_refuses_a_stale_reference_frame(tmp_path):
                 "anatomy": cfg["anatomy"]},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (
@@ -379,7 +423,7 @@ def test_the_mirror_refuses_a_stale_reference_frame(tmp_path):
                 "anatomy": cfg["anatomy"]},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                   capture_output=True, text=True, check=True)
+                   capture_output=True, encoding="utf-8", check=True)
     assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["ok"], \
         "기준 프레임 그대로인데 거부한다 — 프리뷰가 상시 죽는다"
 
@@ -424,7 +468,7 @@ def test_the_mirror_refuses_when_it_cannot_verify(tmp_path):
                 "anatomy": frozen},
         "out": str(tmp_path / "out.json")}), encoding="utf-8")
     proc = subprocess.run([shutil.which("node"), str(harness), str(CURATOR_BREATHE), str(src_json)],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8")
     assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (

@@ -56,7 +56,6 @@ import argparse
 import hashlib
 import json
 import math
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -64,7 +63,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import evidence as evidence_mod
@@ -73,6 +72,7 @@ from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video.repair import ALPHA_SOLID
+from sprite_gen.util.console import utf8_streams
 
 PROG = "video-stop"
 KIND = "stop"
@@ -100,13 +100,31 @@ class StopRefused(ValueError):
         self.record = record
 
 
+def _strip_beside(meta_path: Path) -> Path:
+    """The strip a loop's sidecar `<name>.strip.json` names: `<name>.strip.png` beside it."""
+    return meta_path.with_name(meta_path.name[: -len(".json")] + ".png")
+
+
+def _refuse_overlap(frames_dir: Path, files: list[Path], loop_meta: Path, out_dir: Path, name: str, target: Path,
+                    report_given: bool) -> None:
+    """A stop never writes over, moves or deletes what it reads: `--frames-dir` and every frame found in it, `--loop`
+    and the strip beside it, each with every link or folder its path looks up, against the files it writes in
+    `--out-dir` and its report (`runio.refuse_overlap`). Refused before anything is made."""
+    meta = Path(loop_meta).expanduser()
+    inputs = {"--frames-dir": Path(frames_dir), **{f"{f.name} in --frames-dir": f for f in files},
+              "--loop": meta, f"{_strip_beside(meta).name} beside --loop": _strip_beside(meta)}
+    outputs = {f"{n} in --out-dir": out_dir / n for n in (f"{name}.strip.png", f"{name}.strip.json", f"{name}.gif", f"{name}.webp")}
+    outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
+    refuse_overlap(inputs, outputs, verb=PROG)
+
+
 def read_loop(meta_path: Path) -> tuple[dict[str, Any], list[Image.Image], str]:
     """The loop's sidecar, its cells and its strip's sha256. A loop the stop cannot leave from is refused."""
     meta_path = Path(meta_path).expanduser()
     if not meta_path.name.endswith(".strip.json"):
         raise SystemExit(f"{PROG}: --loop {meta_path}: a loop strip's sidecar, <name>.strip.json")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    strip_path = meta_path.with_name(meta_path.name[: -len(".json")] + ".png")
+    strip_path = _strip_beside(meta_path)
     data = strip_path.read_bytes()
     strip = Image.open(strip_path).convert("RGBA")
     n, w, h = int(meta["frames"]), int(meta["w"]), int(meta["h"])
@@ -359,6 +377,7 @@ def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "
     if len(files) < start + length:
         raise SystemExit(f"{PROG}: {frames_dir} holds {len(files)} frames; the loop was cut from frames {start} to "
                          f"{start + length - 1} of its clip — give the clip's keyed frames (video-frames …/keyed)")
+    _refuse_overlap(frames_dir, files, loop_meta, out_dir, name, target, report_path is not None)
     identity = evidence_mod.source_identity(files, fps)
     same_source = identity["sha256"] == cut["source"].get("sha256")
     base: dict[str, Any] = {
@@ -428,8 +447,7 @@ def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "
     gif_path, webp_path = out_dir / f"{name}.gif", out_dir / f"{name}.webp"
     ms = max(20, round(1000 / fps))
     save_clean_gif(stop_cells, gif_path, duration_ms=ms, loop=None, alpha_threshold=128)
-    loop_mod.write_webp(stop_cells, webp_path, delay_ms=ms, workdir=out_dir / ".webp-frames", loop=1)
-    shutil.rmtree(out_dir / ".webp-frames", ignore_errors=True)
+    loop_mod.write_webp(stop_cells, webp_path, delay_ms=ms, loop=1)
     shown_runs = loop_mod.shown_runs(stop_cells)
     gif = loop_mod.verify_animation(gif_path, expect_frames=shown_runs, check_stale=False, expected_loop=None)
     webp = loop_mod.verify_animation(webp_path, expect_frames=shown_runs, check_stale=True, expected_loop=1)
@@ -487,6 +505,7 @@ def run(**kwargs: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_streams()
     parser = argparse.ArgumentParser(prog=f"sprite-gen {PROG}", description=__doc__)
     add_arguments(parser)
     return run(**vars(parser.parse_args(argv)))

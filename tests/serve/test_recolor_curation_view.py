@@ -188,6 +188,7 @@ def test_a_missing_sheet_is_reported_not_dropped(baked_run: Path) -> None:
     assert missing["present"] is False and missing["url"] is None
 
 
+@pytest.mark.slow
 def test_the_pick_round_trips_through_the_view_save_route(baked_run: Path) -> None:
     assert _post_curation(baked_run, {"recolor": {"picked": "moss"}}) == 200
     assert recolor_pick(load_curation(baked_run)) == "moss"
@@ -198,6 +199,7 @@ def test_the_pick_round_trips_through_the_view_save_route(baked_run: Path) -> No
     assert recolor_pick(load_curation(baked_run)) is None
 
 
+@pytest.mark.slow
 def test_a_save_that_does_not_author_the_pick_carries_it_over(baked_run: Path) -> None:
     """A view on a run with no variant section omits the field — that must read as
     "untouched", not as "cleared" (same carry-over contract as `anchors`)."""

@@ -137,6 +137,28 @@ def _match_costs(reference, moving, center, radius):
     return 1 - product / np.maximum(1e-10, denominator), xs, ys
 
 
+def track_box(frames: list[Image.Image], box: tuple[int, int, int, int], radius: int) -> np.ndarray:
+    """Per frame, how far the content of `box` (x0, y0, x1, y1 in frames[0]) lies from where it is in frames[0], across
+    and down, in whole px: the masked NCC `discover` tracks with, at full size, searched within `radius` px each way.
+
+    Each frame is cut to the box grown by the radius before it is read, so a large frame costs what its box does.
+    ValueError where the box holds too little body to match, or where a match reaches the edge of the search."""
+    x0, y0, x1, y1 = box
+    width, height = frames[0].size
+    cut = (max(0, x0 - radius), max(0, y0 - radius), min(width, x1 + radius), min(height, y1 + radius))
+    inner = (x0 - cut[0], y0 - cut[1], x1 - cut[0], y1 - cut[1])
+    if inner[2] <= inner[0] or inner[3] <= inner[1] or x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+        raise ValueError(f"box {box} is not inside the {width}x{height} frame")
+    reference = _reference(motion_anchor._features(frames[0].crop(cut)), inner)
+    if reference is None:
+        raise ValueError(f"box {box} holds too little body to match")
+    moves = []
+    for frame in frames:
+        shift, _ = _match(reference, motion_anchor._features(frame.crop(cut)), (0, 0), radius)
+        moves.append((-float(shift[0]), -float(shift[1])))
+    return np.asarray(moves)
+
+
 def discover(frames: list[Image.Image], *, reference_index: int) -> tuple[list, dict]:
     if len(frames) < 6 or any(im.mode != 'RGBA' or im.size != frames[0].size for im in frames):
         raise ValueError("automatic motion anchor needs at least six equally sized RGBA frames")

@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 name = "sprite-gen"
 # Release discipline: keep this package metadata version synchronized with
 # SKILL.md's `version:` field in the same release commit.
-version = "2.45.2"
+version = "3.2.0"
 description = "Component-row pipeline for clean 2D game sprites and animation atlases"
 readme = "README.md"
 license = "Apache-2.0"
@@ -80,9 +80,12 @@ timeout = 120
 # reachable, and `scripts/linux_lane.sh --rife-only` runs exactly the marked tests (`-m real_rife`).
 # Another names a test of the torch backend: skipped where PyTorch or the rife-v4.6 model is missing, run by
 # the lanes with none skipped (`-m torch_rife`, on SPRITE_GEN_RIFE_DEVICE; docs/release.md).
+# The last names a slow test: a plain `pytest` is the fast bundle, which tests/conftest.py makes by
+# deselecting the marked tests, and `pytest --full` runs every test, as the release lane does.
 markers = [
     "real_rife: runs the real rife-ncnn-vulkan; skipped where none is reachable, run by `scripts/linux_lane.sh --rife-only`",
     "torch_rife: runs RIFE's torch backend; skipped where PyTorch or the model is missing, run by the lanes with `-m torch_rife`",
+    "slow: a case takes 1 s or more, or the function's cases 5 s or more together (an 8-core M1); deselected unless `pytest --full`",
 ]
 
 # The pipeline ships an importable sprite_gen package. The canonical invocation is the
@@ -109,4 +112,4 @@ include = ["sprite_gen*"]
 # not feared: adding curator/src/deep/new.js under the old patterns built a wheel without it.
 # `curator/**/*` derives the answer from the filesystem, the same fix as packages.find above.
 [tool.setuptools.package-data]
-sprite_gen = ["serve/curator/**/*", "serve/composer/**/*", "audio/*.mjs"]
+sprite_gen = ["serve/curator/**/*", "serve/composer/**/*", "audio/*.mjs", "video/*.mjs"]

@@ -1169,8 +1169,9 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     frames side by side are made from each other and melt the legs. A group whose made drawings carry
     a shared interpolation-quality fault — a ghost too, on its own coverage, where the screen reads
     the loop — keeps every frame it would take, as filmed, and nothing is made from or beside them
-    (`refused`); a made drawing that cross-fades two drawings inside its silhouette is still taken,
-    its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
+    (`refused`), and a drawing of it the loop as it plays still reads at or over `limit` off the flow is
+    `unfixed`, with the faults that refused it (`_refused_left`); a made drawing that cross-fades two drawings inside its
+    silhouette is still taken, its round naming it (`look`). `interpolate` may be None: a ghost then gives way to the clean frame
     beside it, and the flow search stops at the first group it would make, naming it (`unmade`). The
     flow is read again after each group, on the union box of the original loop. Then, on the loop as the rounds left
     it, the eased retime (`why` ease, `_ease`; `ease` false reads the rush and makes nothing): the worst rush
@@ -1269,7 +1270,146 @@ def repair_jumps(frames: list[Image.Image], interpolate: Interpolate | None, *, 
     if record["surge"] is not None:
         later = _flow(out, box)
         record["surge_after"] = next((_said_surge(s, later) for s in _surges(later)), None)
+    if refused:
+        record["unfixed"] = [*record["unfixed"], *_refused_left(out, box, record["rounds"], limit)]
     return out, record
+
+
+def _refused_left(frames: list[Image.Image], box: tuple[int, int, int, int], rounds: list[dict[str, Any]],
+                  limit: float) -> list[dict[str, Any]]:
+    """The drawings of the flow groups the rounds refused that the loop as it now plays still reads at or over `limit` off
+    its flow: a group refused keeps its frames as filmed, so a jump is left there. Each as `flow_targets` names a drawing
+    `unfixed` — its frames and its reading (`off`, `turn`, `into`, `out`, `window`), here on the loop as it plays — and
+    the faults that refused its group (`refused`)."""
+    flow = _flow(frames, box)
+    scores = _drawing_scores(flow)
+    faults_of = {t: r["faults"] for r in rounds if r["why"] == "flow" and r["outcome"] == "rejected" for t in r["frames"]}
+    left = []
+    for d, run in enumerate(flow["runs"]):
+        hit = [t for t in run if t in faults_of]
+        if not hit or scores["off"][d] < limit:
+            continue
+        left.append({"frames": run, **{k: round(float(scores[k][d]), 4) for k in ("off", "turn", "into", "out")},
+                     "window": [round(v, 4) for v in flow["fractions"][int(scores["window"][d])]], "refused": faults_of[hit[0]]})
+    return left
+
+
+# --- the seam bridge (docs/loop-repair.md section 2, "The seam bridge") -------------------------------------------
+
+# A loop that is not a walk — an idle, an action cut whole — is not read for its flow: an idle's blinks and half-shut
+# eyes leave the walk's flow, and the flow repair would make them again. Its wrap alone is read, on the frames as they
+# play (`loop.cell_features`, the seam gate's own thumbnail): the step from its last frame to its first against the mean
+# of the SURGE_AROUND steps either side of it. A wrap over the gate's limit there jumps, and the frames round it are made
+# again by RIFE between the frames either side, the fewest first.
+BRIDGE_WIDTHS = (1, 2, 4)  # frames made round the wrap: ceil(m / 2) before it and floor(m / 2) after
+BRIDGE_MIN_FRAMES = 2 * SURGE_AROUND + max(BRIDGE_WIDTHS) + 2  # the widest stretch and the steps either side, none shared
+
+
+def bridge_run(width: int, count: int) -> list[int]:
+    """The frames a bridge `width` frames wide makes round the wrap of a loop `count` frames long, in play order."""
+    return [*range(count - (width + 1) // 2, count), *range(width // 2)]
+
+
+def _ring(flat: np.ndarray) -> np.ndarray:
+    """A loop's steps as it plays, on its frames' features: `ring[k]` from frame k to the next, the last into the first."""
+    return np.abs(np.roll(flat, -1, axis=0) - flat).mean(axis=1)
+
+
+def _around(ring: np.ndarray, first: int, last: int) -> float:
+    """The mean of the SURGE_AROUND steps before step `first` and after step `last` of a loop's steps (`_ring`)."""
+    n = len(ring)
+    near = [(first - 1 - i) % n for i in range(SURGE_AROUND)] + [(last + 1 + i) % n for i in range(SURGE_AROUND)]
+    return max(float(ring[near].mean()), 1e-12)
+
+
+def seam_bridge(frames: list[Image.Image], interpolate: Interpolate | None, *, limit: float, hold: int | None,
+                facing: str = "right", skip: str | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+    """The seam bridge (docs/loop-repair.md section 2, "The seam bridge") of a loop that is not a walk.
+
+    The wrap jumps where its step is over `limit` (the seam gate's) times the mean of the SURGE_AROUND steps either side
+    of it, and over `loop.PIN_NOISE_MAX`, the re-render noise of a pinned first frame: a near-still loop moves so
+    little a step that its ratios are large where nothing shows. Read on the frames as they play, cropped to their union
+    box, on the seam gate's thumbnail (`loop.cell_features`). A loop drawn on twos or threes (`hold`, the cut's own,
+    `held.measure_cycle`) is not bridged: a frame made round the wrap would split a drawing, and a loop that changes its
+    drawing every other step reads the wrap against steps of nothing.
+
+    A wrap that jumps is bridged BRIDGE_WIDTHS frames at a time, the fewest first (`bridge_run`): each frame made by
+    `interpolate` between the frames either side of the run, at its own time (`between_time`), so the loop keeps its
+    length. Before a frame is made the straight line between the two (their thumbnails, mixed in steps of one) is read:
+    a run whose line leaves a step of the stretch from one to the other over `limit` times the mean of the steps
+    either side is not made, a reading RIFE's frames have not brought under it on any loop measured. A run is taken
+    where none of its frames carries an interpolation fault (`interpolation_quality.faults`, a ghost read where the
+    ghost screen reads the stretch and the steps either side) and, read again with them, every step of the stretch is
+    within `limit` times the mean of the steps either side; the first run taken ends the search. Where none is, the
+    loop is kept as filmed for the seam gate to judge. At most 1 + 2 + 4 frames are made.
+
+    `interpolate` None reads the wrap and stops at the first run to make (`unmade`). `skip` (why) reads nothing.
+    `facing` reads nothing here: it is recorded for the jump guard of `video-loop-compare` (`restoration.jump`)."""
+    from sprite_gen.video import loop as loop_mod  # loop imports this module
+
+    n = len(frames)
+    record: dict[str, Any] = {"reading": "seam", "limit": limit, "floor": loop_mod.PIN_NOISE_MAX, "around": SURGE_AROUND,
+                              "widths": list(BRIDGE_WIDTHS), "facing": facing, "replaced": [], "tries": [], "calls": 0}
+    if skip is not None:
+        record["skipped"] = skip
+        return frames, record
+    if n < BRIDGE_MIN_FRAMES:
+        record["skipped"] = f"a loop of {n} frames, under {BRIDGE_MIN_FRAMES}: no steps either side of the widest stretch"
+        return frames, record
+    box = loop_mod.cells_box(frames)
+    flat = loop_mod.cell_features(frames, box)
+    ring = _ring(flat)
+    wrap = float(ring[-1])
+    seam = wrap / _around(ring, n - 1, n - 1)
+    record.update(seam=round(seam, 4), wrap=round(wrap, 5), hold=hold)
+    if hold is not None and hold > 1:
+        record["skipped"] = "drawn on twos or threes: a frame made round the wrap would split a drawing"
+        return frames, record
+    if seam <= limit or wrap <= loop_mod.PIN_NOISE_MAX:
+        record["skipped"] = "the wrap reads as a step of the loop"
+        return frames, record
+    reads: bool | None = None
+    for width in BRIDGE_WIDTHS:
+        run = bridge_run(width, n)
+        a, b = (run[0] - 1) % n, (run[-1] + 1) % n
+        stretch = [(a + i) % n for i in range((b - a) % n)]
+        line = float(np.abs(flat[b] - flat[a]).mean()) / len(stretch) / _around(ring, stretch[0], stretch[-1])
+        tried: dict[str, Any] = {"width": width, "frames": run, "anchors": [a, b], "line": round(line, 4)}
+        record["tries"].append(tried)
+        if line > limit:
+            tried.update(outcome="rejected", rejected_for="line")
+            continue
+        if interpolate is None:
+            record["unmade"] = {k: tried[k] for k in ("frames", "anchors", "line")}
+            break
+        if reads is None:
+            # the ghost screen on the stretch and the steps either side, read once a frame is to be made
+            near = sorted({(a - SURGE_AROUND + i) % n for i in range(len(stretch) + 2 * SURGE_AROUND + 1)})
+            reads = bool(ghost_screen([frames[k] for k in near])["reads"])
+        out = list(frames)
+        made = []
+        for k in run:
+            t = between_time(a, k, b, n)
+            frame = interpolate(frames[a], frames[b], t)
+            record["calls"] += 1
+            if frame.mode != "RGBA" or frame.size != frames[k].size:
+                raise ValueError("repair interpolator must return an RGBA frame of the original size")
+            measure = {**smear(frame, frames[a], frames[b]), "outline_shift": outline_shift(frame, frames[a], frames[b]),
+                       "ghost": ghost(frame) if reads else None, "crossfade": crossfade(frame, frames[a], frames[b], t)}
+            made.append({"frame": k, "t": round(t, 4), "proposal": measure, "look": looks(measure),
+                         "faults": faults(measure) + ([] if frame.getchannel("A").getbbox() else ["empty"])})
+            out[k] = frame
+        after_ring = _ring(loop_mod.cell_features(out, box))
+        after = float(after_ring[stretch].max()) / _around(after_ring, stretch[0], stretch[-1])
+        wrong = sorted({f for m in made for f in m["faults"]})
+        tried.update(made=made, faults=wrong, look=sorted({w for m in made for w in m["look"]}), after=round(after, 4))
+        if wrong or after > limit:
+            tried.update(outcome="rejected", rejected_for="fault" if wrong else "seam")
+            continue
+        tried["outcome"] = "accepted"
+        record.update(replaced=run, width=width, seam_after=tried["after"])
+        return out, record
+    return frames, record
 
 
 # --- the jolt index (docs/loop-repair.md section 3) ------------------------------------------
@@ -1285,8 +1425,9 @@ HEAD_MEDIAN_FLOOR = 0.05  # % of body height: a median step below this is the tr
 # The top band's step into the loop's first frame, over the loop's median step, beyond which the
 # wrap pops (docs/loop-repair.md section 3, "The seam pop"). It sits between walks holding a part
 # that sways on its own beat and walks without one, on the cut as it plays and on the source frames
-# the cut is chosen from. Above it the cut is chosen again (`--anchor motion-auto`), and a pop that
-# stays is a warning line.
+# the cut is chosen from. Above it the cut is chosen again (`--anchor motion-auto`), and it is the
+# seam pop gate's default bound (`video-loop --seam-pop-max`): a loop that pops over it is refused,
+# with the gate off a warning line.
 SEAM_POP_REFERENCE = 10.0
 # The held side's seam (docs/loop-repair.md section 3, "The held side"): a held part that swings on
 # its own beat misses below its top too — under the hand, where the top band does not reach. Read
@@ -1383,6 +1524,15 @@ def seam_pop(alphas: list[np.ndarray]) -> dict[str, Any]:
     record["pop"] = round(pop, 3)
     record["pops"] = pop > SEAM_POP_REFERENCE
     return record
+
+
+def seam_pop_of(frames: list[Image.Image]) -> dict[str, Any]:
+    """`seam_pop` of a loop's frames read as `measure_jolt` reads the loop (their alpha in their union box), or
+    `skipped` (why) where the top band cannot be read."""
+    try:
+        return seam_pop(coverage(frames, union_box(frames)))
+    except ValueError as exc:
+        return {"skipped": str(exc)}
 
 
 def held_side(masks: list[np.ndarray]) -> str:
@@ -1513,10 +1663,32 @@ def seam_pop_verdict(measured: dict[str, Any], *, head_step_max: float | None = 
             and pop[axis]["wrap_over_median"] > pop["reference"] and not (axis == "x" and said)]
     if not axes:
         return []
-    words = {"x": "sideways", "y": "up or down"}
-    return ["the top of the silhouette jumps into the loop's first frame "
-            + ", ".join(f"{words[a]} {v['wrap_pct']:.2f} % of the body height, {v['wrap_over_median']:.1f}x its median step" for a, v in axes)
+    return ["the top of the silhouette jumps into the loop's first frame " + _pop_axes(axes)
             + f" (over {pop['reference']:g}x): a part held above the head swings on its own beat and does not close at this cut"]
+
+
+def _pop_axes(axes: list[tuple[str, dict[str, Any]]]) -> str:
+    words = {"x": "sideways", "y": "up or down"}
+    return ", ".join(f"{words[a]} {v['wrap_pct']:.2f} % of the body height, {v['wrap_over_median']:.1f}x its median step" for a, v in axes)
+
+
+def seam_pop_gate(pop: dict[str, Any], *, pop_max: float | None) -> dict[str, Any]:
+    """The seam pop as a gate (section 3, "The seam pop"): `pop` (`seam_pop`, or `skipped`) against `pop_max`
+    (`video-loop --seam-pop-max`, SEAM_POP_REFERENCE by default; None: off). `verdict` is `refused` where the pop is
+    over `pop_max`, `passed` where it is not, `unreadable` where the top band could not be read — not refused, and
+    `why` says it — and `off` with the pop as read."""
+    if pop_max is None:
+        return {"verdict": "off", "max": None, "pop": pop.get("pop")}
+    if "skipped" in pop:
+        return {"verdict": "unreadable", "max": pop_max, "pop": None, "why": pop["skipped"]}
+    return {"verdict": "refused" if pop["pop"] > pop_max else "passed", "max": pop_max, "pop": pop["pop"]}
+
+
+def seam_pop_words(pop: dict[str, Any], pop_max: float) -> str:
+    """Where the top band jumps into the loop's first frame over `pop_max` times its median step, in words: each axis
+    whose largest step is the wrap and over the bound, how far (% of the body height) and how many times its step."""
+    return _pop_axes([(axis, pop[axis]) for axis in ("y", "x")
+                      if pop[axis]["wrap_is_largest"] and pop[axis]["wrap_over_median"] > pop_max])
 
 
 def jolt_verdict(measured: dict[str, Any], *, jolt_max: float | None = JOLT_REFERENCE,
