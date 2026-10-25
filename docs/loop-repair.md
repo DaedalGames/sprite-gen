@@ -1280,11 +1280,12 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   `--align-between`. `auto` runs RIFE for every frame between two source frames, as `rife` does,
   and needs it installed the same way.
 - **Smear and melt, per made frame**: `cycle_align.smear` lists every frame RIFE made, with its
-  `method` — `rife` (kept) or `nearest` (a source frame beside it taken instead) — its `faults`,
-  its own ghost reading (`ghost`, below; `null` where the screen does not read the loop), its
-  cross-fade reading and what to `look` at (`crossfade`, below — named, never judged), the holes
-  it opened inside its silhouette that neither source frame has there (`hole`, below), and what
-  it has that neither source frame beside it has (`rife.smear`):
+  `method` — `rife` (kept) or `nearest` (a source frame beside it taken instead) — its `faults`, its
+  own ghost reading (`ghost`, below; `null` where the screen does not read the loop), its cross-fade
+  reading and what to `look` at (`crossfade`, below — named, never judged), the holes it opened
+  inside its silhouette that neither source frame has there (`hole`, below), the line one source
+  frame draws that runs at part strength in its own place in the made frame as a double outline
+  (`doubled`, below), and what it has that neither source frame beside it has (`rife.smear`):
   - `dark_excess`: dark pixels (luma under 70/255) inside the body beyond the darker neighbour's
     count, as a fraction of its solid pixels — a black smear raises it, a dark part that only
     moved (a hat, a watch) does not. Over 0.1 % it is the fault `smear`.
@@ -1432,7 +1433,18 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   - Over **0.015** (`interpolation_quality.CROSSFADE_LOOK`) the frame is named to look at: its
     `smear` row's `look` is `["crossfade"]`, and a kept frame (`method: rife`) gets a line in
     `warnings` ("frame 14 (made by RIFE) may cross-fade two drawings inside its outline …; kept").
-    It is no fault: `auto` keeps it, it gives nothing way, and the retake rule does not count it.
+    It is no fault: `auto` keeps it, it gives nothing way, and the retake rule does not count it. A
+    cross-fade that leaves the two drawings' lines at part strength inside the silhouette over a
+    long enough run is now a double outline (`doubled`, the bullet below), a fault of its own, and
+    gives way for that; the cross-fade reading still only names it. Before the double outline was
+    read, the alignment kept such frames because the cross-fade reading is no fault, for the reason
+    in the next sub-bullet, which is about that reading and still holds; it was never a choice to
+    keep frames with doubled lines. The clean drawing between far-apart drawings, which the
+    cross-fade reading reads over its line, reads no double outline (0 in grey and in black
+    outlines) and is kept; separately, on the synthetic legs of `tests/video/test_crossfade.py`, the
+    frames a RIFE stand-in cross-fades across the legs' long steps (its colour run blends, its
+    coverage run is the union) now give way under `auto`, each still named to look at; under `rife`
+    they are kept and named.
   - Why a reading and not a fault: checked against frames labelled by eye, it does not part them.
     On drawn walks the frame seen cross-faded read well over the line and the frames seen clean
     under it; on synthetic legs (the walker of `tests/video/test_crossfade.py`, its palette varied
@@ -1782,6 +1794,103 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     runs past 5000 steps and would pair none, whereas the search for a set pairing every hole finds
     one in 29 steps, pairing all twenty; where that search too runs past the steps, the other
     answers, and here pairs none.
+- **A double outline, per made frame** (`rife.doubled`): Where RIFE's flow does not follow a line
+  (on drawn art, the top of a boot that one source frame tilts, showing the oval of its opening, and
+  the other plants flat, showing a straight band), it can fade the line out in place instead of
+  moving it. The made frame then shows that source frame's line, lighter, in the source frame's own
+  place, beside the line the made frame drew: a double outline. Its coverage is whole, so the ghost
+  screen (part coverage, alpha 0.1 to 0.9, in regions **5 px** thick) reads nothing; the faded line
+  is lighter than 70/255, so the dark count (`dark_excess`) adds nothing; the line is inside the
+  body, not on the coverage edge, so both outline readings (`outline_loss`, `outline_shift`, which
+  read the coverage edge) pass it; it has no enclosed transparent pixels, so `hole` reads 0. The
+  cross-fade reading names whole drawings blended where the made frame keeps under 60 % of the
+  source frames' strong edges in a window; a frame that moved most of a part and left one line faded
+  keeps its edges, and the cross-fade reading is a reading to look at, never a fault, in any case.
+  - `doubled`: `rife.doubled(made, a, b)` takes the made frame between source frame a and source
+    frame b, with no fraction needed. A frame's line is its solid pixels (alpha 0.5 and over) darker
+    by more than 50/255 (`rife.OUTLINE_SHIFT`, the same contrast the rank outline reading uses) than
+    its own luma closed by a square 2.5 % of the made frame's body height wide (`rife.DOUBLED_WIDE`,
+    0.025; off the solid body the luma counts as white). A dark stroke narrower than that window
+    goes in the closing and is a line; a dark fill wider than it stays and is no line. A pixel of
+    one source frame's line is left at part strength in the made frame when all of these hold: the
+    three frames are solid there; the other source frame draws no line within **4 px** of it
+    (`rife.DOUBLED_SHARED`, 4, a square neighbourhood): a line both draw is theirs at any strength;
+    the other source frame is lighter there than this line by more than 50/255; the made frame is
+    darker there than the other source frame by more than 50/255 (the line is still seen); and the
+    made frame is darker than the other by no more than 0.8 of the line's contrast (the line's
+    contrast is how much lighter the other source frame is than the line there; `rife.DOUBLED_PART`,
+    0.8), both at the pixel and at its darkest pixel within **2 px** (`rife.OUTLINE_REACH`, 2): no
+    line at full strength beside it, as there is beside the soft edge of a line the flow moved. Such
+    pixels count where they make a region **3 px** thick (opened by a 3 px square,
+    `rife.DOUBLED_THICK`, 3). Widened by **3 px**, those that touch make one run. A run's length is
+    sqrt(12) times the square root of the larger second moment of its pixels, which is a straight
+    run's own length. The reading is the longest run's length as a share of the made frame's body
+    height: 0 where the made frame has no solid body, or where the two source frames nowhere differ
+    by more than 50/255 inside all three bodies. It is read inside the box round where the source
+    frames differ, padded so that every pixel there reads as in the whole frame.
+  - Over **0.03** (`interpolation_quality.DOUBLED_WARN`, 0.03 of the body's height) the frame shows
+    a double outline: the fault `doubled`. `auto` takes the nearer source frame there and writes a
+    line in `warnings`; the line says the made frame left a line one source frame beside it draws at
+    part strength in its own place, over a run of the given share of its body high, a double
+    outline, and that the nearer source frame was taken there (`--between auto`). `rife` keeps it,
+    named. The report's `smear` rows carry `doubled` on every made frame.
+  - What is the source frames' own, kept (each a named bound): a line both source frames draw within
+    **4 px** of each other is theirs, at any strength in the made frame (a static line the flow
+    softened, a hem both draw with two lines); a line the made frame carries at more than 0.8 of its
+    contrast is that source frame's own drawing there (a light crease one source frame draws,
+    carried at its own strength, is kept); the soft edge of a line the flow moved lies within **2
+    px** of the line at full strength, so it is not read; a line left less than 50/255 darker than
+    what the other source frame shows there is not seen and not read; a dark patch wider than the
+    closing window is no line; a run 3 % of the body high or shorter is not a fault; and only pixels
+    where all three frames are solid are read, as part coverage is the ghost screen's.
+  - A line only one source frame draws, with no line of the other's within **4 px** (a crease that
+    comes or goes, an eyelid's line, a line a passing leg covers or uncovers), left at part
+    strength, is read the same way and is a double outline: the flow did not follow it and faded it.
+    This is a fault by the definition, not an exception. What the reading does not tell: a part the
+    made frame draws smeared along its way, where the smear reaches back over a line one source
+    frame draws there at part strength, reads as that line left. And lines left where one source
+    frame is not solid (on the silhouette's edge) are not read, so a cross-fade whose doubled lines
+    lie mostly on the silhouette's edge can read under the line.
+  - Where **0.03** sits: set by eye on drawn walks, between the frames seen with a line doubled (a
+    boot's top faded out where one source frame tilts it, beside the top the frame drew), which read
+    over it, and the frames seen as clean or only soft, which read under it. It is a reference, not
+    a measured optimum, and a frame near it is worth a look.
+  - Read only on the frames the alignment makes (`doubled` in each `smear` row). The jump repair of
+    `video-loop`, its eased retime and overlapped wrap (section 2) do not read it, and neither do
+    the versioned measures of `video-loop-compare` and `video-loop-repair`.
+  - Synthetic numbers (`tests/video/test_inbetween_doubled.py`): a figure on a 200 by 260 px canvas,
+    a coat over two legs in boots, outlined **3 px** in near-black, a hand beside the coat; the near
+    boot lifted 18 px in the first source frame and planted in the second. The boot's line is 0.69
+    darker than the boot's fill. The frame drawn between, with the first source frame's near-boot
+    lines laid over it at 0.45 of their strength: `outline_loss` 0, `outline_shift` 0, `ghost` 0,
+    `hole` 0, `crossfade` 0, no fault before; `doubled` 0.102 (the run's own length is the boot's
+    width). Resampled from two frames to four under `auto`, both made cells (1 and 3) take the
+    nearer source frame; under `rife` they are kept, named. The same with both source frames' lines
+    at half, and the frame whose colour is the plain blend of the two inside the drawing's coverage,
+    read over the line too. A crease the first source frame draws across the still near boot and the
+    second does not: left at 0.3, 0.45 or 0.6 of its contrast it reads `doubled` and gives way; left
+    at 0.25 it is lighter than 50/255 under the boot and reads 0; the frame that draws it, and the
+    frame that does not, read 0 and keep their bytes. Read 0 and delivered as the very frame made:
+    the drawing between; the same blurred (radius 1.5 px) or smeared along the step; a hand moving
+    60 px over the coat, drawn, blurred or smeared along its way (t 0.35 to 0.65); boots both source
+    frames draw with a second line; a hem both draw with two lines, softened to 60 % in the frame
+    between; a light crease one source frame draws, carried at its own strength. The bounds, where
+    each turns: left at 0.28 of its contrast the made frame there is 0.1960 darker than the boot,
+    just under 50/255, which is 0.1961, and reads 0; at 0.30 it is 0.2076 darker and is read; at
+    0.80 it reads, at 0.82 it is the source frame's own line and reads 0; with the boot moved 8 px,
+    the pixels of its old line that the reading keeps are too thin to hold a 3 px square, so the
+    opening by 3 px removes them and it reads 0; moved 9 px they hold one and it reads (0.092); a
+    dark patch 10 px square one source frame draws is no line, a stroke **3 px** wide is; left over
+    6 columns the run is 0.0294 of the body, under the line, over 7 columns 0.0343, over it. What it
+    does not tell: the hand smeared along its way from t 0.3 to 0.7 of its 60 px move reaches back
+    over the line the first source frame draws there and reads 0.063. The walker of
+    `tests/video/test_crossfade.py`, legs closing from 16 to 3 degrees: its drawing between, which
+    the cross-fade reading reads over its line in grey (the reason that reading is no fault), reads
+    `doubled` 0 in grey and in black outlines and keeps its bytes; its colour blended inside the
+    drawing's coverage reads 0.098 in grey and 0.37 in black and gives way. Legs closing from 10 to
+    5 degrees, the cross-fade's lines left inside all three silhouettes run 0.0195 of the body (the
+    rest of its doubled edge lies on the silhouette, where one source frame is not solid): under the
+    line, kept.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings
