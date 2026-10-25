@@ -1484,84 +1484,101 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   only where it is 50/255 lighter than the source frames' lines at the same rank, which light lines
   elsewhere on the art (fur, hair drawn without a dark line) hide; the fault `outline` needs both.
   Neither reading is about a hole.
-  - `hole`: of the made frame's pixels under solid (alpha under 0.5) that the outside of the
-    picture cannot reach without crossing its solid body (enclosed holes), those with no pixel
-    under solid in either source frame within **4 px** (`rife.HOLE_REACH`, a square neighbourhood)
-    of where that pixel lay at that frame's time, read three ways: in place (the background,
-    still, and a gap kept, or opened by a step where the frame showing it open has it); carried
-    with the whole figure along the motion the two source frames show for the whole figure; and
-    carried with what lies round the hole along the motion the two source frames show round each
-    piece of hole the first two leave. Where the made frame sits at fraction `t` from source frame a
-    to source frame b, a pixel of it lay in a at `t` of the motion back and lies in b at `1 - t` of
-    it on (rounded so the two are the whole motion apart). Motions are measured only from the two
-    source frames, never from the made frame or RIFE's flow: for each candidate motion over a box
-    in made frame coordinates, each pixel is read in a where it lay and in b where it lies, taking
-    the motion with least mean absolute difference of premultiplied colour and coverage (ties
-    going to smaller motion). The whole figure's motion is read over the box round all three
-    frames' solid bodies. Each remaining piece's motion is read over the box round the piece,
-    widened each way by `max(t, 1 - t)` of the farthest motion followed. A motion is followed up to
-    20 % of the body's height each way (`rife.HOLE_TRAVEL`, 0.2), searched coarse to fine: pooled
-    in square blocks of a power of two where the range is at most 24 px each way
-    (`rife.HOLE_COARSE`, 24), then within 2 px of twice the coarser motion on each finer level down
-    to the pixel. A fourth reading is run only on a frame that still keeps a piece of hole after the
-    third reading, and only on those pieces (a frame keeping no piece of hole after the third
-    reading has the value the first three readings give): a piece is the source frames' where both
-    source frames carry it by one motion within the same reach (20 % of the body's height each way,
-    `rife.HOLE_TRAVEL`). Every motion in that range is judged (every whole-pixel motion from minus
-    to plus the reach on each axis), not one motion per box. Each source frame is moved by its share
-    of the motion, as above. Each moved source frame must (a) have at least 90 % of the piece
-    (`rife.HOLE_CARRY`, 0.9) within 4 px (`rife.HOLE_REACH`) of its own pixels under solid, and (b)
-    cover the band round the piece, the pixels from 5 to 8 px out from it (from `rife.HOLE_REACH` + 1
-    to twice `rife.HOLE_REACH`, a square neighbourhood), as the made frame covers it (solid meaning
-    alpha 0.5 and over), differing on at most 5 % of the band (`rife.HOLE_AGREE`, 0.05). Of the
-    motions that pass for both source frames, the one whose worse source frame differs least over the
-    band is taken (then the one that carries more of the piece, then the smaller motion); the piece's
-    pixels within 4 px of where either source frame has pixels under solid along that motion are the
-    source frames', as in the other readings. The made frame is used only to judge each motion, by
-    its own coverage round its own hole; it is never used to measure a motion, and RIFE's flow is
-    never read. The counts for every motion are computed at once per source frame by FFT correlation,
-    rounded to whole counts. Motions are measured only on frames keeping a hole after the in-place
-    reading. Regions at least **5 px** thick (`rife.HOLE_THICK`, opened by a square that wide: a
-    pinhole or an antialiased crevice a pixel or two wide opens away) are taken after each step, as a
-    fraction of its solid pixels.
+  - `hole`: of the made frame's pixels under solid (alpha under 0.5) that the outside of the picture
+    cannot reach without crossing its solid body (enclosed holes), a pixel is the source frames' own
+    in either of two readings, where either source frame has a pixel under solid within **4 px**
+    (`rife.HOLE_REACH`, a square neighbourhood) of where that pixel lay at that frame's time: in
+    place (the background, still, and a gap kept, or opened by a step where the frame showing it
+    open has it); or carried with the whole figure along the motion the two source frames show for
+    the whole figure. Where the made frame sits at fraction `t` from source frame a to source frame
+    b, a pixel of it lay in a at `t` of the motion back and lies in b at `1 - t` of it on (rounded
+    so the two are the whole motion apart). The whole figure's motion is measured only from the two
+    source frames, never from the made frame or RIFE's flow: over the box round all three frames'
+    solid bodies, each pixel of the box is read in a where it lay and in b where it lies, and the
+    motion with the least mean absolute difference of premultiplied colour and coverage is taken
+    (ties going to the smaller motion). It is followed up to 20 % of the body's height each way
+    (`rife.HOLE_TRAVEL`, 0.2), searched coarse to fine: pooled in square blocks of a power of two
+    where the range is at most 24 px each way (`rife.HOLE_COARSE`, 24), then within 2 px of twice
+    the coarser motion on each finer level down to the pixel. Third, whatever carried it, a hole
+    those two readings leave is the source frames' own, all its pixels, where it is one hole of each
+    source frame: the pairing. It reads holes, not a motion. A hole here is one 8-connected piece of
+    a frame's enclosed pixels: the made frame's count where they keep a pixel when opened by a 5 px
+    square (`rife.HOLE_THICK`); a source frame's where they keep one opened by a 3 px square
+    (`rife.HOLE_SOURCE_THICK`, 3), since a gap can be a little thinner at a source frame's time.
+    Each hole is read for its area (its pixels), its centroid, its shape (the logarithms of its
+    pixels' two principal second moments, each plus 1/12, over its area, so turning and growing
+    leave it as it is) and the colour round it (the mean premultiplied colour of that frame's solid
+    pixels from 5 to 8 px out). A hole of the made frame is paired with a hole of a and a hole of b
+    where the two source frames' holes have areas within 4 times of each other
+    (`rife.HOLE_PAIR_AREA`, 4.0), shapes within 2 times on each moment (`rife.HOLE_PAIR_SHAPE`, 2.0)
+    and colours round them within 0.12 on each channel (`rife.HOLE_COLOUR`, 0.12, on 0 to 1), and
+    their centroids lie at most sqrt(2) times the reach the figure's motion is followed (20 % of the
+    body's height each way, so diagonally) plus 4 px apart; and where the made frame's hole has its
+    area within 25 % of their range (`rife.HOLE_AREA`, 0.25: at least 0.75 times the smaller, at
+    most 1.25 times the larger), its shape within 1.3 times of theirs on each moment
+    (`rife.HOLE_SHAPE`, 1.3), the colour round it within 0.12 of each, and its centroid within 4 px
+    plus 0.1 of their distance (`rife.HOLE_PATH`, 0.1) of the point at `t` on the line from the
+    centroid of a's hole to that of b's. Pairs are taken one to one: each source frame's hole
+    explains one hole of the made frame. The made frame's holes the first two readings already give
+    the source frames are paired first, then the rest; within each, the alikest and nearest first,
+    by the sum of: the logarithm of how far the made frame's hole's area is out of the range, its
+    distance from the point at `t` over what it may be, how far its shape is out, the colour
+    differences of the made frame's hole and of the two source frames' holes each over 0.12, and the
+    two source frames' holes' distance over what it may be; ties go by the made frame's hole, then
+    a's, then b's, in reading order. So a hole the made frame keeps where it was explains no other
+    hole, and in a row of alike holes moving, each hole of the made frame takes the two its own way
+    brings rather than a hole of one source frame and the next but one of the other, whose midpoint
+    lies as near. The made frame is never used to measure a motion and RIFE's flow is never read.
+    The motion and the pairing are read only on frames keeping a hole after the in-place reading,
+    and the pairing only on frames keeping one after the second reading. Regions at least **5 px**
+    thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or an antialiased crevice a
+    pixel or two wide opens away) are taken after each step, as a fraction of its solid pixels.
   - Over **0** (`interpolation_quality.HOLE_WARN`) the frame has a hole through a limb: the fault
     `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` (it says the
-    frame opened a transparent hole inside its outline over the given share of its body, at least
-    5 px thick, where neither source frame beside it has one, a gap through a limb, and that the
+    frame opened a transparent hole inside its outline over the given share of its body, at least 5
+    px thick, where neither source frame beside it has one, a gap through a limb, and that the
     nearer source frame was taken there); `rife` keeps it, named. A gap both source frames have,
     carried by the body's motion, lies in the frame between on the way from where one source frame
     has it to where the other has it; moved far enough it lies 5 px and more from where either
-    source frame has it in place, and a reading in place alone would take it for a hole and give
-    a correct frame way. A gap one source frame has, half open in the frame between while the figure
-    moves, lies beside where that frame has it in the same way. A hole both source frames have,
-    carried by a part over a patterned body that stays, is kept by the fourth reading: one motion
-    per box lets a patterned body that stays outweigh a small part moving over it (over the box round
-    the part's hole the body's stillness, or a motion that matches the stripes to themselves, fits
-    better than the part's motion, so the third reading alone would miss such a hole and give a
-    correct frame way), whereas the fourth reading judges every motion, and the part's motion carries
-    the hole in both source frames with the made frame covered round it as they are. Following the
-    motions keeps those gaps as the source frames' own; a gap the flow opens through a lock of hair
-    is read the same way as one through a leg.
-  - What it does not read: a band cut through a leg's edge rather than inside it reaches the
-    outside and is no hole (the outline readings read its edge as before); a hole within 4 px of a
-    gap a source frame has, in place or where the first three readings' motion carries it, is read
-    as that gap. A motion farther than 20 % of the body's height each way is not followed: a gap
-    both source frames have, carried farther between them, reads as a hole. In the first three
-    readings, one motion is read per box: the whole figure's, then one per piece of hole. Where
-    parts in the box move different ways, the motion read is the one that agrees best over the box;
-    a hole lying where that motion carries a gap either source frame has is read as that gap, and a
-    gap carried by a part that the rest of the box outweighs is left to the fourth reading, which
-    keeps it only where both source frames carry it and the made frame is covered round it as they
-    are. The fourth reading keeps only what both source frames carry. A gap only one source frame
-    opens (closed in the other, half open in the frame between), on a part that moves over a body
-    that stays, far enough that the in-place reading misses it, is given way to the nearer source
-    frame, whether the body is plain or patterned: the whole figure stays; the box round the gap
-    fits a motion that does not carry it (on a plain body, a motion that lays the box on the body
-    away from the part; on a patterned body, the body's stillness); and no one motion carries it in
-    both source frames. The reading cannot tell such a gap from a band the coverage run carried out
-    of one source frame's gap into a limb: at one motion both are the same shape (one source frame
-    open, the made frame narrower), so both are given way. A half-open gap the whole figure carries
-    (figure 3) is kept by the second reading.
+    source frame has it in place, and a reading in place alone would take it for a hole and give a
+    correct frame way. A gap one source frame has, half open in the frame between while the figure
+    moves, lies beside where that frame has it in the same way. A hole both source frames have that
+    a part carries, while the figure's motion does not, is kept by the pairing: a part moving over a
+    body that stays, plain or patterned, a part turning, growing, sheared or swinging. No motion of
+    the whole figure carries it: the body that stays outweighs the small part, and a turned or grown
+    gap lies where no motion of the whole picture puts it. It is one hole of each source frame,
+    alike in area, shape and the colour round it, and it lies on its way between theirs, so whatever
+    carried it, it is theirs. The pairing tells the hole by what it is, not by where a motion takes
+    it. Following the whole figure's motion and pairing the holes keep those gaps as the source
+    frames' own; a gap the flow opens through a lock of hair is read the same way as one through a
+    leg.
+  - What it does not read: a band cut through a leg's edge rather than inside it reaches the outside
+    and is no hole (the outline readings read its edge as before); a hole within 4 px of a hole a
+    source frame has, in place or where the whole figure's motion carries it, is read as that hole,
+    whatever it is: in a row of alike holes moving along the row about as far as they are apart, a
+    hole more lies within 4 px of a source frame's hole in place and is read as theirs (a row of
+    four holes 8 px square, 24 px apart, on a plate moving 32 px along the row). A hole the
+    pairing's bounds let through is the source frames' own: one moved off its way by no more than 4
+    px and 0.1 of the distance between the two source frames' holes (6 px across and 6 px along the
+    way of a plate moving 48 px is 8.5 px, where 8.8 px is let through), or one larger or smaller
+    than both of theirs by up to a quarter. The pairing's bounds are where a hole stops being
+    theirs, and past them the frame gives way to the nearer source frame: a hole unlike both source
+    frames' holes (its area more than a quarter out of the range of theirs, or its shape more than
+    1.3 times out of theirs); a hole off its way between theirs (farther from the point at `t` than
+    4 px and 0.1 of their distance, as a plate drawn 12 px across its way, or drawn where it is at t
+    0.8 in a frame made at t 0.5); two source frames' holes farther apart than sqrt(2) times the
+    reach and 4 px (77.5 px on a body 260 px high: a plate whose centre moves 80 px, or one swung 60
+    degrees from a point 100 px above it, its centre moving 100 px); and two source frames' holes
+    whose areas differ more than 4 times (a plate grown 2.2 times as it moves). A gap only one
+    source frame has, that neither the in-place reading nor the whole figure's motion carries, has
+    nothing to pair with and gives way: a gap only one source frame opens (closed in the other, half
+    open in the frame between) on a part moving over a body that stays, plain or patterned (pinned
+    by a test). The reading cannot tell such a gap from a band the coverage run carried out of one
+    source frame's gap into a limb: both show one source frame's gap and nothing in the other. Each
+    source frame's hole explains one hole of the made frame: a hole more than the source frames have
+    gives way, as a hole more in a row of holes, midway between two of them or past the row's end,
+    or one of the row moved to a midway (figure 8). A half-open gap the whole figure carries (figure
+    3) is kept by the second reading.
   - Read only on the frames the alignment makes (`hole` in each `smear` row). The jump repair of
     `video-loop`, its eased retime and overlapped wrap (section 2) do not read it, and neither do the
     versioned measures of `video-loop-compare` and `video-loop-repair`.
@@ -1569,47 +1586,91 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     in black, legs filled darker than 70/255, one source frame with legs side by side and the other
     with a gap between them) has the frame between with a band 8 px wide and 40 px tall through its
     far leg read `outline_loss` 0, `outline_shift` 11.3 %, `ghost` 0, and `hole` 2.69 % (its own 320
-    pixels as a share of the body); whole figure motion is 0 and the band box shows 5 px, neither
-    showing a gap where the band lay, so the band is read whole. The drawn frame, the arm gap moved
-    3 px, a pinhole 3 px wide, and an empty frame read `hole` 0. In figure 2 (a 120 by 180 px body
-    with an 8 by 40 px gap, moved 0 to 32 px across and diagonally), the gap from 24 px on lies
-    5 px and more from where either source frame has it in place (1.50 % in place alone), but whole
-    figure motion carries it: `hole` 0. In figure 3 (a body 90 px wide on legs in boots closing the
-    gap below), a half-open gap when moving 30 px lies 8 px and more beside where the parted frame
-    has it (300 px in place), but whole figure motion carries it: `hole` 0; with an 8 by 40 px band
-    cut through the moving body it reads `hole` 2.88 % (320 pixels) and
-    `faults: ["outline", "hole"]`. In figure 4 (a 200 by 180 px still body with a 40 px square part
-    and 14 px square hole moving 32 px), whole figure motion is 0, but motion round the hole is
-    32 px, carrying it: `hole` 0. In figure 5 (a body that stays, patterned, with a part on it and
-    a hole through the part's middle, the part moved from one source frame to the next, each frame
-    between drawn exactly at its place): (i) the checkpoint validator's frame: a body 200 by 180 px
-    with stripes 3 px wide every 6 px (a lighter colour by 40 levels), on a 260 by 220 px canvas, a
-    part 24 px square with a hole 10 px square, moved 32 px across: the first three readings leave
-    the hole whole, 100 pixels or 0.28 % of the body (the whole figure's motion is 0 and the box
-    round the hole fits a motion that lays the stripes on themselves); the fourth carries it:
-    `hole` 0, and both made cells are kept as made, byte for byte. (ii) A body 240 by 260 px on a
-    300 by 300 px canvas in five patterns (stripes 3, 2 and 6 px wide every 6, 4 and 12 px running
-    up and down; stripes 3 px wide every 6 px running across; checks 4 px square) at contrasts 15,
-    40 and 120, parts 24, 40 and 60 px square with holes 10, 17 and 25 px square: moved 32 and
-    48 px across and diagonally at `t` 0.5 (the moves listed in the test), the first three readings
-    leave a hole in 59 of these 105 frames (0.16 % to 0.47 %); moved 16, 32 and 48 px across and
-    diagonally at `t` 0.25 and 0.75 over the 3 px stripes at contrast 40, none. With the fourth
-    reading every one reads `hole` 0. Resampled to eight frames (`t` 0.25, 0.5 and 0.75 each way),
-    parts of 24, 40 and 60 px moved 32 px diagonally and the 24 px part moved 48 px over stripes
-    at contrast 120 keep every made frame, byte for byte. In figure 6 (a torso 120 by 260 px that
+    pixels as a share of the body); the whole figure's motion is 0, so neither of the first two
+    readings shows a gap where the band lay; the only hole both source frames have is the gap
+    between the arm and the body, which the made frame keeps where it was, so it is paired with the
+    made frame's own arm gap and explains nothing else; the band is read whole. The drawn frame, the
+    arm gap moved 3 px, a pinhole 3 px wide, and an empty frame read `hole` 0. In figure 2 (a 120 by
+    180 px body with an 8 by 40 px gap, moved 0 to 32 px across and diagonally), the gap from 24 px
+    on lies 5 px and more from where either source frame has it in place (1.50 % in place alone),
+    but whole figure motion carries it: `hole` 0. In figure 3 (a body 90 px wide on legs in boots
+    closing the gap below), a half-open gap when moving 30 px lies 8 px and more beside where the
+    parted frame has it (300 px in place), but whole figure motion carries it: `hole` 0; with an 8
+    by 40 px band cut through the moving body it reads `hole` 2.88 % (320 pixels) and `faults:
+    ["outline", "hole"]`. In figure 4 (a 200 by 180 px still body with a 40 px square part and 14 px
+    square hole moving 32 px), the whole figure's motion is 0, so the first two readings leave the
+    hole; it is one hole of each source frame, alike and on its way 32 px between theirs, so it is
+    paired: `hole` 0. In figure 5 (a body that stays, patterned, with a part on it and a hole
+    through the part's middle, the part moved from one source frame to the next, each frame between
+    drawn exactly at its place): (i) the checkpoint validator's frame: a body 200 by 180 px with
+    stripes 3 px wide every 6 px (a lighter colour by 40 levels), on a 260 by 220 px canvas, a part
+    24 px square with a hole 10 px square, moved 32 px across: the whole figure's motion is 0 and
+    the in-place reading leaves the hole whole, 100 pixels or 0.28 % of the body (a motion read over
+    the box round the hole would take one that lays the stripes on themselves); the hole is one hole
+    of each source frame, alike and on its way, so it is paired: `hole` 0, and both made cells are
+    kept as made, byte for byte. (ii) A body 240 by 260 px on a 300 by 300 px canvas in five
+    patterns (stripes 3, 2 and 6 px wide every 6, 4 and 12 px running up and down; stripes 3 px wide
+    every 6 px running across; checks 4 px square) at contrasts 15, 40 and 120, parts 24, 40 and 60
+    px square with holes 10, 17 and 25 px square: moved 32 and 48 px across and diagonally at `t`
+    0.5, and moved 16, 32 and 48 px across and diagonally at `t` 0.25 and 0.75 over the 3 px stripes
+    at contrast 40, every one of these frames reads `hole` 0 (the moves listed in the test are those
+    where a motion read over the box round the hole takes the body's stillness, or the stripes laid
+    on themselves, on some pattern). Resampled to eight frames (`t` 0.25, 0.5 and 0.75 each way),
+    parts of 24, 40 and 60 px moved 32 px diagonally and the 24 px part moved 48 px over stripes at
+    contrast 120 keep every made frame, byte for byte. In figure 6 (a torso 120 by 260 px that
     stays, patterned in blocks 4 px square each lighter by its own whole number up to 200 levels,
     with an arm beside its right edge: the upper arm and the forearm lie along that edge and are
     joined by the arm's outer side, so the gap between arm and torso, 16 by 12 px, has the torso's
     edge on its left and the arm on its other three sides; the arm reaches 48 px above and 52 px
     below the gap and moves 40 px down from one source frame to the next), the gap lies where the
-    arm covers it in the other source frame, so the in-place reading leaves it, and over the box
-    round it the torso's stillness fits better than the arm's motion: the first three readings read
-    0.28 %, 0.55 % and 0.28 % at `t` 0.25, 0.5 and 0.75. The fourth carries it: `hole` 0, and
-    resampled to eight every made frame is kept, byte for byte. The boundary, pinned by a test: a
-    part 30 px square moving 32 px across a body that stays, a hole 14 px square open through it in
-    one source frame and closed in the other, 8 px square in the frame between (half open): over a
-    plain body and over the 3 px stripes alike it reads `hole` 0.10 % (its 64 pixels) and both made
-    cells are given way to the nearer source frame, with `faults: ["hole"]`.
+    arm covers it in the other source frame, so the in-place reading leaves it, and the whole
+    figure's motion is 0 (a motion read over the box round it would take the torso's stillness); it
+    is one gap of each source frame, alike and on the arm's way, so it is paired: `hole` 0 at `t`
+    0.25, 0.5 and 0.75, and resampled to eight every made frame is kept, byte for byte. The
+    boundary, pinned by a test: a part 30 px square moving 32 px across a body that stays, a hole 14
+    px square open through it in one source frame and closed in the other, 8 px square in the frame
+    between (half open): over a plain body and over the 3 px stripes alike it reads `hole` 0.10 %
+    (its 64 pixels) and both made cells are given way to the nearer source frame, with `faults:
+    ["hole"]`; the second source frame has no hole on the part to pair it with. In figure 7 (a body
+    240 by 260 px on a 300 by 300 px canvas that stays, in stripes 3 px wide every 6 px (a lighter
+    colour by 40 levels) or plain, with a plate on it (|u| < 24 and |v| < 28 px in its own axes) and
+    a gap through the plate (|u| < 6, |v| < 16, so 11 by 31 px on whole pixels); each frame between
+    drawn exactly at its place in one motion from one source frame to the next: the plate's centre
+    moves across, and the plate turns, grows or is sheared about it, or the plate swings from a
+    point 100 px above its centre), (i) the third checkpoint validator's frame: the plate turns 60
+    degrees as it moves 48 px over the stripes. No motion of the whole figure carries the turned
+    gap, and the in-place reading leaves it whole, 0.55 % of the body; it is one hole of each source
+    frame, alike and on its way, so it is paired: `hole` 0, and resampled to four, and to eight (`t`
+    0.25, 0.5 and 0.75 each way), every made frame is kept, byte for byte. The plate turned 90
+    degrees, grown 2 times and sheared by 0.6 as it moves 48 px, and swung 45 degrees (its centre
+    moving 76.5 px, within sqrt(2) times 52 plus 4, or 77.5 px, on this body), are kept the same way
+    over the stripes; over the plain body each reads `hole` 0 (plain, the plate swung 45 degrees is
+    given way for `smear`, a reading of its own). (ii) The plate turned 0 to 90 degrees, grown 1.1
+    to 2 times, or sheared by 0.15 to 0.6 as it moves 0, 24 or 48 px, or swung 10 to 45 degrees,
+    over the stripes and over the plain body at `t` 0.5, and turned as it moves over the stripes at
+    `t` 0.25: all 125 frames read `hole` 0. (iii) The boundaries, over either body: the plate moving
+    48 px, drawn with its gap 16 by 40 px (1.9 times their area, where a quarter more is let
+    through) it reads `hole` 1.04 %; with its gap 18 by 18 px (its larger moment 2.8 times smaller
+    over its area, where 1.3 times is let through), 0.52 %; the plate drawn 12 px across its way,
+    0.55 %; the plate drawn where it is at `t` 0.8 in a frame made at `t` 0.5 (14.4 px along its
+    way, where 8.8 px is let through), 0.30 %; the plate growing 2.2 times as it moves 48 px (the
+    source frames' gaps more than 4 times apart in area, where 4 times is let through), 0.55 %; the
+    plate moving 80 px (its centre 80 px from one source frame to the next, where 77.5 px is let
+    through on this body), 0.55 %; and the plate swung 60 degrees, its centre moving 100 px, 0.55 %.
+    Each frame gives way to the nearer source frame, with `hole` among its faults. In figure 8 (the
+    same body with a plate 120 by 40 px on it and a row of four holes 8 px square through the plate,
+    24 px apart, the plate moving 32 px down from one source frame to the next), the frame between
+    drawn exactly reads `hole` 0 and is kept as made; so is the frame between with the row drawn a
+    pixel taller, where a hole of one source frame and the next but one of the other have their
+    midpoint as near each of the made frame's holes as its own two: the nearer pair is taken first,
+    so each hole takes its own two. Drawn with one hole more, midway between two of the row's holes,
+    or between the last two, or past the row's end, or with one of the row's holes moved 12 px to a
+    midway, the frame between reads `hole` 0.10 % (the 64 pixels of one hole) and gives way to the
+    nearer source frame: each source frame's hole explains one hole of the made frame. Standing
+    still, with the row drawn a pixel taller in the frame between, it is kept; with one hole more
+    midway as well, it reads 0.10 % and gives way: the in-place reading gives the row's holes to the
+    source frames, and they are paired first, so the source frames' holes are taken by the holes
+    they are.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings

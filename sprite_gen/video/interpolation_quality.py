@@ -33,10 +33,11 @@ CROSSFADE_LOOK = 0.015
 # passes — the overlapped wrap's frames (docs/loop-repair.md sections 2 and 4).
 TORN_WARN = 0.21
 # A made frame whose `rife.hole` is over this has a hole through a limb: a transparent hole inside its silhouette at
-# least rife.HOLE_THICK pixels thick that neither neighbour has there, in place or carried by the motion the two show.
-# Any is one: a gap a step opens between two legs lies where the neighbour that shows it open has it, and a gap the two
-# have moved with the body lies on its way between them; both are theirs. Read only where the measure carries it — the
-# frames the cycle alignment makes (docs/loop-repair.md section 4).
+# least rife.HOLE_THICK pixels thick that neither neighbour has there, in place, carried by the whole figure's motion, or
+# as one hole of each, alike and on its way. Any is one: a gap a step opens between two legs lies where the neighbour that
+# shows it open has it, a gap the two have moved with the body lies on its way between them, and a hole each has that a
+# part carried, turned or grown, is one hole of each; all are theirs. Read only where the measure carries it — the frames
+# the cycle alignment makes (docs/loop-repair.md section 4).
 HOLE_WARN = 0.0
 
 

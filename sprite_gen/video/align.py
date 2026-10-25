@@ -239,8 +239,8 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
 
     A time between two source frames is made by `interpolate`, with what it added and the outline it
     lost measured (`rife.smear`), its own ghost read (`rife.ghost`), the holes it opened inside its
-    silhouette that neither source frame has there, in place or carried by the motion the two show
-    (`rife.hole`), and judged (`faults`); `between`
+    silhouette that neither source frame has there, in place, carried by the whole figure's motion, or
+    one hole of each source frame, alike and on its way (`rife.hole`), and judged (`faults`); `between`
     auto keeps a made frame with no fault and takes the nearer source frame where it has one, rife
     keeps every made frame, nearest makes none and takes the nearer source frame (the motion keeps the
     filmed frames at up to half a frame off their time). Every made frame is listed in `smear` with

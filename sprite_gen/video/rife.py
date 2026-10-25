@@ -15,9 +15,9 @@ neighbours' rank by rank, so a mid-tone line the flow only softened is not read 
 neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
 part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
 whole silhouette, a reading to look at, not a fault; `hole` reads a transparent hole a made frame opened
-inside its silhouette that neither neighbour has there, in place or carried by a motion the two show —
-the whole figure's, the one round the hole, or any that carries it in both and fits the made frame's
-coverage round it — where the two runs disagree inside a limb (docs/loop-repair.md section 4). `passes` runs
+inside its silhouette that neither neighbour has there — in place, carried by the whole figure's motion,
+or, whatever carried it, one of each neighbour's holes, alike and on its way — where the two runs
+disagree inside a limb (docs/loop-repair.md section 4). `passes` runs
 the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
 `torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
@@ -61,7 +61,6 @@ import PIL
 from PIL import Image, ImageFilter, PngImagePlugin
 
 from sprite_gen._deps import np
-from sprite_gen.video.auto_motion import _correlate
 from sprite_gen.video.frames import _components, _near
 
 BINARY = "rife-ncnn-vulkan"
@@ -106,25 +105,35 @@ OUTLINED = 0.75
 GHOST_THICK = 5
 # `hole`: a pixel under solid (alpha under 0.5) that the outside of the picture cannot reach without crossing the solid
 # body is a hole; a made frame's is its neighbours' where either of them is under solid within HOLE_REACH pixels of where
-# it lay at that neighbour's time — in place, carried with the whole figure, or carried with what lies round it (a gap
-# between an arm and the body or between two legs, kept, opened by a step or moved with them) — and counts where it makes
-# a region at least HOLE_THICK pixels thick: a pinhole a pixel or two wide, an antialiased crevice, is opened away. Each
-# motion is the one the two neighbours alone show (`_travel`), never the flow's, so a frame the flow got wrong is not
-# judged by the flow that made it; it is followed up to HOLE_TRAVEL of the body's height, searched whole on the level
-# pooled coarsely enough that this reach is at most HOLE_COARSE pixels each way, then refined down to the pixel.
+# it lay at that neighbour's time — in place, or carried with the whole figure (a gap between an arm and the body or
+# between two legs, kept, opened by a step or moved with them) — and counts where it makes a region at least HOLE_THICK
+# pixels thick: a pinhole a pixel or two wide, an antialiased crevice, is opened away. The figure's motion is the one the
+# two neighbours alone show (`_travel`), never the flow's, so a frame the flow got wrong is not judged by the flow that
+# made it; it is followed up to HOLE_TRAVEL of the body's height, searched whole on the level pooled coarsely enough that
+# this reach is at most HOLE_COARSE pixels each way, then refined down to the pixel.
 HOLE_REACH = 4
 HOLE_THICK = 5
 HOLE_TRAVEL = 0.2
 HOLE_COARSE = 24
-# A piece of hole those motions leave is the neighbours' where both carry it by one motion within that reach, every motion
-# judged (`_carried`): one motion per box lets a patterned body that stays outweigh a small part moving over it, its hole
-# carried with it. Each neighbour, moved by its share of the motion, has HOLE_CARRY of the piece within HOLE_REACH of its
-# transparency and covers the band HOLE_REACH + 1 to 2 HOLE_REACH pixels round the piece as the made frame covers it, all
-# but HOLE_AGREE of the band; the made frame says only which motion fits round its own hole. A gap one neighbour alone
-# has fits no motion in both, so it stays: a band the coverage run carried out of one neighbour's gap into a limb, and as
-# well a gap only one neighbour opens, narrower in the made frame, on a part the first motions do not follow.
-HOLE_CARRY = 0.9
-HOLE_AGREE = 0.05
+# A hole those two leave is still the neighbours' where it is one hole of each, whatever carried it — a part moving over a
+# body that stays, turning, growing, sheared, swinging: told by what it is, not by a motion. Each of the made frame's
+# enclosed holes (a piece of them keeping a pixel opened by HOLE_THICK) is paired with one of each neighbour's (keeping a
+# pixel opened by HOLE_SOURCE_THICK, a gap a little thinner at a neighbour's time) where the three are alike and lie on
+# one way (`_paired`). The neighbours' two: areas within HOLE_PAIR_AREA times of each other, shapes within HOLE_PAIR_SHAPE
+# times (`_holes`: second moments over area, which turning and growing keep), the colour round them within HOLE_COLOUR,
+# and no farther apart than the figure's motion reaches, diagonally, and HOLE_REACH. The made frame's: its area within
+# HOLE_AREA of their range, its shape within HOLE_SHAPE times of it, the colour round it within HOLE_COLOUR of each, and
+# its centroid within HOLE_REACH and HOLE_PATH of their distance of the point at its time on the line from one to the
+# other. Each neighbour's hole explains one of the made frame's, the alikest and nearest taken first, and the made frame's
+# holes the first two readings give the neighbours before the rest: a neighbour's hole the made frame keeps where it was
+# explains no other.
+HOLE_SOURCE_THICK = 3
+HOLE_PAIR_AREA = 4.0
+HOLE_PAIR_SHAPE = 2.0
+HOLE_AREA = 0.25
+HOLE_SHAPE = 1.3
+HOLE_PATH = 0.1
+HOLE_COLOUR = 0.12
 # `crossfade`: an edge's local range is read over this many pixels, wider than RIFE's blur, so a
 # softened edge keeps its height and a cross-faded one does not; strong edges are counted in windows
 # this share of the body's height; a window that kept under CROSSFADE_KEEP of its source frames'
@@ -513,15 +522,6 @@ def _pooled(x: np.ndarray, f: int) -> np.ndarray:
     return x.reshape(x.shape[0] // f, f, x.shape[1] // f, f, x.shape[2]).mean(axis=(1, 3))
 
 
-def _padded(x: np.ndarray, box: tuple[int, int, int, int], pad: int) -> np.ndarray:
-    """`x` over `box` (y0, y1, x0, x1) and `pad` pixels round it each way; past the picture, zero."""
-    y0, y1, x0, x1 = box
-    out = np.zeros((y1 - y0 + 2 * pad, x1 - x0 + 2 * pad) + x.shape[2:], dtype=x.dtype)
-    sy0, sy1, sx0, sx1 = max(0, y0 - pad), min(x.shape[0], y1 + pad), max(0, x0 - pad), min(x.shape[1], x1 + pad)
-    out[sy0 - y0 + pad:sy1 - y0 + pad, sx0 - x0 + pad:sx1 - x0 + pad] = x[sy0:sy1, sx0:sx1]
-    return out
-
-
 def _apart(v: int, t: float) -> tuple[int, int]:
     """Along one axis, for a motion of v pixels from a to b: where a pixel of the frame at fraction t lay in a and lies
     in b, from it — t of the motion back and 1 - t of it on, rounded so the two are v apart."""
@@ -538,7 +538,12 @@ def _match(pa: np.ndarray, pb: np.ndarray, t: float, box: tuple[int, int, int, i
     y0, y1, x0, x1 = box
     pad = max(abs(centre[0]), abs(centre[1])) + radius + 1
     h, w = y1 - y0, x1 - x0
-    crops = [_padded(x, box, pad) for x in (pa, pb)]
+    crops = []
+    for x in (pa, pb):
+        crop = np.zeros((h + 2 * pad, w + 2 * pad, x.shape[2]), dtype=x.dtype)
+        sy0, sy1, sx0, sx1 = max(0, y0 - pad), min(x.shape[0], y1 + pad), max(0, x0 - pad), min(x.shape[1], x1 + pad)
+        crop[sy0 - y0 + pad:sy1 - y0 + pad, sx0 - x0 + pad:sx1 - x0 + pad] = x[sy0:sy1, sx0:sx1]
+        crops.append(crop)
     best: tuple[float, int, int, int] | None = None
     for vy in range(centre[0] - radius, centre[0] + radius + 1):
         ay, by = _apart(vy, t)
@@ -578,82 +583,105 @@ def _moved(mask: np.ndarray, dy: int, dx: int) -> np.ndarray:
     return out
 
 
-def _bounds(mask: np.ndarray, margin: int = 0) -> tuple[int, int, int, int]:
-    """The rows and columns `mask` spans (y0, y1, x0, x1), `margin` further each way inside the picture."""
+def _bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """The rows and columns `mask` spans (y0, y1, x0, x1)."""
     ys, xs = np.nonzero(mask)
-    return (max(0, int(ys.min()) - margin), min(mask.shape[0], int(ys.max()) + 1 + margin),
-            max(0, int(xs.min()) - margin), min(mask.shape[1], int(xs.max()) + 1 + margin))
+    return int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
 
 
-def _pieces(mask: np.ndarray) -> list[np.ndarray]:
-    """The 8-connected pieces of `mask`, each a mask of its own."""
-    ys, starts, stops, pieces, _ = _components(mask, diagonal=True)
-    out = []
-    for piece in np.unique(pieces):
-        part = np.zeros_like(mask)
-        for y, x0, x1 in zip(ys[pieces == piece], starts[pieces == piece], stops[pieces == piece]):
-            part[y, x0:x1] = True
-        out.append(part)
-    return out
+def _holes(pre: np.ndarray, thick: int) -> tuple[list[tuple[tuple[slice, slice], np.ndarray]], np.ndarray]:
+    """A frame's enclosed holes (`_enclosed`, 8-connected pieces of them) that keep a pixel opened by a square `thick`
+    pixels wide, its premultiplied colour and coverage given (`_premultiplied`): each hole's window, the hole's pixels
+    in it and 2 HOLE_REACH + 1 pixels round them, and a row of what `_paired` reads of it — its area (pixels), its
+    centroid (rows, columns), its shape (the logarithms of its pixels' two principal second moments, larger first, each
+    plus a pixel's own 1/12 and over the area: turning and growing keep it) and the colour round it (the mean
+    premultiplied colour of the frame's solid pixels from HOLE_REACH + 1 to 2 HOLE_REACH out, 0 where there are none)."""
+    solid = pre[..., 3] >= 0.5
+    enclosed = _enclosed(solid)
+    ys, starts, stops, pieces, _ = _components(enclosed, diagonal=True)
+    opened = np.pad(np.cumsum(_opened(enclosed, thick), axis=1, dtype=np.int64), ((0, 0), (1, 0)))
+    order = np.argsort(pieces, kind="stable")
+    margin = 2 * HOLE_REACH + 1
+    windows, rows = [], []
+    for runs in np.split(order, np.unique(pieces[order], return_index=True)[1][1:]):
+        if not (opened[ys[runs], stops[runs]] > opened[ys[runs], starts[runs]]).any():
+            continue
+        y0, y1 = max(0, int(ys[runs].min()) - margin), min(solid.shape[0], int(ys[runs].max()) + 1 + margin)
+        x0, x1 = max(0, int(starts[runs].min()) - margin), min(solid.shape[1], int(stops[runs].max()) + margin)
+        mask = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+        for y, s0, s1 in zip(ys[runs], starts[runs], stops[runs]):
+            mask[y - y0, s0 - x0:s1 - x0] = True
+        window = (slice(y0, y1), slice(x0, x1))
+        py, px = np.nonzero(mask)
+        py, px, n = py + y0, px + x0, len(py)
+        moments = (np.sort(np.linalg.eigvalsh(np.cov(np.vstack([py, px]).astype(np.float64))))[::-1] if n > 2
+                   else np.zeros(2))
+        ring = _near(mask, 2 * HOLE_REACH) & ~_near(mask, HOLE_REACH) & solid[window]
+        colour = pre[window][ring][:, :3].mean(axis=0) if ring.any() else np.zeros(3)
+        windows.append((window, mask))
+        rows.append([n, py.mean(), px.mean(), *np.log((moments + 1 / 12) / n), *colour])
+    return windows, np.array(rows, dtype=np.float64).reshape(-1, 8)
 
 
-def _alike(box: tuple[int, int, int, int], part: np.ndarray, band: np.ndarray, solid: np.ndarray, near: np.ndarray,
-           covered: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """One neighbour moved by each pair of `offsets` (rows, columns: where a pixel of the made frame lay in it), as a grid
-    over the two: the share of `part` within HOLE_REACH of its transparency (`near`), and the share of `band` where its
-    coverage (`covered`) is not the made frame's (`solid`). `part`, `band` and `solid` are the made frame's over `box`;
-    `near` and `covered` the neighbour's whole picture, past which it is neither. Each count is one correlation over
-    every offset at once (`_correlate`), rounded to the whole number it is."""
-    k = int(np.abs(offsets).max())
-    near_k, covered_k = (_padded(x, box, k).astype(np.float64) for x in (near, covered))
-    p, on, off = (x.astype(np.float64) for x in (part, band & solid, band & ~solid))
-    n = 2 * k + 1
-    carried = np.rint(_correlate(near_k, p, n, n))
-    differs = on.sum() - np.rint(_correlate(covered_k, on, n, n)) + np.rint(_correlate(covered_k, off, n, n))
-    at = np.ix_(offsets + k, offsets + k)
-    return carried[at] / p.sum(), differs[at] / max(1.0, on.sum() + off.sum())
-
-
-def _carried(part: np.ndarray, solid: np.ndarray, a: tuple[np.ndarray, np.ndarray], b: tuple[np.ndarray, np.ndarray],
-             t: float, reach: int) -> tuple[int, int] | None:
-    """The motion (rows, columns) within `reach` each way by which both neighbours carry `part`, a piece of the hole of a
-    made frame at fraction `t` whose solid pixels are `solid`; each neighbour given as its pixels within HOLE_REACH of its
-    transparency and its solid pixels. Moved by its share of the motion (`_apart`), each neighbour has HOLE_CARRY of the
-    piece within HOLE_REACH of its transparency and covers the band HOLE_REACH + 1 to 2 HOLE_REACH pixels round the
-    piece as the made frame does, all but HOLE_AGREE of it (`_alike`). Of those motions, the one whose worse neighbour
-    differs least over the band, then carries more of the piece, then is the smallest; None where there is none."""
-    box = _bounds(part, 2 * HOLE_REACH)
-    window = (slice(box[0], box[1]), slice(box[2], box[3]))
-    inside = part[window]
-    band = _near(inside, 2 * HOLE_REACH) & ~_near(inside, HOLE_REACH)
-    v = np.arange(-reach, reach + 1)
-    lay, lie = np.array([_apart(int(x), t) for x in v]).T  # per motion along an axis, where a pixel lay in a and lies in b
-    (ca, da), (cb, db) = (_alike(box, inside, band, solid[window], near, covered, offsets)
-                          for (near, covered), offsets in ((a, lay), (b, lie)))
-    carry, differs = np.minimum(ca, cb), np.maximum(da, db)
-    iy, ix = np.nonzero((carry >= HOLE_CARRY) & (differs <= HOLE_AGREE))
-    if iy.size == 0:
-        return None
-    k = np.lexsort((v[iy] ** 2 + v[ix] ** 2, -carry[iy, ix], differs[iy, ix]))[0]
-    return int(v[iy[k]]), int(v[ix[k]])
+def _paired(made: np.ndarray, a: np.ndarray, b: np.ndarray, t: float, reach: int, first: np.ndarray) -> list[int]:
+    """Which of the made frame's holes (rows of `_holes`; the frame at fraction `t` from `a` to `b`, the neighbours'
+    holes) are one hole of each neighbour's. A triple is one of the made frame's holes and one of each neighbour's where
+    the neighbours' two have areas within HOLE_PAIR_AREA times of each other, shapes within HOLE_PAIR_SHAPE times (on
+    each moment) and the colours round them within HOLE_COLOUR (on each channel), their centroids at most sqrt(2)
+    `reach` + HOLE_REACH apart (`reach`: how far the figure's motion is followed each way); and the made frame's has its
+    area within HOLE_AREA of their range, its shape within HOLE_SHAPE times of theirs on each moment, the colour round it
+    within HOLE_COLOUR of each, and its centroid within HOLE_REACH + HOLE_PATH of their distance of the point at `t` on
+    the line from theirs in a to theirs in b. Triples are taken one to one: those of the holes `first` names before the
+    rest, the alikest and nearest first — the logarithm of how far its area is out of their range, its distance from that
+    point over what it may be, how far its shape is out of theirs, the two colour differences over HOLE_COLOUR and the
+    neighbours' two holes' distance over what it may be, summed — then by the made frame's hole, then a's, then b's, in
+    order: of a row of alike holes moving, each of the made frame's takes the two its own way brings, not a hole of one
+    neighbour and the next but one of the other, whose midpoint is as near."""
+    if not (len(made) and len(a) and len(b)):
+        return []
+    A, B = a[:, None], b[None, :]
+    apart = np.hypot(B[..., 1] - A[..., 1], B[..., 2] - A[..., 2])
+    near = apart / (np.sqrt(2) * reach + HOLE_REACH)
+    colour = np.abs(A[..., 5:] - B[..., 5:]).max(axis=-1)
+    j, k = np.nonzero((np.maximum(A[..., 0], B[..., 0]) <= HOLE_PAIR_AREA * np.minimum(A[..., 0], B[..., 0]))
+                      & (np.abs(A[..., 3:5] - B[..., 3:5]).max(axis=-1) <= np.log(HOLE_PAIR_SHAPE))
+                      & (colour <= HOLE_COLOUR) & (near <= 1))
+    A, B, apart, near, colour = a[j], b[k], apart[j, k], near[j, k], colour[j, k]
+    lo, hi = np.minimum(A[:, 0], B[:, 0]), np.maximum(A[:, 0], B[:, 0])
+    narrow, wide = np.minimum(A[:, 3:5], B[:, 3:5]), np.maximum(A[:, 3:5], B[:, 3:5])
+    at = (1 - t) * A[:, 1:3] + t * B[:, 1:3]
+    triples = []
+    for i, c in enumerate(made):
+        area = np.where(c[0] < lo, c[0] / lo, np.where(c[0] > hi, c[0] / hi, 1.0))
+        path = np.hypot(c[1] - at[:, 0], c[2] - at[:, 1]) / (HOLE_REACH + HOLE_PATH * apart)
+        shape = np.maximum(0.0, np.maximum(narrow - c[3:5], c[3:5] - wide)).max(axis=-1)
+        alike = np.maximum(np.abs(c[5:] - A[:, 5:]).max(axis=-1), np.abs(c[5:] - B[:, 5:]).max(axis=-1))
+        cost = np.abs(np.log(area)) + path + shape + alike / HOLE_COLOUR + colour / HOLE_COLOUR + near
+        for p in np.nonzero((area >= 1 - HOLE_AREA) & (area <= 1 + HOLE_AREA) & (path <= 1)
+                            & (shape <= np.log(HOLE_SHAPE)) & (alike <= HOLE_COLOUR))[0]:
+            triples.append((not first[i], float(cost[p]), i, int(j[p]), int(k[p])))
+    used: tuple[set[int], set[int], set[int]] = (set(), set(), set())
+    for _, _, *triple in sorted(triples):
+        if all(x not in seen for x, seen in zip(triple, used)):
+            for x, seen in zip(triple, used):
+                seen.add(x)
+    return sorted(used[0])
 
 
 def hole(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> float:
     """A hole a made frame at fraction `t` from `a` to `b` opened inside its silhouette that neither neighbour has there:
     of its pixels under solid that the outside cannot reach without crossing its solid body, those where neither
-    neighbour is under solid within HOLE_REACH of where the pixel lay at that neighbour's time — in place, carried with
-    the whole figure, or carried with what lies round the piece of hole — in regions at least HOLE_THICK pixels thick
-    (opened by a square that wide), as a fraction of its solid pixels. Each motion is the one the two neighbours alone
-    show (`_travel`, followed up to HOLE_TRAVEL of the body's height): over the box round all three frames' solid bodies,
-    then over the box round each piece of hole that one leaves, widened each way by as far as the piece can have lain in
-    the farther neighbour (max(t, 1 - t) of that reach), so the box holds a gap the neighbours carried there. A piece
-    those leave is theirs where both carry it by any one motion within that reach that the made frame's coverage round
-    the piece fits (`_carried`): a part moving over a patterned body that stays, which outweighs it in the box.
+    neighbour is under solid within HOLE_REACH of where the pixel lay at that neighbour's time — in place, or carried
+    with the whole figure along the motion the two neighbours alone show (`_travel`, over the box round all three
+    frames' solid bodies, followed up to HOLE_TRAVEL of the body's height) — and in no hole of the made frame that is
+    one of each neighbour's, whatever carried it (`_holes`, `_paired`), in regions at least HOLE_THICK pixels thick
+    (opened by a square that wide), as a fraction of its solid pixels.
     The coverage run can carry a gap one neighbour has between two legs into a leg the colour run keeps whole: the frame
     shows the leg's fill on both sides of a transparent band, with no line round it, and nothing added and no part
-    coverage to read — and wherever the band's pixels lay, both neighbours show the leg there. A gap the neighbours have
-    — between an arm and the body or between two legs, kept, opened by a step, or moved with the body or the arm — is
-    theirs. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
+    coverage to read — and wherever the band's pixels lay, both neighbours show the leg there, and neither has a hole
+    like it on its way. A gap the neighbours have — between an arm and the body or between two legs, kept, opened by a
+    step, or moved with the body — is theirs, and so is a hole each has, carried by a part however it moves within
+    reach. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
     m, fa, fb = (np.asarray(f.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0 for f in (made, a, b))
     solid = m >= 0.5
     if not solid.any():
@@ -664,21 +692,14 @@ def hole(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> float:
         pa, pb = _premultiplied(a), _premultiplied(b)
         rows = np.nonzero(solid.any(axis=1))[0]
         reach = max(1, int(round(HOLE_TRAVEL * int(rows[-1] - rows[0] + 1))))
-
-        def theirs(v: tuple[int, int]) -> np.ndarray:
-            (ay, by), (ax, bx) = _apart(v[0], t), _apart(v[1], t)
-            return _moved(near_a, -ay, -ax) | _moved(near_b, -by, -bx)
-
-        left = _opened(left & ~theirs(_travel(pa, pb, t, _bounds(solid | (fa >= 0.5) | (fb >= 0.5)), reach)), HOLE_THICK)
-        margin = int(np.ceil(max(t, 1 - t) * reach))
-        for part in _pieces(left):
-            left &= ~(part & theirs(_travel(pa, pb, t, _bounds(part, margin), reach)))
-        left = _opened(left, HOLE_THICK)
+        (ay, by), (ax, bx) = (_apart(v, t) for v in _travel(pa, pb, t, _bounds(solid | (fa >= 0.5) | (fb >= 0.5)), reach))
+        left = _opened(left & ~(_moved(near_a, -ay, -ax) | _moved(near_b, -by, -bx)), HOLE_THICK)
         if left.any():
-            for part in _pieces(left):
-                v = _carried(part, solid, (near_a, fa >= 0.5), (near_b, fb >= 0.5), t, reach)
-                if v is not None:
-                    left &= ~(part & theirs(v))
+            holes, own = _holes(_premultiplied(made), HOLE_THICK)
+            first = np.array([not left[window][mask].any() for window, mask in holes], dtype=bool)
+            for i in _paired(own, _holes(pa, HOLE_SOURCE_THICK)[1], _holes(pb, HOLE_SOURCE_THICK)[1], t, reach, first):
+                window, mask = holes[i]
+                left[window] &= ~mask
             left = _opened(left, HOLE_THICK)
     return round(float(left.sum()) / int(solid.sum()), 5)
 

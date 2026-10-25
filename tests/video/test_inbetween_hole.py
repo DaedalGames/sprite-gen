@@ -1,26 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """A hole through a limb (docs/loop-repair.md section 4): `rife.hole` reads the transparent holes a made frame opened
-inside its silhouette that neither source frame beside it has there, in place or carried by the motion the two show, and
-the cycle alignment gives such a frame way to the nearer source frame (`--between auto`). RIFE runs a frame's colour and
-its coverage apart, and the coverage run can carry the gap one source frame has between two legs into a leg the colour
-run keeps whole: a transparent band through the leg with its fill on both sides. Nothing is added, no part coverage is
-left, and around the band the leg's own fill is all the line there is — the outline readings judge an outline, not a
-hole. A gap the source frames have is theirs wherever the motion between them carries it: kept, moved with the body or
-with a part of it, or opened by a step between two legs — and a hole both source frames have, carried by a part over a
-patterned body that stays, is theirs too, though the body's stillness fits the box round it better than the part's
-motion. A gap only one source frame opens, on such a part, is given way: the reading does not tell it from a band the
-coverage run carried out of one source frame's gap.
+inside its silhouette that neither source frame beside it has there, and the cycle alignment gives such a frame way to
+the nearer source frame (`--between auto`). RIFE runs a frame's colour and its coverage apart, and the coverage run can
+carry the gap one source frame has between two legs into a leg the colour run keeps whole: a transparent band through the
+leg with its fill on both sides. Nothing is added, no part coverage is left, and around the band the leg's own fill is
+all the line there is — the outline readings judge an outline, not a hole. A hole of the frame between is the source
+frames' own where either has a pixel under solid within 4 px of where it lay, in place or carried by the whole figure's
+motion — a gap kept, moved with the body, or opened by a step between two legs — or where it is, whatever carried it,
+one hole of each source frame: alike in area, in shape and in the colour round it, and on its way between theirs. So a
+hole a part carries over a body that stays, turned, grown, sheared or swung, is theirs. Each source frame's hole is one
+hole of the frame between: a hole more than they have is given way, and so is a hole unlike theirs, off its way or
+farther than the figure's motion is followed, and a gap only one source frame opens on a part the figure's motion does
+not carry, which the reading does not tell from a band the coverage run carried out of one source frame's gap.
 
 The fixtures are synthetic: a figure of rectangles outlined in black, legs filled dark (under the dark line, 70/255,
 as dark tights or boots are), the near leg over the far one; the first source frame with its legs side by side, the
 second with a gap between them, as a step opens it; a gap between the arm and the body in every frame. Then a body with
 a gap through it, moved whole; a figure whose legs part above boots that close the gap below, still and moving; a body
-that stays with a part on it, a hole through the part, moved; the same over a body patterned in stripes or checks; and
-a torso patterned in blocks with an arm beside it, the gap between them moving with the arm."""
+that stays with a part on it, a hole through the part, moved; the same over a body patterned in stripes or checks; a
+torso patterned in blocks with an arm beside it, the gap between them moving with the arm; a plate with a gap through it,
+turned, grown, sheared or swung over a body that stays; and a plate with a row of holes."""
 
 from __future__ import annotations
 
 import itertools
+import math
 
 import numpy as np
 import pytest
@@ -38,8 +42,8 @@ MOVES = (0, 4, 8, 12, 24, 32)  # px the body with a gap moves from one source fr
 DIM, PART = (45, 55, 60), (150, 90, 60)  # the patterned body's darker colour (lighter by its contrast) and the part's
 PATTERNS = ((3, 6, "v"), (2, 4, "v"), (6, 12, "v"), (3, 6, "h"), (4, 8, "c"))  # stripes wide, their period, which way
 CONTRASTS = (15, 40, 120)
-# A part's side, its hole's, the px it moves and whether diagonally: the moves at t 0.5 where one motion per box gives the
-# body's stillness the part's hole on some pattern above.
+# A part's side, its hole's, the px it moves and whether diagonally: the moves at t 0.5 where a motion read over the box
+# round the part's hole takes the body's stillness, or the stripes laid on themselves, on some pattern above.
 OUTWEIGHED = (((24, 10), 32, 0), ((24, 10), 32, 1), ((24, 10), 48, 0), ((24, 10), 48, 1), ((40, 17), 32, 0),
               ((40, 17), 32, 1), ((60, 25), 32, 1))
 
@@ -165,6 +169,58 @@ def _arm(dy: int) -> Image.Image:
     for x0, y0, x1, y1 in ((150, 60, 191, 111), (176, 60, 191, 175), (150, 124, 191, 175)):
         d.rectangle((x0, y0 + dy, x1, y1 + dy), fill=PART + (255,))
     return im
+
+
+def _still(plain: bool) -> np.ndarray:
+    """A body that stays, 240 x 260 px on a 300 x 300 px canvas (RGBA), in stripes 3 px wide every 6 px lighter by 40,
+    or plain DIM."""
+    x = np.mgrid[:300, :300][1]
+    rgba = np.zeros((300, 300, 4), np.uint8)
+    lift = np.zeros_like(x) if plain else (x % 6 < 3) * 40
+    rgba[20:280, 30:270, :3] = (np.array(DIM) + lift[..., None])[20:280, 30:270]
+    rgba[20:280, 30:270, 3] = 255
+    return rgba
+
+
+def _plate(t: float, *, plain: bool = False, d: float = 0.0, turn: float = 0.0, grow: float = 1.0, shear: float = 0.0,
+           swing: float = 0.0, off: float = 0.0) -> Image.Image:
+    """The body that stays (`_still`) with a plate on it (|u| < 24, |v| < 28 px in its own axes) and a gap through the
+    plate (|u| < 6, |v| < 16), drawn exactly at time t of one motion from t 0 to t 1, half of it before t 0.5 and half
+    after: the plate's centre moves d px across, and the plate turns `turn` degrees, grows `grow` times and is sheared by
+    `shear` about it; or, with `swing`, the plate hangs from a point 100 px above its centre at t 0.5 and turns `swing`
+    degrees about that point; `off` px lower than its way. Turned 60 degrees and moved 48 px over the stripes, it is the
+    third checkpoint validator's frame."""
+    y, x = np.mgrid[:300, :300].astype(np.float64)
+    rgba = _still(plain)
+    s = t - 0.5
+    if swing:
+        phi = math.radians(swing * s)
+        cx, cy, theta = 150 + 100 * math.sin(phi), 40 + 100 * math.cos(phi), -phi
+    else:
+        cx, cy, theta = 150 + d * s, 140 + off, math.radians(turn * s)
+    u = (x - cx) * math.cos(theta) + (y - cy) * math.sin(theta)
+    v = -(x - cx) * math.sin(theta) + (y - cy) * math.cos(theta)
+    u, v = (u - shear * s * v) / grow ** s, v / grow ** s
+    rgba[(np.abs(u) < 24) & (np.abs(v) < 28)] = PART + (255,)
+    rgba[(np.abs(u) < 6) & (np.abs(v) < 16)] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def _row(t: float, *, plain: bool = False, d: int = 0, dy: int = 0, more: tuple[int, ...] = (), taller: int = 0,
+         filled: tuple[int, ...] = ()) -> Image.Image:
+    """The body that stays (`_still`) with a plate 120 x 40 px on it and a row of four holes 8 px square through it, 24 px
+    apart (at -36, -12, 12 and 36 px from its centre), the plate moving d px across and dy px down from t 0 to t 1,
+    drawn at t: the row's holes `taller` rows taller at their foot, those at the columns in `filled` left solid, and holes
+    8 px square more at the columns in `more`."""
+    rgba = _still(plain)
+    cx, cy = int(round(150 + d * (t - 0.5))), int(round(140 + dy * (t - 0.5)))
+    rgba[cy - 20:cy + 20, cx - 60:cx + 60] = PART + (255,)
+    for ox in (-36, -12, 12, 36):
+        if ox not in filled:
+            rgba[cy - 4:cy + 4 + taller, cx + ox - 4:cx + ox + 4] = 0
+    for ox in more:
+        rgba[cy - 4:cy + 4, cx + ox - 4:cx + ox + 4] = 0
+    return Image.fromarray(rgba, "RGBA")
 
 
 def _holed(frame: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
@@ -300,8 +356,8 @@ def test_a_gap_one_source_frame_has_half_open_between_is_theirs():
 def test_a_gap_moved_with_a_part_while_the_body_stays_is_theirs():
     """A part with a hole through it moves 32 px across a body that stays, the frame between drawn with the part
     halfway: the hole lies 5 px and more from where either source frame has it, on the way the part moves. The body
-    outweighs the part in the whole figure, which stays; the hole is carried with what lies round it, and the frame is
-    kept as made."""
+    outweighs the part in the whole figure, which stays; the hole is one hole of each source frame, alike and on its way
+    between theirs, and the frame is kept as made."""
     a, made, b = _ring(-16), _ring(0), _ring(16)
     assert _resampled(a, made, b) == KEPT and rife.hole(made, a, b, 0.5) == 0
 
@@ -322,10 +378,10 @@ def test_a_hole_through_a_moving_body_is_still_read():
 def test_a_hole_a_part_carries_over_a_patterned_body_that_stays_is_kept_as_made():
     """A part with a hole through it moves over a striped body that stays, each frame between drawn exactly at its
     place: the hole is both source frames', carried with the part. Over the box round it the body's stillness fits
-    better than the part's motion, which alone misses it; every motion within reach is judged, and the part's carries
-    the hole in both source frames with the frame between covered round it as they are. The checkpoint validator's own
-    frame (its 24 px part moved 32 px), resampled to four, and parts of 24, 40 and 60 px moved diagonally 32 px (and the
-    24 px part 48 px) over stripes at contrast 120, resampled to eight, keep every frame made, byte for byte."""
+    better than the part's motion, so a motion read there misses it; told by what it is, it is one hole of each source
+    frame, alike and on its way between theirs. The checkpoint validator's own frame (its 24 px part moved 32 px),
+    resampled to four, and parts of 24, 40 and 60 px moved diagonally 32 px (and the 24 px part 48 px) over stripes at
+    contrast 120, resampled to eight, keep every frame made, byte for byte."""
     assert _resampled(_validators(-16), _validators(0), _validators(16)) == KEPT
     for (part, gap), move in (((24, 10), 32), ((24, 10), 48), ((40, 17), 32), ((60, 25), 32)):
 
@@ -355,8 +411,8 @@ def test_every_pattern_contrast_and_move_reads_no_hole_where_a_part_carries_it()
 def test_the_gap_between_an_arm_and_a_patterned_torso_that_stays_is_theirs():
     """An arm moves 40 px down beside a torso that stays, patterned in blocks: the gap between them, carried with the arm,
     lies where the arm covers it in the other source frame, and over the box round it the torso's stillness fits better
-    than the arm's motion. Both source frames carry it on the arm's way: at t 0.25, 0.5 and 0.75 the frames between read
-    no hole and are kept as made."""
+    than the arm's motion. It is one gap of each source frame, alike and on the arm's way between theirs: at t 0.25, 0.5
+    and 0.75 the frames between read no hole and are kept as made."""
     assert {t: rife.hole(_arm(0), _arm(-int(np.floor(t * 40 + 0.5))), _arm(40 - int(np.floor(t * 40 + 0.5))), t)
             for t in (0.25, 0.5, 0.75)} == {0.25: 0.0, 0.5: 0.0, 0.75: 0.0}
     assert _quarters(lambda s: _arm(round(s * 40) - 20)) == QUARTERS
@@ -365,13 +421,116 @@ def test_the_gap_between_an_arm_and_a_patterned_torso_that_stays_is_theirs():
 def test_a_gap_only_one_source_frame_opens_on_a_part_over_a_body_that_stays_is_given_way():
     """The boundary: a part 30 px square moves 32 px over a body that stays, a hole 14 px square open through it in the
     first source frame and closed in the second, half open (8 px) in the frame between. The hole lies 5 px and more from
-    where the first frame has it in place; the whole figure stays; the box round it fits a motion that does not carry it
-    (over a plain body, one that lays the box on the body away from the part; over the validator's stripes, the body's
-    stillness); and no motion carries it in both source frames — as none carries a band the coverage run took out of one
-    source frame's gap into a limb. Plain or striped, the frame gives way to the nearer source frame."""
+    where the first frame has it in place; the whole figure stays; and the second source frame has no hole to pair it
+    with — as neither has one to pair with a band the coverage run took out of one source frame's gap into a limb. Plain
+    or striped, the frame gives way to the nearer source frame."""
     for contrast in (0, 40):
         a, made, b = (_over(dx, 0, part=30, gap=gap, contrast=contrast) for dx, gap in ((-16, 14), (0, 8), (16, 0)))
         out, facts = align.resample([a, b], 4, lambda x, y, t: made)
         assert facts["made_at"] == [] and facts["nearest_at"] == [1, 3] and out[1] is b and out[3] is a
         assert all(m["faults"] == ["hole"] for m in facts["smear"])
         assert rife.hole(made, a, b, 0.5) == round(8 * 8 / int((np.asarray(made)[..., 3] >= 128).sum()), 5)
+
+
+# The third checkpoint validator's motion of the plate (`_plate`): turned 60 degrees as it moves 48 px.
+TURNED = {"turn": 60, "d": 48}
+# Motions of the plate whose gap no motion of the figure carries, over a body that stays: turned 90 degrees, grown twice
+# and sheared by 0.6 as it moves 48 px, and swung 45 degrees, its centre moving 76.5 px — within the reach of a body
+# 260 px high (sqrt(2) x 52 + 4 = 77.5 px).
+MOTIONS = ({"turn": 90, "d": 48}, {"grow": 2.0, "d": 48}, {"shear": 0.6, "d": 48}, {"swing": 45})
+
+
+def test_a_hole_both_source_frames_have_on_a_turning_plate_is_kept_as_made():
+    """The third checkpoint validator's frame: the plate turns 60 degrees as it moves 48 px over the stripes, the frame
+    between drawn exactly halfway. No motion of the figure carries the gap, turned as it is; it is one hole of each source
+    frame, alike in area, in shape and in the colour round it, and on its way between theirs. Resampled to four, both
+    frames made are kept, byte for byte, and to eight (t 0.25, 0.5 and 0.75 each way) every one; so are the plate's
+    other motions in MOTIONS over the stripes, and over a plain body as well each reads no hole (plain, the plate swung
+    45 degrees is given way for `smear`, a reading of its own)."""
+    assert _resampled(*(_plate(s, **TURNED) for s in (0.0, 0.5, 1.0))) == KEPT
+    assert _quarters(lambda s: _plate(s, **TURNED)) == QUARTERS
+    assert {tuple(m.items()): _resampled(*(_plate(s, **m) for s in (0.0, 0.5, 1.0))) for m in MOTIONS} == {
+        tuple(m.items()): KEPT for m in MOTIONS}
+    assert {tuple(m.items()): rife.hole(_plate(0.5, plain=True, **m), _plate(0.0, plain=True, **m), _plate(1.0, plain=True, **m), 0.5)
+            for m in MOTIONS} == {tuple(m.items()): 0.0 for m in MOTIONS}
+
+
+@pytest.mark.slow
+def test_every_motion_of_a_plate_within_reach_reads_no_hole():
+    """The plate turned 0 to 90 degrees, grown 1.1 to 2 times or sheared by 0.15 to 0.6 as it moves 0, 24 or 48 px, or
+    swung 10 to 45 degrees, over stripes and over a plain body at t 0.5, and turned as it moves over the stripes at
+    t 0.25: every frame between reads no hole."""
+    motions = ([{"turn": r, "d": d} for r in (0, 10, 20, 30, 45, 60, 90) for d in (0, 24, 48)]
+               + [{"grow": g, "d": d} for g in (1.1, 1.2, 1.35, 1.5, 2.0) for d in (0, 24, 48)]
+               + [{"shear": h, "d": d} for h in (0.15, 0.3, 0.45, 0.6) for d in (0, 24, 48)]
+               + [{"swing": w} for w in (10, 20, 30, 45)])
+    seen = {}
+    for m, plain in itertools.product(motions, (False, True)):
+        a, made, b = (_plate(s, plain=plain, **m) for s in (0.0, 0.5, 1.0))
+        seen[tuple(m.items()), plain, 0.5] = rife.hole(made, a, b, 0.5)
+    for r, d in itertools.product((0, 10, 20, 30, 45, 60, 90), (0, 24, 48)):
+        a, made, b = (_plate(s, turn=r, d=d) for s in (0.0, 0.25, 1.0))
+        seen[(("turn", r), ("d", d)), False, 0.25] = rife.hole(made, a, b, 0.25)
+    assert len(seen) == 125 and {k: v for k, v in seen.items() if v} == {}
+
+
+def _gap_drawn(plain: bool, rows: tuple[int, int], cols: tuple[int, int]) -> Image.Image:
+    """The plate moving 48 px (`_plate`) drawn halfway with its gap filled and a gap cut at `rows` and `cols` instead."""
+    out = np.asarray(_plate(0.5, plain=plain, d=48)).copy()
+    out[124:156, 144:156] = PART + (255,)
+    out[rows[0]:rows[1], cols[0]:cols[1]] = 0
+    return Image.fromarray(out, "RGBA")
+
+
+def _given_way(a: Image.Image, made: Image.Image, b: Image.Image) -> bool:
+    """Resampled to four, both frames made at t 0.5 are `made`, given way to the nearer source frame with `hole` among
+    their faults."""
+    out, facts = align.resample([a, b], 4, lambda x, y, t: made)
+    return (facts["made_at"] == [] and facts["nearest_at"] == [1, 3] and out[1] is b and out[3] is a
+            and all("hole" in m["faults"] and m["hole"] > 0 for m in facts["smear"]))
+
+
+def test_a_hole_unlike_the_source_frames_or_off_its_way_or_out_of_reach_is_given_way():
+    """The boundaries, on the plate moving 48 px over a body that stays, plain or striped, its gap 11 x 31 px in both
+    source frames: the frame between gives way to the nearer source frame where its gap is unlike theirs — drawn 16 x 40 px
+    (1.9 times their area; rife.HOLE_AREA lets it be a quarter larger) or 18 x 18 px (its larger moment 2.8 times smaller
+    over its area; rife.HOLE_SHAPE lets it be 1.3 times) — or off its way between theirs: the plate drawn 12 px across it,
+    or where it is at t 0.8 in a frame made at t 0.5, 14.4 px along it (rife.HOLE_REACH + rife.HOLE_PATH of their 48 px
+    apart lets it be 8.8 px); where the source frames' gaps are unlike each other, the plate growing 2.2 times as it
+    moves (their areas more than rife.HOLE_PAIR_AREA, 4 times, apart); and where they lie farther apart than the figure's
+    motion is followed (sqrt(2) x 52 + 4 = 77.5 px on a body 260 px high), the plate moving 80 px, or swinging 60 degrees,
+    its centre moving 100 px."""
+    seen = {}
+    for plain in (False, True):
+        a, b = _plate(0.0, plain=plain, d=48), _plate(1.0, plain=plain, d=48)
+        for name, made in (("area", _gap_drawn(plain, (120, 160), (142, 158))), ("shape", _gap_drawn(plain, (131, 149), (141, 159))),
+                           ("across", _plate(0.5, plain=plain, d=48, off=12)), ("along", _plate(0.8, plain=plain, d=48))):
+            seen[name, plain] = _given_way(a, made, b)
+        for name, motion in (("pair area", {"grow": 2.2, "d": 48}), ("reach", {"d": 80}), ("swing", {"swing": 60})):
+            seen[name, plain] = _given_way(*(_plate(s, plain=plain, **motion) for s in (0.0, 0.5, 1.0)))
+    assert seen == {k: True for k in seen}
+
+
+def test_each_hole_of_a_source_frame_is_one_hole_of_the_frame_between():
+    """A plate with a row of four holes (`_row`) moves 32 px down over a body that stays, plain or striped: the frame
+    between drawn exactly is kept as made, and so is one with the row drawn a pixel taller, where a hole of one source
+    frame and the next but one of the other have their midpoint as near each hole as its own two: the nearer pair is
+    taken first. Drawn with one hole more midway between two of the row's — where one source frame's hole and the next
+    one of the other would put it — or past the row's end, or with one of the row's moved 12 px to a midway, it gives way
+    to the nearer source frame: each source frame's hole is one hole of the frame between, and each of the row's is taken
+    by the hole it is. Standing still, the row drawn a pixel taller: the in-place reading gives the row its source frames'
+    holes, which are paired with it before the hole more, so one more hole midway still gives way."""
+    seen = {}
+    for plain in (False, True):
+        a, b = _row(0.0, plain=plain, dy=32), _row(1.0, plain=plain, dy=32)
+        seen["row", plain] = _resampled(a, _row(0.5, plain=plain, dy=32), b) == KEPT
+        seen["a pixel taller", plain] = _resampled(a, _row(0.5, plain=plain, dy=32, taller=1), b) == KEPT
+        for name, made in (("midway", _row(0.5, plain=plain, dy=32, more=(0,))),
+                           ("between the last two", _row(0.5, plain=plain, dy=32, more=(24,))),
+                           ("past the end", _row(0.5, plain=plain, dy=32, more=(54,))),
+                           ("moved to a midway", _row(0.5, plain=plain, dy=32, more=(0,), filled=(12,)))):
+            seen[name, plain] = _given_way(a, made, b)
+        still = _row(0.0, plain=plain)
+        seen["still, a pixel taller", plain] = _resampled(still, _row(0.5, plain=plain, taller=1), still) == KEPT
+        seen["still, a pixel taller, one more midway", plain] = _given_way(still, _row(0.5, plain=plain, taller=1, more=(0,)), still)
+    assert seen == {k: True for k in seen}
