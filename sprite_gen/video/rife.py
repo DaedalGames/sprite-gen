@@ -17,7 +17,8 @@ part coverage on a frame alone, filmed or made; `crossfade` reads two drawings c
 whole silhouette, a reading to look at, not a fault; `hole` reads a transparent hole a made frame opened
 inside its silhouette that neither neighbour has there — in place, carried by the whole figure's motion,
 or, whatever carried it, one of each neighbour's holes, alike and on its way — where the two runs
-disagree inside a limb (docs/loop-repair.md section 4). `passes` runs
+disagree inside a limb; `doubled` reads a line one neighbour draws that a made frame left at part strength in its own
+place, a double outline where the flow faded a line out instead of moving it (docs/loop-repair.md section 4). `passes` runs
 the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
 `torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
@@ -139,6 +140,21 @@ HOLE_SHAPE = 1.3
 HOLE_PATH = 0.1
 HOLE_COLOUR = 0.12
 HOLE_PAIR_STEPS = 5000
+# `doubled`: a line one neighbour draws, left at part strength in its own place in a made frame — where the flow could not
+# follow a line and faded it out instead, the frame shows it beside the line it drew: a double outline (a boot's top as one
+# neighbour tilts it and the other plants it). A frame's line is its solid pixels darker by more than OUTLINE_SHIFT than its
+# own luma, white off its solid body, closed by a square DOUBLED_WIDE of the made frame's body height wide: a dark stroke
+# narrower than that goes in the closing, a dark fill wider stays and is no line. A pixel of one neighbour's line is left
+# where the three frames are solid, the other neighbour draws no line within DOUBLED_SHARED px of it (a line both draw is
+# theirs, at any strength) and is lighter there by more than OUTLINE_SHIFT, and the made frame is darker than the other
+# there by more than OUTLINE_SHIFT (a line still seen) yet by no more than DOUBLED_PART of the line's contrast, there and
+# at its darkest within OUTLINE_REACH (no line at full strength beside it, as at the soft edge of a line the flow moved).
+# Such pixels count where they make a region DOUBLED_THICK px thick; widened by DOUBLED_THICK px, those that touch make one
+# run, and a run's length is sqrt(12) times the root of its pixels' larger second moment (a straight run's own length).
+DOUBLED_WIDE = 0.025
+DOUBLED_SHARED = 4
+DOUBLED_PART = 0.8
+DOUBLED_THICK = 3
 # `crossfade`: an edge's local range is read over this many pixels, wider than RIFE's blur, so a
 # softened edge keeps its height and a cross-faded one does not; strong edges are counted in windows
 # this share of the body's height; a window that kept under CROSSFADE_KEEP of its source frames'
@@ -881,6 +897,61 @@ def crossfade(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> fl
             if kept >= 0.02 * w * w and km < CROSSFADE_KEEP * kept:
                 lost += kept - km
     return round(lost / max(1, int(solid.sum())), 5)
+
+
+def _lines(x: np.ndarray, r: int) -> np.ndarray:
+    """An RGBA frame's (0..1) lines (`doubled`): its solid pixels darker by more than OUTLINE_SHIFT than its luma, white off
+    its solid body, closed by a square 2 r + 1 wide."""
+    solid = x[..., 3] >= 0.5
+    luma = np.where(solid, _luma(x), 1.0)
+    closed = _square_min(-_square_min(-luma, r, mode="edge"), r, mode="edge")
+    return solid & (closed - luma > OUTLINE_SHIFT)
+
+
+def doubled(made: Image.Image, a: Image.Image, b: Image.Image) -> float:
+    """A line one neighbour draws, left at part strength in its own place in a made frame: the longest run of such pixels
+    (DOUBLED_* above), as a share of the made frame's body height. RIFE can fade out a line its flow does not follow — the
+    top of a boot one neighbour tilts and the other plants — and the frame shows it, lighter, beside the line it drew: a
+    double outline, its coverage whole (no part coverage for `ghost`), nothing darker added (`smear`) and its edge outlined
+    (`outline_shift`). Read on the made frame's pixels against each neighbour's: a line both neighbours draw is theirs at
+    any strength, a line the made frame carries at its neighbour's strength is that neighbour's drawing, and the soft edge
+    of a line the flow moved lies beside the line at full strength. 0 where the frame has no solid body, or where the
+    neighbours nowhere differ by a line's contrast (docs/loop-repair.md section 4)."""
+    m, fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (made, a, b))
+    rows = np.nonzero((m[..., 3] >= 0.5).any(axis=1))[0]
+    if rows.size == 0:
+        return 0.0
+    height = int(rows[-1] - rows[0] + 1)
+    lm, la, lb = (_luma(x) for x in (m, fa, fb))
+    both = (m[..., 3] >= 0.5) & (fa[..., 3] >= 0.5) & (fb[..., 3] >= 0.5)
+    differ = both & (np.abs(la - lb) > OUTLINE_SHIFT)
+    if not differ.any():
+        return 0.0
+    r = max(1, round(DOUBLED_WIDE * height / 2))
+    # read in the box round where they differ, wide enough that every pixel there reads as in the whole frame
+    y0, y1, x0, x1 = _bounds(differ)
+    pad = 2 * r + DOUBLED_SHARED + OUTLINE_REACH + DOUBLED_THICK
+    box = (slice(max(0, y0 - pad), y1 + pad), slice(max(0, x0 - pad), x1 + pad))
+    m, fa, fb, lm, la, lb, both = (v[box] for v in (m, fa, fb, lm, la, lb, both))
+    line_a, line_b = _lines(fa, r), _lines(fb, r)
+    darkest = _square_min(np.where(m[..., 3] >= 0.5, lm, 1.0), OUTLINE_REACH, constant_values=1.0)
+    left = np.zeros(both.shape, dtype=bool)
+    for line, other, own, there in ((line_a, line_b, la, lb), (line_b, line_a, lb, la)):
+        part = DOUBLED_PART * (there - own)
+        left |= (both & line & ~_near(other, DOUBLED_SHARED) & (there - own > OUTLINE_SHIFT)
+                 & (there - lm > OUTLINE_SHIFT) & (there - lm <= part) & (there - darkest <= part))
+    left = _opened(left, DOUBLED_THICK)
+    if not left.any():
+        return 0.0
+    ys, starts, stops, pieces, _ = _components(_near(left, DOUBLED_THICK), diagonal=True)
+    run = np.zeros(left.shape, dtype=np.int64)
+    for y, s0, s1, p in zip(ys, starts, stops, pieces):
+        run[y, s0:s1] = p
+    py, px = np.nonzero(left)
+    ids = run[py, px]
+    longest = max(float(np.linalg.eigvalsh(np.cov(np.vstack([py[ids == i], px[ids == i]]).astype(np.float64)))[-1])
+                  for i in np.unique(ids))
+    return round(float(np.sqrt(12 * max(longest, 0.0))) / height, 5)
 
 
 def torn(apart: np.ndarray, made: Image.Image) -> float:
