@@ -117,21 +117,20 @@ HOLE_TRAVEL = 0.2
 HOLE_COARSE = 24
 # A hole those two leave is still the neighbours' where it is one hole of each, whatever carried it — a part moving over a
 # body that stays, turning, growing, sheared, swinging: told by what it is, not by a motion. Each of the made frame's
-# enclosed holes (a piece of them keeping a pixel opened by HOLE_THICK) is paired with one of each neighbour's (keeping a
-# pixel opened by HOLE_SOURCE_THICK, a gap a little thinner at a neighbour's time) where the three are alike and lie on
-# one way (`_paired`). The neighbours' two: areas within HOLE_PAIR_AREA times of each other, shapes within HOLE_PAIR_SHAPE
+# enclosed holes the first two readings leave (a piece of them keeping a pixel opened by HOLE_THICK) is paired with one
+# of each neighbour's (keeping a pixel opened by HOLE_SOURCE_THICK, a gap a little thinner at a neighbour's time) where
+# the three are alike and lie on one way (`_paired`); a hole those readings give the neighbours takes no pair, being
+# theirs already. The neighbours' two: areas within HOLE_PAIR_AREA times of each other, shapes within HOLE_PAIR_SHAPE
 # times (`_holes`: second moments over area, which turning and growing keep), the colour round them within HOLE_COLOUR,
 # and no farther apart than the figure's motion reaches, diagonally, and HOLE_REACH. The made frame's: its area within
 # HOLE_AREA of their range, its shape within HOLE_SHAPE times of it, the colour round it within HOLE_COLOUR of each, and
 # its centroid within HOLE_REACH and HOLE_PATH of their distance of the point at its time on the line from one to the
-# other. Each neighbour's hole explains one of the made frame's: of the sets of such triples that can stand together
-# and pair every one of the made frame's holes the first two readings give the neighbours, the one taken pairs the most
-# of the rest, then is the alikest and nearest (`_taken`) — a neighbour's hole the made frame keeps where it was
-# explains no other, and alike holes moving together each keep their own two, however near their ways run. Where no
-# set pairs all of those, one of them is a hole more than the neighbours have that the first two readings took for
-# theirs, and none of the rest pairs. An exact search finds the set, each group of triples sharing holes apart, in at
-# most HOLE_PAIR_STEPS steps (a row or grid of alike holes that all pair takes about a step a hole); a group whose
-# search runs past them pairs none of its holes.
+# other. Each neighbour's hole explains one of the holes paired: of the sets of such triples that can stand together,
+# the one taken pairs the most, then is the alikest and nearest (`_taken`), so alike holes moving together each keep
+# their own two, however near their ways run. An exact search finds it, each group of triples sharing holes apart: first
+# whether one set pairs every hole of the group (`_whole`), then, where none does, which set pairs the most
+# (`_searched`), each in at most HOLE_PAIR_STEPS steps (a row or grid of alike holes that all pair takes about a step a
+# hole); where the first runs past them the second answers, and a group the second runs past pairs none of its holes.
 HOLE_SOURCE_THICK = 3
 HOLE_PAIR_AREA = 4.0
 HOLE_PAIR_SHAPE = 2.0
@@ -629,19 +628,18 @@ def _holes(pre: np.ndarray, thick: int) -> tuple[list[tuple[tuple[slice, slice],
     return windows, np.array(rows, dtype=np.float64).reshape(-1, 8)
 
 
-def _paired(made: np.ndarray, a: np.ndarray, b: np.ndarray, t: float, reach: int, first: np.ndarray) -> list[int]:
-    """Which of the made frame's holes outside `first` (rows of `_holes`; the frame at fraction `t` from `a` to `b`, the
-    neighbours' holes) are one hole of each neighbour's. A triple is one of the made frame's holes and one
-    of each neighbour's where the neighbours' two have areas within HOLE_PAIR_AREA times of each other, shapes within
-    HOLE_PAIR_SHAPE times (on each moment) and the colours round them within HOLE_COLOUR (on each channel), their
+def _paired(made: np.ndarray, a: np.ndarray, b: np.ndarray, t: float, reach: int) -> list[int]:
+    """Which of the made frame's holes (rows of `_holes`: those the first two readings leave; the frame at fraction `t`
+    from `a` to `b`, the neighbours' holes) are one hole of each neighbour's. A triple is one of the made frame's holes
+    and one of each neighbour's where the neighbours' two have areas within HOLE_PAIR_AREA times of each other, shapes
+    within HOLE_PAIR_SHAPE times (on each moment) and the colours round them within HOLE_COLOUR (on each channel), their
     centroids at most sqrt(2) `reach` + HOLE_REACH apart (`reach`: how far the figure's motion is followed each way);
     and the made frame's has its area within HOLE_AREA of their range, its shape within HOLE_SHAPE times of theirs on
     each moment, the colour round it within HOLE_COLOUR of each, and its centroid within HOLE_REACH + HOLE_PATH of
     their distance of the point at `t` on the line from theirs in a to theirs in b. Its cost, how far the three are
     from alike and near: the logarithm of how far the made frame's area is out of their range, its distance from that
     point over what it may be, how far its shape is out of theirs, the two colour differences over HOLE_COLOUR and the
-    neighbours' two holes' distance over what it may be, summed. The triples taken are one to one and pair every hole
-    `first` names (`_taken`)."""
+    neighbours' two holes' distance over what it may be, summed. The triples taken are one to one (`_taken`)."""
     if not (len(made) and len(a) and len(b)):
         return []
     A, B = a[:, None], b[None, :]
@@ -665,17 +663,15 @@ def _paired(made: np.ndarray, a: np.ndarray, b: np.ndarray, t: float, reach: int
         for p in np.nonzero((area >= 1 - HOLE_AREA) & (area <= 1 + HOLE_AREA) & (path <= 1)
                             & (shape <= np.log(HOLE_SHAPE)) & (alike <= HOLE_COLOUR))[0]:
             triples.append((i, int(j[p]), int(k[p]), float(cost[p])))
-    return _taken(triples, [bool(x) for x in first])
+    return _taken(triples)
 
 
-def _taken(triples: list[tuple[int, int, int, float]], first: list[bool]) -> list[int]:
-    """The made frame's holes outside `first` that the triples taken pair, one to one: no hole of any frame in two of
-    them. Each hole `first` names, the neighbours' already, is one hole of each neighbour's too: of the sets of
-    `triples` (the made frame's hole, a's, b's and the cost; `_paired`) that can stand together and pair every one of
-    those, the one taken pairs the most of the rest, then has the least summed cost. So a neighbour's hole the made
-    frame keeps where it was explains no other, and alike holes moving together each keep their own two, however near
-    their ways run. Triples sharing a hole, directly or through others, make one group, read apart from the rest
-    (`_searched`); a group with no hole outside `first` changes nothing and is not read."""
+def _taken(triples: list[tuple[int, int, int, float]]) -> list[int]:
+    """The made frame's holes the triples taken pair, one to one: no hole of any frame in two of them. Of the sets of
+    `triples` (the made frame's hole, a's, b's and the cost; `_paired`) that can stand together, the one taken pairs the
+    most holes, then has the least summed cost, so alike holes moving together each keep their own two, however near
+    their ways run. Triples sharing a hole, directly or through others, make one group, read apart from the rest: all
+    its holes pair where one set pairs them all (`_whole`), and otherwise those of the set `_searched` finds."""
     owner: dict[tuple[int, int], tuple[int, int]] = {}
 
     def root(x: tuple[int, int]) -> tuple[int, int]:
@@ -692,62 +688,102 @@ def _taken(triples: list[tuple[int, int, int, float]], first: list[bool]) -> lis
         groups.setdefault(root((0, i)), {}).setdefault(i, []).append((cost, 1 << j, 1 << k))
     taken: list[int] = []
     for cands in groups.values():
-        if not all(first[i] for i in cands):
-            taken += _searched(cands, first)
+        taken += list(cands) if _whole(cands) else _searched(cands)
     return sorted(taken)
 
 
-def _searched(cands: dict[int, list[tuple[float, int, int]]], first: list[bool]) -> list[int]:
+def _whole(cands: dict[int, list[tuple[float, int, int]]]) -> bool | None:
+    """Whether one set of a group's triples (each of its made frame's holes with its triples, cheapest first: the cost,
+    and a's hole and b's as bits; `_taken`), one to one, pairs every hole of the group: True or False, or None where the
+    search runs past HOLE_PAIR_STEPS steps. Depth first from the made frame's hole with the fewest triples still free
+    (holding no hole a triple taken holds), each of those cheapest first, no hole left unpaired; a branch is cut where a
+    hole left has no free triple, or where the holes left cannot each keep a hole of a, or of b, of its own among those
+    its free triples hold (`_matched`)."""
+    stack = [(tuple(sorted(cands)), 0, 0)]
+    for _ in range(HOLE_PAIR_STEPS):
+        if not stack:
+            return False
+        holes, used_a, used_b = stack.pop()
+        if not holes:
+            return True
+        free = {i: [x for x in cands[i] if not (used_a & x[1] or used_b & x[2])] for i in holes}
+        if not all(free.values()) or not (_matched(free, 1) and _matched(free, 2)):
+            continue
+        h = min(holes, key=lambda i: (len(free[i]), i))
+        others = tuple(i for i in holes if i != h)
+        stack.extend((others, used_a | ja, used_b | kb) for _, ja, kb in reversed(free[h]))
+    return None if stack else False
+
+
+def _matched(free: dict[int, list[tuple[float, int, int]]], side: int) -> bool:
+    """Whether each of the made frame's holes `free` names can keep a hole of one neighbour (`side` 1, a; 2, b) of its
+    own among those its free triples hold there: an augmenting path for each in turn (Kuhn's matching)."""
+    held = dict.fromkeys(free, 0)
+    for i, f in free.items():
+        for x in f:
+            held[i] |= x[side]
+    owner: dict[int, int] = {}  # a neighbour's hole, as its bit: the made frame's hole keeping it
+    for start in free:
+        seen, path = 0, [[start, held[start], 0]]  # a made frame's hole, the holes it has yet to try, the one it keeps
+        while path:
+            step = path[-1]
+            untried = step[1] & ~seen
+            if not untried:
+                path.pop()
+                continue
+            x = untried & -untried
+            step[1], seen = untried ^ x, seen | x
+            if x in owner:
+                path.append([owner[x], held[owner[x]], x])
+                continue
+            for i, _, kept in reversed(path):  # the last takes x, and each before it the one the next gives up
+                owner[x], x = i, kept
+            break
+        else:
+            return False
+    return True
+
+
+def _searched(cands: dict[int, list[tuple[float, int, int]]]) -> list[int]:
     """Of one group of triples (each of its made frame's holes with its triples, cheapest first: the cost, and a's hole
-    and b's as bits; `_taken`), the holes outside `first` the set taken pairs, by an exact search, depth first: from the
-    made frame's hole with the fewest triples still free (holding no hole a triple taken holds), each of those,
-    cheapest first, then, for a hole outside `first`, the hole left unpaired. The most a branch could still pair: each
-    hole left with a free triple, and in each neighbour no more than the holes the free triples hold there. A branch is
-    cut where that leaves a hole `first` names unpaired, or pairs fewer of the rest than the best set found, or as many
-    with no less cost than the best's, even were each hole of `first` and each of as many of the rest as it takes, the
-    cheapest, paired by its cheapest free triple. The search ends at a set pairing every hole, since every such set
-    pairs the same holes. Where no set pairs every hole `first` names, one of them is a hole more than the neighbours
-    have that the first two readings took for theirs, and none of the rest is paired; nor where the search runs past
-    HOLE_PAIR_STEPS steps (docs/loop-repair.md section 4)."""
-    owed = sum(first[i] for i in cands)
+    and b's as bits; `_taken`), the holes the set taken pairs, by an exact search, depth first: from the made frame's
+    hole with the fewest triples still free (holding no hole a triple taken holds), each of those, cheapest first, then
+    the hole left unpaired. The most a branch could still pair: each hole left with a free triple, and in each neighbour
+    no more than the holes the free triples hold there. A branch is cut where that pairs fewer holes than the best set
+    found, or as many with no less cost than the best's, even were each of as many as it takes, the cheapest, paired by
+    its cheapest free triple. The search ends at a set pairing every hole, since every such set pairs the same holes.
+    Where it runs past HOLE_PAIR_STEPS steps none of the group's holes is paired (docs/loop-repair.md section 4)."""
     best: tuple[int, float, tuple[int, ...]] = (-1, 0.0, ())
-    stack = [(tuple(sorted(cands)), 0, 0, 0, 0, 0.0, ())]
+    stack = [(tuple(sorted(cands)), 0, 0, 0, 0.0, ())]
     for _ in range(HOLE_PAIR_STEPS):
         if not stack:
             break
-        holes, used_a, used_b, got_first, got_rest, cost, pairs = stack.pop()
-        free, cheapest, held = {}, ([], []), [0, 0, 0, 0]  # held: a's and b's holes as bits, `first`'s, the rest's
+        holes, used_a, used_b, got, cost, pairs = stack.pop()
+        free, cheapest, held_a, held_b = {}, [], 0, 0
         for i in holes:
             if f := [x for x in cands[i] if not (used_a & x[1] or used_b & x[2])]:
                 free[i] = f
-                side = 2 * (not first[i])
-                cheapest[side // 2].append(f[0][0])
+                cheapest.append(f[0][0])
                 for _, ja, kb in f:
-                    held[side] |= ja
-                    held[side + 1] |= kb
-        in_a, in_b = (held[0] | held[2]).bit_count(), (held[1] | held[3]).bit_count()
-        more_first = min(len(cheapest[0]), held[0].bit_count(), held[1].bit_count(), in_a, in_b)
-        more_rest = min(len(cheapest[1]), held[2].bit_count(), held[3].bit_count(), in_a - more_first,
-                        in_b - more_first)
-        could = got_rest + more_rest
-        if got_first + more_first < owed or could < best[0] or could == best[0] and (
-                cost + sum(cheapest[0]) + sum(sorted(cheapest[1])[:more_rest]) >= best[1]):
+                    held_a |= ja
+                    held_b |= kb
+        more = min(len(cheapest), held_a.bit_count(), held_b.bit_count())
+        if got + more < best[0] or got + more == best[0] and cost + sum(sorted(cheapest)[:more]) >= best[1]:
             continue
         if not free:
-            best = (got_rest, cost, pairs)
-            if got_first + got_rest == len(cands):
+            best = (got, cost, pairs)
+            if got == len(cands):
                 break
             continue
         h = min(free, key=lambda i: (len(free[i]), i))
         others = tuple(i for i in free if i != h)
-        if not first[h]:
-            stack.append((others, used_a, used_b, got_first, got_rest, cost, pairs))
-        stack.extend((others, used_a | ja, used_b | kb, got_first + first[h], got_rest + (not first[h]), cost + c,
-                      pairs + (h,)) for c, ja, kb in reversed(free[h]))
+        stack.append((others, used_a, used_b, got, cost, pairs))
+        stack.extend((others, used_a | ja, used_b | kb, got + 1, cost + c, pairs + (h,))
+                     for c, ja, kb in reversed(free[h]))
     else:
         if stack:
             return []
-    return [i for i in best[2] if not first[i]]
+    return list(best[2])
 
 
 def hole(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> float:
@@ -778,9 +814,9 @@ def hole(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> float:
         left = _opened(left & ~(_moved(near_a, -ay, -ax) | _moved(near_b, -by, -bx)), HOLE_THICK)
         if left.any():
             holes, own = _holes(_premultiplied(made), HOLE_THICK)
-            first = np.array([not left[window][mask].any() for window, mask in holes], dtype=bool)
-            for i in _paired(own, _holes(pa, HOLE_SOURCE_THICK)[1], _holes(pb, HOLE_SOURCE_THICK)[1], t, reach, first):
-                window, mask = holes[i]
+            rest = [i for i, (window, mask) in enumerate(holes) if left[window][mask].any()]
+            for p in _paired(own[rest], _holes(pa, HOLE_SOURCE_THICK)[1], _holes(pb, HOLE_SOURCE_THICK)[1], t, reach):
+                window, mask = holes[rest[p]]
                 left[window] &= ~mask
             left = _opened(left, HOLE_THICK)
     return round(float(left.sum()) / int(solid.sum()), 5)

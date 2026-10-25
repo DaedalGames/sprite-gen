@@ -8,12 +8,14 @@ all the line there is — the outline readings judge an outline, not a hole. A h
 frames' own where either has a pixel under solid within 4 px of where it lay, in place or carried by the whole figure's
 motion — a gap kept, moved with the body, or opened by a step between two legs — or where it is, whatever carried it,
 one hole of each source frame: alike in area, in shape and in the colour round it, and on its way between theirs. So a
-hole a part carries over a body that stays, turned, grown, sheared or swung, is theirs. Each source frame's hole is one
-hole of the frame between: the holes the first two readings give them must all pair, and of the sets that pair them
-the one taken pairs the most of the rest, so alike holes whose ways run near each other each keep their own two. A hole
-more than they have is given way, and so is a hole unlike theirs, off its way or farther than the figure's motion is
-followed, and a gap only one source frame opens on a part the figure's motion does not carry, which the reading does
-not tell from a band the coverage run carried out of one source frame's gap.
+hole a part carries over a body that stays, turned, grown, sheared or swung, is theirs. A hole the first two readings
+give the source frames takes no pair; of the holes they leave, each source frame's hole is one hole of the frame
+between, and of the sets of pairs the one taken pairs the most, so alike holes whose ways run near each other each keep
+their own two. A hole more than they have among the holes left is given way, and so is a hole unlike theirs, off its
+way or farther than the figure's motion is followed, and a gap only one source frame opens on a part the figure's
+motion does not carry, which the reading does not tell from a band the coverage run carried out of one source frame's
+gap. A hole more is read as theirs where it lies within 4 px of a hole of theirs, or where it pairs with one source
+frame's hole and the other's alike hole whose own holes the first two readings explain: what the reading does not tell.
 
 The fixtures are synthetic: a figure of rectangles outlined in black, legs filled dark (under the dark line, 70/255,
 as dark tights or boots are), the near leg over the far one; the first source frame with its legs side by side, the
@@ -22,12 +24,14 @@ a gap through it, moved whole; a figure whose legs part above boots that close t
 that stays with a part on it, a hole through the part, moved; the same over a body patterned in stripes or checks; a
 torso patterned in blocks with an arm beside it, the gap between them moving with the arm; a plate with a gap through it,
 turned, grown, sheared or swung over a body that stays; a plate with a row of holes; a row of holes moving on a curved
-way; and a column of holes."""
+way; a column of holes; a plate with a hole one source frame keeps in place beside a hole moving between them; and a
+body moving whole with a gap or a row of holes through it."""
 
 from __future__ import annotations
 
 import itertools
 import math
+import random
 
 import numpy as np
 import pytest
@@ -256,6 +260,35 @@ def _column(t: float, *, shut: tuple[int, ...] = ()) -> Image.Image:
     for place in (p for p in range(3) if p not in shut):
         y = cy + 24 * (place - 1)
         rgba[y - 4:y + 4, 146:154] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def _beside(t: float, *, kept_by: int = 0) -> Image.Image:
+    """The body that stays (`_still`) with a plate 105 px square on it, through it a hole 8 px square in place (rows 120
+    to 127, columns 112 to 119) that one source frame keeps and the other shuts — open while t < 1, so in the first source
+    frame and the frame between, or with `kept_by` 1 while t > 0 — and a hole 8 px square moving from (100, 100) to
+    (152, 148), drawn at t: at t 0.5 at its exact midpoint, 10 px from the hole in place. The fifth checkpoint
+    validator's frame."""
+    rgba = _still(False)
+    rgba[75:180, 75:180] = PART + (255,)
+    if (t < 1) if kept_by == 0 else (t > 0):
+        rgba[120:128, 112:120] = 0
+    cx, cy = int(100 + 52 * t), int(100 + 48 * t)
+    rgba[cy - 4:cy + 4, cx - 4:cx + 4] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def _moving(t: float, move: tuple[int, int], holes: tuple[tuple[int, int, int, int], ...],
+            more: tuple[tuple[int, int, int, int], ...] = ()) -> Image.Image:
+    """A body 200 x 260 px outlined in black on a 400 x 400 px canvas, moving whole move[0] px across and move[1] down
+    from t 0 to t 1 (its corner at (100, 70) at t 0.5), drawn at t, with holes through it at `holes` (x0, y0, x1, y1 from
+    its corner, the ends left out) and at `more`."""
+    rgba = np.zeros((400, 400, 4), np.uint8)
+    x0, y0 = 100 + int(round(move[0] * (t - 0.5))), 70 + int(round(move[1] * (t - 0.5)))
+    rgba[y0:y0 + 260, x0:x0 + 200] = LINE
+    rgba[y0 + 2:y0 + 258, x0 + 2:x0 + 198] = PART + (255,)
+    for bx0, by0, bx1, by1 in holes + more:
+        rgba[y0 + by0:y0 + by1, x0 + bx0:x0 + bx1] = 0
     return Image.fromarray(rgba, "RGBA")
 
 
@@ -553,9 +586,9 @@ def test_each_hole_of_a_source_frame_is_one_hole_of_the_frame_between():
     frame and the next but one of the other have their midpoint as near each hole as its own two: only with its own two
     is every hole of the row paired. Drawn with one hole more midway between two of the row's — where one source frame's
     hole and the next one of the other would put it — or past the row's end, or with one of the row's moved 12 px to a
-    midway, it gives way to the nearer source frame: each source frame's hole is one hole of the frame between. Standing
-    still, the row drawn a pixel taller: the in-place reading gives the row its source frames' holes, and every hole of
-    the row must pair, which leaves one more hole midway none, so it still gives way."""
+    midway, it gives way to the nearer source frame: of the holes the first two readings leave, each source frame's hole
+    is one hole of the frame between. Standing still, the row drawn a pixel taller is kept: the in-place reading gives
+    the row its source frames' holes."""
     seen = {}
     for plain in (False, True):
         a, b = _row(0.0, plain=plain, dy=32), _row(1.0, plain=plain, dy=32)
@@ -568,7 +601,6 @@ def test_each_hole_of_a_source_frame_is_one_hole_of_the_frame_between():
             seen[name, plain] = _given_way(a, made, b)
         still = _row(0.0, plain=plain)
         seen["still, a pixel taller", plain] = _resampled(still, _row(0.5, plain=plain, taller=1), still) == KEPT
-        seen["still, a pixel taller, one more midway", plain] = _given_way(still, _row(0.5, plain=plain, taller=1, more=(0,)), still)
     assert seen == {k: True for k in seen}
 
 
@@ -590,20 +622,81 @@ def test_holes_no_set_of_pairs_explains_together_give_way(monkeypatch):
     row, on the first hole's way: it could take the first hole's two, but the first and the second cannot then both
     keep theirs — each source frame's holes pair as many of the made frame's as they number and no more. And the row's
     last hole shut in the second source frame: it has nothing there to pair with. Both give way to the nearer source
-    frame with `hole` among their faults. So does a column of three holes moving down (`_column`), its middle hole shut
-    in the second source frame: the in-place reading gives the frame between's first and middle holes to the source
-    frames, but no set of pairs pairs both — the middle one's only pair, the holes it lies against, holds the second
-    source frame's first hole, the first one's own — so one of them is a hole more than the second source frame has,
-    and the last hole, which its own two would pair, is not paired. Searched no further than rife.HOLE_PAIR_STEPS
-    steps, here one, the frame of the test above gives way too: a group of triples whose search runs past it pairs none
-    of its holes."""
+    frame with `hole` among their faults. Searched no further than rife.HOLE_PAIR_STEPS steps, here one, the frame of the
+    test above gives way too: a group of triples both of whose searches run past it pairs none of its holes."""
     seen = {}
     for n, still in itertools.product((2, 4), (False, True)):
         seen["one more before", n, still] = _given_way(_way(0.0, n, still=still), _way(0.5, n, still=still, more=(-1,)),
                                                        _way(1.0, n, still=still))
         seen["the last only in the first", n, still] = _given_way(_way(0.0, n, still=still), _way(0.5, n, still=still),
                                                                   _way(1.0, n, still=still, shut=(n - 1,)))
-    seen["a column, its middle hole shut in the second"] = _given_way(_column(0.0), _column(0.5), _column(1.0, shut=(1,)))
     monkeypatch.setattr(rife, "HOLE_PAIR_STEPS", 1)
     seen["searched one step"] = _given_way(*(_way(s) for s in (0.0, 0.5, 1.0)))
+    assert seen == {k: True for k in seen}
+
+
+def _tangled(seed: int, n: int) -> list[tuple[int, int, int, float]]:
+    """Triples for `rife._taken`: n made holes, each paired by its own two (i, i, i) and by up to five more pairs of a's
+    and b's holes within three places of its own, at seeded random costs: one set pairs every hole."""
+    rng = random.Random(seed)
+    triples = {(i, i, i) for i in range(n)}
+    for i in range(n):
+        for _ in range(5):
+            triples.add((i, min(n - 1, max(0, i + rng.randint(-3, 3))), min(n - 1, max(0, i + rng.randint(-3, 3)))))
+    return [(i, j, k, round(rng.uniform(0.0, 3.0), 3)) for i, j, k in sorted(triples)]
+
+
+def test_a_group_every_hole_of_which_pairs_is_paired_whole_where_the_search_for_the_most_runs_long(monkeypatch):
+    """Twenty alike holes, each with its own two and up to five more pairs near its own at random costs (`_tangled`):
+    the search for the set pairing the most, cheapest first, wanders among the cheaper pairs and runs past
+    rife.HOLE_PAIR_STEPS here before it finds a set pairing all twenty. The search for a set pairing every hole, cut
+    wherever the holes left cannot each keep a hole of each source frame of their own, finds one in a few dozen steps,
+    and every hole is paired. Where that search runs past the steps too, the other answers, and here pairs none."""
+    triples = _tangled(3, 20)
+    assert rife._taken(triples) == list(range(20))
+    monkeypatch.setattr(rife, "_whole", lambda cands: None)  # as though the search for a whole set ran past the steps
+    assert rife._taken(triples) == []
+
+
+def test_a_hole_the_first_two_readings_give_the_source_frames_takes_no_pair():
+    """The fifth checkpoint validator's frame (`_beside`): a hole 8 px square that the first source frame and the frame
+    between have in place and the second shuts, beside a hole moving 52 px across and 48 down, drawn at its exact
+    midpoint 10 px from the first (within the moving hole's way: 4 px and 0.1 of its 70.8 px). The in-place reading
+    gives the first hole to the source frames, so it takes no pair, and the moving hole keeps its own two: resampled to
+    four, both frames made are kept, byte for byte, and so are they with the hole in place kept by the second source
+    frame instead."""
+    assert {k: _resampled(*(_beside(s, kept_by=k) for s in (0.0, 0.5, 1.0))) for k in (0, 1)} == {0: KEPT, 1: KEPT}
+
+
+def test_a_hole_more_whose_pair_the_first_two_readings_leave_free_is_read_as_theirs():
+    """What the reading does not tell, pinned (docs/loop-repair.md section 4): a hole more than the source frames have
+    is theirs where it lies within 4 px of where they have a hole, or where it pairs with one source frame's hole and
+    the other's alike hole whose own holes in the frame between the first two readings explain. A column of three holes
+    moving down (`_column`), its middle hole shut in the second source frame: the in-place reading gives the frame
+    between's first and middle holes to the source frames, each lying against one of theirs, and the last pairs with
+    its own two. A row of four holes standing still (`_row`), drawn a pixel taller with one hole more midway: the
+    in-place reading gives the row's holes to the source frames, and the hole more pairs with one's hole and the
+    other's next one. A body moving whole 32 px down (`_moving`) with a row of four holes 8 px square, 24 px apart, and
+    one more midway between the middle two: the second reading carries the row, and the hole more pairs the same way.
+    Each is kept as made. And a twin: the body moving whole 48 px across and 48 down with a gap 5 x 30 px through it,
+    carried by the second reading, and one gap more 10 px beside it, 5 px of the body between them: it lies 10 px from
+    the point at t 0.5 between the source frames' gaps, within 4 px and 0.1 of their 67.9 px (10.8 px), and pairs with
+    them, so it reads `hole` 0 either way (the outline readings, readings of their own, give this frame way). A twin off
+    that way gives way for `hole`: 11 px beside the gap, or 13 px beside a gap 8 px wide (5 px of the body between them
+    again). A twin is let through only where the gap's width and 5 px are within 4 px and 0.1 of how far it moves."""
+    seen = {"column, its middle hole shut in the second": _resampled(_column(0.0), _column(0.5), _column(1.0, shut=(1,)))
+            == KEPT}
+    for plain in (False, True):
+        still = _row(0.0, plain=plain)
+        seen["still row, a pixel taller, one more midway", plain] = _resampled(
+            still, _row(0.5, plain=plain, taller=1, more=(0,)), still) == KEPT
+    row = tuple((100 + ox - 4, 126, 100 + ox + 4, 134) for ox in (-36, -12, 12, 36))
+    seen["row moving whole, one more midway"] = _resampled(
+        _moving(0.0, (0, 32), row), _moving(0.5, (0, 32), row, ((96, 126, 104, 134),)), _moving(1.0, (0, 32), row)) == KEPT
+    for width, off in ((5, 10), (5, 11), (8, 13)):
+        gap = (95, 100, 95 + width, 130)
+        a, b = _moving(0.0, (48, 48), (gap,)), _moving(1.0, (48, 48), (gap,))
+        made = _moving(0.5, (48, 48), (gap,), ((95 + off, 100, 95 + off + width, 130),))
+        seen["twin", width, off] = (rife.hole(made, a, b, 0.5) == rife.hole(made, b, a, 0.5) == 0) if off == 10 else (
+            _given_way(a, made, b))
     assert seen == {k: True for k in seen}
