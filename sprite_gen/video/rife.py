@@ -14,7 +14,11 @@ the flow failed and melted a limb into the fill; `outline_shift` reads that edge
 neighbours' rank by rank, so a mid-tone line the flow only softened is not read as lost — where the
 neighbours are outlined (`outlined`), and not on art painted without a line; `ghost` reads a band of
 part coverage on a frame alone, filmed or made; `crossfade` reads two drawings cross-faded inside a
-whole silhouette, a reading to look at, not a fault (docs/loop-repair.md section 4). `passes` runs
+whole silhouette, a reading to look at, not a fault; `hole` reads a transparent hole a made frame opened
+inside its silhouette that neither neighbour has there — in place, carried by the whole figure's motion,
+or, whatever carried it, one of each neighbour's holes, alike and on its way — where the two runs
+disagree inside a limb; `doubled` reads a line one neighbour draws that a made frame left at part strength in its own
+place, a double outline where the flow faded a line out instead of moving it (docs/loop-repair.md section 4). `passes` runs
 the sixteen single passes the binary's augmentation combines inside one call, one at a time, and
 `torn` reads where they disagree: a small part RIFE drags apart beside a large one moving far.
 
@@ -58,6 +62,7 @@ import PIL
 from PIL import Image, ImageFilter, PngImagePlugin
 
 from sprite_gen._deps import np
+from sprite_gen.video.frames import _components, _near
 
 BINARY = "rife-ncnn-vulkan"
 MODEL = "rife-v4.6"
@@ -99,6 +104,57 @@ OUTLINED = 0.75
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
 GHOST_THICK = 5
+# `hole`: a pixel under solid (alpha under 0.5) that the outside of the picture cannot reach without crossing the solid
+# body is a hole; a made frame's is its neighbours' where either of them is under solid within HOLE_REACH pixels of where
+# it lay at that neighbour's time — in place, or carried with the whole figure (a gap between an arm and the body or
+# between two legs, kept, opened by a step or moved with them) — and counts where it makes a region at least HOLE_THICK
+# pixels thick: a pinhole a pixel or two wide, an antialiased crevice, is opened away. The figure's motion is the one the
+# two neighbours alone show (`_travel`), never the flow's, so a frame the flow got wrong is not judged by the flow that
+# made it; it is followed up to HOLE_TRAVEL of the body's height, searched whole on the level pooled coarsely enough that
+# this reach is at most HOLE_COARSE pixels each way, then refined down to the pixel.
+HOLE_REACH = 4
+HOLE_THICK = 5
+HOLE_TRAVEL = 0.2
+HOLE_COARSE = 24
+# A hole those two leave is still the neighbours' where it is one hole of each, whatever carried it — a part moving over a
+# body that stays, turning, growing, sheared, swinging: told by what it is, not by a motion. Each of the made frame's
+# enclosed holes the first two readings leave (a piece of them keeping a pixel opened by HOLE_THICK) is paired with one
+# of each neighbour's (keeping a pixel opened by HOLE_SOURCE_THICK, a gap a little thinner at a neighbour's time) where
+# the three are alike and lie on one way (`_paired`); a hole those readings give the neighbours takes no pair, being
+# theirs already. The neighbours' two: areas within HOLE_PAIR_AREA times of each other, shapes within HOLE_PAIR_SHAPE
+# times (`_holes`: second moments over area, which turning and growing keep), the colour round them within HOLE_COLOUR,
+# and no farther apart than the figure's motion reaches, diagonally, and HOLE_REACH. The made frame's: its area within
+# HOLE_AREA of their range, its shape within HOLE_SHAPE times of it, the colour round it within HOLE_COLOUR of each, and
+# its centroid within HOLE_REACH and HOLE_PATH of their distance of the point at its time on the line from one to the
+# other. Each neighbour's hole explains one of the holes paired: of the sets of such triples that can stand together,
+# the one taken pairs the most, then is the alikest and nearest (`_taken`), so alike holes moving together each keep
+# their own two, however near their ways run. An exact search finds it, each group of triples sharing holes apart: first
+# whether one set pairs every hole of the group (`_whole`), then, where none does, which set pairs the most
+# (`_searched`), each in at most HOLE_PAIR_STEPS steps (a row or grid of alike holes that all pair takes about a step a
+# hole); where the first runs past them the second answers, and a group the second runs past pairs none of its holes.
+HOLE_SOURCE_THICK = 3
+HOLE_PAIR_AREA = 4.0
+HOLE_PAIR_SHAPE = 2.0
+HOLE_AREA = 0.25
+HOLE_SHAPE = 1.3
+HOLE_PATH = 0.1
+HOLE_COLOUR = 0.12
+HOLE_PAIR_STEPS = 5000
+# `doubled`: a line one neighbour draws, left at part strength in its own place in a made frame — where the flow could not
+# follow a line and faded it out instead, the frame shows it beside the line it drew: a double outline (a boot's top as one
+# neighbour tilts it and the other plants it). A frame's line is its solid pixels darker by more than OUTLINE_SHIFT than its
+# own luma, white off its solid body, closed by a square DOUBLED_WIDE of the made frame's body height wide: a dark stroke
+# narrower than that goes in the closing, a dark fill wider stays and is no line. A pixel of one neighbour's line is left
+# where the three frames are solid, the other neighbour draws no line within DOUBLED_SHARED px of it (a line both draw is
+# theirs, at any strength) and is lighter there by more than OUTLINE_SHIFT, and the made frame is darker than the other
+# there by more than OUTLINE_SHIFT (a line still seen) yet by no more than DOUBLED_PART of the line's contrast, there and
+# at its darkest within OUTLINE_REACH (no line at full strength beside it, as at the soft edge of a line the flow moved).
+# Such pixels count where they make a region DOUBLED_THICK px thick; widened by DOUBLED_THICK px, those that touch make one
+# run, and a run's length is sqrt(12) times the root of its pixels' larger second moment (a straight run's own length).
+DOUBLED_WIDE = 0.025
+DOUBLED_SHARED = 4
+DOUBLED_PART = 0.8
+DOUBLED_THICK = 3
 # `crossfade`: an edge's local range is read over this many pixels, wider than RIFE's blur, so a
 # softened edge keeps its height and a cross-faded one does not; strong edges are counted in windows
 # this share of the body's height; a window that kept under CROSSFADE_KEEP of its source frames'
@@ -457,6 +513,331 @@ def ghost(frame: Image.Image) -> float:
     return round(float(thick.sum()) / max(1, int((alpha >= 0.5).sum())), 5)
 
 
+def _enclosed(solid: np.ndarray) -> np.ndarray:
+    """The pixels off `solid` that the outside of the picture cannot reach without crossing it (8-connected)."""
+    ys, starts, stops, pieces, _ = _components(~solid, diagonal=True)
+    h, w = solid.shape
+    inside = ~np.isin(pieces, pieces[(ys == 0) | (ys == h - 1) | (starts == 0) | (stops == w)])
+    out = np.zeros_like(solid)
+    for y, x0, x1 in zip(ys[inside], starts[inside], stops[inside]):
+        out[y, x0:x1] = True
+    return out
+
+
+def _opened(mask: np.ndarray, size: int) -> np.ndarray:
+    """`mask` opened by a square `size` pixels wide: what is thinner than that goes."""
+    return _mask(_mask(mask, size, ImageFilter.MinFilter), size, ImageFilter.MaxFilter)
+
+
+def _premultiplied(frame: Image.Image) -> np.ndarray:
+    """An RGBA frame as its colour premultiplied by its coverage and the coverage (0..1, H x W x 4)."""
+    x = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+    return np.concatenate([x[..., :3] * x[..., 3:], x[..., 3:]], axis=-1)
+
+
+def _pooled(x: np.ndarray, f: int) -> np.ndarray:
+    """`x` (H x W x C) averaged over blocks f pixels on a side, padded with zeros to whole blocks."""
+    if f == 1:
+        return x
+    x = np.pad(x, ((0, -x.shape[0] % f), (0, -x.shape[1] % f), (0, 0)))
+    return x.reshape(x.shape[0] // f, f, x.shape[1] // f, f, x.shape[2]).mean(axis=(1, 3))
+
+
+def _apart(v: int, t: float) -> tuple[int, int]:
+    """Along one axis, for a motion of v pixels from a to b: where a pixel of the frame at fraction t lay in a and lies
+    in b, from it — t of the motion back and 1 - t of it on, rounded so the two are v apart."""
+    back = int(np.floor(t * v + 0.5))
+    return -back, v - back
+
+
+def _match(pa: np.ndarray, pb: np.ndarray, t: float, box: tuple[int, int, int, int], centre: tuple[int, int],
+           radius: int) -> tuple[int, int]:
+    """The motion (rows, columns) from a to b, within `radius` of `centre` each way, under which the two agree best over
+    `box` (y0, y1, x0, x1) of the frame at fraction t: each pixel of the box read in a where it lay and in b where it lies
+    (`_apart`), the mean absolute difference of their premultiplied colour and coverage (`_premultiplied`), a tie to the
+    smaller motion. Past the picture both are empty."""
+    y0, y1, x0, x1 = box
+    pad = max(abs(centre[0]), abs(centre[1])) + radius + 1
+    h, w = y1 - y0, x1 - x0
+    crops = []
+    for x in (pa, pb):
+        crop = np.zeros((h + 2 * pad, w + 2 * pad, x.shape[2]), dtype=x.dtype)
+        sy0, sy1, sx0, sx1 = max(0, y0 - pad), min(x.shape[0], y1 + pad), max(0, x0 - pad), min(x.shape[1], x1 + pad)
+        crop[sy0 - y0 + pad:sy1 - y0 + pad, sx0 - x0 + pad:sx1 - x0 + pad] = x[sy0:sy1, sx0:sx1]
+        crops.append(crop)
+    best: tuple[float, int, int, int] | None = None
+    for vy in range(centre[0] - radius, centre[0] + radius + 1):
+        ay, by = _apart(vy, t)
+        for vx in range(centre[1] - radius, centre[1] + radius + 1):
+            ax, bx = _apart(vx, t)
+            cost = float(np.abs(crops[0][pad + ay:pad + ay + h, pad + ax:pad + ax + w]
+                                - crops[1][pad + by:pad + by + h, pad + bx:pad + bx + w]).mean(dtype=np.float64))
+            key = (cost, vy * vy + vx * vx, vy, vx)
+            if best is None or key < best:
+                best = key
+    return best[2], best[3]
+
+
+def _travel(pa: np.ndarray, pb: np.ndarray, t: float, box: tuple[int, int, int, int], reach: int) -> tuple[int, int]:
+    """The motion from a to b over `box` of the frame at fraction t (`_match`), up to `reach` pixels each way: searched
+    whole on the level pooled in blocks of the smallest power of two that brings the reach to at most HOLE_COARSE pixels
+    each way, then within two pixels of twice the coarser motion on each level down to the pixel."""
+    f = 1
+    while reach > HOLE_COARSE * f:
+        f *= 2
+    v, radius = (0, 0), -(-reach // f)
+    y0, y1, x0, x1 = box
+    while True:
+        qa, qb = _pooled(pa, f), _pooled(pb, f)
+        v = _match(qa, qb, t, (y0 // f, min(qa.shape[0], -(-y1 // f)), x0 // f, min(qa.shape[1], -(-x1 // f))), v, radius)
+        if f == 1:
+            return v
+        f, v, radius = f // 2, (2 * v[0], 2 * v[1]), 2
+
+
+def _moved(mask: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    """`mask` moved dy rows down and dx columns right; what comes in is empty."""
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    if abs(dy) < h and abs(dx) < w:
+        out[max(0, dy):h + min(0, dy), max(0, dx):w + min(0, dx)] = mask[max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)]
+    return out
+
+
+def _bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """The rows and columns `mask` spans (y0, y1, x0, x1)."""
+    ys, xs = np.nonzero(mask)
+    return int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+
+
+def _holes(pre: np.ndarray, thick: int) -> tuple[list[tuple[tuple[slice, slice], np.ndarray]], np.ndarray]:
+    """A frame's enclosed holes (`_enclosed`, 8-connected pieces of them) that keep a pixel opened by a square `thick`
+    pixels wide, its premultiplied colour and coverage given (`_premultiplied`): each hole's window, the hole's pixels
+    in it and 2 HOLE_REACH + 1 pixels round them, and a row of what `_paired` reads of it — its area (pixels), its
+    centroid (rows, columns), its shape (the logarithms of its pixels' two principal second moments, larger first, each
+    plus a pixel's own 1/12 and over the area: turning and growing keep it) and the colour round it (the mean
+    premultiplied colour of the frame's solid pixels from HOLE_REACH + 1 to 2 HOLE_REACH out, 0 where there are none)."""
+    solid = pre[..., 3] >= 0.5
+    enclosed = _enclosed(solid)
+    ys, starts, stops, pieces, _ = _components(enclosed, diagonal=True)
+    opened = np.pad(np.cumsum(_opened(enclosed, thick), axis=1, dtype=np.int64), ((0, 0), (1, 0)))
+    order = np.argsort(pieces, kind="stable")
+    margin = 2 * HOLE_REACH + 1
+    windows, rows = [], []
+    for runs in np.split(order, np.unique(pieces[order], return_index=True)[1][1:]):
+        if not (opened[ys[runs], stops[runs]] > opened[ys[runs], starts[runs]]).any():
+            continue
+        y0, y1 = max(0, int(ys[runs].min()) - margin), min(solid.shape[0], int(ys[runs].max()) + 1 + margin)
+        x0, x1 = max(0, int(starts[runs].min()) - margin), min(solid.shape[1], int(stops[runs].max()) + margin)
+        mask = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+        for y, s0, s1 in zip(ys[runs], starts[runs], stops[runs]):
+            mask[y - y0, s0 - x0:s1 - x0] = True
+        window = (slice(y0, y1), slice(x0, x1))
+        py, px = np.nonzero(mask)
+        py, px, n = py + y0, px + x0, len(py)
+        moments = (np.sort(np.linalg.eigvalsh(np.cov(np.vstack([py, px]).astype(np.float64))))[::-1] if n > 2
+                   else np.zeros(2))
+        ring = _near(mask, 2 * HOLE_REACH) & ~_near(mask, HOLE_REACH) & solid[window]
+        colour = pre[window][ring][:, :3].mean(axis=0) if ring.any() else np.zeros(3)
+        windows.append((window, mask))
+        rows.append([n, py.mean(), px.mean(), *np.log((moments + 1 / 12) / n), *colour])
+    return windows, np.array(rows, dtype=np.float64).reshape(-1, 8)
+
+
+def _paired(made: np.ndarray, a: np.ndarray, b: np.ndarray, t: float, reach: int) -> list[int]:
+    """Which of the made frame's holes (rows of `_holes`: those the first two readings leave; the frame at fraction `t`
+    from `a` to `b`, the neighbours' holes) are one hole of each neighbour's. A triple is one of the made frame's holes
+    and one of each neighbour's where the neighbours' two have areas within HOLE_PAIR_AREA times of each other, shapes
+    within HOLE_PAIR_SHAPE times (on each moment) and the colours round them within HOLE_COLOUR (on each channel), their
+    centroids at most sqrt(2) `reach` + HOLE_REACH apart (`reach`: how far the figure's motion is followed each way);
+    and the made frame's has its area within HOLE_AREA of their range, its shape within HOLE_SHAPE times of theirs on
+    each moment, the colour round it within HOLE_COLOUR of each, and its centroid within HOLE_REACH + HOLE_PATH of
+    their distance of the point at `t` on the line from theirs in a to theirs in b. Its cost, how far the three are
+    from alike and near: the logarithm of how far the made frame's area is out of their range, its distance from that
+    point over what it may be, how far its shape is out of theirs, the two colour differences over HOLE_COLOUR and the
+    neighbours' two holes' distance over what it may be, summed. The triples taken are one to one (`_taken`)."""
+    if not (len(made) and len(a) and len(b)):
+        return []
+    A, B = a[:, None], b[None, :]
+    apart = np.hypot(B[..., 1] - A[..., 1], B[..., 2] - A[..., 2])
+    near = apart / (np.sqrt(2) * reach + HOLE_REACH)
+    colour = np.abs(A[..., 5:] - B[..., 5:]).max(axis=-1)
+    j, k = np.nonzero((np.maximum(A[..., 0], B[..., 0]) <= HOLE_PAIR_AREA * np.minimum(A[..., 0], B[..., 0]))
+                      & (np.abs(A[..., 3:5] - B[..., 3:5]).max(axis=-1) <= np.log(HOLE_PAIR_SHAPE))
+                      & (colour <= HOLE_COLOUR) & (near <= 1))
+    A, B, apart, near, colour = a[j], b[k], apart[j, k], near[j, k], colour[j, k]
+    lo, hi = np.minimum(A[:, 0], B[:, 0]), np.maximum(A[:, 0], B[:, 0])
+    narrow, wide = np.minimum(A[:, 3:5], B[:, 3:5]), np.maximum(A[:, 3:5], B[:, 3:5])
+    at = (1 - t) * A[:, 1:3] + t * B[:, 1:3]
+    triples = []
+    for i, c in enumerate(made):
+        area = np.where(c[0] < lo, c[0] / lo, np.where(c[0] > hi, c[0] / hi, 1.0))
+        path = np.hypot(c[1] - at[:, 0], c[2] - at[:, 1]) / (HOLE_REACH + HOLE_PATH * apart)
+        shape = np.maximum(0.0, np.maximum(narrow - c[3:5], c[3:5] - wide)).max(axis=-1)
+        alike = np.maximum(np.abs(c[5:] - A[:, 5:]).max(axis=-1), np.abs(c[5:] - B[:, 5:]).max(axis=-1))
+        cost = np.abs(np.log(area)) + path + shape + alike / HOLE_COLOUR + colour / HOLE_COLOUR + near
+        for p in np.nonzero((area >= 1 - HOLE_AREA) & (area <= 1 + HOLE_AREA) & (path <= 1)
+                            & (shape <= np.log(HOLE_SHAPE)) & (alike <= HOLE_COLOUR))[0]:
+            triples.append((i, int(j[p]), int(k[p]), float(cost[p])))
+    return _taken(triples)
+
+
+def _taken(triples: list[tuple[int, int, int, float]]) -> list[int]:
+    """The made frame's holes the triples taken pair, one to one: no hole of any frame in two of them. Of the sets of
+    `triples` (the made frame's hole, a's, b's and the cost; `_paired`) that can stand together, the one taken pairs the
+    most holes, then has the least summed cost, so alike holes moving together each keep their own two, however near
+    their ways run. Triples sharing a hole, directly or through others, make one group, read apart from the rest: all
+    its holes pair where one set pairs them all (`_whole`), and otherwise those of the set `_searched` finds."""
+    owner: dict[tuple[int, int], tuple[int, int]] = {}
+
+    def root(x: tuple[int, int]) -> tuple[int, int]:
+        while owner.get(x, x) != x:
+            x = owner[x]
+        return x
+
+    for i, j, k, _ in triples:
+        for x in ((1, j), (2, k)):
+            if (r := root(x)) != (s := root((0, i))):
+                owner[r] = s
+    groups: dict[tuple[int, int], dict[int, list[tuple[float, int, int]]]] = {}
+    for i, j, k, cost in sorted(triples, key=lambda x: (x[3], x[1], x[2], x[0])):
+        groups.setdefault(root((0, i)), {}).setdefault(i, []).append((cost, 1 << j, 1 << k))
+    taken: list[int] = []
+    for cands in groups.values():
+        taken += list(cands) if _whole(cands) else _searched(cands)
+    return sorted(taken)
+
+
+def _whole(cands: dict[int, list[tuple[float, int, int]]]) -> bool | None:
+    """Whether one set of a group's triples (each of its made frame's holes with its triples, cheapest first: the cost,
+    and a's hole and b's as bits; `_taken`), one to one, pairs every hole of the group: True or False, or None where the
+    search runs past HOLE_PAIR_STEPS steps. Depth first from the made frame's hole with the fewest triples still free
+    (holding no hole a triple taken holds), each of those cheapest first, no hole left unpaired; a branch is cut where a
+    hole left has no free triple, or where the holes left cannot each keep a hole of a, or of b, of its own among those
+    its free triples hold (`_matched`)."""
+    stack = [(tuple(sorted(cands)), 0, 0)]
+    for _ in range(HOLE_PAIR_STEPS):
+        if not stack:
+            return False
+        holes, used_a, used_b = stack.pop()
+        if not holes:
+            return True
+        free = {i: [x for x in cands[i] if not (used_a & x[1] or used_b & x[2])] for i in holes}
+        if not all(free.values()) or not (_matched(free, 1) and _matched(free, 2)):
+            continue
+        h = min(holes, key=lambda i: (len(free[i]), i))
+        others = tuple(i for i in holes if i != h)
+        stack.extend((others, used_a | ja, used_b | kb) for _, ja, kb in reversed(free[h]))
+    return None if stack else False
+
+
+def _matched(free: dict[int, list[tuple[float, int, int]]], side: int) -> bool:
+    """Whether each of the made frame's holes `free` names can keep a hole of one neighbour (`side` 1, a; 2, b) of its
+    own among those its free triples hold there: an augmenting path for each in turn (Kuhn's matching)."""
+    held = dict.fromkeys(free, 0)
+    for i, f in free.items():
+        for x in f:
+            held[i] |= x[side]
+    owner: dict[int, int] = {}  # a neighbour's hole, as its bit: the made frame's hole keeping it
+    for start in free:
+        seen, path = 0, [[start, held[start], 0]]  # a made frame's hole, the holes it has yet to try, the one it keeps
+        while path:
+            step = path[-1]
+            untried = step[1] & ~seen
+            if not untried:
+                path.pop()
+                continue
+            x = untried & -untried
+            step[1], seen = untried ^ x, seen | x
+            if x in owner:
+                path.append([owner[x], held[owner[x]], x])
+                continue
+            for i, _, kept in reversed(path):  # the last takes x, and each before it the one the next gives up
+                owner[x], x = i, kept
+            break
+        else:
+            return False
+    return True
+
+
+def _searched(cands: dict[int, list[tuple[float, int, int]]]) -> list[int]:
+    """Of one group of triples (each of its made frame's holes with its triples, cheapest first: the cost, and a's hole
+    and b's as bits; `_taken`), the holes the set taken pairs, by an exact search, depth first: from the made frame's
+    hole with the fewest triples still free (holding no hole a triple taken holds), each of those, cheapest first, then
+    the hole left unpaired. The most a branch could still pair: each hole left with a free triple, and in each neighbour
+    no more than the holes the free triples hold there. A branch is cut where that pairs fewer holes than the best set
+    found, or as many with no less cost than the best's, even were each of as many as it takes, the cheapest, paired by
+    its cheapest free triple. The search ends at a set pairing every hole, since every such set pairs the same holes.
+    Where it runs past HOLE_PAIR_STEPS steps none of the group's holes is paired (docs/loop-repair.md section 4)."""
+    best: tuple[int, float, tuple[int, ...]] = (-1, 0.0, ())
+    stack = [(tuple(sorted(cands)), 0, 0, 0, 0.0, ())]
+    for _ in range(HOLE_PAIR_STEPS):
+        if not stack:
+            break
+        holes, used_a, used_b, got, cost, pairs = stack.pop()
+        free, cheapest, held_a, held_b = {}, [], 0, 0
+        for i in holes:
+            if f := [x for x in cands[i] if not (used_a & x[1] or used_b & x[2])]:
+                free[i] = f
+                cheapest.append(f[0][0])
+                for _, ja, kb in f:
+                    held_a |= ja
+                    held_b |= kb
+        more = min(len(cheapest), held_a.bit_count(), held_b.bit_count())
+        if got + more < best[0] or got + more == best[0] and cost + sum(sorted(cheapest)[:more]) >= best[1]:
+            continue
+        if not free:
+            best = (got, cost, pairs)
+            if got == len(cands):
+                break
+            continue
+        h = min(free, key=lambda i: (len(free[i]), i))
+        others = tuple(i for i in free if i != h)
+        stack.append((others, used_a, used_b, got, cost, pairs))
+        stack.extend((others, used_a | ja, used_b | kb, got + 1, cost + c, pairs + (h,))
+                     for c, ja, kb in reversed(free[h]))
+    else:
+        if stack:
+            return []
+    return list(best[2])
+
+
+def hole(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> float:
+    """A hole a made frame at fraction `t` from `a` to `b` opened inside its silhouette that neither neighbour has there:
+    of its pixels under solid that the outside cannot reach without crossing its solid body, those where neither
+    neighbour is under solid within HOLE_REACH of where the pixel lay at that neighbour's time — in place, or carried
+    with the whole figure along the motion the two neighbours alone show (`_travel`, over the box round all three
+    frames' solid bodies, followed up to HOLE_TRAVEL of the body's height) — and in no hole of the made frame that is
+    one of each neighbour's, whatever carried it (`_holes`, `_paired`), in regions at least HOLE_THICK pixels thick
+    (opened by a square that wide), as a fraction of its solid pixels.
+    The coverage run can carry a gap one neighbour has between two legs into a leg the colour run keeps whole: the frame
+    shows the leg's fill on both sides of a transparent band, with no line round it, and nothing added and no part
+    coverage to read — and wherever the band's pixels lay, both neighbours show the leg there, and neither has a hole
+    like it on its way. A gap the neighbours have — between an arm and the body or between two legs, kept, opened by a
+    step, or moved with the body — is theirs, and so is a hole each has, carried by a part however it moves within
+    reach. 0 where the frame has no solid body (docs/loop-repair.md section 4)."""
+    m, fa, fb = (np.asarray(f.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0 for f in (made, a, b))
+    solid = m >= 0.5
+    if not solid.any():
+        return 0.0
+    near_a, near_b = _near(fa < 0.5, HOLE_REACH), _near(fb < 0.5, HOLE_REACH)
+    left = _opened(_enclosed(solid) & ~near_a & ~near_b, HOLE_THICK)
+    if left.any():
+        pa, pb = _premultiplied(a), _premultiplied(b)
+        rows = np.nonzero(solid.any(axis=1))[0]
+        reach = max(1, int(round(HOLE_TRAVEL * int(rows[-1] - rows[0] + 1))))
+        (ay, by), (ax, bx) = (_apart(v, t) for v in _travel(pa, pb, t, _bounds(solid | (fa >= 0.5) | (fb >= 0.5)), reach))
+        left = _opened(left & ~(_moved(near_a, -ay, -ax) | _moved(near_b, -by, -bx)), HOLE_THICK)
+        if left.any():
+            holes, own = _holes(_premultiplied(made), HOLE_THICK)
+            rest = [i for i, (window, mask) in enumerate(holes) if left[window][mask].any()]
+            for p in _paired(own[rest], _holes(pa, HOLE_SOURCE_THICK)[1], _holes(pb, HOLE_SOURCE_THICK)[1], t, reach):
+                window, mask = holes[rest[p]]
+                left[window] &= ~mask
+            left = _opened(left, HOLE_THICK)
+    return round(float(left.sum()) / int(solid.sum()), 5)
+
+
 def _local_range(x: np.ndarray) -> np.ndarray:
     """Per pixel, the largest over the channels of max - min within CROSSFADE_RANGE pixels."""
     out = np.zeros(x.shape[:2], dtype=np.float32)
@@ -516,6 +897,61 @@ def crossfade(made: Image.Image, a: Image.Image, b: Image.Image, t: float) -> fl
             if kept >= 0.02 * w * w and km < CROSSFADE_KEEP * kept:
                 lost += kept - km
     return round(lost / max(1, int(solid.sum())), 5)
+
+
+def _lines(x: np.ndarray, r: int) -> np.ndarray:
+    """An RGBA frame's (0..1) lines (`doubled`): its solid pixels darker by more than OUTLINE_SHIFT than its luma, white off
+    its solid body, closed by a square 2 r + 1 wide."""
+    solid = x[..., 3] >= 0.5
+    luma = np.where(solid, _luma(x), 1.0)
+    closed = _square_min(-_square_min(-luma, r, mode="edge"), r, mode="edge")
+    return solid & (closed - luma > OUTLINE_SHIFT)
+
+
+def doubled(made: Image.Image, a: Image.Image, b: Image.Image) -> float:
+    """A line one neighbour draws, left at part strength in its own place in a made frame: the longest run of such pixels
+    (DOUBLED_* above), as a share of the made frame's body height. RIFE can fade out a line its flow does not follow — the
+    top of a boot one neighbour tilts and the other plants — and the frame shows it, lighter, beside the line it drew: a
+    double outline, its coverage whole (no part coverage for `ghost`), nothing darker added (`smear`) and its edge outlined
+    (`outline_shift`). Read on the made frame's pixels against each neighbour's: a line both neighbours draw is theirs at
+    any strength, a line the made frame carries at its neighbour's strength is that neighbour's drawing, and the soft edge
+    of a line the flow moved lies beside the line at full strength. 0 where the frame has no solid body, or where the
+    neighbours nowhere differ by a line's contrast (docs/loop-repair.md section 4)."""
+    m, fa, fb = (np.asarray(f.convert("RGBA"), dtype=np.float32) / 255.0 for f in (made, a, b))
+    rows = np.nonzero((m[..., 3] >= 0.5).any(axis=1))[0]
+    if rows.size == 0:
+        return 0.0
+    height = int(rows[-1] - rows[0] + 1)
+    lm, la, lb = (_luma(x) for x in (m, fa, fb))
+    both = (m[..., 3] >= 0.5) & (fa[..., 3] >= 0.5) & (fb[..., 3] >= 0.5)
+    differ = both & (np.abs(la - lb) > OUTLINE_SHIFT)
+    if not differ.any():
+        return 0.0
+    r = max(1, round(DOUBLED_WIDE * height / 2))
+    # read in the box round where they differ, wide enough that every pixel there reads as in the whole frame
+    y0, y1, x0, x1 = _bounds(differ)
+    pad = 2 * r + DOUBLED_SHARED + OUTLINE_REACH + DOUBLED_THICK
+    box = (slice(max(0, y0 - pad), y1 + pad), slice(max(0, x0 - pad), x1 + pad))
+    m, fa, fb, lm, la, lb, both = (v[box] for v in (m, fa, fb, lm, la, lb, both))
+    line_a, line_b = _lines(fa, r), _lines(fb, r)
+    darkest = _square_min(np.where(m[..., 3] >= 0.5, lm, 1.0), OUTLINE_REACH, constant_values=1.0)
+    left = np.zeros(both.shape, dtype=bool)
+    for line, other, own, there in ((line_a, line_b, la, lb), (line_b, line_a, lb, la)):
+        part = DOUBLED_PART * (there - own)
+        left |= (both & line & ~_near(other, DOUBLED_SHARED) & (there - own > OUTLINE_SHIFT)
+                 & (there - lm > OUTLINE_SHIFT) & (there - lm <= part) & (there - darkest <= part))
+    left = _opened(left, DOUBLED_THICK)
+    if not left.any():
+        return 0.0
+    ys, starts, stops, pieces, _ = _components(_near(left, DOUBLED_THICK), diagonal=True)
+    run = np.zeros(left.shape, dtype=np.int64)
+    for y, s0, s1, p in zip(ys, starts, stops, pieces):
+        run[y, s0:s1] = p
+    py, px = np.nonzero(left)
+    ids = run[py, px]
+    longest = max(float(np.linalg.eigvalsh(np.cov(np.vstack([py[ids == i], px[ids == i]]).astype(np.float64)))[-1])
+                  for i in np.unique(ids))
+    return round(float(np.sqrt(12 * max(longest, 0.0))) / height, 5)
 
 
 def torn(apart: np.ndarray, made: Image.Image) -> float:
