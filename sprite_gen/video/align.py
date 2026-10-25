@@ -999,7 +999,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
               "cycles_given": {str(loops[i][0]): k for i, k in given.items()},
               "feet_given": {str(loops[i][0]): f for i, f in told.items()},
               "fps": round(fps, 4), "cycle_seconds": round(target / fps, 4),
-              "interpolator": ({"kind": "rife-ncnn-vulkan", **located[0]} if located else
+              "interpolator": (dict(located[0]) if located else
                                {"kind": "injected"} if any(r.get("smear") for r in rows) else None),
               "between_cache": cache.record() if cache is not None else None,
               "made_by_rife": sum(r["made_by_rife"] for r in rows),
@@ -1087,7 +1087,7 @@ def run(**kwargs: object) -> int:
     except rife_mod.RifeNotInstalled as exc:
         # Asked for by name, so no RIFE is a failure, never a quiet skip (video-set skips with a warning).
         raise SystemExit(f"video-cycle-align: {exc}; frames between source frames are made by RIFE — "
-                         f"`{rife_mod.INSTALL_COMMAND}` (docs/loop-repair.md)") from exc
+                         f"`{rife_mod.install_command()}` (docs/loop-repair.md)") from exc
     for line in report["warnings"]:
         print(f"video-cycle-align: warning: {line}", file=sys.stderr)
     print(json.dumps({k: report[k] for k in ("length", "lengths", "cycles_given", "feet_given", "between", "made_by_rife", "replaced", "retake",
