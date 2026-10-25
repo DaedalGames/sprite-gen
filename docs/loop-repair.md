@@ -1519,20 +1519,35 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     (`rife.HOLE_SHAPE`, 1.3), the colour round it within 0.12 of each, and its centroid within 4 px
     plus 0.1 of their distance (`rife.HOLE_PATH`, 0.1) of the point at `t` on the line from the
     centroid of a's hole to that of b's. Pairs are taken one to one: each source frame's hole
-    explains one hole of the made frame. The made frame's holes the first two readings already give
-    the source frames are paired first, then the rest; within each, the alikest and nearest first,
-    by the sum of: the logarithm of how far the made frame's hole's area is out of the range, its
-    distance from the point at `t` over what it may be, how far its shape is out, the colour
-    differences of the made frame's hole and of the two source frames' holes each over 0.12, and the
-    two source frames' holes' distance over what it may be; ties go by the made frame's hole, then
-    a's, then b's, in reading order. So a hole the made frame keeps where it was explains no other
-    hole, and in a row of alike holes moving, each hole of the made frame takes the two its own way
-    brings rather than a hole of one source frame and the next but one of the other, whose midpoint
-    lies as near. The made frame is never used to measure a motion and RIFE's flow is never read.
-    The motion and the pairing are read only on frames keeping a hole after the in-place reading,
-    and the pairing only on frames keeping one after the second reading. Regions at least **5 px**
-    thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or an antialiased crevice a
-    pixel or two wide opens away) are taken after each step, as a fraction of its solid pixels.
+    explains one hole of the made frame. No hole of any frame is in two pairs taken; every hole of
+    the made frame that the first two readings (in place, and carried with the whole figure) already
+    give the source frames, and that has a pair at all, must be paired too. Of all sets pairing
+    those holes, the set taken pairs the most of the other holes; of those, the one with the least
+    summed cost. The same frames always give the same set. The cost of a pair is the sum of: the
+    logarithm of how far the made frame's hole's area is out of the range of the two source frames'
+    holes' areas, its distance from the point at `t` over what it may be, how far its shape is out,
+    the colour differences of the made frame's hole and of the two source frames' holes each over
+    0.12, and the two source frames' holes' distance over what it may be. So a hole the made frame
+    keeps where it was explains no other hole, since it must be paired itself; and alike holes
+    moving together each keep their own two holes, however near their ways run. Pairs that share a
+    hole form a group, searched apart by an exact depth first search from the hole with the fewest
+    pairs still free, trying each pair, cheapest first (or leaving a hole not given by the first two
+    readings unpaired); groups whose holes the first two readings already give are not searched,
+    branches leaving one of those holes unpaired or unable to beat the best set found are cut, and
+    the search stops at a set pairing every hole. At most 5000 steps are taken per group
+    (`rife.HOLE_PAIR_STEPS`, 5000), past which a group pairs none of its holes and the frame gives
+    way to the nearer source frame; a row or grid of alike holes that all pair takes about a step
+    per hole (a grid of 100 holes, 101 to 106 steps), and on the synthetic frames only grids of 16
+    to 100 holes, 16 px apart, with one hole shut in one source frame, run past it, which give way
+    in any case. Where no set pairs every hole the first two readings give, one of the first two
+    readings' holes is then a hole more than the source frames have, which those readings took for
+    theirs because it lies within 4 px of where another hole is; then none of the other holes in
+    that group is paired (figure 10). The made frame is never used to measure a motion and RIFE's
+    flow is never read. The motion and the pairing are read only on frames keeping a hole after the
+    in-place reading, and the pairing only on frames keeping one after the second reading. Regions
+    at least **5 px** thick (`rife.HOLE_THICK`, opened by a square that wide: a pinhole or an
+    antialiased crevice a pixel or two wide opens away) are taken after each step, as a fraction of
+    its solid pixels.
   - Over **0** (`interpolation_quality.HOLE_WARN`) the frame has a hole through a limb: the fault
     `hole`, and `auto` takes the nearer source frame there, with a line in `warnings` (it says the
     frame opened a transparent hole inside its outline over the given share of its body, at least 5
@@ -1662,15 +1677,46 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
     24 px apart, the plate moving 32 px down from one source frame to the next), the frame between
     drawn exactly reads `hole` 0 and is kept as made; so is the frame between with the row drawn a
     pixel taller, where a hole of one source frame and the next but one of the other have their
-    midpoint as near each of the made frame's holes as its own two: the nearer pair is taken first,
-    so each hole takes its own two. Drawn with one hole more, midway between two of the row's holes,
-    or between the last two, or past the row's end, or with one of the row's holes moved 12 px to a
-    midway, the frame between reads `hole` 0.10 % (the 64 pixels of one hole) and gives way to the
-    nearer source frame: each source frame's hole explains one hole of the made frame. Standing
-    still, with the row drawn a pixel taller in the frame between, it is kept; with one hole more
-    midway as well, it reads 0.10 % and gives way: the in-place reading gives the row's holes to the
-    source frames, and they are paired first, so the source frames' holes are taken by the holes
-    they are.
+    midpoint as near each of the made frame's holes as its own two: the pairing takes the set that
+    pairs the most holes, so each hole keeps its own two. Drawn with one hole more, midway between
+    two of the row's holes, or between the last two, or past the row's end, or with one of the row's
+    holes moved 12 px to a midway, the frame between reads `hole` 0.10 % (the 64 pixels of one hole)
+    and gives way to the nearer source frame: each source frame's hole explains one hole of the made
+    frame. Standing still, with the row drawn a pixel taller in the frame between, it is kept; with
+    one hole more midway as well, it reads 0.10 % and gives way: the in-place reading gives the
+    row's holes to the source frames, and they are paired first, so the source frames' holes are
+    taken by the holes they are. In figure 9 (the same body with a plate on it and a row of two,
+    three or four holes 8 px square through the plate, 12 px apart, moving on a curved way from one
+    source frame (t 0) to the next (t 1): int(40 t + 20 t (1 - t)) px across and int(32 t) px down
+    at time t, the plate moving with the holes, or staying while the holes move through it; with two
+    holes it is the fourth checkpoint validator's frame), the frame between is drawn exactly, at t
+    0.5: each of its holes lies 5 px beside the midpoint of where the two source frames have that
+    hole; 4 px and 0.1 of their distance (51 px), 9.1 px in all, are let through. The first hole
+    lies 1 px from the midpoint of the second hole in the first source frame and the first hole in
+    the second source frame: that pair of source holes is the cheaper for it, and taken, it would
+    leave the second hole with nothing to pair with. The set of pairs taken pairs the most holes, so
+    each hole keeps its own two: the frame between reads `hole` 0, and resampled to four frames,
+    both made cells are kept, byte for byte. This holds for two, three and four holes, the plate
+    moving or staying (with three and four holes, each hole but the last is likewise cheaper with
+    the next one's hole in the first source frame). Boundaries, pinned by a test, with two and four
+    holes, the plate moving or staying: with one hole more before the row, on the first hole's way
+    (it could take the first hole's two, but then the first and the second cannot both keep theirs:
+    each source frame's holes pair as many of the made frame's holes as they number, and no more),
+    the frame between reads `hole` 0.10 % (the 64 pixels of one hole) and gives way to the nearer
+    source frame; with the row's last hole shut in the second source frame (it has nothing there to
+    pair with), it reads 0.10 % and gives way. With the search limited to one step
+    (`rife.HOLE_PAIR_STEPS` set to 1), no set is found within it, so neither hole of the two-hole
+    frame is paired: it reads `hole` 0.21 % (both holes, 128 pixels) and gives way. In figure 10
+    (the same body with a plate 40 by 90 px on it and a column of three holes 8 px square through
+    the plate, 24 px apart, moving 32 px down, the middle hole shut in the second source frame), the
+    frame between is drawn at t 0.5, its holes 16 px down. Each lies against the next hole down in
+    the first source frame and the hole before it in the second: the in-place reading gives the
+    first and middle holes to the source frames, leaves of the first only a strip 4 px high, which
+    does not count, and leaves the last hole whole. The first hole pairs only with its own two and
+    the middle only with the first source frame's last hole and the second's first; sharing that
+    hole, no set pairs both, so one is a hole more than the second source frame has, none of the
+    other holes is paired, and the frame between reads `hole` 0.10 % and gives way to the nearer
+    source frame.
 - **What `auto` costs**: a frame replaced shows the nearer source frame, so the motion there
   steps as filmed, up to half a frame off its time, and the loop shows fewer distinct drawings a
   second than `rife` — but no melted one. A clip drawn on twos has a long step between drawings

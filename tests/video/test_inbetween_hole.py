@@ -9,9 +9,11 @@ frames' own where either has a pixel under solid within 4 px of where it lay, in
 motion — a gap kept, moved with the body, or opened by a step between two legs — or where it is, whatever carried it,
 one hole of each source frame: alike in area, in shape and in the colour round it, and on its way between theirs. So a
 hole a part carries over a body that stays, turned, grown, sheared or swung, is theirs. Each source frame's hole is one
-hole of the frame between: a hole more than they have is given way, and so is a hole unlike theirs, off its way or
-farther than the figure's motion is followed, and a gap only one source frame opens on a part the figure's motion does
-not carry, which the reading does not tell from a band the coverage run carried out of one source frame's gap.
+hole of the frame between: the holes the first two readings give them must all pair, and of the sets that pair them
+the one taken pairs the most of the rest, so alike holes whose ways run near each other each keep their own two. A hole
+more than they have is given way, and so is a hole unlike theirs, off its way or farther than the figure's motion is
+followed, and a gap only one source frame opens on a part the figure's motion does not carry, which the reading does
+not tell from a band the coverage run carried out of one source frame's gap.
 
 The fixtures are synthetic: a figure of rectangles outlined in black, legs filled dark (under the dark line, 70/255,
 as dark tights or boots are), the near leg over the far one; the first source frame with its legs side by side, the
@@ -19,7 +21,8 @@ second with a gap between them, as a step opens it; a gap between the arm and th
 a gap through it, moved whole; a figure whose legs part above boots that close the gap below, still and moving; a body
 that stays with a part on it, a hole through the part, moved; the same over a body patterned in stripes or checks; a
 torso patterned in blocks with an arm beside it, the gap between them moving with the arm; a plate with a gap through it,
-turned, grown, sheared or swung over a body that stays; and a plate with a row of holes."""
+turned, grown, sheared or swung over a body that stays; a plate with a row of holes; a row of holes moving on a curved
+way; and a column of holes."""
 
 from __future__ import annotations
 
@@ -220,6 +223,39 @@ def _row(t: float, *, plain: bool = False, d: int = 0, dy: int = 0, more: tuple[
             rgba[cy - 4:cy + 4 + taller, cx + ox - 4:cx + ox + 4] = 0
     for ox in more:
         rgba[cy - 4:cy + 4, cx + ox - 4:cx + ox + 4] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def _way(t: float, n: int = 2, *, still: bool = False, more: tuple[int, ...] = (), shut: tuple[int, ...] = ()) -> Image.Image:
+    """The body that stays (`_still`) with a plate on it and a row of n holes 8 px square through it, 12 px apart, moving
+    on a curved way from t 0 to t 1, int(40 t + 20 t (1 - t)) px across and int(32 t) px down — at t 0.5 each hole lies
+    5 px beside the midpoint of where the source frames have it — drawn at t: the plate moving with them, or `still` and
+    wide enough for their whole way; holes 8 px square more at the places in `more` (-1 before the first), and the row's
+    holes at the places in `shut` left solid. With two holes it is the fourth checkpoint validator's frame."""
+    rgba = _still(False)
+    dx, dy = int(40 * t + 20 * t * (1 - t)), int(32 * t)
+    if still:
+        rgba[95:185, 85:200] = PART + (255,)
+    else:
+        rgba[90 + dy:160 + dy, 85 + dx:150 + 12 * (n - 2) + dx] = PART + (255,)
+    for place in [p for p in range(n) if p not in shut] + list(more):
+        x, y = 110 + 12 * place + dx, 124 + dy
+        rgba[y - 4:y + 4, x - 4:x + 4] = 0
+    return Image.fromarray(rgba, "RGBA")
+
+
+def _column(t: float, *, shut: tuple[int, ...] = ()) -> Image.Image:
+    """The body that stays (`_still`) with a plate 40 x 90 px on it and a column of three holes 8 px square through it,
+    24 px apart, the plate moving 32 px down from t 0 to t 1, drawn at t; the holes at the places in `shut` left solid.
+    At t 0.5 each hole lies against the next hole of the first source frame and the one before it of the second: the
+    in-place reading gives the middle hole those two, and leaves of the first and the last a strip thinner than
+    rife.HOLE_THICK."""
+    rgba = _still(False)
+    cy = int(round(140 + 32 * (t - 0.5)))
+    rgba[cy - 45:cy + 45, 130:170] = PART + (255,)
+    for place in (p for p in range(3) if p not in shut):
+        y = cy + 24 * (place - 1)
+        rgba[y - 4:y + 4, 146:154] = 0
     return Image.fromarray(rgba, "RGBA")
 
 
@@ -514,12 +550,12 @@ def test_a_hole_unlike_the_source_frames_or_off_its_way_or_out_of_reach_is_given
 def test_each_hole_of_a_source_frame_is_one_hole_of_the_frame_between():
     """A plate with a row of four holes (`_row`) moves 32 px down over a body that stays, plain or striped: the frame
     between drawn exactly is kept as made, and so is one with the row drawn a pixel taller, where a hole of one source
-    frame and the next but one of the other have their midpoint as near each hole as its own two: the nearer pair is
-    taken first. Drawn with one hole more midway between two of the row's — where one source frame's hole and the next
-    one of the other would put it — or past the row's end, or with one of the row's moved 12 px to a midway, it gives way
-    to the nearer source frame: each source frame's hole is one hole of the frame between, and each of the row's is taken
-    by the hole it is. Standing still, the row drawn a pixel taller: the in-place reading gives the row its source frames'
-    holes, which are paired with it before the hole more, so one more hole midway still gives way."""
+    frame and the next but one of the other have their midpoint as near each hole as its own two: only with its own two
+    is every hole of the row paired. Drawn with one hole more midway between two of the row's — where one source frame's
+    hole and the next one of the other would put it — or past the row's end, or with one of the row's moved 12 px to a
+    midway, it gives way to the nearer source frame: each source frame's hole is one hole of the frame between. Standing
+    still, the row drawn a pixel taller: the in-place reading gives the row its source frames' holes, and every hole of
+    the row must pair, which leaves one more hole midway none, so it still gives way."""
     seen = {}
     for plain in (False, True):
         a, b = _row(0.0, plain=plain, dy=32), _row(1.0, plain=plain, dy=32)
@@ -533,4 +569,41 @@ def test_each_hole_of_a_source_frame_is_one_hole_of_the_frame_between():
         still = _row(0.0, plain=plain)
         seen["still, a pixel taller", plain] = _resampled(still, _row(0.5, plain=plain, taller=1), still) == KEPT
         seen["still, a pixel taller, one more midway", plain] = _given_way(still, _row(0.5, plain=plain, taller=1, more=(0,)), still)
+    assert seen == {k: True for k in seen}
+
+
+def test_alike_holes_whose_ways_run_near_each_keep_their_own_two():
+    """The fourth checkpoint validator's frame (`_way`): two alike holes 12 px apart move on a curved way over a body
+    that stays, with the plate or through a plate that stays, and the frame between is drawn exactly, each hole 5 px
+    beside the midpoint of its own two (4 px and 0.1 of their 51 px are let through). The first hole lies 1 px from the
+    midpoint of the second's hole in the first source frame and its own in the second: that triple is the cheaper, and
+    taken first it would leave the second hole nothing to pair with. The set of triples taken pairs the most holes, so
+    each hole keeps its own two: resampled to four, both frames made are kept, byte for byte, and so are three and four
+    such holes, each but the last cheapest with the next one's hole in the first source frame."""
+    seen = {(n, still): _resampled(*(_way(s, n, still=still) for s in (0.0, 0.5, 1.0))) for n in (2, 3, 4)
+            for still in (False, True)}
+    assert seen == {k: KEPT for k in seen}
+
+
+def test_holes_no_set_of_pairs_explains_together_give_way(monkeypatch):
+    """The boundaries on the same way (`_way`), two and four holes, the plate moving or still. One hole more before the
+    row, on the first hole's way: it could take the first hole's two, but the first and the second cannot then both
+    keep theirs — each source frame's holes pair as many of the made frame's as they number and no more. And the row's
+    last hole shut in the second source frame: it has nothing there to pair with. Both give way to the nearer source
+    frame with `hole` among their faults. So does a column of three holes moving down (`_column`), its middle hole shut
+    in the second source frame: the in-place reading gives the frame between's first and middle holes to the source
+    frames, but no set of pairs pairs both — the middle one's only pair, the holes it lies against, holds the second
+    source frame's first hole, the first one's own — so one of them is a hole more than the second source frame has,
+    and the last hole, which its own two would pair, is not paired. Searched no further than rife.HOLE_PAIR_STEPS
+    steps, here one, the frame of the test above gives way too: a group of triples whose search runs past it pairs none
+    of its holes."""
+    seen = {}
+    for n, still in itertools.product((2, 4), (False, True)):
+        seen["one more before", n, still] = _given_way(_way(0.0, n, still=still), _way(0.5, n, still=still, more=(-1,)),
+                                                       _way(1.0, n, still=still))
+        seen["the last only in the first", n, still] = _given_way(_way(0.0, n, still=still), _way(0.5, n, still=still),
+                                                                  _way(1.0, n, still=still, shut=(n - 1,)))
+    seen["a column, its middle hole shut in the second"] = _given_way(_column(0.0), _column(0.5), _column(1.0, shut=(1,)))
+    monkeypatch.setattr(rife, "HOLE_PAIR_STEPS", 1)
+    seen["searched one step"] = _given_way(*(_way(s) for s in (0.0, 0.5, 1.0)))
     assert seen == {k: True for k in seen}
