@@ -4,6 +4,23 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
 
 ## Unreleased
 
+**Upgrading from 3.3.0: `video-set` now frames a walk or run filmed from the side on a square widened by the room its still lacks.** A still that leaves less than `GAIT_ROOM` clear in front of its silhouette (0.15 of the silhouette's height) or behind it (0.25) gains the columns it lacks on that side; the square gains the same number of rows above the still. A still that leaves the room keeps its canvas to the byte. Every other state, a front, back or diagonal view, `--shape` and `--fit tight` are framed as before. Each side walk or run's `canvas.report.json`, and its item in `set.report.json`, gains `room`. `video-canvas` gains `--view` and reads the room only with `--view side`.
+
+- **New: the walk's room (`canvas.gait_room`, `GAIT_ROOM`, `ROOM_VIEWS`).** Filmed from the side, a walk's stride reaches in front of the standing silhouette, and behind it the stride and a part that trails behind the body (a big tail, a long coat) swing past it. Where either met the left or right edge, `video-frames` refused the clip, and the walk had to be filmed again with `--shape wide`. The `walk` and `run` rows now read the still's room: the empty columns between the silhouette and the left and right edges of the square the row makes of the still, in front and behind, as a fraction of the silhouette's height. A side under its `GAIT_ROOM` (more behind than in front) gains what it lacks, and the frame stays square: the clip keeps the 1:1 a walk is filmed at, and the still is never scaled. The report's `room` records the view, the silhouette, the room on each side, the bound, `short`, `added_px` (columns per side) and `added_rows`, and a widened canvas's `why` says why. `--shape square` keeps the still's own square. `--shape wide` is still the walk's 16:9 row (`GAIT_WIDE`). See [video-pipeline](docs/video-pipeline.md) section 1.
+- **Changed: `canvas.subject_rows` is now `canvas.subject_box`**, which reads the columns as well as the rows. `--fit tight` reads its rows from it, byte for byte.
+- **Tests**: `tests/video/test_walk_canvas_room.py` covers these cases:
+  - a side walk whose tail reaches 6 px of the edge behind, facing either way, gets a square widened behind and above by what it lacks, the still unscaled, through `video-set`'s item and report;
+  - a person with room keeps the default row's canvas byte for byte;
+  - front, back, diagonal and unnamed views are not read;
+  - each bound flips one pixel either side of its `GAIT_ROOM`, the one behind larger than the one in front, and both short sides each gain their own lack;
+  - a still taller than it is wide is read in its square;
+  - a white base is read on its corner colour;
+  - a run is read at the walk's bounds;
+  - `--shape square`, `--shape wide`, `--fit tight` and another state are not read;
+  - `--view` works from the command line.
+
+  Four `video-set` tests' canvas stubs now take `view`, and `test_edge_speck_lead_in.py` reads the walk's own row.
+
 **Upgrading from 3.3.0: A walk or run loop is cut to the same bytes, whether a part pops in it or not; every walk and run report gains `part_pop` and `retake`.** `--unfixed refuse` also refuses a loop recorded `retake` reason `part-pop`, whatever `--repair`. No flags are added; no frames are made and no other cut is taken.
 
 - **New: The part reading and the `retake` record.** Squares 8 % of the body height are followed drawing to drawing and a part whose jerk leaves the curve its steps either side draw pops at the wrap. The cut stays and the report records a take to film again (`retake`, reason `part-pop`): `remedy` is `retake` where the engine's search chose the cut, and `recut-or-retake` where the cut was given (`--cycle fixed`, or `pinned`); `searched` says which. See [loop-repair](docs/loop-repair.md) section 2, "The part pop".
