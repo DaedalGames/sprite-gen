@@ -16,6 +16,18 @@ const BREATHE_MODES = ["pixel", "smooth"];
 // smooth 모양 값의 허용 범위 — 파이썬 curation.BREATHE_SMOOTH_SHAPE_RANGES 미러.
 const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9], inhale: [0.2, 0.8] };
 
+// pixel 의 둥근 가슴 — 파이썬 curation.BREATHE_ROUND_KEYS·BREATHE_ROUND_MAX·BREATHE_ROUND_SHAPE 미러. 둘 중 하나가 0 보다
+// 크면 그 pixel 줄은 둥근 가슴 장을 굽는다: 가슴 타원 키·숨 꼭대기·토막을 smooth 처럼 읽고, 봉투 값(depth·depth_x·lag)은
+// 거부한다. 큐레이터는 이 장을 따라 그리지 않는다 (breathe.js 가 거부) — 적힌 그대로 들고 있는다.
+const BREATHE_ROUND_KEYS = ["chest_round", "arms_x"];
+const BREATHE_ROUND_MAX = 0.20;
+const BREATHE_ROUND_SHAPE = ["chest_y", "chest_rx", "chest_ry", "chest_tilt", "chest_bias", "chest_x", "chest_bias_y", "inhale"];
+
+function breatheRound(raw) {
+  return raw.mode !== "smooth"
+    && BREATHE_ROUND_KEYS.some((k) => raw[k] != null && isNumericScalar(raw[k]) && Number(raw[k]) > 0);
+}
+
 function breatheRangeProblems(raw) {
   const bounds = [["depth", 0.005, 0.20, 0.06], ["breaths", 1, 8, 1], ["lag", 0, 0.45, 0.1]];
   const bad = [];
@@ -25,17 +37,33 @@ function breatheRangeProblems(raw) {
   if (raw.mode === "smooth" && raw.lag != null && Number(raw.lag) !== 0) {
     bad.push(`lag=${JSON.stringify(raw.lag)} (smooth 에는 lag 가 없다)`);
   }
-  // 모양 값은 smooth 만 쓴다 — pixel 줄에 있으면 굽기가 거부하고, smooth 줄은 범위를 본다.
+  // 둥근 가슴 값 — null 은 생략과 같다. smooth 줄에 있거나 범위 밖이면 굽기가 거부한다.
+  const rounded = breatheRound(raw);
+  for (const key of BREATHE_ROUND_KEYS) {
+    if (raw[key] == null) continue;
+    if (raw.mode === "smooth") { bad.push(`${key} (pixel 의 둥근 가슴 값)`); continue; }
+    const v = isNumericScalar(raw[key]) ? Number(raw[key]) : NaN;
+    if (!Number.isFinite(v) || v < 0 || v > BREATHE_ROUND_MAX) bad.push(`${key}=${JSON.stringify(raw[key])}`);
+  }
+  if (rounded) {
+    for (const key of ["depth", "depth_x", "lag"]) {
+      if (raw[key] != null) bad.push(`${key} (둥근 가슴 줄은 봉투 값을 쓰지 않는다)`);
+    }
+  }
+  // 모양 값은 smooth 만 쓴다 — 둥근 가슴 줄은 가슴 타원 키만. 그 밖의 pixel 줄에 있으면 굽기가 거부하고, 읽는 줄은 범위를 본다.
   for (const [key, [lo, hi]] of Object.entries(BREATHE_SMOOTH_SHAPE_RANGES)) {
     if (raw[key] === undefined) continue;
-    if (raw.mode !== "smooth") { bad.push(`${key} (smooth 만 쓰는 모양 값)`); continue; }
+    if (raw.mode !== "smooth" && !(rounded && BREATHE_ROUND_SHAPE.includes(key))) {
+      bad.push(`${key} (smooth 만 쓰는 모양 값)`);
+      continue;
+    }
     const v = isNumericScalar(raw[key]) ? Number(raw[key]) : NaN;
     if (!Number.isFinite(v) || v < lo || v > hi) bad.push(`${key}=${JSON.stringify(raw[key])}`);
   }
-  // 들숨 꼭대기 칸(smooth): 1 부터 커지는 정수, 서로 두 칸 이상 — 파이썬 state_breathe 미러.
+  // 들숨 꼭대기 칸(smooth·둥근 가슴): 1 부터 커지는 정수, 서로 두 칸 이상 — 파이썬 state_breathe 미러.
   if (raw.breath_peaks !== undefined) {
     const p = raw.breath_peaks;
-    const ok = raw.mode === "smooth" && Array.isArray(p) && p.length > 0 && p.every(Number.isInteger)
+    const ok = (raw.mode === "smooth" || rounded) && Array.isArray(p) && p.length > 0 && p.every(Number.isInteger)
       && p[0] >= 1 && p.every((v, i) => i === 0 || v - p[i - 1] >= 2)
       && (raw.breaths == null || Number(raw.breaths) === p.length);
     if (!ok) bad.push(`breath_peaks=${JSON.stringify(p)}`);
@@ -44,13 +72,14 @@ function breatheRangeProblems(raw) {
   // state_breathe 미러 (curation.BREATHE_STRETCH_KEYS).
   const intAt = (v) => isNumericScalar(v) && Number.isInteger(Number(v));
   // null 은 생략과 같다(줄이 곧 루프) — 단 pixel 줄에서는 키가 있는 것만으로 굽기가 거부한다.
-  if (raw.loop_cells !== undefined && (raw.mode !== "smooth"
+  if (raw.loop_cells !== undefined && ((raw.mode !== "smooth" && !rounded)
       || (raw.loop_cells !== null && (!intAt(raw.loop_cells) || Number(raw.loop_cells) < 2)))) {
     bad.push(`loop_cells=${JSON.stringify(raw.loop_cells)}`);
   }
   if (raw.start_cell !== undefined) {
     const loop = intAt(raw.loop_cells) ? Number(raw.loop_cells) : Infinity;
-    const ok = raw.mode === "smooth" && intAt(raw.start_cell) && Number(raw.start_cell) >= 0 && Number(raw.start_cell) < loop;
+    const ok = (raw.mode === "smooth" || rounded) && intAt(raw.start_cell) && Number(raw.start_cell) >= 0
+      && Number(raw.start_cell) < loop;
     if (!ok) bad.push(`start_cell=${JSON.stringify(raw.start_cell)}`);
   }
   for (const [key, lo, hi, dflt] of bounds) {
@@ -652,7 +681,8 @@ function seedEntries() {
         // smooth 줄은 적힌 그대로 들고 있다. 미러가 없어 미리보기도 편집 결과도 굽기와 맞출 수
         // 없고, 아래 pixel 정규화를 태우면 첫 autosave 가 pixel 기본값(depth 0.06, lag 0.1)을
         // 채워 넣어 smooth 줄의 진폭을 바꾸고 굽기가 lag 로 거부하게 된다.
-        ? rawBreathe.mode === "smooth" ? JSON.parse(JSON.stringify(rawBreathe))
+        // 둥근 가슴 pixel 줄도 같다 — 아래 pixel 정규화는 chest_round·arms_x 를 버리고 depth·lag 를 채워 넣는다.
+        ? rawBreathe.mode === "smooth" || breatheRound(rawBreathe) ? JSON.parse(JSON.stringify(rawBreathe))
         // `depth` 생략은 굽기에서 0.06 이다. `Number(undefined)` = NaN 이고
         // `JSON.stringify(NaN)` 은 `null` 이라, 기본값 분기가 없으면 첫 autosave 가
         // 사이드카에 `depth: null` 을 박아 **굽기가 죽는다** (validator 실측 2026-07-26).
