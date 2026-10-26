@@ -23,6 +23,12 @@ OUTLINE_WARN = 0.05
 # model leaves between two held drawings (and the frames made beside them) and the frames seen as clean
 # (docs/loop-repair.md section 4).
 GHOST_WARN = 0.003
+# A made frame whose ghost band, read in windows rife.GHOST_BAND of its body high (`rife.ghost_window`), is over this share
+# of a window's solid pixels is a ghost too, though the whole figure's share stays under GHOST_WARN: a band through one
+# limb, where one neighbour's gap beside the limb and the other's limb there are blended and the background shows through.
+# Set from the made frames of the cycle alignment, clean and seen through (docs/loop-repair.md section 4). Read only
+# where the measure carries it — the frames the cycle alignment makes.
+GHOST_WINDOW_WARN = 0.014
 # A made frame whose `rife.crossfade` is over this is named to look at, never given way for: on drawn
 # walks only the frame seen cross-faded read over it, but on synthetic legs a clean drawing between two
 # far-apart drawings outlined in grey reads over it too, and a cross-fade drawn without outlines mostly
@@ -62,12 +68,15 @@ def faults(measure: dict[str, float | None]) -> list[str]:
     (`torn`, the overlapped wrap's frames: `rife.passes`, `rife.torn`). A hole through a limb where
     it carries the holes the frame opened that neither neighbour has (`hole`, the cycle alignment's
     frames: `rife.hole`). A double outline where it carries how far a line one neighbour draws runs at
-    part strength in its own place (`doubled`, the cycle alignment's frames: `rife.doubled`)."""
+    part strength in its own place (`doubled`, the cycle alignment's frames: `rife.doubled`). A ghost too
+    where it carries the band read in windows of the body (`ghost_window`, the cycle alignment's frames:
+    `rife.ghost_window`) and that is over GHOST_WINDOW_WARN."""
     shift = measure.get("outline_shift")
     outline = measure["outline_loss"] if shift is None else min(measure["outline_loss"], shift)
     return ([*(["smear"] if measure["dark_excess"] > SMEAR_WARN else []),
              *(["outline"] if outline > OUTLINE_WARN else []),
-             *(["ghost"] if (measure.get("ghost") or 0.0) > GHOST_WARN else []),
+             *(["ghost"] if ((measure.get("ghost") or 0.0) > GHOST_WARN
+                             or (measure.get("ghost_window") or 0.0) > GHOST_WINDOW_WARN) else []),
              *(["torn"] if (measure.get("torn") or 0.0) > TORN_WARN else []),
              *(["hole"] if (measure.get("hole") or 0.0) > HOLE_WARN else []),
              *(["doubled"] if (measure.get("doubled") or 0.0) > DOUBLED_WARN else [])])

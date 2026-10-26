@@ -147,10 +147,11 @@ def test_a_held_loop_stretched_past_what_an_interpolator_bridges_is_named_for_a_
     assert retake["reason"] == "held-drawings" and retake["hold"] == 2 and retake["source"] == "span" and retake["drawings"] == 8
     assert retake["drawings_per_second"] == pytest.approx(8.0) and retake["frames_per_drawing"] == pytest.approx(3.0)
     assert retake["unmade"] == len(by["NE"]["nearest_at"]) > 0
-    # on twos at its own length nothing is made; drawn every frame, a replaced frame is no reason to film again
+    # on twos at its own length nothing is made; drawn every frame, a replaced frame is no held drawing to film again,
+    # but the frames this stand-in cross-fades all take the nearer source frame, and the beat they break is a reason
     assert by["SW"]["retake"] is None and by["SW"]["made_by_rife"] == 0
-    assert by["E"]["retake"] is None and len(by["E"]["nearest_at"]) > 0
-    assert [(r["name"], r["reason"]) for r in report["retake"]] == [("walk", "held-drawings")]
+    assert by["E"]["retake"]["reasons"] == ["broken-beat"] and len(by["E"]["nearest_at"]) > 0
+    assert [(r["name"], r["reason"]) for r in report["retake"]] == [("walk", "held-drawings"), ("walk", "broken-beat")]
     assert Path(report["retake"][0]["dir"]) == dirs[0]
     lines = [w for w in report["warnings"] if "film this direction again (held-drawings)" in w]
     assert len(lines) == 1 and "8 drawings a second" in lines[0] and lines[0].startswith(f"{dirs[0]}: ")  # every strip is `walk`
@@ -185,7 +186,7 @@ def test_a_held_loop_squeezed_past_on_twos_is_not_named(tmp_path):
     report = align.align_set(dirs, interpolate=_cross_fade, length=24, cycles={"A": 1})  # the bob reads as two cycles
     row = next(r for r in report["loops"] if Path(r["dir"]).name == "A")
     assert row["drawings"]["hold"] == 2 and row["drawings"]["drawings"] == pytest.approx(16, abs=0.5)
-    assert len(row["nearest_at"]) > 0 and row["retake"] is None
+    assert len(row["nearest_at"]) > 0 and row["retake"]["reasons"] == ["broken-beat"]  # no held drawings; the beat breaks
 
 
 @pytest.mark.slow
@@ -244,8 +245,8 @@ def test_a_clip_held_for_part_of_its_length_is_read_where_it_was_cut(tmp_path, h
     if named:
         assert row["retake"]["reason"] == "held-drawings" and row["retake"]["source"] == "span"
         assert row["retake"]["drawings"] == 8 and row["retake"]["drawings_per_second"] == pytest.approx(8.0)
-    else:
-        assert row["retake"] is None and report["retake"] == []
+    else:  # no held drawings to film again; the beat the stand-in's cross-fades break is the one reason
+        assert row["retake"]["reasons"] == ["broken-beat"] and [r["reasons"] for r in report["retake"]] == [["broken-beat"]]
 
 
 def test_the_cut_is_read_on_the_clips_steps_into_the_frame_after_it():
@@ -302,5 +303,6 @@ def test_video_set_carries_the_retake_into_its_record(tmp_path):
         rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
                      "loop": {"n_out": cycle}})
     out = batch.align_gaits(rows, tmp_path, "auto", interpolate=_cross_fade)
-    assert out["walk"]["applied"] and [r["reason"] for r in out["walk"]["retake"]] == ["held-drawings"]
-    assert rows[0]["loop"]["cycle_align"]["retake"]["reason"] == "held-drawings" and rows[1]["loop"]["cycle_align"]["retake"] is None
+    assert out["walk"]["applied"] and [r["reason"] for r in out["walk"]["retake"]] == ["held-drawings", "broken-beat"]
+    assert rows[0]["loop"]["cycle_align"]["retake"]["reason"] == "held-drawings"
+    assert rows[1]["loop"]["cycle_align"]["retake"]["reasons"] == ["broken-beat"]  # squeezed, its cross-fades given way
