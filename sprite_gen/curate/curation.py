@@ -253,6 +253,14 @@ BREATHE_SMOOTH_PEAK_REACH = 0.9
 # 조각이 idle 의 숨을 위상 그대로 잇는다. 칸 i 의 위상은 루프 칸 (start_cell + i) mod loop_cells 의 위상이고 숨 박자
 # (breaths·breath_peaks)는 그 루프의 것이다. 생략은 줄이 곧 루프다 (start_cell 0, loop_cells 는 줄의 칸 수).
 BREATHE_STRETCH_KEYS = ("start_cell", "loop_cells")
+# pixel 의 둥근 가슴과 양팔 가로 (`sprite_gen.effects.breathe` round 장): chest_round 는 들숨 꼭대기에서 가슴 테두리가
+# 꼭대기 P 에서 바깥으로 나가는 양, arms_x 는 팔(해부가 몸통 밖 부속으로 읽은 열)이 옆으로 밀려 나가는 양 — 둘 다 목 아래
+# 몸통 높이(정규화 기준) 비율이다. 둘 중 하나가 0 보다 크면 그 pixel 줄은 봉투 스쿼시 대신 이 장을 굽는다 (생략·0 은 꺼짐,
+# 이전과 바이트 같다). 이 줄은 smooth 의 가슴 타원 키와 숨 박자 키를 읽는다 — 진행파(lag)와 봉투 진폭(depth·depth_x)은
+# 쓰지 않는다.
+BREATHE_ROUND_KEYS = ("chest_round", "arms_x")
+BREATHE_ROUND_MAX = 0.20
+BREATHE_ROUND_SHAPE = ("chest_y", "chest_rx", "chest_ry", "chest_tilt", "chest_bias", "chest_x", "chest_bias_y", "inhale")
 
 RETIRED_BREATHE_KEYS = {
     "splits": "분할선은 봉투 경계로 대체됐다 — 경계는 자동 검출되고 `rigid_row` 로만 덮어쓴다",
@@ -294,7 +302,12 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     `depth` 생략은 `BREATHE_SMOOTH_DEPTH`, `depth_x` 생략은 `BREATHE_SMOOTH_DEPTH_X` 이며, 모양 값
     (`BREATHE_SMOOTH_SHAPE` 의 키, 들숨 몫 `inhale` 포함)이 기본값과 함께 실린다. 루프의 한 토막(`start_cell`,
     `loop_cells` — `BREATHE_STRETCH_KEYS`)도 smooth 에 늘 실린다 (생략이면 0 과 None, 줄이 곧 루프). 모양 값과 토막은
-    smooth 만 쓴다 — pixel 줄에 있으면 조용히 무시하지 않고 거부한다."""
+    smooth 만 쓴다 — pixel 줄에 있으면 조용히 무시하지 않고 거부한다.
+
+    예외는 둥근 가슴 pixel 줄이다 (`chest_round`·`arms_x` 중 하나가 0 보다 큼, `BREATHE_ROUND_KEYS`): 그 줄은 가슴 타원 키
+    (`BREATHE_ROUND_SHAPE`, 들숨 몫 포함)·숨 꼭대기·토막을 smooth 와 같은 검사로 읽고, 봉투 값(`depth`·`depth_x`·`lag`)과
+    smooth 만 쓰는 모양 값(어깨·chest_dir·chest_flat)은 거부한다. 반환은 {"chest_round", "arms_x", "breaths", "breath_peaks",
+    가슴 타원 키, "start_cell", "loop_cells", "rigid_row", "axis_x", "torso_half", "anatomy"} 다."""
     if not curation:
         return None
     entry = curation.get("states", {}).get(state)
@@ -315,8 +328,37 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
             f"curation: states.{state}.breathe.mode = {mode!r} 를 모른다 — "
             f"{' | '.join(BREATHE_MODES)} 중 하나다 (생략하면 pixel). 조용히 pixel 로 굽지 않는다.")
     smooth = mode == "smooth"
+    # pixel 의 둥근 가슴·양팔 가로 — 생략(None)·0 은 꺼짐. 하나라도 0 보다 크면 그 줄은 round 장을 굽는다.
+    amps = {}
+    for name in BREATHE_ROUND_KEYS:
+        if raw.get(name) is None:
+            continue
+        if smooth:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.{name} 는 pixel 의 둥근 가슴 값이다 — smooth 의 가슴은 depth·depth_x 로 "
+                f"오르고 부푼다. 그 키를 지우거나 mode 를 지워라. 조용히 무시하지 않는다.")
+        try:
+            amps[name] = float(raw[name])
+        except (TypeError, ValueError):
+            raise SystemExit(f"curation: states.{state}.breathe.{name} 를 숫자로 못 읽는다: {raw[name]!r}")
+        if not 0.0 <= amps[name] <= BREATHE_ROUND_MAX:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.{name} = {raw[name]!r} 가 범위 [0.0, {BREATHE_ROUND_MAX}] 밖이다. "
+                f"조용히 깎지 않는다 — 사이드카를 고쳐라.")
+    rounded = any(amps.values())
+    if rounded:
+        envelope = sorted(k for k in ("depth", "depth_x", "lag") if raw.get(k) is not None)
+        if envelope:
+            raise SystemExit(
+                f"curation: states.{state}.breathe 의 {', '.join(envelope)} 는 봉투 스쿼시의 값이다 — 둥근 가슴 줄"
+                f"(chest_round·arms_x)은 그 진폭으로 숨쉬고 진행파가 없다. 그 키를 지워라. 조용히 무시하지 않는다.")
+        stray = sorted(k for k in BREATHE_SMOOTH_SHAPE if k in raw and k not in BREATHE_ROUND_SHAPE)
+        if stray:
+            raise SystemExit(
+                f"curation: states.{state}.breathe 의 {', '.join(stray)} 는 smooth 만 쓰는 모양 값이다 — 둥근 가슴 줄은 "
+                f"가슴 타원({', '.join(BREATHE_ROUND_SHAPE)})과 숨 박자만 읽는다. 그 키를 지워라. 조용히 무시하지 않는다.")
     stray = sorted(k for k in (*BREATHE_SMOOTH_SHAPE, "breath_peaks", *BREATHE_STRETCH_KEYS) if k in raw)
-    if stray and not smooth:
+    if stray and not (smooth or rounded):
         raise SystemExit(
             f"curation: states.{state}.breathe 의 {', '.join(stray)} 는 smooth 의 모양 값이다 — "
             f"pixel 은 쓰지 않는다. `mode: \"smooth\"` 를 적거나 그 키를 지워라. 조용히 무시하지 않는다.")
@@ -330,7 +372,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
         raw_dx = raw.get("depth_x")
         depth_x = None if raw_dx is None else float(raw_dx)
         lag = float(raw.get("lag", 0.0 if smooth else 0.10))
-        peaks = raw.get("breath_peaks") if smooth else None
+        peaks = raw.get("breath_peaks") if smooth or rounded else None
         breaths = _exact_int("breaths", raw.get("breaths", len(peaks) if isinstance(peaks, list) else 1), state)
     except (TypeError, ValueError) as exc:
         # 폐기 키는 요란하게 거부하면서 형식 오류만 조용히 호흡을 꺼버리면 계약이 어긋난다
@@ -365,10 +407,10 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     if torso_half is not None:
         torso_half = _exact_int("torso_half", torso_half, state)
     frozen = raw.get("anatomy")
-    if smooth:
+    if smooth or rounded:
         # 진행파(lag)는 윗행의 위상을 늦춰 위상 0 인 칸도 움직인다 — smooth 의 첫 칸은 원본
-        # 그대로여야 루프와 묶음의 이음이 안 바뀐다. 0 아닌 lag 를 조용히 버리지 않는다.
-        if lag != 0.0:
+        # 그대로여야 루프와 묶음의 이음이 안 바뀐다. 0 아닌 lag 를 조용히 버리지 않는다 (둥근 가슴 줄은 위에서 거부했다).
+        if smooth and lag != 0.0:
             raise SystemExit(
                 f"curation: states.{state}.breathe.lag = {raw.get('lag')!r} — smooth 에는 진행파가 없다. "
                 f"위상 0 인 칸이 원본 그대로여야 루프·묶음 이음이 안 바뀐다. lag 를 지워라.")
@@ -400,6 +442,8 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
                 f"이어야 한다. 조용히 접지 않는다.")
         shape = {}
         for name, default in BREATHE_SMOOTH_SHAPE.items():
+            if rounded and name not in BREATHE_ROUND_SHAPE:
+                continue
             given = raw.get(name, default)
             try:
                 value = float(given)
@@ -416,6 +460,12 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
                 f"curation: states.{state}.breathe.chest_bias {shape['chest_bias']:g}, chest_bias_y "
                 f"{shape['chest_bias_y']:g} — 꼭대기가 가슴 타원 테두리에 너무 가깝다 (반지름 비율 "
                 f"{BREATHE_SMOOTH_PEAK_REACH:g} 안이어야 한다).")
+        if rounded:
+            cfg = {"chest_round": amps.get("chest_round", 0.0), "arms_x": amps.get("arms_x", 0.0), "breaths": breaths,
+                   "breath_peaks": peaks, **shape, "start_cell": start_cell, "loop_cells": loop_cells,
+                   "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,
+                   "anatomy": frozen if isinstance(frozen, dict) else None}
+            return cfg if mode is None else {"mode": mode, **cfg}
         return {"mode": mode, "depth": depth,
                 "depth_x": BREATHE_SMOOTH_DEPTH_X if depth_x is None else depth_x,
                 "breaths": breaths, "breath_peaks": peaks, **shape, "start_cell": start_cell, "loop_cells": loop_cells,
