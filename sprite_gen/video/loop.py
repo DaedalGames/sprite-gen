@@ -49,6 +49,7 @@ from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
+from sprite_gen.video import part_pop as part_pop_mod
 from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
@@ -134,7 +135,8 @@ REPAIR_MODES = ("auto", "on", "off")
 OVERLAP_WRAP_MODES = ("on", "off")
 OVERLAP_WRAP_OFF = "turned off (--overlap-wrap off)"
 # A frame the jump repair leaves off the walk's flow (`jump_repair.unfixed`: no group brings it back, or the group that
-# would was refused). warn: a warning line, the loop kept; refuse: the loop fails.
+# would was refused), or a part that pops at the wrap of the cut taken (`part_pop.left`, a take to film again: `retake`).
+# warn: a warning line, the loop kept; refuse: the loop fails.
 UNFIXED_MODES = ("warn", "refuse")
 SIZE_HOLD_MODES = ("auto", "off")
 FACINGS = ("right", "left")
@@ -1141,6 +1143,72 @@ def _unfixed_lines(jump_repair: dict[str, Any]) -> list[str]:
         lines.append(f"frame{'s' if len(frames) > 1 else ''} {', '.join(map(str, frames))} of the loop lie{'' if len(frames) > 1 else 's'} "
                      f"{u['off']:.2f}x its window's usual step off the walk's flow after the jump repair: {why}")
     return lines
+
+
+def _pop_settled(record: dict[str, Any], frames: list[Image.Image], cut: list[Image.Image]) -> None:
+    """What became of a part that pops at the wrap of the cut taken (`part_pop`, docs/loop-repair.md section 2, "The part
+    pop"), recorded: `outcome` — `none` where no part pops, `closed` where the jump repair changed frames of the cut and no
+    part pops on the loop as it now plays, `named` where it plays as filmed — and the pops `left`, read again (`after`)
+    where a frame of the cut was changed."""
+    if not record["pops"]:
+        record.update(outcome="none", left=[])
+        return
+    left = record["pops"]
+    if any(a is not b for a, b in zip(frames, cut)):
+        again = part_pop_mod.public(part_pop_mod.read(frames))
+        record["after"] = {k: again[k] for k in ("drawings", "hold", "parts", "followed", "nearest", "pops")}
+        left = again["pops"]
+    record.update(outcome="named" if left else "closed", left=left)
+
+
+def _pop_said(p: dict[str, Any], together: int = 1) -> str:
+    """A part that pops (`part_pop.read`), in words; `together`, the parts that pop over the same run, the worst said."""
+    return (f"the part at ({p['at'][0]:.0f}, {p['at'][1]:.0f}) px of frame {p['from']} moves {p['body_pct']:.2f} % of the body's "
+            f"height into frame {p['to']}, {p['jerk_pct']:.2f} % off the curve its steps either side draw ({p['speed']:.1f}x its "
+            f"usual step, {p['curve']:.1f}x the step that curve gives, {p['lead']:.2f}x its largest such jump elsewhere; it "
+            f"{'comes back' if p['kind'] == 'flung' else 'stays'}{_beside(together)})")
+
+
+def _beside(together: int) -> str:
+    """The parts that pop with the one said, in words."""
+    if together < 2:
+        return ""
+    return f"; {together - 1} part{'s' if together > 2 else ''} beside it pop{'' if together > 2 else 's'} with it"
+
+
+def _pop_runs(pops: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    """The pops (worst first) grouped by the run they pop over: the worst of each and how many pop there."""
+    runs: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for p in pops:
+        runs.setdefault((p["from"], p["to"]), []).append(p)
+    return [(group[0], len(group)) for group in runs.values()]
+
+
+RETAKE_REASON = "part-pop"
+
+
+def part_retake(record: dict[str, Any], cut: tuple[int, int], *, given: bool) -> dict[str, Any] | None:
+    """A take to film again where a part pops at the wrap of the loop as it plays (`part_pop.left`), as
+    `video-cycle-align`'s `retake` is: `reason` (RETAKE_REASON), `reasons`, the numbers under `part_pop` — the pops left,
+    the cut, and whether the search chose it (`searched`) — the `limits`, and `remedy`: `retake` where the engine's search
+    chose the cut, `recut-or-retake` where it was given (`given`: --cycle fixed, or pinned). No other cut is taken for it.
+    None where no part pops."""
+    if not record.get("left"):
+        return None
+    return {"reason": RETAKE_REASON, "reasons": [RETAKE_REASON],
+            "part_pop": {"pops": [{k: p[k] for k in ("seed", "from", "to", "at", "body_pct", "jerk_pct", "speed", "curve", "lead",
+                                                     "kind", "margin")} for p in record["left"]],
+                         "cut": list(cut), "searched": not given},
+            "limits": {k: record[k] for k in ("floor", "speed", "curve", "lead")},
+            "remedy": "recut-or-retake" if given else "retake"}
+
+
+def _pop_lines(record: dict[str, Any], *, given: bool) -> list[str]:
+    """Each pop that plays as filmed, a take to film again (`retake`), in words (`video-loop: warning:` lines)."""
+    why = ("the cut was given (--cycle fixed or pinned): cut it where no part pops, or film it again" if given else
+           "the search's cut is kept as cut, and no other cut is taken for a part: film it again")
+    return [f"film this direction again ({RETAKE_REASON}) — {_pop_said(p, together)}: {why}" for p, together in
+            _pop_runs(record.get("left") or [])]
 
 
 def _step_reason(jump_repair: dict[str, Any], frames: set[int]) -> dict[str, Any]:
@@ -2156,6 +2224,11 @@ def _cut_loop(
             print(f"video-loop: warning: {line}", file=sys.stderr)
     # Each cut frame given way to the frame beside it, as filmed: the seam is read on it there (`seam_as_filmed`).
     as_filmed: dict[int, Image.Image] = {}
+    if prof.gait:
+        # The part reading (docs/loop-repair.md section 2, "The part pop") of every walk and run, on the cut as filmed —
+        # anchored, before any repair — whatever --repair asks: a hand or a foot that pops at the wrap.
+        report_base["part_pop"] = part_pop_mod.public(part_pop_mod.read(frames))
+        cut_frames = frames
     if repair != "off" and prof.gait:
         report_base["jump_repair"] = None
         filmed = frames
@@ -2281,9 +2354,23 @@ def _cut_loop(
                      f"frames from {i}); the motion does not play smoothly — regenerate the clip")
             refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error)
+        # A part that pops at the wrap of the cut taken: closed where the jump repair changed it away, else a take to film
+        # again (`retake`), named.
+        _pop_settled(report_base["part_pop"], frames, cut_frames)
+        given = cycle_mode in ("fixed", "pinned")
+        report_base["retake"] = part_retake(report_base["part_pop"], (i, L), given=given)
+        pops_left = _pop_lines(report_base["part_pop"], given=given)
+        if pops_left and unfixed == "refuse":
+            error = (f"video-loop: a part pops at the loop's wrap — {'; '.join(pops_left)} ({cycle.get('kind', 'periodic')} "
+                     f"length {L} frames from {i}); the motion does not play smoothly")
+            refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+            raise SystemExit(error)
         for line in left:
             print(f"video-loop: warning: {line} — a jump played as filmed; --unfixed refuse refuses such a loop "
                   "(docs/loop-repair.md section 2)", file=sys.stderr)
+        for line in pops_left:
+            print(f"video-loop: warning: {line}; --unfixed refuse refuses such a loop (docs/loop-repair.md section 2, "
+                  '"The part pop")', file=sys.stderr)
         for line in warnings:
             print(f"video-loop: warning: {line} (reference bound; the loop is kept — docs/loop-repair.md)", file=sys.stderr)
         if "ghost_given_way" not in report_base:
@@ -2596,7 +2683,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repair", choices=REPAIR_MODES, default="auto", help="auto (default): take out the frames off the walk's flow (one or two drawings that lie 3x their region's usual step off the line between the frames either side) and make them again with RIFE between those frames, each at its own time, so the loop keeps its length; adopt only without smear/outline faults, at most 3 calls and never made from or beside a frame made (docs/loop-repair.md section 2). A rejected group keeps its frames. A loop that is not a walk or run is not read for its flow: where its wrap steps over --seam-max times the mean of the three steps either side, one, two or four frames round it are made again by RIFE between the frames either side, the fewest first, taken only without faults and where every step from one to the other then reads within that limit (docs/loop-repair.md section 2, \"The seam bridge\"). Missing RIFE keeps the filmed loop with a warning (`sprite-gen rife install`); on: the same repair, but no RIFE fails the loop; off: cut as filmed")
     parser.add_argument("--overlap-wrap", choices=OVERLAP_WRAP_MODES, default="on", help="--anchor motion-auto, under --repair auto or on: on (default): a cut two steps long whose wrap a part on its own beat leaves open (the seam gate refuses it) has four to twelve frames beside its wrap made again between the clip's frames a cycle apart and its own, each read with RIFE's single passes for a part torn — 34 calls of the binary a frame, up to forty frames (docs/loop-repair.md section 2, \"The overlapped wrap\"); off: not tried, recorded `wrap_overlap.skipped` with a warning line, and the gate refuses the cut as filmed — for a host whose RIFE runs on a CPU, where one frame of a 960 px clip takes minutes")
     parser.add_argument("--wrap-blend", choices=wrap_blend_mod.MODES, default="auto", help="--cycle pinned with --anchor none: auto (default): where the pinned last frame draws the first again (the first frame and it differ by more than --seam-max times the cut's median step, at full size), the last half second of the cut takes the first frame's drawing back in a ramp, only where the two ends differ by a redraw and the cell stands where the pin stands; a ramp that steps more than the cut already does, or does not shrink the wrap, is not used and a warning line says so (report `wrap_blend`, docs/loop-repair.md section 6); off: the cut as filmed")
-    parser.add_argument("--unfixed", choices=UNFIXED_MODES, default="warn", help="walk/run, under --repair auto or on: a frame the jump repair leaves off the walk's flow — no group of up to two drawings brings it back, or the group that would was refused (its RIFE frame had a fault) — is recorded in jump_repair.unfixed; warn (default): a warning line, the loop kept; refuse: the loop fails")
+    parser.add_argument("--unfixed", choices=UNFIXED_MODES, default="warn", help="walk/run: a frame the jump repair leaves off the walk's flow (under --repair auto or on) — no group of up to two drawings brings it back, or the group that would was refused (its RIFE frame had a fault) — is recorded in jump_repair.unfixed; a part the size of a hand or a foot that pops at the wrap of the cut taken — the cut kept as cut — in part_pop.left, a take to film again (retake, reason part-pop; docs/loop-repair.md section 2, \"The part pop\"); warn (default): a warning line, the loop kept; refuse: the loop fails")
     parser.add_argument("--jolt-max", type=float, default=None, help=f"walk/run: fail the repaired loop when its jolt index (how far each step strays from its neighbours' mean, over the median step) exceeds this. Default: no gate — the index is reported and a value over {repair_mod.JOLT_REFERENCE} is a warning line")
     parser.add_argument("--head-step-max", type=float, default=None, help=f"walk/run: fail the repaired loop when the head's largest sideways move in one frame exceeds this %% of the body height. Default: no gate — reported, and over {repair_mod.HEAD_STEP_REFERENCE} is a warning line")
     parser.add_argument("--seam-pop-max", type=_seam_pop_max, default=repair_mod.SEAM_POP_REFERENCE, metavar="BOUND|off",
@@ -2691,6 +2778,12 @@ def run(**kwargs: object) -> int:
             summary["jump_repair"]["eased"] = eased[0]["replaced"]
     if payload.get("jump_repair", {}).get("unfixed"):
         summary.setdefault("jump_repair", {})["unfixed"] = [u["frames"] for u in payload["jump_repair"]["unfixed"]]
+    if payload.get("part_pop", {}).get("pops"):
+        popped = payload["part_pop"]
+        summary["part_pop"] = {"pops": [{k: p[k] for k in ("from", "to", "at", "body_pct", "kind", "margin")} for p in popped["pops"]],
+                               "outcome": popped["outcome"], "left": [[p["from"], p["to"]] for p in popped["left"]]}
+    if payload.get("retake"):
+        summary["retake"] = {k: payload["retake"][k] for k in ("reason", "remedy")}
     summary["strip"] = {k: payload["strip"][k] for k in ("path", "frames", "w", "h", "body_h", "delay_ms")}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
