@@ -2,26 +2,11 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased
+## v3.4.0 - Loop part pop retakes, cycle alignment walk beat repair and broken beats, ghost limb faults, and same foot, filmed jump, and seam jump retakes
 
-**Upgrading from 3.3.0: A walk or run loop is cut to the same bytes, whether a part pops in it or not; every walk and run report gains `part_pop` and `retake`.** `--unfixed refuse` also refuses a loop recorded `retake` reason `part-pop`, whatever `--repair`. No flags are added; no frames are made and no other cut is taken.
+**Upgrading from 3.3.0: A walk or run loop in `video-loop` is cut to the same bytes, whether a part pops in it or not, and `video-cycle-align` changes only alignment outputs whose beat broke or where a made frame has a limb seen through under `--between auto`.** For `video-loop`, every walk and run report gains `part_pop` and `retake`; `--unfixed refuse` also refuses a loop recorded `retake` reason `part-pop`, whatever `--repair`; no flags are added, no frames are made and no other cut is taken. `video-cycle-align` now reads ghost bands in windows of the body to catch limbs seen through, keeps frames given way on the beat under `--between auto` by making them again at clean fractions or widening jolts across neighbouring frames, changing only alignment outputs whose beat broke (a jolt of 0.25 beat or more) or where a made frame has a limb seen through (ghost window over 1.4 %); loops keeping the beat, loops with no frame given way, and `video-loop` (and `video-set`) keep their bytes for strip PNG, GIF, WebP, and cycle frames, while gaining `beat`, `ghost_window`, (on back and back_diagonal views) `same_foot`, and `retake` reasons (`broken-beat`, `same-foot`) in alignment `strip.json` and reports; every aligned loop's `strip.json` and report gain `screen`, and loops whose cut jumps gain the reasons `filmed-jump` and `seam-jump`, frames unchanged; and `clip_feet` in `video-loop`'s `strip.json` and reports for every walk or run cut; all outputs from `video-loop-compare` and `video-loop-repair` are unchanged, bytes included, and `--same-foot` defaults to `warn` so nothing is refused by default.
 
 - **New: The part reading and the `retake` record.** Squares 8 % of the body height are followed drawing to drawing and a part whose jerk leaves the curve its steps either side draw pops at the wrap. The cut stays and the report records a take to film again (`retake`, reason `part-pop`): `remedy` is `retake` where the engine's search chose the cut, and `recut-or-retake` where the cut was given (`--cycle fixed`, or `pinned`); `searched` says which. See [loop-repair](docs/loop-repair.md) section 2, "The part pop".
-- **Tests**: `tests/video/test_loop_part_pop.py` (the four bounds flip the pop; flung and stays; a pop over two steps reads as their mean; an ease through a fast bell does not pop; a fist jumping 2.5, 3.5 and 5 % passes the flow and surge readings and is named; a walk whose tail, foot and eye move across the wrap, and a run, have no pop; an ordinary walk is cut to the bytes it was; a cut given whose fist pops is named, `retake` `recut-or-retake`, `--unfixed refuse` refuses, and under `warn` it is the bytes it was; a clip whose fist drifts through every cut keeps the search's cut to the bytes it was, `retake` `retake`; a clip no part pops in is cut to the bytes it was).
-
-**Upgrading from 3.3.0: `video-cycle-align` now reads ghost bands in windows of the body to catch limbs
-seen through, keeps frames given way on the beat under `--between auto` by making them again at clean
-fractions or widening jolts across neighbouring frames, changing only alignment outputs whose beat broke
-(a jolt of 0.25 beat or more) or where a made frame has a limb seen through (ghost window over 1.4 %);
-loops keeping the beat, loops with no frame given way, and `video-loop` (and `video-set`) keep their
-bytes for strip PNG, GIF, WebP, and cycle frames, while gaining `beat`, `ghost_window`, (on back and
-back_diagonal views) `same_foot`, and `retake` reasons (`broken-beat`, `same-foot`) in alignment
-`strip.json` and reports; every aligned loop's `strip.json` and report gain `screen`, and loops whose cut
-jumps gain the reasons `filmed-jump` and `seam-jump`, frames unchanged; and `clip_feet` in `video-loop`'s
-`strip.json` and reports for every walk or run cut; all outputs from `video-loop-compare` and
-`video-loop-repair` are unchanged, bytes included, and `--same-foot` defaults to `warn` so nothing is
-refused by default.**
-
 - **New: a made frame's ghost band is now also read in windows of the body (`rife.ghost_window`, constant
   `rife.GHOST_BAND` = 0.10) to catch limbs seen through.** On frames the cycle alignment makes,
   `rife.ghost_window` counts the same part-covered pixels in regions at least `rife.GHOST_THICK` (5 px)
@@ -194,6 +179,7 @@ refused by default.**
   `video-cycle-align` at the cut's own length, the jump is named with the aligned loop's frames that show
   it, recorded in `strip.json`, while a cut whose changes are alike names nothing. Also
   `tests/video/test_loop_prop_seam_held.py` now expects `screen` among `cycle_align`'s keys.
+- **Tests**: `tests/video/test_loop_part_pop.py` (the four bounds flip the pop; flung and stays; a pop over two steps reads as their mean; an ease through a fast bell does not pop; a fist jumping 2.5, 3.5 and 5 % passes the flow and surge readings and is named; a walk whose tail, foot and eye move across the wrap, and a run, have no pop; an ordinary walk is cut to the bytes it was; a cut given whose fist pops is named, `retake` `recut-or-retake`, `--unfixed refuse` refuses, and under `warn` it is the bytes it was; a clip whose fist drifts through every cut keeps the search's cut to the bytes it was, `retake` `retake`; a clip no part pops in is cut to the bytes it was).
 
 ## v3.3.0 - PyTorch RIFE backend for CUDA and CPU, executor for a GPU on another machine, and Linux CPU and cloud T4 release lanes
 
