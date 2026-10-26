@@ -2,6 +2,185 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## v3.4.0 - Loop part pop retakes, cycle alignment walk beat repair and broken beats, ghost limb faults, and same foot, filmed jump, and seam jump retakes
+
+**Upgrading from 3.3.0: A walk or run loop in `video-loop` is cut to the same bytes, whether a part pops in it or not, and `video-cycle-align` changes only alignment outputs whose beat broke or where a made frame has a limb seen through under `--between auto`.** For `video-loop`, every walk and run report gains `part_pop` and `retake`; `--unfixed refuse` also refuses a loop recorded `retake` reason `part-pop`, whatever `--repair`; no flags are added, no frames are made and no other cut is taken. `video-cycle-align` now reads ghost bands in windows of the body to catch limbs seen through, keeps frames given way on the beat under `--between auto` by making them again at clean fractions or widening jolts across neighbouring frames, changing only alignment outputs whose beat broke (a jolt of 0.25 beat or more) or where a made frame has a limb seen through (ghost window over 1.4 %); loops keeping the beat, loops with no frame given way, and `video-loop` (and `video-set`) keep their bytes for strip PNG, GIF, WebP, and cycle frames, while gaining `beat`, `ghost_window`, (on back and back_diagonal views) `same_foot`, and `retake` reasons (`broken-beat`, `same-foot`) in alignment `strip.json` and reports; every aligned loop's `strip.json` and report gain `screen`, and loops whose cut jumps gain the reasons `filmed-jump` and `seam-jump`, frames unchanged; and `clip_feet` in `video-loop`'s `strip.json` and reports for every walk or run cut; all outputs from `video-loop-compare` and `video-loop-repair` are unchanged, bytes included, and `--same-foot` defaults to `warn` so nothing is refused by default.
+
+- **New: The part reading and the `retake` record.** Squares 8 % of the body height are followed drawing to drawing and a part whose jerk leaves the curve its steps either side draw pops at the wrap. The cut stays and the report records a take to film again (`retake`, reason `part-pop`): `remedy` is `retake` where the engine's search chose the cut, and `recut-or-retake` where the cut was given (`--cycle fixed`, or `pinned`); `searched` says which. See [loop-repair](docs/loop-repair.md) section 2, "The part pop".
+- **New: a made frame's ghost band is now also read in windows of the body (`rife.ghost_window`, constant
+  `rife.GHOST_BAND` = 0.10) to catch limbs seen through.** On frames the cycle alignment makes,
+  `rife.ghost_window` counts the same part-covered pixels in regions at least `rife.GHOST_THICK` (5 px)
+  thick that `rife.ghost` counts, but in windows a tenth of the body high sliding a quarter window at a
+  time down the body, each as a share of the solid pixels in that window, reading the largest window's
+  share and where it lies as fractions of the body from the top (`ghost_window_at`). Over
+  `interpolation_quality.GHOST_WINDOW_WARN` = 0.014 (1.4 % of a window's solid pixels), the made frame has
+  the fault `ghost` (though whole-body `ghost` stays under 0.3 %) and gives way, or is made again at another
+  fraction, warning that it carries a limb seen through (for example: "carries a part-covered band over
+  2.40 % of the solid pixels in a band 10 % of its body high (60 to 70 % down it), at least 5 px thick,
+  though 0.18 % of its whole body, a limb seen through, a ghost"). This catches RIFE blending coverages
+  over a gap beside a limb; it is not read on `video-loop`'s jump repair frames or filmed frames.
+- **New: `video-cycle-align` reads the loop's beat and keeps frames given way on it under
+  `--between auto`, checks for the same foot stepping twice, and `video-loop` records whether each cut
+  steps the same foot twice (`clip_feet`).** On every aligned loop, `video-cycle-align` reads the leg
+  path over the lowest `LEG_PATH_BAND` = 0.10 of the figure box (`BLOCK` 8 x 8 px, `SEARCH` 12 px,
+  `MATCH_BAD` 40 of 255, `READ_HEIGHT` 410 px) and measures the beat jolt across each gap (`BEAT_JOLT`
+  = 0.25 beat). Under `--between auto` (the default), where a loop's beat breaks from frames given way
+  to the nearer source frame, the frames given way are taken in runs of neighbouring frames and made
+  again at clean fractions (`align.RETIME_T` = 0.15 to 0.85, step 0.05) within `BEAT_JOLT` of their
+  times, or their jolt is spread over neighbouring frames (`align.WIDEN` = 2, then 3 frames each side)
+  moved off their own times and made by RIFE. A frame made only to keep the beat is taken only where
+  its window reading is under `align.RETIME_WINDOW_MAX` = 0.006, well under the 1.4 % fault limit,
+  besides having no fault. Runs that cannot be kept stay on the nearer source frame, are named in
+  `beat.named`, and carry the `broken-beat` reason under `--between auto` in the `retake` record when
+  beat gaps remain at `BEAT_JOLT` or more. On views where feet stand side by side (`STEP_VIEWS` = back,
+  back_diagonal), `video-cycle-align` reads whether the same foot steps twice in a row (`FOOT_ROWS` = 0.03,
+  `LIFT_MIN` = 0.010, `LIFT_CELLS` = 2, `DOWN_MAX` = 0.006), recording reason `same-foot`, and warns
+  under `--same-foot warn` (the default) or stops the set before anything is rewritten under
+  `--same-foot refuse`. Each reason has one warning line replacing earlier separate beat and same-foot
+  lines, naming what is likely to fix it ("retake", "recut", or "recut-or-retake"), and the report's
+  `retake` list carries these loops like the others (under `--between nearest` a broken beat is recorded
+  in `beat` but is no reason). `video-loop` reads every cut of the cut's length on keyed frames of
+  walks and runs, recording for every cut whether that cut, looped, steps the same foot twice (`clip_feet`)
+  in `strip.json` and its report.
+- **New: `video-cycle-align` reads a jump the take films between two of its frames, or at the cut's seam,
+  on the screen as well as the beat.** For each step of the cut's own frames (`cycle.source/`, step i
+  from frame i to i + 1, the last step from the last frame to the first, which is the cut's seam),
+  `cadence.screen_steps(frames)` reads the mean absolute luminance difference over white (0 to 255) of
+  the box every frame's figure fits in (`whole`) and of its lowest `cadence.SCREEN_ROWS` = 0.30 (`legs`;
+  a strip cell's lowest 125 of its 406 px), read at `READ_HEIGHT` 410 px. The beat reads only the leg
+  path where the feet go (the lowest 10 % of the box); two drawings filmed a pose apart (legs wide apart
+  in one, crossed in the next, the tail up) move the feet little and change the picture much, so the beat
+  passes them, but the screen sees them. It is read on the cut's own frames, not on the aligned frames
+  (an aligned frame spans two or three of the cut's frames, which spreads a jump over the drawing changes
+  beside it and hides it), on every aligned loop whatever its view and whatever `--between`. Under
+  `cadence.screen_record`, a step is a jump when, over the box or on its leg rows, it is at least
+  `cadence.SCREEN_JUMP` = 2.0 times the cycle's typical step and at least `cadence.SCREEN_ALONE` = 1.3
+  times every other step of the cycle. The typical step is the upper quartile of the cycle's steps: on
+  ones every step is a drawing change, on twos or threes most steps change nothing and the upper quartile
+  is a drawing change. A cycle whose drawing changes are all alike names none; so does a cycle with two
+  steps alike however large (neither is 1.3 times the other). A jump inside the cut gives the `retake`
+  reason `filmed-jump` (details `filmed_jump`: `steps`, `at`, `whole`, `legs`, `remedy`
+  "recut-or-retake"), because the take jumps between two poses there and the alignment does not change
+  the poses a take shows; where the clip films another cycle without the jump, a cut of the same clip
+  from there removes it, and where it does not, a new take does. A jump at the seam gives `seam-jump`
+  (details `seam_jump`, same keys, `remedy` "recut-or-retake"), because another cut of the clip may close
+  on a pose it holds, or a new take may not need the cut to close there (limits `screen_jump`,
+  `screen_alone`, `screen_rows`). Warning lines name what is likely to fix it (for example: "<loop>: cut
+  it again or film this direction again (filmed-jump): the take jumps between two of its frames, from
+  frame 30 to 31 of cycle.source/ the picture changes 22 of 255 over the figure's box and 36 on its legs,
+  2.10 and 2.50 times the cut's typical step and 1.50 and 1.80 times any other step (the loop's frames 13
+  to 14); the alignment does not change the poses a take shows. Where the clip films another cycle
+  without the jump, a cut there fixes it; where it does not, a new take does", or for a seam jump:
+  "<loop>: cut it again or film this direction again (seam-jump): the cut's seam jumps, from frame ... ;
+  another cut of the clip may close on a pose it holds, a new take may not need the cut to close there").
+- **Report fields:** `cycle_align.beat` in `strip.json` and report row `beat` record `jolt`, `gap`,
+  `over`, `jolts`, `limit` (0.25), `band` (0.1), and `path` (`read`, `on-time`, or `unread` with
+  `why`). Each `smear` row (and a frame made again, under `retimed`) records `ghost_window` and
+  `ghost_window_at` ([from, to] fractions of the body); both are `null` where the ghost screen does not
+  read the loop. A retimed frame's row in `smear` has `method: "retimed"` (beside `rife` kept and
+  `nearest` given way), keeps its first frame's measures and `faults`, and gains `retimed`: `t`,
+  `from_t`, `off`, measures, `faults: []`, `look`. Every frame given way in a loop whose beat broke gains
+  `retime`: `between`, `tried` (each fraction recording `ghost_window`, and `window_over` where it had no
+  fault but read over the bar), `off_nearest`. Retimed frames count in `made_at` and `made_by_rife`, not
+  `nearest_at` or `replaced`; the report gains a set-wide `retimed` count, and `beat.retimed` lists them
+  per loop. Widened runs record in `beat.widened` (`run`, `width`, and `moved` with `at`, `off`, new
+  source or pair and fraction); moved frames carry `smear` `method: "moved"` with `moved` and count in
+  `made_at`. Runs kept on the nearer source frame record in `beat.named`. `cycle_align.same_foot` in
+  `strip.json` and the report row records `read`, `order`, `steps` (`half`, `frames`, `peak`, `lift`),
+  `twice`, and `clip`. `clip_feet` in `strip.json` and the `video-loop` report records `length`, `cuts`,
+  `same_foot`, `alternate`, `unread`, `seam_in_step`, and `same_foot_at`. Each loop row and `strip.json`
+  `cycle_align` gain `screen`: `whole` and `legs` (every step), `typical` (per region), `jumps` (each: `step`
+  [i, i + 1] as frames of cycle.source/, `seam` true for the last step, `whole` and `legs` each [change, times
+  the typical step, times the next largest step], `at` the gaps [k, k + 1] of the aligned (turned) loop that show
+  it), and `limits` (`jump`, `alone`, `rows`). Under `--same-foot refuse`, a
+  refused report is written with `applied: false`, `refused: "same-foot"`, and `same_foot`; the report's
+  `same_foot` key names the mode. A loop's `retake` record (keeping its shape: `reason` the first,
+  `reasons` all, details under each reason's snake_case key, `limits`) gains reasons `filmed-jump`
+  (details `filmed_jump`: `steps`, `at`, `whole`, `legs`, `remedy`), `seam-jump` (details `seam_jump`: `steps`,
+  `at`, `whole`, `legs`, `remedy`; limits `screen_jump`, `screen_alone`, `screen_rows`), `broken-beat` under
+  `--between auto` (details `broken_beat`: `jolt`, `gap`, `over`, `named`, `remedy`; limit `beat_jolt`)
+  and `same-foot` (details `same_foot`: `order`, `twice`, `clip` counting `length`, `cuts`, `same_foot`,
+  `alternate`, `unread`, `seam_in_step`, or null, `remedy`; limits `lift_min`, `lift_cells`, `down_max`),
+  in order: held-drawings, filmed-ghost, filmed-jump, seam-jump, broken-beat, same-foot; `remedy` is "retake",
+  "recut", or "recut-or-retake", and the report's `retake` list carries these loops like the others.
+- **Python callers:** new module `sprite_gen/video/cadence.py` with `leg_path`, `Beat`, `beat_record`,
+  `turned`, `same_foot`, `clip_feet`, `view_reads_feet`, `screen_steps`, `screen_record` and constants
+  `LEG_PATH_BAND` (0.10), `READ_HEIGHT` (410), `BLOCK` (8), `SEARCH` (12), `MATCH_BAD` (40.0),
+  `BEAT_JOLT` (0.25), `STEP_VIEWS`, `FOOT_ROWS` (0.03), `LIFT_MIN` (0.010), `LIFT_CELLS` (2),
+  `DOWN_MAX` (0.006), `SCREEN_ROWS` (0.30), `SCREEN_JUMP` (2.0), and `SCREEN_ALONE` (1.3); in
+  `sprite_gen/video/rife.py` `ghost_window` and `GHOST_BAND` (0.10); in
+  `sprite_gen/video/interpolation_quality.py` `GHOST_WINDOW_WARN` (0.014); in `sprite_gen/video/align.py`
+  `measure_made(frame, a, b, t, reads=...)` (returning every measure a made frame is judged by),
+  `retake(..., beat=None, feet=None, screen=None)`, `RETAKE_JUMP_REASON` ("filmed-jump"),
+  `RETAKE_SEAM_REASON` ("seam-jump"), `RETAKE_BEAT_REASON`, `RETAKE_FEET_REASON`, `REMEDIES`,
+  `RETIME_WINDOW_MAX` (0.006), `RETIME_T`, `WIDEN` (2, 3), `SAME_FOOT` ("warn", "refuse"),
+  `align_set(..., same_foot="warn")`, and `resample` facts gaining `beat`.
+- **Output changes:** under default `--between auto`, alignment outputs where frames given way broke the
+  beat change when retimed or widened to keep the beat under `BEAT_JOLT` (0.25 beat), or where a made
+  frame has a limb seen through (ghost window over 1.4 %) and gives way or is made again; loops whose
+  frames given way keep the beat, loops with no frame given way or faulty made frame, and all outputs
+  under `--between nearest` and `rife` keep their exact bytes across strip PNG, GIF, WebP, and cycle
+  frames (gaining the `beat` record, `ghost_window`, `retake` reasons, and where `--view` is back or
+  back_diagonal `same_foot` in `strip.json` and reports; under `--between rife` the alignment keeps the
+  made frame and names it a ghost); every aligned loop's `strip.json` and report gain `screen`, and loops
+  whose cut jumps gain the reasons, frames unchanged. For `video-loop` (and the loops `video-set` cuts),
+  `strip.json` and report files gain `clip_feet` on every walk or run cut, while strip PNG, GIF, WebP,
+  and cycle frames keep their exact bytes. All outputs from `video-loop-compare` and `video-loop-repair`
+  are unchanged, bytes included.
+- **Tests:** synthetic test suite in `tests/video/test_cycle_align_beat.py` uses figures with an
+  outlined body over two outlined feet 16 px wide (two blocks) on the ground, sliding together by 8 px
+  (a block) at each drawing forward half the cycle and back, with the interpolator drawing them at the
+  fraction and smearing the body where told the pair breaks, and feet standing side by side lifting in
+  turn. Tests cover: a cut of 54 frames on threes aligned to 24 where every fourth frame falls half way
+  between drawings with RIFE smearing at fractions 0.45 to 0.55, the nearer source frame leaving a jolt
+  of 2/3 of a beat (which 3.3.0 failed) and the fix making each again at 0.4 (0.13 of a beat early,
+  largest jolt 0.13, nothing named); a fraction made again with no fault but a block the background shows
+  through (its window between 0.6 % and 1.4 %) is passed over for the next clean fraction (0.6 instead of
+  0.4), its try recording `window_over`; a cut of 20 stretched to 30 with two neighbouring frames given
+  way, where making each again nearest its own fraction jolts the gap between them 0.325 beat but the
+  run's choice (0.55 and 0.2) keeps every gap under 0.25 beat (largest 0.2), and where 0.55 is not clean
+  both stay on the nearer source frame (named, largest jolt 1.0); a frame whose pair breaks at every
+  fraction within the limit, half a beat late on the nearer frame, where two frames each side are moved
+  a third and a sixth of a beat late and made there (every gap jolting a sixth of a beat); a cut of 40
+  squeezed to 24 with one frame given way a fifth of a beat off on the nearer frame delivered as before
+  without remaking; every frame at its own time giving jolt 0 without reading legs; `--between nearest`
+  recording the jolt it leaves; same foot detection on back loops reading "RRL" (twice) and alternating
+  "RL" round the ring, dipping under `LIFT_MIN` without reaching `DOWN_MAX` reading one step and reaching
+  `DOWN_MAX` reading two steps, front, front diagonal, side, and no view not read, one half stepping not
+  read, the clip that steps the same foot twice every cycle reading 29 of its 49 cuts so and 20 with their
+  seam inside a step, the alternating clip reading 33 cuts alternating and 16 with their seam inside a
+  step, a cut shorter than the cycle whose seam joins two right lifts reads, as a loop, right then left
+  (alternating), and a clip holding just that cut counts it apart (`seam_in_step` 1, neither alternating
+  nor the same foot), and a cut 1.5 cycles long joining a step to the same foot's next; a loop whose
+  beat still breaks and a loop that steps the same foot twice carrying reasons `broken-beat` and
+  `same-foot` with remedies (`--between nearest` and a beat with no gap over being no reason);
+  integration through `video-loop` and `video-cycle-align` recording `clip_feet`, `--same-foot refuse`
+  stopping the set with strip untouched and report refused, and naming the same-foot loop "film this
+  direction again (same-foot)", with `remedy` "retake" and the clip's counts. New synthetic test suite
+  in `tests/video/test_inbetween_seen_through.py` uses a wide body over two legs, the near leg's outer
+  8 columns cut back over 60 rows in the first source frame (a gap open to the space between the legs)
+  and whole in the second; the frame made between them has that strip at alpha 0.35 in the leg's colour:
+  its whole-body ghost is under 0.3 % and its hole 0, so with no window reading (3.3.0) it has no fault;
+  its window reads over 1.4 %, in the legs, and it is judged `ghost`; under `--between rife` the
+  alignment keeps it and names it a ghost; a band at alpha just outside 0.1 to 0.9 is not read.
+  In tests/video/test_inbetween_doubled.py the frame "drawn between, smeared along the step" (the mean
+  of drawings from t 0.35 to 0.65) is no longer among the clean frames: its feet are part-covered over
+  4.5 % of their window, so it is now judged a ghost (smeared half as far it is not); and in
+  tests/video/test_held_drawings.py and tests/video/test_ghost_retake.py, loops whose frames the stand-in
+  interpolator cross-fades and gives way now also carry `broken-beat` among their `retake` reasons (a
+  loop drawn every frame with frames given way, a held loop squeezed past on twos, the filmed-ghost
+  loops), held-drawings and filmed-ghost staying first where they apply.
+  New tests in `tests/video/test_screen_jump.py` exercise screen jumps synthetically with an outlined
+  body over an outlined bar 80 px wide in the leg rows, sliding by the drawing: a cut on threes whose bar
+  slides 4 px a drawing except one drawing change of 20 px names that one step a jump (not the seam);
+  cuts whose drawing changes are all 4 px name none on ones, twos, and threes; a cut with two 20 px
+  changes names none; a cut that slides out all the way and comes back in one step at the seam names a
+  seam jump; retake records and warning lines are covered for both reasons; and through `video-loop` and
+  `video-cycle-align` at the cut's own length, the jump is named with the aligned loop's frames that show
+  it, recorded in `strip.json`, while a cut whose changes are alike names nothing. Also
+  `tests/video/test_loop_prop_seam_held.py` now expects `screen` among `cycle_align`'s keys.
+- **Tests**: `tests/video/test_loop_part_pop.py` (the four bounds flip the pop; flung and stays; a pop over two steps reads as their mean; an ease through a fast bell does not pop; a fist jumping 2.5, 3.5 and 5 % passes the flow and surge readings and is named; a walk whose tail, foot and eye move across the wrap, and a run, have no pop; an ordinary walk is cut to the bytes it was; a cut given whose fist pops is named, `retake` `recut-or-retake`, `--unfixed refuse` refuses, and under `warn` it is the bytes it was; a clip whose fist drifts through every cut keeps the search's cut to the bytes it was, `retake` `retake`; a clip no part pops in is cut to the bytes it was).
+
 ## v3.3.0 - PyTorch RIFE backend for CUDA and CPU, executor for a GPU on another machine, and Linux CPU and cloud T4 release lanes
 
 **Upgrading from 3.2.0: Defaults stay unchanged, cache keys update once, reports show the backend, install checks model hashes, and schemas are unchanged.** With `SPRITE_GEN_RIFE_BACKEND` unset (the default), RIFE is the `rife-ncnn-vulkan` binary as before. Its frames are the same bytes as 3.2.0. Measured: the binary's frames and sixteen-pass readings through the changed engine equal the old engine's, byte for byte. A `--between-cache` directory kept by 3.2.0 is made again once. The key now names the backend (`backend: "ncnn"`). The engine's `rife.py` changed, and its sha256 is part of the key anyway. Reports take `interpolator.kind` from what made the frames: `rife-ncnn-vulkan` as before for the binary, or `rife-torch` for the new backend. The overlapped wrap's and the seam bridge's records count `binary_calls` for the binary as before, or `runs` for the torch backend. `SPRITE_GEN_RIFE_EXECUTOR` (new) is unset by default, and RIFE runs in this process. `sprite-gen rife install` now checks the model's two files (`rife-v4.6/flownet.param`, `flownet.bin`) against pinned SHA-256 after unpacking, for either backend. A model that differs installs nothing. The line a missing RIFE is reported with (`install` in records, warnings) is `sprite-gen rife install` for the binary. Where the torch backend is chosen, that line is: `pip install "sprite-gen[torch]" && sprite-gen rife install --backend torch`. No command-line flags of `video-loop` / `video-cycle-align` / `video-set` change. No restoration schemas change: `source-restoration-v5`, repair report `schema_version` 4, comparison `schema_version` 6.

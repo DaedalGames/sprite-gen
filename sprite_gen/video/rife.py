@@ -137,6 +137,9 @@ OUTLINED = 0.75
 # antialiased edge or a keyed strand of hair is a pixel or two wide and erodes away; the band a video
 # model leaves between two drawings, or a flow carries from it, does not.
 GHOST_THICK = 5
+# `ghost_window`: the same band read in windows this share of the body high, each against the solid pixels in it, so a
+# band on one limb counts against that limb's part of the body and not the whole figure's (docs/loop-repair.md section 4).
+GHOST_BAND = 0.10
 # `hole`: a pixel under solid (alpha under 0.5) that the outside of the picture cannot reach without crossing the solid
 # body is a hole; a made frame's is its neighbours' where either of them is under solid within HOLE_REACH pixels of where
 # it lay at that neighbour's time — in place, or carried with the whole figure (a gap between an arm and the body or
@@ -680,6 +683,31 @@ def ghost(frame: Image.Image) -> float:
     lo, hi = PARTIAL_ALPHA
     thick = _mask((alpha > lo) & (alpha < hi), GHOST_THICK, ImageFilter.MinFilter)
     return round(float(thick.sum()) / max(1, int((alpha >= 0.5).sum())), 5)
+
+
+def ghost_window(frame: Image.Image) -> tuple[float, tuple[float, float]]:
+    """The ghost band (`ghost`: part-covered pixels in regions at least GHOST_THICK pixels thick) read in windows
+    GHOST_BAND of the body high, sliding a quarter window at a time down the body: the largest share of a window's solid
+    pixels, and where that window lies, as fractions of the body from its top. A band through one limb — the gap one
+    neighbour has beside a limb blended with the limb the other has there, so the background shows through it — is a
+    small share of a whole figure and a large one of the rows it lies in (docs/loop-repair.md section 4)."""
+    alpha = np.asarray(frame.convert("RGBA").getchannel("A"), dtype=np.float32) / 255.0
+    lo, hi = PARTIAL_ALPHA
+    thick = _mask((alpha > lo) & (alpha < hi), GHOST_THICK, ImageFilter.MinFilter)
+    solid = alpha >= 0.5
+    rows = np.nonzero(solid.any(axis=1))[0]
+    if not rows.size:
+        return 0.0, (0.0, 0.0)
+    top, bottom = int(rows[0]), int(rows[-1])
+    height = bottom - top + 1
+    win = max(8, round(height * GHOST_BAND))
+    thick_rows, solid_rows = thick.sum(axis=1), solid.sum(axis=1)
+    best, at = 0.0, top
+    for y in range(top, bottom - win + 2, max(1, win // 4)):
+        s = int(solid_rows[y:y + win].sum())
+        if s and thick_rows[y:y + win].sum() / s > best:
+            best, at = float(thick_rows[y:y + win].sum()) / s, y
+    return round(best, 5), (round((at - top) / height, 3), round((at + win - top) / height, 3))
 
 
 def _enclosed(solid: np.ndarray) -> np.ndarray:
