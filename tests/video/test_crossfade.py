@@ -164,7 +164,9 @@ def test_alignment_gives_a_crossfaded_frame_way_as_a_double_outline_and_names_it
     """Resampled 8 to 12 through a RIFE whose colour run blends and whose coverage run is the union:
     every frame it makes across the legs' long steps leaves both drawings' lines at half inside the
     silhouette, a double outline (`rife.doubled`, tests/video/test_inbetween_doubled.py), so auto gives
-    it way, each named in a warning line, and names it to look at all the same. Before the double
+    it way — to the nearer source frame, or to its pair made again at a fraction with no fault where
+    the nearer frame breaks the beat (`retimed`) — each named in a warning line, and names it to look
+    at all the same. Before the double
     outline was read they were kept: the cross-fade reading names and never judges, as a clean drawing
     between far-apart drawings reads over it too, and it still does. Under rife they are kept, each
     named in a warning line to look at."""
@@ -172,7 +174,8 @@ def test_alignment_gives_a_crossfaded_frame_way_as_a_double_outline_and_names_it
     report = align.align_set([tmp_path / "E"], length=12, interpolate=lambda a, b, t: _made(a, b, t, _union), multi_cycle="warn")
     looked = [m for m in report["loops"][0]["smear"] if m["look"]]
     assert looked and all(m["look"] == ["crossfade"] and m["crossfade"] > CROSSFADE_LOOK for m in looked)
-    assert all(m["method"] == "nearest" and "doubled" in m["faults"] for m in looked)
+    assert all(m["method"] in ("nearest", "retimed") and "doubled" in m["faults"] for m in looked)
+    assert all(m["retimed"]["faults"] == [] for m in looked if m["method"] == "retimed")
     assert all(any(f"frame {m['at']}: RIFE's frame" in w and "a double outline" in w for w in report["warnings"]) for m in looked)
     _cut(_keyed(tmp_path, "R", 8), tmp_path / "R", 8)
     report = align.align_set([tmp_path / "R"], length=12, interpolate=lambda a, b, t: _made(a, b, t, _union), multi_cycle="warn",

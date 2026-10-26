@@ -100,12 +100,13 @@ from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.video import sway as sway_mod
+from sprite_gen.video import cadence as cadence_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import period as period_mod
 from sprite_gen.video import rife as rife_mod
-from sprite_gen.video.interpolation_quality import CROSSFADE_LOOK, SMEAR_WARN, OUTLINE_WARN, clean_beside, faults, ghost_screen, looks
+from sprite_gen.video.interpolation_quality import CROSSFADE_LOOK, GHOST_WARN, SMEAR_WARN, OUTLINE_WARN, clean_beside, faults, ghost_screen, looks
 from sprite_gen.util.console import utf8_streams
 
 SNAP = 0.03  # a sample time within this of a source frame takes that frame
@@ -131,6 +132,23 @@ LOW_MARGIN = "low-margin"  # how `foot_why` starts where the two strikes differ 
 CUE_RHYTHM = 0.25
 BETWEEN = ("auto", "rife", "nearest")  # how a time between two source frames is filled (resample)
 DEFAULT_BETWEEN = "auto"
+# Where a made frame gives way and the nearer source frame breaks the loop's beat (`_keep_the_beat`), the same pair is
+# made again at these fractions, nearest its own first: a frame RIFE cannot make half way between two drawings is
+# often clean nearer one of them (docs/loop-repair.md section 4).
+RETIME_T = tuple(round(0.15 + 0.05 * j, 2) for j in range(15))
+# A frame made only to keep the beat (made again at another fraction, or moved for a spread) is optional: the nearer
+# source frame, and a line naming the broken beat, is always there instead, and a frame seen through is worse than a beat
+# that jolts. So it is taken only where its ghost band reads under this in every window of its body (`rife.ghost_window`),
+# a bar for frames seen as clean, well under the fault's (interpolation_quality.GHOST_WINDOW_WARN): a fraction near the
+# one refused for a limb seen through often carries the same patch with more of it wholly clear, which reads under the
+# fault's limit and is seen all the same (docs/loop-repair.md section 4).
+RETIME_WINDOW_MAX = 0.006
+# A run of frames given way that no choice of fractions keeps on the beat spreads its jolt over this many frames beside it
+# on each side, moved off their own time by an even share of it and made there (`_widen`), the fewest first.
+WIDEN = (2, 3)
+# A loop that steps the same foot twice (`cadence.same_foot`): warn (default) names it in the report and the warnings,
+# refuse stops the set before anything is rewritten.
+SAME_FOOT = ("warn", "refuse")
 # A set with a loop the two-cycle screen suspects and no --cycles for it: fail (default) stops the
 # set before anything is rewritten, warn aligns it as it is and names the loop in the warnings.
 MULTI_CYCLE = ("fail", "warn")
@@ -153,6 +171,20 @@ RETAKE_REASON = "held-drawings"
 RETAKE_GHOST_KEPT_MIN = 1
 RETAKE_GHOST_REASON = "filmed-ghost"
 KEPT_NO_CLEAN, KEPT_RIFE = "no-clean-frame", "between-rife"
+# A loop aligned under auto whose beat still breaks — a run of frames given way that no fraction made again and no spread
+# kept on the beat (`beat` over) — is named for whoever cuts or films it again, the reason `broken-beat`; a loop that steps
+# the same foot twice (`same_foot` twice), the reason `same-foot`. Each reason's record says what is likely to fix it
+# (`remedy`): `retake` where every cut of the clip reads the same (a new take), `recut` where some cut of the clip
+# alternates, `recut-or-retake` where the cuts were not read or the beat breaks (another cut may land its times on frames
+# RIFE can make; a new take may not need them made).
+RETAKE_BEAT_REASON, RETAKE_FEET_REASON = "broken-beat", "same-foot"
+# A cut whose own frames jump (`screen`, cadence.screen_record: one step changes the picture far more than its drawing
+# changes do): between two frames inside the cut, the reason `filmed-jump` — the take jumps from one pose to another
+# there, and neither another fraction nor another place on the beat removes it, but a cut of the same clip from a cycle
+# it films without the jump does; at the cut's seam, its last frame to its first, the reason `seam-jump` — another cut
+# of the clip may close on a pose it holds. Both `recut-or-retake`.
+RETAKE_JUMP_REASON, RETAKE_SEAM_REASON = "filmed-jump", "seam-jump"
+REMEDIES = ("retake", "recut", "recut-or-retake")
 
 
 def held_drawings(frames: list[Image.Image], *, fps: float, clip: dict[str, Any] | None = None,
@@ -181,7 +213,9 @@ def held_drawings(frames: list[Image.Image], *, fps: float, clip: dict[str, Any]
     return {"source": "cycle", **held_mod.measure([float(D[k, (k + 1) % n]) for k in range(n)], fps=fps, cyclic=True)}
 
 
-def retake(drawings: dict[str, Any], facts: dict[str, Any], ghost_at: list[dict[str, Any]], *, fps: float) -> dict[str, Any] | None:
+def retake(drawings: dict[str, Any], facts: dict[str, Any], ghost_at: list[dict[str, Any]], *, fps: float,
+           beat: dict[str, Any] | None = None, feet: dict[str, Any] | None = None,
+           screen: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The reasons to film a loop again, with their numbers, in one record, or None. `drawings` is the
     source's `held_drawings`, `facts` its `resample` facts, `ghost_at` its cells where a filmed ghost
     gave way or was kept, as the loop's row records them (each cell where it now stands).
@@ -192,6 +226,12 @@ def retake(drawings: dict[str, Any], facts: dict[str, Any], ghost_at: list[dict[
     only where it applies. `filmed-ghost`: RETAKE_GHOST_KEPT_MIN or more cells where the ghost itself
     was kept, neither frame beside its time clean (`kept` no-clean-frame) — `ghost` names them (`kept`),
     their frames of the source (`sources`), the highest reading (`ghost_max`) and the screen's `limit`.
+    `filmed-jump` and `seam-jump` (`screen`, the loop's screen record): `filmed_jump` and `seam_jump` name each jump's
+    step (frames of the source), the gaps of the loop that show it (`at`), its change and ratios per region, and the
+    `remedy`. `broken-beat` (`beat`, the loop's turned beat record, under `--between auto`): gaps still at BEAT_JOLT or more —
+    `broken_beat` names the largest jolt and its gap, every gap over, the frames that kept the nearer source frame
+    (`named`) and the `remedy`. `same-foot` (`feet`, the loop's `same_foot` with its clip's cuts): `same_foot` names the
+    steps' order, the pairs of one foot, the clip's counts and the `remedy`.
     `reason` is the first that applies, in that order, `reasons` all of them, `limits` each one's."""
     reasons: list[str] = []
     record: dict[str, Any] = {}
@@ -211,13 +251,55 @@ def retake(drawings: dict[str, Any], facts: dict[str, Any], ghost_at: list[dict[
         record["ghost"] = {"kept": [g["at"] for g in kept], "sources": sorted({g["source"] for g in kept}),
                            "ghost_max": max(g["ghost"] for g in kept), "limit": facts["ghost_screen"]["limit"]}
         limits["ghost_kept_min"] = RETAKE_GHOST_KEPT_MIN
+    for reason, key, seam, remedy in ((RETAKE_JUMP_REASON, "filmed_jump", False, "recut-or-retake"),
+                                      (RETAKE_SEAM_REASON, "seam_jump", True, "recut-or-retake")):
+        jumps = [j for j in (screen or {}).get("jumps", []) if j["seam"] is seam]
+        if jumps:
+            reasons.append(reason)
+            record[key] = {"steps": [j["step"] for j in jumps], "at": [j["at"] for j in jumps],
+                           "whole": [j["whole"] for j in jumps], "legs": [j["legs"] for j in jumps], "remedy": remedy}
+            limits |= {"screen_jump": cadence_mod.SCREEN_JUMP, "screen_alone": cadence_mod.SCREEN_ALONE, "screen_rows": cadence_mod.SCREEN_ROWS}
+    if beat and facts.get("between") == "auto" and beat.get("path") == "read" and beat.get("over"):
+        reasons.append(RETAKE_BEAT_REASON)
+        record["broken_beat"] = {"jolt": beat["jolt"], "gap": beat["gap"], "over": beat["over"],
+                                 "named": sorted(k for run in beat.get("named", []) for k in run), "remedy": "recut-or-retake"}
+        limits["beat_jolt"] = cadence_mod.BEAT_JOLT
+    if feet and feet.get("read") and feet.get("twice"):
+        clip = feet.get("clip") or {}
+        remedy = ("retake" if clip.get("cuts") and clip.get("same_foot") and not clip.get("alternate")
+                  else "recut" if clip.get("alternate") else "recut-or-retake")
+        reasons.append(RETAKE_FEET_REASON)
+        record["same_foot"] = {"order": feet["order"], "twice": feet["twice"],
+                               "clip": ({k: clip[k] for k in ("length", "cuts", "same_foot", "alternate", "unread", "seam_in_step") if k in clip}
+                                        if clip.get("cuts") else None), "remedy": remedy}
+        limits |= {"lift_min": cadence_mod.LIFT_MIN, "lift_cells": cadence_mod.LIFT_CELLS, "down_max": cadence_mod.DOWN_MAX}
     if not reasons:
         return None
     return {"reason": reasons[0], "reasons": reasons, **record, "limits": limits}
 
 
-def _retake_line(name: str, r: dict[str, Any], reason: str) -> str:
-    """A loop to film again for `reason` (one of its `reasons`), in words."""
+def _retake_line(name: str, r: dict[str, Any], reason: str, row: dict[str, Any] | None = None) -> str:
+    """A loop to film again for `reason` (one of its `reasons`), in words; `row` is its report row (the beat and the feet
+    as read)."""
+    if reason in (RETAKE_JUMP_REASON, RETAKE_SEAM_REASON):
+        j = r["filmed_jump" if reason == RETAKE_JUMP_REASON else "seam_jump"]
+        steps = "; ".join(
+            f"from frame {a} to {b} of {SOURCE_DIR}/ the picture changes {w[0]:g} of 255 over the figure's box and {g[0]:g} on its legs, "
+            f"{w[1]:.2f} and {g[1]:.2f} times the cut's typical step and {w[2]:.2f} and {g[2]:.2f} times any other step "
+            f"(the loop's frames {', '.join(f'{k} to {k1}' for k, k1 in at)})"
+            for (a, b), w, g, at in zip(j["steps"], j["whole"], j["legs"], j["at"]))
+        if reason == RETAKE_JUMP_REASON:
+            return (f"{name}: cut it again or film this direction again ({reason}): the take jumps between two of its frames — "
+                    f"{steps}; the alignment does not change the poses a take shows. Where the clip films another cycle without "
+                    "the jump, a cut there fixes it; where it does not, a new take does (docs/loop-repair.md section 4)")
+        return (f"{name}: cut it again or film this direction again ({reason}): the cut's seam jumps — {steps}; another cut of "
+                "the clip may close on a pose it holds, a new take may not need the cut to close there (docs/loop-repair.md section 4)")
+    if reason == RETAKE_BEAT_REASON:
+        return f"{name}: cut it again or film this direction again ({reason}): " + _beat_line(name, row)[len(name) + 2:]  # type: ignore[arg-type]
+    if reason == RETAKE_FEET_REASON:
+        say = {"retake": "film this direction again", "recut": "cut it again",
+               "recut-or-retake": "cut it again or film this direction again"}[r["same_foot"]["remedy"]]
+        return f"{name}: {say} ({reason}): " + _same_foot_line(name, row)[len(name) + 2:]  # type: ignore[arg-type]
     if reason == RETAKE_GHOST_REASON:
         g = r["ghost"]
         cells, sources = ", ".join(map(str, g["kept"])), ", ".join(map(str, g["sources"]))
@@ -230,6 +312,18 @@ def _retake_line(name: str, r: dict[str, Any], reason: str) -> str:
             f"that is {r['drawings_per_second']:g} drawings a second, {r['frames_per_drawing']:g} frames apart, and {r['unmade']} "
             "frame(s) between them could not be made, so the loop halts there. A new take that draws every frame "
             "fixes it; no interpolator draws legs that swap places across a gap this wide (docs/loop-repair.md section 4)")
+
+
+def measure_made(frame: Image.Image, a: Image.Image, b: Image.Image, t: float, *, reads: bool) -> dict[str, Any]:
+    """Everything a frame made between `a` and `b` at `t` is judged by (`faults`): what it added and the outline it lost
+    (`rife.smear`, `rife.outline_shift`), its ghost band over the whole body and in windows of it (`rife.ghost`,
+    `rife.ghost_window` with where that window lies, `ghost_window_at`; None where the ghost screen does not read the loop,
+    `reads`), its cross-fade (`rife.crossfade`, named, not judged), its holes (`rife.hole`) and double outline
+    (`rife.doubled`)."""
+    window, at = rife_mod.ghost_window(frame) if reads else (None, None)
+    return {**rife_mod.smear(frame, a, b), "outline_shift": rife_mod.outline_shift(frame, a, b),
+            "ghost": rife_mod.ghost(frame) if reads else None, "ghost_window": window, "ghost_window_at": list(at) if at else None,
+            "crossfade": rife_mod.crossfade(frame, a, b, t), "hole": rife_mod.hole(frame, a, b, t), "doubled": rife_mod.doubled(frame, a, b)}
 
 
 def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Interpolate | None,
@@ -255,7 +349,11 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
     or the one before it; where it is the nearer frame, the other beside the time is — and rife keeps it.
     Each such cell is listed in `ghost_at`: `at`, the ghost `source` and its reading, and the frame
     `taken` — the ghost itself where rife kept it beside a clean frame (`kept` between-rife), or where
-    neither frame beside it is clean (`kept` no-clean-frame, under any `between`)."""
+    neither frame beside it is clean (`kept` no-clean-frame, under any `between`).
+
+    The loop's beat is read on the legs (`beat`, `_keep_the_beat`: how far each frame standing off its own time jolts
+    the legs into it and out of it); under auto, where the nearer source frames taken break it, a frame given way is
+    made again at another fraction of its pair where that keeps it (`smear` method retimed)."""
     count = len(frames)
     if length < 2:
         raise ValueError(f"cycle length {length} is too short")
@@ -268,6 +366,13 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
     nearest_at: list[int] = []
     smears: list[dict[str, Any]] = []
     ghost_at: list[dict[str, Any]] = []
+    provenance: list[dict[str, Any]] = []
+    gave_way: list[dict[str, Any]] = []  # under auto, each made frame given way to a source frame, for the beat
+
+    def made(a: Image.Image, b: Image.Image, t: float) -> tuple[Image.Image, dict[str, Any], list[str]]:
+        frame = interpolate(a, b, t)  # type: ignore[misc]
+        measure = measure_made(frame, a, b, t, reads=screen["reads"])
+        return frame, measure, faults(measure)
 
     def clean(k: int, first: int, other: int | None) -> int:
         """`first` where the screen passes it, else `other`, the clean frame beside it, where there is one
@@ -295,27 +400,265 @@ def resample(frames: list[Image.Image], length: int, interpolate: rife_mod.Inter
             if interpolate is None:
                 raise ValueError(f"frame {k} of {length} falls between source frames and no interpolator is available")
             a, b = frames[i % count], frames[(i + 1) % count]
-            made = interpolate(a, b, frac)
-            measure = {**rife_mod.smear(made, a, b), "outline_shift": rife_mod.outline_shift(made, a, b),
-                       "ghost": rife_mod.ghost(made) if screen["reads"] else None,
-                       "crossfade": rife_mod.crossfade(made, a, b, frac), "hole": rife_mod.hole(made, a, b, frac),
-                       "doubled": rife_mod.doubled(made, a, b)}
-            wrong = faults(measure)
+            frame, measure, wrong = made(a, b, frac)
             keep = between == "rife" or not wrong
             taken = ({"between": [i % count, (i + 1) % count], "t": round(frac, 4)} if keep
                      else {"source": clean(k, nearer, None if beside in ghosts else beside)})
             (made_at if keep else nearest_at).append(k)
             smears.append({"at": k, "method": "rife" if keep else "nearest", **measure, "faults": wrong, "look": looks(measure)})
-        out.append(made if "between" in taken else frames[taken["source"]])
-        if cells_from is not None:
-            cells_from.append(taken)
+            if not keep:
+                gave_way.append({"at": k, "pair": (i % count, (i + 1) % count), "t": frac, "smear": smears[-1]})
+        out.append(frame if "between" in taken else frames[taken["source"]])
+        provenance.append(taken)
+    beat = _keep_the_beat(frames, out, provenance, gave_way, made, between=between, ghosts=ghosts)
+    for g in beat.pop("retimed_at"):
+        nearest_at.remove(g)
+        made_at.append(g)
+        ghost_at[:] = [entry for entry in ghost_at if entry["at"] != g]
+    for m in (m for spread in beat.get("widened", []) for m in spread.pop("frames")):
+        # a frame beside a run, moved off its own time to share the run's jolt: made there, or the source frame taken
+        k = m["at"]
+        entry = next((e for e in smears if e["at"] == k), None)
+        if "between" in m["cell"] and k not in made_at:
+            made_at.append(k)
+        elif "source" in m["cell"] and k in made_at:
+            made_at.remove(k)
+        moved = {**m["cell"], "off": m["off"], **({"measure": m["measure"]} if "measure" in m else {})}
+        if entry is not None:
+            entry["method"], entry["moved"] = "moved", moved
+        elif "measure" in m:
+            smears.append({"at": k, "method": "moved", **m["measure"], "faults": [], "look": looks(m["measure"]), "moved": moved})
+    smears.sort(key=lambda e: e["at"])
+    made_at.sort()
+    if cells_from is not None:
+        cells_from.extend(provenance)
     facts: dict[str, Any] = {"from": count, "to": length, "between": between, "taken": length - len(made_at),
-                             "made_by_rife": len(made_at), "made_at": made_at, "ghost_screen": screen, "ghost_at": ghost_at}
+                             "made_by_rife": len(made_at), "made_at": made_at, "ghost_screen": screen, "ghost_at": ghost_at,
+                             "beat": beat}
     if between != "rife":
         facts["nearest_at"] = nearest_at
     if between != "nearest":
         facts["smear"] = smears
     return out, facts
+
+
+def _at_its_time(cell: dict[str, Any], k: int, count: int, length: int) -> bool:
+    """Whether frame k of a loop of `length` resampled from `count` frames stands at its own time, k·count/length, as
+    `cells_from` records it (a fraction to four decimals)."""
+    time = k * count / length
+    return (abs(cell["between"][0] + cell["t"] - time) < 1e-3) if "between" in cell else abs(cell["source"] - time) < 1e-9
+
+
+def _showing(step: int, cells: list[dict[str, Any]], count: int) -> list[int]:
+    """The gaps k to k + 1 of a loop (`cells_from` of a cycle of `count` frames, before it is turned) that show the cut's
+    step from frame `step` to the next: those whose time runs over some of it, the forward way round."""
+    times = [c["source"] if "source" in c else c["between"][0] + c["t"] for c in cells]
+    L = len(times)
+    shown = []
+    for k in range(L):
+        span = (times[(k + 1) % L] - times[k]) % count
+        into = (step - times[k]) % count
+        if span > 0 and (into < span or into + 1 > count):
+            shown.append(k)
+    return shown
+
+
+def _runs(cells: list[int], length: int) -> list[list[int]]:
+    """`cells` (frames of a loop of `length`, in order) as runs of neighbours, a run across the last frame and the first
+    one run; the whole ring one run that starts at its first frame."""
+    runs: list[list[int]] = []
+    for k in cells:
+        if runs and k == runs[-1][-1] + 1:
+            runs[-1].append(k)
+        else:
+            runs.append([k])
+    if len(runs) > 1 and runs[0][0] == 0 and runs[-1][-1] == length - 1:
+        runs[0] = runs.pop() + runs[0]
+    return runs
+
+
+def _assign(run: list[int], options: dict[int, list[dict[str, Any]]], places: list[float], beat: cadence_mod.Beat
+            ) -> list[dict[str, Any]] | None:
+    """One option for each frame of a run, of the least cost, that keeps every gap from the frame before the run to the
+    frame after it under BEAT_JOLT, the frames beside the run where they stand (`places`); None where no choice does.
+    A run that is the whole ring closes on itself. Each option's `place` is where it stands, its `cost` a pair added up
+    over the run and compared in order."""
+    L = beat.length
+    ring = len(run) == L
+
+    def ok(k: int, p: float, q: float) -> bool:
+        return abs(beat.jolt(k, p, q)) < cadence_mod.BEAT_JOLT
+
+    def add(c: tuple[float, float], d: tuple[float, float]) -> tuple[float, float]:
+        return (c[0] + d[0], c[1] + d[1])
+
+    def chain(first: list[int]) -> list[tuple[tuple[float, float], list[int]]]:
+        """The cheapest choice ending on each option of the run's last frame, given the first frame's allowed options."""
+        k0 = run[0]
+        best = {j: (options[k0][j]["cost"], [j]) for j in first
+                if ring or ok((k0 - 1) % L, places[(k0 - 1) % L], options[k0][j]["place"])}
+        for a, b in zip(run, run[1:]):
+            nxt: dict[int, tuple[tuple[float, float], list[int]]] = {}
+            for j, o in enumerate(options[b]):
+                cands = [(add(cost, o["cost"]), path + [j]) for i, (cost, path) in best.items() if ok(a, options[a][i]["place"], o["place"])]
+                if cands:
+                    nxt[j] = min(cands, key=lambda c: c[0])
+            best = nxt
+        k1 = run[-1]
+        return [(cost, path) for j, (cost, path) in best.items()
+                if ok(k1, options[k1][j]["place"], options[run[0]][path[0]]["place"] if ring else places[(k1 + 1) % L])]
+
+    found = ([c for j in range(len(options[run[0]])) for c in chain([j])] if ring
+             else chain(list(range(len(options[run[0]])))))
+    if not found:
+        return None
+    _, path = min(found, key=lambda c: c[0])
+    return [options[k][j] for k, j in zip(run, path)]
+
+
+def _widen(run: list[int], width: int, options: dict[int, list[dict[str, Any]]], places: list[float], beat: cadence_mod.Beat,
+           frames: list[Image.Image], fixed: set[int], ghosts: dict[int, float], made: Any) -> dict[str, Any] | None:
+    """A run of frames given way that no choice keeps on the beat, with its jolt spread over `width` frames on each side:
+    the run's choice (of its `options`: the nearer source frame, however far off its time, or a fraction made again)
+    whose largest jolt — inside the run, and the jolt from the frame `width` + 1 before it (and after it) shared evenly
+    over the `width` frames between — is the least; each frame beside it moved by its share off its own time (where the
+    leg path puts that place, the nearest such time) and made there, or taken where that time is on a source frame. None where the frames beside it are not all at their own
+    time and free (`fixed` names those that are not), the least jolt is BEAT_JOLT or more, a frame beside it would be a
+    filmed ghost or is made with a fault, or the loop it leaves jolts BEAT_JOLT or more between the two frames held."""
+    L, n = beat.length, len(frames)
+    if len(run) + 2 * width + 2 > L:
+        return None
+    left = [(run[0] - d) % L for d in range(1, width + 1)]
+    right = [(run[-1] + d) % L for d in range(1, width + 1)]
+    if any(k in fixed for k in left + right):
+        return None
+    hold_l, hold_r = (run[0] - width - 1) % L, (run[-1] + width + 1) % L
+    off_l, off_r = beat.off(hold_l, places[hold_l]), beat.off(hold_r, places[hold_r])
+    share = width + 1
+    # the least largest jolt over the run, chained frame by frame (minimax)
+    first = run[0]
+    best = {j: (abs(beat.off(first, o["place"]) - off_l) / share, [j]) for j, o in enumerate(options[first])}
+    for a, b in zip(run, run[1:]):
+        nxt = {}
+        for j, o in enumerate(options[b]):
+            nxt[j] = min(((max(v, abs(beat.jolt(a, options[a][i]["place"], o["place"]))), path + [j]) for i, (v, path) in best.items()),
+                         key=lambda c: c[0])
+        best = nxt
+    last = run[-1]
+    worst, path = min(((max(v, abs(off_r - beat.off(last, options[last][j]["place"])) / share), p) for j, (v, p) in best.items()),
+                      key=lambda c: c[0])
+    if worst >= cadence_mod.BEAT_JOLT:
+        return None
+    chosen = [options[k][j] for k, j in zip(run, path)]
+    edge_l, edge_r = beat.off(first, chosen[0]["place"]), beat.off(last, chosen[-1]["place"])
+    # each span of the leg path between two source frames, a cycle before and after too: the path climbs, a held drawing flat
+    unwrapped = [(i + m * n, beat.M[i] + m * beat.P, beat.M[i + 1] + m * beat.P) for m in (-1, 0, 1) for i in range(n)]
+    moved = []
+    for cells, edge, hold in ((left, edge_l, off_l), (right, edge_r, off_r)):
+        for d, k in enumerate(cells, start=1):
+            off = hold + (edge - hold) * (share - d) / share
+            target = beat.own(k) + off * beat.beat
+            tau = k * n / L
+            # the time nearest k's own whose place on the leg path is the target
+            hits = [(i, lo, hi) for i, lo, hi in unwrapped if lo <= target <= hi]
+            if not hits:
+                return None
+            i, lo, hi = min(hits, key=lambda h: abs(h[0] + 0.5 - tau))
+            frac = float((target - lo) / (hi - lo)) if hi > lo else 0.0
+            a, b = i % n, (i + 1) % n
+            if frac < SNAP or frac > 1 - SNAP:
+                source = a if frac < SNAP else b
+                if source in ghosts:
+                    return None
+                moved.append({"at": k, "cell": {"source": source}, "frame": frames[source], "place": beat.at(source), "off": round(off, 3)})
+                continue
+            frame, measure, wrong = made(frames[a], frames[b], frac)
+            if wrong or (measure.get("ghost_window") or 0.0) >= RETIME_WINDOW_MAX:
+                return None
+            moved.append({"at": k, "cell": {"between": [a, b], "t": round(frac, 4)}, "frame": frame, "place": beat.at(a + frac),
+                          "off": round(off, 3), "measure": measure})
+    after = list(places)
+    for k, o in zip(run, chosen):
+        after[k] = o["place"]
+    for m in moved:
+        after[m["at"]] = m["place"]
+    span = [(hold_l + q) % L for q in range(len(run) + 2 * width + 1)]
+    if any(abs(beat.jolt(k, after[k], after[(k + 1) % L])) >= cadence_mod.BEAT_JOLT for k in span):
+        return None
+    return {"chosen": chosen, "moved": moved, "width": width}
+
+
+def _keep_the_beat(frames: list[Image.Image], out: list[Image.Image], provenance: list[dict[str, Any]],
+                   gave_way: list[dict[str, Any]], made: Any, *, between: str, ghosts: dict[int, float]) -> dict[str, Any]:
+    """The beat of the resampled loop (`cadence.beat_record`), and under `--between auto` the made frames given way kept on
+    it: where the loop with the nearer source frame taken for each breaks its beat (a jolt of BEAT_JOLT or more), each run
+    of frames given way side by side takes, frame by frame, either that source frame or the same pair made again at
+    another fraction of RETIME_T, with no fault, its ghost band under RETIME_WINDOW_MAX in every window, and standing under
+    BEAT_JOLT off its own time (a frame moved for a spread meets the same bars) — whichever choice over the
+    run keeps every gap from the frame before it to the frame after it under BEAT_JOLT, the fewest made again and those
+    nearest their own fraction. A run no choice keeps has its jolt spread over the frames beside it (`_widen`, WIDEN frames
+    a side, recorded under `widened`); one that cannot stays on the nearer source frame and is named (`named`). `out` and
+    `provenance` are rewritten where a frame is made again or moved; `retimed_at` lists the frames given way that are
+    made again (docs/loop-repair.md section 4)."""
+    L, count = len(out), len(frames)
+    if all(_at_its_time(c, k, count, L) for k, c in enumerate(provenance)):
+        return {**cadence_mod.beat_record(None, None), "retimed_at": []}
+    beat = cadence_mod.Beat(cadence_mod.leg_path(frames), L)
+    places = [beat.place(c) for c in provenance] if beat.reads else None
+    record = cadence_mod.beat_record(beat, places)
+    if not beat.reads or between != "auto" or not gave_way or not record["over"]:
+        return {**record, "retimed_at": []}
+    options: dict[int, list[dict[str, Any]]] = {}
+    by_at = {g["at"]: g for g in gave_way}
+    for k, g in by_at.items():
+        i, j = g["pair"]
+        nearer = {"how": "nearest", "place": places[k], "cost": (0, 0.0), "off": round(beat.off(k, places[k]), 3)}
+        tries = []
+        for t in sorted((t for t in RETIME_T if abs(t - g["t"]) > 1e-3), key=lambda t: (abs(t - g["t"]), t)):  # not its own again
+            place = beat.at(i + t)
+            off = beat.off(k, place)
+            if abs(off) >= cadence_mod.BEAT_JOLT:
+                continue
+            frame, measure, wrong = made(frames[i], frames[j], t)
+            seen = (measure.get("ghost_window") or 0.0) >= RETIME_WINDOW_MAX  # not clean enough to be made only for the beat
+            tries.append({"t": t, "off": round(off, 3), "faults": wrong, "ghost_window": measure.get("ghost_window"),
+                          **({"window_over": RETIME_WINDOW_MAX} if seen and not wrong else {})})
+            if not wrong and not seen:
+                options.setdefault(k, []).append({"how": "retimed", "t": t, "place": place, "cost": (1, abs(t - g["t"])),
+                                                  "off": round(off, 3), "frame": frame, "measure": measure})
+        options[k] = [nearer, *options.get(k, [])]
+        g["smear"]["retime"] = {"between": [i, j], "tried": tries, "off_nearest": nearer["off"]}
+    retimed: list[int] = []
+    named: list[list[int]] = []
+    widened: list[dict[str, Any]] = []
+    runs = _runs(sorted(by_at), L)
+    fixed = set(by_at) | {k for k, c in enumerate(provenance) if not _at_its_time(c, k, count, L)}
+    for run in runs:
+        chosen = _assign(run, options, places, beat)
+        if chosen is None:
+            spread = next((w for w in (_widen(run, width, options, places, beat, frames, fixed, ghosts, made) for width in WIDEN) if w), None)
+            if spread is None:
+                named.append(run)
+                continue
+            chosen = spread["chosen"]
+            for m in spread["moved"]:
+                out[m["at"]], provenance[m["at"]], places[m["at"]] = m["frame"], m["cell"], m["place"]
+                fixed.add(m["at"])
+            widened.append({"run": run, "width": spread["width"],
+                            "moved": [{"at": m["at"], "off": m["off"], **m["cell"]} for m in spread["moved"]],
+                            "frames": [{k: v for k, v in m.items() if k not in ("frame", "place")} for m in spread["moved"]]})
+        for k, o in zip(run, chosen):
+            if o["how"] != "retimed":
+                continue
+            i, j = by_at[k]["pair"]
+            out[k], provenance[k], places[k] = o["frame"], {"between": [i, j], "t": round(o["t"], 4)}, o["place"]
+            smear = by_at[k]["smear"]
+            smear["method"] = "retimed"
+            smear["retimed"] = {"t": o["t"], "from_t": round(by_at[k]["t"], 4), "off": o["off"], **o["measure"], "faults": [],
+                                "look": looks(o["measure"])}
+            retimed.append(k)
+    final = cadence_mod.beat_record(beat, places)
+    return {**final, "retimed": sorted(retimed), "named": named, "widened": widened, "retimed_at": retimed}
 
 
 strike_signals = legs_mod.strike_signals
@@ -753,12 +1096,21 @@ def _fault_line(name: str, m: dict[str, Any], ghost: dict[str, Any] | None = Non
             *([f"lost its outline on {100 * m['outline_loss']:.2f} % of its edge beyond either source frame beside it"
                + ("" if m["outline_shift"] is None else f", {100 * m['outline_shift']:.2f} % lighter than theirs at the same rank")
                + " — a melted or ghost limb"] if "outline" in m["faults"] else []),
-            *([f"carries {_ghost_words(m['ghost'])} — a ghost"] if "ghost" in m["faults"] else []),
+            *([f"carries {_ghost_words(m['ghost'])} — a ghost" if (m.get("ghost") or 0.0) > GHOST_WARN else
+               f"carries a part-covered band over {100 * m['ghost_window']:.2f} % of the solid pixels in a band {100 * rife_mod.GHOST_BAND:g} % "
+               f"of its body high ({100 * m['ghost_window_at'][0]:.0f} to {100 * m['ghost_window_at'][1]:.0f} % down it), at least "
+               f"{rife_mod.GHOST_THICK} px thick, though {100 * (m.get('ghost') or 0.0):.2f} % of its whole body — a limb seen through, a ghost"]
+              if "ghost" in m["faults"] else []),
             *([f"opened a transparent hole inside its outline over {100 * m['hole']:.2f} % of its body, at least "
                f"{rife_mod.HOLE_THICK} px thick, where neither source frame beside it has one — a gap through a limb"]
               if "hole" in m["faults"] else []),
             *([f"left a line one source frame beside it draws at part strength in its own place, over a run {100 * m['doubled']:.2f} % "
                "of its body high — a double outline"] if "doubled" in m["faults"] else [])]
+    if m["method"] == "retimed":
+        r = m["retimed"]
+        return (f"{name}: frame {m['at']}: RIFE's frame at {r['from_t']:g} " + "; ".join(what)
+                + f", so the same two source frames were made again at {r['t']:g}, the legs {r['off']:+.2f} of a beat off its "
+                  f"time, where the nearer source frame broke the beat (--between auto)")
     if m["method"] == "nearest":
         return (f"{name}: frame {m['at']}: RIFE's frame " + "; ".join(what)
                 + (", so the nearer source frame was taken there (--between auto)" if ghost is None else
@@ -768,6 +1120,42 @@ def _fault_line(name: str, m: dict[str, Any], ghost: dict[str, Any] | None = Non
                    "(--between auto)"))
     return (f"{name}: frame {m['at']} (made by RIFE) " + "; ".join(what)
             + "; see it in cycle/, or align with --between auto (the nearer source frame there) or --between nearest")
+
+
+def _beat_line(name: str, r: dict[str, Any]) -> str:
+    """A loop aligned under auto whose beat is broken (`beat` over), in words: where, how far, and the frames given way
+    that no choice kept on it (`named`)."""
+    b = r["beat"]
+    gaps = ", ".join(f"{a}-{c}" for a, c in b["over"])
+    named = sorted(k for run in b.get("named", []) for k in run)
+    return (f"{name}: its beat breaks — the legs jolt {b['jolt']:.2f} of a beat between frames {b['gap'][0]} and {b['gap'][1]} "
+            f"(at gaps {gaps}: {b['limit']} or more skips into a frame and halts out of it)"
+            + (f"; frame(s) {', '.join(map(str, named))} took the nearer source frame, and neither it, nor the same two source "
+               f"frames made again at a fraction standing within {b['limit']} of a beat of its time, nor its jolt spread over "
+               "the frames beside them keeps the gaps beside them under it" if named else "")
+            + " — look at it in cycle/, or film the direction again (docs/loop-repair.md section 4)")
+
+
+def _same_foot_line(name: str, r: dict[str, Any]) -> str:
+    """A loop that steps the same foot twice in a row (`same_foot` twice), in words, with what its clip's cuts say."""
+    f = r["same_foot"]
+    foot = {s["peak"]: {"L": "left", "R": "right"}[s["half"]] for s in f["steps"]}
+    pairs = "; ".join(f"its own {foot[a]} foot lifts at frames {a} and {b}" for a, b in f["twice"])
+    clip = f.get("clip")
+    if not clip or not clip.get("cuts"):
+        tail = ("; its clip's cuts were not read (" + (clip.get("why") if clip else "cut before video-loop recorded `clip_feet`")
+                + "), so whether another cut alternates is not known")
+    elif clip["same_foot"] and not clip["alternate"]:
+        joined = clip.get("seam_in_step", 0)
+        tail = (f"; every cut of its clip {clip['length']} frames long that reads steps so ({clip['same_foot']} of {clip['cuts']}"
+                + (f"; {joined} more with their seam inside a step, which hides the second lift in the seam" if joined else "")
+                + "): the take steps that foot twice every cycle, so cutting it again does not help — film this direction again")
+    else:
+        tail = (f"; {clip['alternate']} of the {clip['cuts']} cuts of its clip {clip['length']} frames long alternate, "
+                f"{clip['same_foot']} step so: a cut elsewhere in the clip may alternate")
+    return (f"{name}: steps the same foot twice in a row — {pairs}, no step of the other foot between ({f['order']} round the "
+            "loop, the picture's left foot its own left seen from behind); the alignment does not change the steps a take "
+            f"shows{tail} (docs/loop-repair.md section 4)")
 
 
 def _look_line(name: str, m: dict[str, Any]) -> str:
@@ -791,7 +1179,8 @@ def _ghost_line(name: str, g: dict[str, Any]) -> str:
 def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: rife_mod.Interpolate | None = None,
               report_path: Path | None = None, between: str = DEFAULT_BETWEEN, views: list[str | None] | None = None,
               start_foot: str = START_FOOT, multi_cycle: str = "fail", cycles: dict[str, int] | None = None,
-              state: str | None = None, feet: dict[str, str] | None = None, between_cache: Path | None = None) -> dict[str, Any]:
+              state: str | None = None, feet: dict[str, str] | None = None, between_cache: Path | None = None,
+              same_foot: str = "warn") -> dict[str, Any]:
     """Resample every loop of a set to one length (default: the median), turned to a foot strike —
     where `views` (one per loop: `front`, `back`, `side@right`, `front_diagonal@left`, …) lets it,
     the strike of the same own foot (`start_foot`) in every loop.
@@ -814,7 +1203,12 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     source frames, fraction and interpolator (its `identity()`, which an injected one must have). The
     report's `between_cache` counts the frames taken (`hits`), made (`misses`), kept but unreadable, and
     made while what they are made from changed, so not kept (`not_kept`); it is None without a
-    directory, and nothing is kept."""
+    directory, and nothing is kept.
+
+    Every loop's beat is recorded (`beat`, `cadence.beat_record`, as frames of the turned loop), and a loop seen from the
+    back or a back diagonal is read for the same foot stepping twice in a row (`same_foot`, `cadence.same_foot`, with the
+    clip's every cut as `video-loop` read them, `clip`): `same_foot` warn names such a loop in the warnings, refuse stops
+    the set before anything is rewritten (the report written with `applied` false, `refused` same-foot)."""
     if len(loop_dirs) < 1:
         raise SystemExit("video-cycle-align: at least one --loop-dir")
     if between_cache is not None and interpolate is not None and not callable(getattr(interpolate, "identity", None)):
@@ -826,6 +1220,8 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         raise SystemExit(f"video-cycle-align: --start-foot must be left or right, not {start_foot!r}")
     if multi_cycle not in MULTI_CYCLE:
         raise SystemExit(f"video-cycle-align: --multi-cycle must be one of {', '.join(MULTI_CYCLE)}, not {multi_cycle!r}")
+    if same_foot not in SAME_FOOT:
+        raise SystemExit(f"video-cycle-align: --same-foot must be one of {', '.join(SAME_FOOT)}, not {same_foot!r}")
     for v in views or []:
         if v is not None:
             name, _, facing = v.partition("@")
@@ -944,8 +1340,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         # the ghosts passed over or kept as frames of cycle.source/, each cell where it now stands
         ghost_at = sorted(({**g, "at": (g["at"] - start) % target, "source": index[g["source"]], "taken": index[g["taken"]]}
                            for g in facts["ghost_at"]), key=lambda g: g["at"])
-        again = retake(drawings, facts, ghost_at, fps=fps)
-        record = {**facts, "drawings": drawings, "retake": again, "turned_by": start, "turned_on": strike["by"], "view": view, "start_foot": strike["start_foot"],
+        record = {**facts, "drawings": drawings, "retake": None, "turned_by": start, "turned_on": strike["by"], "view": view, "start_foot": strike["start_foot"],
                   "start_foot_source": strike["start_foot_source"],
                   # the two strikes as they stand in the rebuilt cycle/: the larger first
                   "strikes": [(k - start) % target for k in strike["strikes"]],
@@ -961,9 +1356,40 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         # the screen's frames as frames of cycle.source/
         record["ghost_screen"] = {**facts["ghost_screen"], "ghosts": [{**g, "frame": index[g["frame"]]} for g in facts["ghost_screen"]["ghosts"]]}
         record["ghost_at"] = ghost_at
+        record["beat"] = {**cadence_mod.turned(facts["beat"], start),
+                          **({"retimed": sorted((k - start) % target for k in facts["beat"]["retimed"]),
+                              "named": [[(k - start) % target for k in run] for run in facts["beat"]["named"]],
+                              "widened": [{**w, "run": [(k - start) % target for k in w["run"]],
+                                           "moved": [{**m, "at": (m["at"] - start) % target} for m in w["moved"]]}
+                                          for w in facts["beat"]["widened"]]}
+                             if "retimed" in facts["beat"] else {})}
+        # the cut's own frames read for a jump (cadence.screen_record), each jump with the gaps of the turned loop that show it
+        screen = cadence_mod.screen_record(cadence_mod.screen_steps(frames))
+        record["screen"] = {**screen, "jumps": [{**j, "step": [index[s] for s in j["step"]],
+                                                 "at": [[(k - start) % target, (k + 1 - start) % target]
+                                                        for k in _showing(j["step"][0], provenance, len(frames))]}
+                                                for j in screen["jumps"]]}
         provenance = [{"source": index[p["source"]]} if "source" in p else {"between": [index[j] for j in p["between"]], "t": p["t"]}
                       for p in provenance]
-        aligned.append((out[start:] + out[:start], record, provenance[start:] + provenance[:start]))
+        out = out[start:] + out[:start]
+        if cadence_mod.view_reads_feet(view):
+            record["same_foot"] = {**cadence_mod.same_foot(out, view), "clip": loops[i][2].get("clip_feet")}
+        record["retake"] = retake(drawings, facts, ghost_at, fps=fps, beat=record["beat"], feet=record.get("same_foot"),
+                                  screen=record["screen"])
+        aligned.append((out, record, provenance[start:] + provenance[:start]))
+    twice = [(loops[i][0], loops[i][1], record) for i, (_, record, _) in enumerate(aligned)
+             if (record.get("same_foot") or {}).get("twice")]
+    if twice and same_foot == "refuse":
+        shared = len({meta_path.name for _, meta_path, *_ in loops}) < len(loops)
+        message = ("video-cycle-align: " + "; ".join(_same_foot_line(str(d) if shared else meta_path.name[: -len(".strip.json")], r)
+                                                     for d, meta_path, r in twice)
+                   + ". Stopped before anything was rewritten (--same-foot refuse)")
+        if report_path is not None:
+            loop_mod.write_loop_report(report_path.expanduser().resolve(), {
+                "kind": "sprite-gen-video-cycle-align-report", "applied": False, "refused": "same-foot", "why": message,
+                "same_foot": [{"dir": str(d), "name": meta_path.name[: -len(".strip.json")], **r["same_foot"]} for d, meta_path, r in twice],
+                "lengths": [len(f) for f in sources], "fps": round(fps, 4)})
+        raise SystemExit(message)
     rows = []
     for (d, meta_path, meta, _), (out, record, provenance), origin in zip(loops, aligned, origins):
         merged = _rebuild(d, meta_path, meta, out, fps, record, cells_from=provenance, origin=origin)
@@ -974,6 +1400,8 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     warnings = [_fault_line(r["name"], m, next((g for g in r["ghost_at"] if g["at"] == m["at"]), None))
                 for r in rows for m in r.get("smear", []) if m["faults"]]
     warnings += [_look_line(r["name"], m) for r in rows for m in r.get("smear", []) if m["method"] == "rife" and m["look"]]
+    warnings += [_look_line(r["name"], {**m, **m["retimed"]}) for r in rows for m in r.get("smear", [])
+                 if m["method"] == "retimed" and m["retimed"]["look"]]
     retakes = [{"dir": r["dir"], "name": r["name"], **r["retake"]} for r in rows if r["retake"]]
     # A loop to film again is named by its directory where two loops share a strip name (each `walk`).
     shared = len({r["name"] for r in rows}) < len(rows)
@@ -981,7 +1409,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     warnings += [f"{r['dir'] if shared else r['name']}: the ghost screen does not read it — {r['ghost_screen']['why']}; no frame of it "
                  "is named a ghost or given way for one, so look at cycle/ (docs/loop-repair.md section 4)"
                  for r in rows if not r["ghost_screen"]["reads"]]
-    warnings = cycle_warnings + [_retake_line(r["dir"] if shared else r["name"], r["retake"], reason)
+    warnings = cycle_warnings + [_retake_line(r["dir"] if shared else r["name"], r["retake"], reason, r)
                                  for r in rows if r["retake"] for reason in r["retake"]["reasons"]] + warnings
     unnamed = [_unnamed_foot(r) for r in rows if r["start_foot"] is None]
     if len(rows) > 1 and views is None and unnamed:
@@ -1003,7 +1431,9 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                                {"kind": "injected"} if any(r.get("smear") for r in rows) else None),
               "between_cache": cache.record() if cache is not None else None,
               "made_by_rife": sum(r["made_by_rife"] for r in rows),
-              "replaced": sum(1 for r in rows for m in r.get("smear", []) if m["method"] == "nearest"), "loops": rows}
+              "replaced": sum(1 for r in rows for m in r.get("smear", []) if m["method"] == "nearest"),
+              "retimed": sum(1 for r in rows for m in r.get("smear", []) if m["method"] == "retimed"),
+              "same_foot": same_foot, "loops": rows}
     if report_path is not None:
         loop_mod.write_loop_report(report_path.expanduser().resolve(), report)
     return report
@@ -1042,6 +1472,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "measured in the report (`smear`); under auto and nearest a filmed ghost frame gives way to a clean source "
                              "frame beside it (`ghost_at`); a made frame kept that cross-fades two drawings inside its outline is kept "
                              "and named to look at (`look`)")
+    parser.add_argument("--same-foot", choices=SAME_FOOT, default="warn",
+                        help="a loop seen from the back or a back diagonal that steps the same foot twice in a row (the picture's "
+                             "halves of its feet lifting, read round the loop): warn (default) names it in the report (`same_foot`, "
+                             "with its clip's every cut as video-loop read them) and the warnings; refuse stops the set before "
+                             "anything is rewritten, the report naming it")
     parser.add_argument("--between-cache", type=Path, metavar="DIR",
                         help="a directory every frame RIFE makes between two source frames is kept in, for aligning the same set "
                              "again: a later alignment given the same DIR (the feet told, a retake in place of one loop) takes a "
@@ -1083,7 +1518,8 @@ def run(**kwargs: object) -> int:
                            start_foot=str(kwargs.get("start_foot") or START_FOOT),
                            multi_cycle=str(kwargs.get("multi_cycle") or "fail"), cycles=parse_cycles(list(kwargs.get("cycles") or [])),  # type: ignore[arg-type]
                            state=kwargs.get("state"), feet=parse_feet(list(kwargs.get("foot") or [])),  # type: ignore[arg-type]
-                           between_cache=kwargs.get("between_cache"))  # type: ignore[arg-type]
+                           between_cache=kwargs.get("between_cache"),  # type: ignore[arg-type]
+                           same_foot=str(kwargs.get("same_foot") or "warn"))
     except rife_mod.RifeNotInstalled as exc:
         # Asked for by name, so no RIFE is a failure, never a quiet skip (video-set skips with a warning).
         raise SystemExit(f"video-cycle-align: {exc}; frames between source frames are made by RIFE — "

@@ -50,6 +50,7 @@ from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import motion_anchor, auto_motion, local_cycle, gait_fallback, nonloop, effect
 from sprite_gen.video import part_pop as part_pop_mod
+from sprite_gen.video import cadence as cadence_mod
 from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
@@ -2155,6 +2156,10 @@ def _cut_loop(
         cycle["coverage"] = round((n - skip - L) / L, 4)
     # The same, over the cut alone: a clip held for part of its length is held where the cut is.
     report_base["cycle_drawings"] = held_mod.measure_cycle(clip_steps, start=i, length=L, fps=fps)
+    if gait_frames is not None:
+        # Every cut of the cut's length the clip holds, read for the same foot stepping twice in a row (sprite_gen/video/
+        # cadence.py): `video-cycle-align` says from it whether cutting a loop that does so again could help.
+        report_base["clip_feet"] = cadence_mod.clip_feet(gait_frames[skip:], L, first=skip)
     # playback density, not a fixed count: a long cycle gets more frames so every state plays at
     # ~gif_fps (a fixed 12 made a 2.5 s jump hold each frame 210 ms while a 1.1 s walk held 90 ms)
     if n_out is None:
@@ -2430,6 +2435,8 @@ def _cut_loop(
     strip_meta["drawings"] = {k: report_base["drawings"][k] for k in ("hold", "drawings_per_second", "contrast", "frames")}
     strip_meta["cycle_drawings"] = {k: report_base["cycle_drawings"][k] for k in ("start", "length", "steps", "hold", "drawings_per_second", "contrast")
                                     } | ({"why": report_base["cycle_drawings"]["why"]} if "why" in report_base["cycle_drawings"] else {})
+    if "clip_feet" in report_base:
+        strip_meta["clip_feet"] = report_base["clip_feet"]
     # A cut frame that is no longer the frame as filmed for a filmed ghost, and one kept with no clean frame beside
     # it: `cycle/` is the alignment's material (`cycle.source/`), whose screen no longer sees a ghost given way, so the
     # strip says it, and an alignment carries it over (frames of the cut).

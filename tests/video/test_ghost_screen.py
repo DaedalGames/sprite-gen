@@ -143,8 +143,11 @@ def _cut(keyed: Path, out: Path, length: int) -> dict:
 
 @pytest.mark.slow
 def test_alignment_delivers_no_filmed_ghost_and_names_each_cell_it_passed_over(tmp_path):
-    """Set length 22: S (20) lands on its ghost at a whole time, E (24) makes a frame next to its
-    ghost, which carries it, and the nearer frame is that ghost. Both take the frame after it."""
+    """Set length 22: S (20) lands on its ghost at a whole time and takes the frame after it. E (24)
+    makes a frame next to its ghost, which carries it, and the nearer frame is that ghost: the frame
+    after it would stand half a beat late (docs/loop-repair.md section 4, the beat), so the pair is
+    made again at a fraction that keeps the beat and carries no ghost (this stand-in draws the nearer
+    frame whole: from half way on, frame 6). E passes over no ghost."""
     dirs = []
     for name, length, ghost in (("S", 20, 10), ("E", 24, 5)):
         _cut(_keyed(tmp_path, name, length, (ghost,)), tmp_path / name, length)
@@ -154,14 +157,16 @@ def test_alignment_delivers_no_filmed_ghost_and_names_each_cell_it_passed_over(t
     for name, ghost in (("S", 10), ("E", 5)):
         row = by[name]
         assert [g["frame"] for g in row["ghost_screen"]["ghosts"]] == [ghost]
-        assert [(g["source"], g["taken"]) for g in row["ghost_at"]] == [(ghost, ghost + 1)]
-        assert row["cells_from"][row["ghost_at"][0]["at"]] == {"source": ghost + 1}
         cells = [Image.open(p) for p in sorted((Path(row["dir"]) / "cycle").glob("frame-*.png"))]
         assert max(rife.ghost(c) for c in cells) <= GHOST_WARN
-    e = by["E"]
-    assert next(m for m in e["smear"] if m["at"] == e["ghost_at"][0]["at"])["faults"] == ["ghost"]
+    s, e = by["S"], by["E"]
+    assert [(g["source"], g["taken"]) for g in s["ghost_at"]] == [(10, 11)]
+    assert s["cells_from"][s["ghost_at"][0]["at"]] == {"source": 11}
+    (m,) = [m for m in e["smear"] if m["method"] == "retimed"]
+    assert m["faults"] == ["ghost"] and m["retimed"]["faults"] == [] and m["retime"]["between"] == [5, 6]
+    assert e["ghost_at"] == [] and e["cells_from"][m["at"]] == {"between": [5, 6], "t": m["retimed"]["t"]} and m["retimed"]["t"] >= 0.5
     named = [w for w in report["warnings"] if "is a filmed ghost" in w]
-    assert len(named) == 2 and any(w.startswith(f"{e['dir']}: frame {e['ghost_at'][0]['at']}: source frame 5 ") for w in named)
+    assert len(named) == 1 and named[0].startswith(f"{s['dir']}: frame {s['ghost_at'][0]['at']}: source frame 10 ")
 
 
 def test_jump_repair_rejects_a_proposal_that_carries_a_ghost(monkeypatch):
