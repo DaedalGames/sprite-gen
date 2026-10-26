@@ -1,6 +1,6 @@
 # Loop repair — RIFE in-betweens for jump frames, the jolt index, one cycle per set
 
-> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch, the latter in this process or on a GPU elsewhere), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the seam bridge (the wrap of a loop that is not a walk), the jolt index and its gate, cycle alignment across a direction set, the redrawn wrap of a pinned clip (`--wrap-blend`) · Index: [docs/README.md](README.md)
+> Owns: Where RIFE runs and what it costs, which model and augmentation it runs with, its two backends (the binary and PyTorch, the latter in this process or on a GPU elsewhere), how it is installed and what runs without it, jump-frame repair in `video-loop`, the flow reading (frames off a walk's way), the eased retime (a part that rushes on its way), the part pop (a hand or a foot that jumps at the wrap), the seam bridge (the wrap of a loop that is not a walk), the jolt index and its gate, cycle alignment across a direction set, the redrawn wrap of a pinned clip (`--wrap-blend`) · Index: [docs/README.md](README.md)
 
 A walk loop cut from a generated clip can look right in every still and still hitch when it
 plays: the video model redraws thin hair a little differently every frame, and now and then
@@ -397,7 +397,7 @@ below; a frame made is the whole picture at one time, so the legs take the time 
 and on every walker measured the loop keeps the flow repair). Before all of it, a cut two steps
 long whose wrap a part on its own beat leaves open has the frames beside its wrap made again between
 the clip's frames a cycle apart and its own ([the overlapped
-wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below). A loop of any other state is not read for its flow; where its wrap jumps, frames round it are made again ([the seam bridge](#the-seam-bridge-a-loop-that-is-not-a-walk-whose-wrap-jumps) below).
+wrap](#the-overlapped-wrap--a-part-on-its-own-beat-that-no-cut-of-two-steps-closes) below). A part the size of a hand or a foot that jumps at a walk's wrap is read on the part itself: the engine reads and names the pop and records the loop as a take to film again, and the cut stays as it was ([the part pop](#the-part-pop-a-hand-or-a-foot-that-jumps-at-the-wrap)). A loop of any other state is not read for its flow; where its wrap jumps, frames round it are made again ([the seam bridge](#the-seam-bridge-a-loop-that-is-not-a-walk-whose-wrap-jumps) below).
 
 | Rule | Value | Why |
 |---|---|---|
@@ -456,7 +456,7 @@ made for the source projection and for restoration, which never restores it ([th
 guard](loop-comparison.md#the-ghost-guard)). `--repair off` gives nothing way: the cut's ghosts are
 delivered as filmed, named (section 4).
 
-Under `--repair auto` (the default) or `on`, jump repair takes out a group of one or two drawings that lie 3.0 or more usual steps off the line between neighbours (`repair.FLOW_LIMIT`) and has RIFE make them again. A group whose made frames have a fault is refused and keeps its frames as filmed in `refused`. When the loop as it plays still reads a drawing of a refused group at or over the limit, that drawing is in `jump_repair.unfixed` too: `frames`, `off`, `turn`, `into`, `out`, `window` (read on the playing loop) and `refused`. Every drawing in `unfixed` prints the warning line `video-loop: warning: frame <frame> of the loop lies <off>x its window's usual step off the walk's flow after the jump repair: the group that would bring it back was refused (<faults>), so it plays as filmed — a jump played as filmed; --unfixed refuse refuses such a loop (docs/loop-repair.md section 2)`. Flag `--unfixed warn|refuse` (default `warn`) can refuse such a loop with `video-loop: loop frames left off the flow — ` followed by those words, the cut, and `; the motion does not play smoothly — regenerate the clip`. The `--unfixed` flag is caller choice and is not lifted by `--seam-max`.
+Under `--repair auto` (the default) or `on`, jump repair takes out a group of one or two drawings that lie 3.0 or more usual steps off the line between neighbours (`repair.FLOW_LIMIT`) and has RIFE make them again. A group whose made frames have a fault is refused and keeps its frames as filmed in `refused`. When the loop as it plays still reads a drawing of a refused group at or over the limit, that drawing is in `jump_repair.unfixed` too: `frames`, `off`, `turn`, `into`, `out`, `window` (read on the playing loop) and `refused`. Every drawing in `unfixed` prints the warning line `video-loop: warning: frame <frame> of the loop lies <off>x its window's usual step off the walk's flow after the jump repair: the group that would bring it back was refused (<faults>), so it plays as filmed — a jump played as filmed; --unfixed refuse refuses such a loop (docs/loop-repair.md section 2)`. Flag `--unfixed warn|refuse` (default `warn`) can refuse such a loop with `video-loop: loop frames left off the flow — ` followed by those words, the cut, and `; the motion does not play smoothly — regenerate the clip`. The `--unfixed` flag is caller choice and is not lifted by `--seam-max`. The flag also covers a loop recorded `retake` reason `part-pop`: under `refuse`, the loop fails, whatever `--repair` says ([the part pop](#the-part-pop-a-hand-or-a-foot-that-jumps-at-the-wrap)).
 
 The flow is read again after each group, on the union box of the loop as filmed; a refused group is
 never tried again in that run, and nothing is made from or beside it. The circular last/first
@@ -888,6 +888,104 @@ alone: nothing is read or made for it, `wrap_overlap` says so (`skipped`: "turne
 off)", no `tries`, `calls` 0) with the `warning:` line every skipped wrap has, and the gate refuses the cut
 as filmed, the loop failing on its seam as where every run is refused. The jump repair, the eased retime and
 the gate are as with it on; `--repair off` turns it off with the rest.
+
+### The part pop: a hand or a foot that jumps at the wrap
+
+The flow reading reads a walk loop in nine windows, each half the body's box across and down (`FLOW_GRID` 4), on the body's coverage and shading blurred by 3 % of the body height (`FLOW_BLUR`). The surge reading ([the eased retime](#the-eased-retime--a-part-that-rushes-on-its-way)) reads the same windows.
+
+A part the size of a hand that jumps a few per cent of the body height at the wrap (the step from the loop's last frame to its first) and stays there passes both, for three reasons: first, the window is far larger than the hand, and its usual step is set by the tail and the legs that pass through it; second, the flow's `off` is half the change of a step, so a part that jumps once and goes on reads at half; third, the distance between two blurred states stops growing once the part is further than the blur from where it was, so even a window the size of a hand reads such a jump under the surge reading's speed limit of 3.0 usual steps.
+
+Windows small enough to see the hand (a grid of 8 or 12, or windows the size of a hand) do read the jump, but they read many of the loop's ordinary steps over the same limits too.
+
+Synthetic evidence in `tests/video/test_loop_part_pop.py` shows the failure: a walker seen from the side, 36 frames a cycle, with a forearm held out in front ending in a fist. Its fist slips 2.5, 3.5 or 5 % of its height over the loop and jumps back at the wrap. The flow reading names no frame (1.46 off the flow at most against the limit 3.0) and the surge reading names no rush. The part reading below names the fist.
+
+The part reading (`part_pop.read`) runs on every walk and run (the states the jump repair reads), on the cut as filmed, after the anchor and the wrap blend and before any repair, whatever `--repair` says. It is read on the loop's drawings (`repair.flow_drawings`), as the flow reading: a loop on twos is read a drawing at a time.
+
+Parts are squares 8 % of the body height on a side (`PART_PATCH`), seeded every 8 % over the body on the loop's first drawing, where the square is covered (coverage at least 0.15, `PART_SEEN`) and shaded (luma standard deviation at least 0.02, `PART_TEXTURE`). They are read at a body height of 400 px (`PART_READ`). Each square is found drawing to drawing by normalised cross-correlation of its luma (over a mid grey by coverage) within 8 % of the body height of where it was (`PART_SEARCH`), to a fraction of a pixel on the parabola through the correlations either side.
+
+A part counts only where every one of its steps reads back: the square where it landed, looked for in the drawing before, lands within 1.5 px (at 400 px) of where the part was (`PART_FOLLOW`), and no search reaches its edge. A part is dropped at its first step that does not read back, and nothing is read on it. Fur whose pattern repeats, a part whose drawing changes, and a part that moves further than the search in one drawing (the legs of a run) are not followed. An eye that blinks can still be followed both ways; it is then read like any other part and the bounds below leave it, so the read-back check does not by itself drop every blink.
+
+A part's usual step is its median step, no less than the median of the followed parts' medians (the flow reading's `_flow_scale` rule, so a part that hardly moves is not read on its noise) nor 0.5 px (`PART_NOISE`).
+
+A part does not move evenly: a tail swings slow, fast, slow again. So a run of one or two steps (`SURGE_SPAN`) is read against the curve the part's own steps either side of it draw, not against their mean: the three steps before the run and the three after (`SURGE_AROUND`), each a step vector, fitted x and y apart by a second-degree polynomial in time (least squares: the local fit of a Savitzky-Golay filter), and the run's steps predicted on that curve. How far the run's steps leave their prediction, as a mean length, is its `jerk`. A part that eases steps where its curve goes, however fast; a frame that jumps does not.
+
+A part pops where the run is, all at once:
+
+| Bound | Value | Read on | Why |
+|---|---|---|---|
+| `PART_POP_FLOOR` | 2 % of the body height | the run's largest step | a tremor stays under it |
+| `SURGE_LIMIT` (the surge reading's own) | 3.0 | the jerk over the part's usual step | as the surge reading bounds a window's speed |
+| `PART_POP_CURVE` | 5.0 | the jerk over the larger of: the step the curve predicts there, the curve's own scatter over the six steps it was fitted to (root mean square), 0.5 px | a part that eases fast steps where its curve goes |
+| `PART_POP_LEAD` | 2.0 | the jerk over the part's largest jerk on any other run as long whose curve was fitted without this run's steps | a part that moves far inside the loop as well (a tail's flick, a foot snapping up) leaves its curve there too |
+
+Its way is not read. Its kind is recorded: `flung` where the step after the run takes back at least half of its move, or the run takes back that share of the step before (`PART_FLUNG` 0.5); otherwise `stays`.
+
+At the wrap the runs read are those that touch the step from the last drawing to the first. A loop under 8 drawings is not read (`skipped`): a run and the three steps either side need eight. A loop too short to hold another run whose curve leaves this one out has nothing to lead, and does not pop.
+
+The choice of the curve was measured 2026-10-26 on synthetic paths: 50 ordinary paths (a slow part of about 1 px a step at a body height of 400 px, on a gentle wobble of 36 steps, whose speed rises and falls in a sine-squared bell over 3, 4, 5, 6 or 8 steps, to 6, 12, 20, 30 or 40 px a step at its fastest, up to a tenth of the body, placed across the wrap and inside the loop) and 24 broken paths (the slow part jumping 8, 12, 16 or 20 px in one step and staying there, or coming back the next step, or jumping inside an ease of seven steps that peaks at 8 px; at the wrap and inside).
+
+| Baseline | Ordinary paths named | Broken paths missed |
+|---|---|---|
+| the mean of the three steps either side, 6 times it, and 1.5 times the part's largest step elsewhere (the reading measured first) | 15 of 50: the bells of 3 and 4 steps from 12 px a step at the wrap; inside, those of 3 steps from 20 px and of 4 steps from 12 px | 6 of 24: the jumps of 8 to 16 px inside an ease |
+| the curve, 4 times the predicted step, lead 2.0 | 3 of 50: the bells of 4 steps at 30 and 40 px at the wrap and at 40 px inside | 8 of 24: every jump inside an ease |
+| the curve, 5 times, lead 2.0 (taken) | none | 8 of 24: every jump inside an ease |
+| the curve, 6 times, lead 2.0 | none | 8 of 24 |
+
+5.0 is the least multiple of the predicted step that names none of the bells. A jump that rides a fast motion and is less than five times the step its curve gives there is not named (a 20 px jump inside an ease of 8 px is about 2.2 times it). The mean baseline names the largest of those (20 px) only because it also names fast eases.
+
+The reading has four named gaps. First, a part that is not followed is not read: on a fast run the fastest parts leave the search between drawings (the test walker drawn at 16 frames a cycle, a run, its legs swinging 12 % of the body a frame, has many squares unfollowed and none of those followed pops); where a part's drawing changes at the wrap, it is not followed there and its jump is not named. Second, a detail smaller than 8 % of the body (a finger) is read with what is round it. Third, a loop under 8 drawings is not read. Fourth, a jump riding a fast motion, under five times its curve's step.
+
+The cut is kept: the engine takes no other cut for a part pop, whichever cut it is (the search's or one given). Frames made between two at the wrap do not mend it (the part's jump is still in the clip, spread over a step or two), so a loop a part pops in is cut to the same bytes as a loop where it is not read (`cycle/`, the strip, the GIF, the WebP). Taking another cut is not done because the part reading reads parts the size of a hand, not the whole body's change at the wrap: a cut chosen on it alone is not held to the whole body. It waits on a gate that reads the whole body's change between frames at the wrap.
+
+The loop as cut is read again (the part reading on the frames as anchored); `part_pop` records `outcome`: `none` where no part pops, `closed` where the jump repair changed frames of the cut and no part pops on the loop as it plays (`after`, the reading again), `named` where it plays as filmed; and `left`, the pops that play.
+
+A take to film again: where a part pops on the loop as it plays, the report's top-level `retake` is `{reason: "part-pop", reasons: ["part-pop"], part_pop: {pops, cut, searched}, limits: {floor, speed, curve, lead}, remedy}`, else `null`. `pops` each: `seed`, `from`, `to`, `at`, `body_pct`, `jerk_pct`, `speed`, `curve`, `lead`, `kind`, `margin`. `remedy` is `retake` where the engine's search chose the cut, and `recut-or-retake` where the cut was given (`--cycle fixed`, or `pinned`); `searched` says which. The shape is `video-cycle-align`'s per-loop `retake` (section 4): `reason` in kebab-case, the numbers under the reason's snake_case key, `limits`, and `remedy` (`retake`, `recut`, `recut-or-retake`), so a caller reads both alike.
+
+`--unfixed refuse` refuses a loop with such a `retake`, whatever `--repair` says (the repair makes no frame for a part pop and the cut stays, so whatever `--repair` says the pop plays as filmed). `--unfixed warn` (the default) keeps it with a warning line.
+
+A loop is cut to the same bytes whether a part pops in it or not (`cycle/`, the strip, the GIF, the WebP); every walk and run report gains `part_pop` and `retake` (`retake` is `null` where no part pops).
+
+Cost: the reading is NumPy on the CPU, about a second a loop; nothing else is read.
+
+Named gaps of the take to film again: no other cut is read or taken (a pop the search's cut has may be absent at another cut of the clip; finding it waits on the whole body's gate); the pop is named for a cut given too (`remedy` `recut-or-retake`).
+
+Synthetic outcomes (tests in `tests/video/test_loop_part_pop.py`, measured 2026-10-26 on alex-macbook-m1, except the third, a probe beside the tests):
+
+On the front walker of `tests/video/test_loop_overlap.py` with its tail on the walk's beat and a fist held out (73 frames, 26 a cycle, `--anchor motion-auto`), the fist held still: no part pops, `retake` is `null`, and the loop is the bytes it is with no part read at all.
+
+On the same walker with its fist drifting 0.18 px a frame through the clip: every 26-frame cut jumps it back about 4.7 px at its wrap (3 % of the body). The search's cut (two steps by the crossings) is kept and named (margin 1.39); `retake` `remedy` `retake`, `searched` true; the loop is the bytes it is with no part read.
+
+On the walker with its fist drifting only through the clip's first 12 to 24 frames (a probe): the search takes a cut past the drift (33/26), its repeat error there being least; no part pops.
+
+On the side walker cut whole (`--cycle fixed`), its fist slipping 3.5 % back at the wrap: five squares on the fist pop together (the worst a jerk of 3.43 % of the body, 10.2 usual steps, 14.6 times its curve's step, lead 7.4, stays); one warning line names the worst and the four beside it; `retake` `remedy` `recut-or-retake`, `searched` false; `--unfixed refuse` refuses the loop; under `warn` the loop is the bytes it is with no part read.
+
+On the side walker whose tail swings, whose far foot lifts 16 px and whose eye shuts across the wrap, and the same walker drawn as a run (16 frames a cycle): no part pops anywhere; the walk is cut to the bytes it was.
+
+`part_pop` in the report carries the bounds (`read_px`, `patch`, `search`, `follow_px`, `floor`, `speed`, `curve`, `lead`), `drawings`, `hold`, `body_px`, `parts` (seeded), `followed`, `usual_floor_px`, `pops` (each: `seed`, `from`, `to`, `steps`, `at`, `body_pct`, `jerk_pct`, `usual_px`, `speed`, `curve`, `lead`, `kind`, `back`, `margin`; worst first, at most one a part; `margin` is the least of the four terms over their bounds, 1 or more pops), `nearest` (the run nearest to popping, popped or not), `skipped` where it was not read, `outcome` (`none`, `closed`, `named`), `left` (the pops that play as filmed), and `after` (the reading of the loop as it plays, where a frame was changed).
+
+The summary line's JSON carries `part_pop` (`pops` with `from`, `to`, `at`, `body_pct`, `kind`, `margin`; `outcome`; `left`) and `retake` (`reason`, `remedy`).
+
+The engine prints these warning lines on stderr, in its own words, for a pop left as filmed:
+
+```
+video-loop: warning: film this direction again (part-pop) — the part at (<x>, <y>) px of frame <from> moves <body> % of the body's height into frame <to>, <jerk> % off the curve its steps either side draw (<speed>x its usual step, <curve>x the step that curve gives, <lead>x its largest such jump elsewhere; it stays (or: comes back); <n> parts beside it pop with it): <why>; --unfixed refuse refuses such a loop (docs/loop-repair.md section 2, "The part pop")
+```
+
+```
+<why>:
+the search's cut is kept as cut, and no other cut is taken for a part: film it again
+the cut was given (--cycle fixed or pinned): cut it where no part pops, or film it again
+```
+
+`--unfixed refuse` fails the loop with this error line:
+
+```
+video-loop: a part pops at the loop's wrap — film this direction again (part-pop) — <the warning line's words from `the part at` to the why> (<kind> length <L> frames from <start>); the motion does not play smoothly
+```
+
+**Beyond walks: a strike.** The jump repair and the part reading run on walks and runs only. An attack has a strike: an intended rush, the largest acceleration of the loop at the impact frame, larger still with a sword. Read as a part pop, it would be named. Ways to widen it later, not built: the state declares its strike frames (or a window round them) and the reading leaves them out; the lead is read against the same part's like accelerations elsewhere in the loop, so a strike the loop repeats is its own motion; a one-shot cut (`--cycle once`) has no wrap to read.
+
+**The body's surge reading.** The body's surge reading (`repair.surges`, `SURGE_LIMIT`, `SURGE_RATIO` 3.0 over the mean of the `SURGE_AROUND` steps either side) reads a window's run against the mean of its neighbours, the baseline the synthetic paths above show naming fast eases. Whether the curve can serve there is not measured; the flow and surge readings are unchanged.
 
 ### The seam bridge: a loop that is not a walk, whose wrap jumps
 
