@@ -109,6 +109,21 @@ the cell it was read on are looked for in each cell within CARRY_SEARCH px of wh
 lay (`carry_match`, `carry_own`), and a cell where that is uncertain is carried by the lay, the record saying which and
 why. Outside every region's band no pixel changes. The record holds the band, the carry of each region in every cell
 and a ledger of what the move did in each cell, and what is in the ledger is said in a warning line.
+
+`--hold-mask` (with `--band`; off by default, and off nothing of it is read or written) holds pixels the band moves
+round: an arm that hangs over the part, a dress below it. The mask is a PNG drawn on the cell the regions were read on,
+each of its 8-connected pieces carried into every cell by its own solid pixels as a band carries a region (`carry_mask`;
+by the lay where that is uncertain, named) and grown by HOLD_GROW px for what that carry may be off by; or a folder of
+one mask per cell, held as given. The move is not changed. In every cell the mask, the pixels not opaque within the
+move's reach and HOLD_EDGE px of it (its soft edge, the half-clear rim of a gap beside it) and the clear pixels as near
+(the air) keep their bytes. Every other pixel is read as without the mask, but a read headed into what is kept stops
+short of it (`free_back`): it goes back f = min(s, h) px of its move s, h HOLD_SLOPE of how far it could go, lowered
+until it rises by at most HOLD_SLOPE a px every way, and the gap the part leaves is drawn from the part stretched in
+order, never read backwards: a read takes at least the move's own least area or 1 − HOLD_SLOPE of the source's,
+whichever is less (`read_share`; read between neighbours, 1 − HOLD_SLOPE·√2). A read that still takes a kept pixel is
+read from the others, or walked back further. The record holds the mask, the carry of each piece in every cell and a
+ledger per cell (`hold_ledger`): what was kept, what was read short, and the pixels whose read takes the source
+backwards, read off the move each read took.
 """
 
 from __future__ import annotations
@@ -181,6 +196,15 @@ CARRY_BASIS_BAND = {"reading": "outline-lay", "region": "own-pixels"}
 CARRY_SEARCH = 9  # px either way a region's pixels are looked for in a cell (whole pixels), around where the cell before had them
 PRESSED, STRETCHED = 0.85, 1.15  # of a pixel's area: the ledger counts a moved pixel left with less, or more
 MOVED_PX = 0.5  # px: a pixel outside every region moved this far or more is counted
+# A hold mask (`--hold-mask`) under a band: the pixels it holds, carried by their own pixels, keep their bytes with their
+# soft edge and the air beside them; a read headed into them takes a share of its move that rises no faster than HOLD_SLOPE.
+HOLD_POLICY = "own-pixels-grown/kept-edge-air/read-short-sloped/1"
+HOLD_GROW = 3  # px (4-neighbour steps) a mask carried from the cell it was drawn on is grown by: what its carry may be off by
+HOLD_EDGE = 2  # px past the move's reach (4-neighbour steps) round the held pixels: what is not opaque there is held, what is clear kept
+HOLD_MARGIN = 1  # px (8-neighbour steps): a read stops short of the kept pixels by as much, unless it is already that near
+HOLD_SLOPE = 0.5  # of a px: how much more of its move a read takes a px further any way (across, down or both), at most
+HOLD_ROUND = 1  # px each way the share of a read is taken at its least over, then averaged over (0: as found)
+HOLD_STEPS = 16  # a read whose four pixels still take a kept one walks back a 1/HOLD_STEPS of its move at a time
 
 
 def parse_region(text: str) -> tuple[float, ...]:
@@ -760,37 +784,49 @@ def carry_own(base: Image.Image, cells: list[Image.Image], regions: list[tuple[f
     solid = np.asarray(base.getchannel("A")) >= ALPHA_SOLID
     whole = _whole_premultiplied(base)
     cell_wholes: dict[int, np.ndarray] = {}
-    n = len(cells)
-    order = list(range(n)) if base_index is None else [(base_index + i) % n for i in range(1, n)]
     out: list[list[dict[str, Any]]] = [[] for _ in cells]
     for region in regions:
         mask = (region_weight(xx, yy, region, base_shift) > 0) & solid
-        entries: dict[int, dict[str, Any]] = {}
-        if base_index is not None:
-            entries[base_index] = {"px": [float(base_shift[0]), float(base_shift[1])], "from": "base"}
-        before: tuple[int, tuple[float, float]] | None = None  # the cell before and where its own pixels were found
-        for k in order:
-            lay = (float(lays[k][0]), float(lays[k][1]))
-            if not mask.any():
-                entries[k] = {"px": list(lay), "from": "lay", "why": "no solid pixel of the cell it was read on is under it"}
-                continue
-            if k not in cell_wholes:
-                cell_wholes[k] = _whole_premultiplied(cells[k])
-            if before is None:
-                guess, around = (lay[0] - base_shift[0], lay[1] - base_shift[1]), "the lay"
-            else:
-                guess, around = before[1], f"where cell {before[0]} had it"
-            found = carry_match(whole, cell_wholes[k], mask, guess, around=around)
-            entry: dict[str, Any] = {"least": found.least, "curvature": None if found.curvature is None else list(found.curvature)}
-            if found.shift is None:
-                entries[k] = {"px": list(lay), "from": "lay", "why": found.why} | entry
-                before = None
-            else:
-                entries[k] = {"px": [base_shift[0] + found.shift[0], base_shift[1] + found.shift[1]], "from": "pixels"} | entry
-                before = (k, found.shift)
-        for k in range(n):
+        entries = carry_mask(whole, cells, cell_wholes, mask, base_shift, lays, base_index,
+                             "no solid pixel of the cell it was read on is under it")
+        for k in range(len(cells)):
             out[k].append(entries[k])
     return out
+
+
+def carry_mask(whole: np.ndarray, cells: list[Image.Image], cell_wholes: dict[int, np.ndarray], mask: np.ndarray,
+               base_shift: tuple[float, float], lays: list[tuple[float, float]], base_index: int | None,
+               empty: str) -> dict[int, dict[str, Any]]:
+    """Per cell, where the pixels of `whole` (`_whole_premultiplied` of the cell they were read on, carried there by
+    `base_shift`) under `mask` are (`carry_match`), as `carry_own` carries a region: in the loop's order from `base_index`,
+    each cell around where the cell before had them, or around its lay; by the lay where that is uncertain, or where the
+    mask holds no pixel (`empty` says why). `cell_wholes` keeps each cell's `_whole_premultiplied` once read."""
+    n = len(cells)
+    order = list(range(n)) if base_index is None else [(base_index + i) % n for i in range(1, n)]
+    entries: dict[int, dict[str, Any]] = {}
+    if base_index is not None:
+        entries[base_index] = {"px": [float(base_shift[0]), float(base_shift[1])], "from": "base"}
+    before: tuple[int, tuple[float, float]] | None = None  # the cell before and where its own pixels were found
+    for k in order:
+        lay = (float(lays[k][0]), float(lays[k][1]))
+        if not mask.any():
+            entries[k] = {"px": list(lay), "from": "lay", "why": empty}
+            continue
+        if k not in cell_wholes:
+            cell_wholes[k] = _whole_premultiplied(cells[k])
+        if before is None:
+            guess, around = (lay[0] - base_shift[0], lay[1] - base_shift[1]), "the lay"
+        else:
+            guess, around = before[1], f"where cell {before[0]} had it"
+        found = carry_match(whole, cell_wholes[k], mask, guess, around=around)
+        entry: dict[str, Any] = {"least": found.least, "curvature": None if found.curvature is None else list(found.curvature)}
+        if found.shift is None:
+            entries[k] = {"px": list(lay), "from": "lay", "why": found.why} | entry
+            before = None
+        else:
+            entries[k] = {"px": [base_shift[0] + found.shift[0], base_shift[1] + found.shift[1]], "from": "pixels"} | entry
+            before = (k, found.shift)
+    return entries
 
 
 @dataclass(frozen=True)
@@ -943,6 +979,7 @@ class Ask:
     gain_across: float | None = None  # the gain across asked; None: --gain, across as down
     breath: Breath | None = None  # the breath the part follows; None: the body's motion, answered by the damped mass
     band: Band | None = None  # each region moved as one mass over a band (`--band`); None: the weight falls from the centre
+    hold: Hold | None = None  # pixels a band moves round and leaves as they are (`--hold-mask`); None: none
 
     @property
     def across(self) -> float:
@@ -958,10 +995,11 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
              zeta: float | None = None, on_fold: str = "refuse", read_on: str | None = None,
              stretch_floor: float | None = None, breathe: Path | None = None, lag: float | None = None,
              gain_across: float | None = None, band: float | str | None = None, band_margin: float | str | None = None,
-             band_up: tuple[float, float | str] | str | None = None, verb: str = VERB) -> Ask:
+             band_up: tuple[float, float | str] | str | None = None, hold_mask: Path | None = None, verb: str = VERB) -> Ask:
     """A sway's ask, read and checked. A number left out (None) is its default: the damped mass's gain, freq and zeta,
     or, on the breath (`breathe`), the breath's gain and lag. `band` (px or AUTO; None: off) moves each region as one
-    mass, `band_margin` and `band_up` shaping it."""
+    mass, `band_margin` and `band_up` shaping it, and `hold_mask` (a PNG or a folder of them; None: off) holds pixels
+    the band moves round."""
     # The numbers go into the record, which is JSON, and into the cells' arithmetic: a numpy number from a
     # caller (an int64 has no JSON form) is read as the float the command line gives, so every caller of the
     # same numbers writes the same strip and record.
@@ -997,8 +1035,11 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
         if not 0 <= stretch_floor < 1:  # a NaN is neither
             raise SystemExit(f"{verb}: --stretch-floor is the least area a moved pixel keeps, at least 0 and under 1; got {stretch_floor:g}")
     breath = None if breathe is None else read_breath(breathe, lag, verb=verb)
+    shaped = _read_band(regions, band, band_margin, band_up, stretch_floor, verb)
+    if hold_mask is not None and shaped is None:
+        raise SystemExit(f"{verb}: --hold-mask keeps pixels as they are while a band moves its regions round them; it needs --band")
     return Ask(regions, gain, freq, zeta, on_fold, None if read_on is None else str(read_on), stretch_floor, gain_across,
-               breath, _read_band(regions, band, band_margin, band_up, stretch_floor, verb))
+               breath, shaped, None if hold_mask is None else read_hold(hold_mask, verb))
 
 
 def _read_band(regions: list[tuple[float, ...]], band: float | str | None, margin: float | str | None,
@@ -1047,7 +1088,8 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
                  freq: float | None = None, zeta: float | None = None, on_fold: str = "refuse", verb: str = VERB,
                  read_on: str | None = None, stretch_floor: float | None = None, breathe: Path | None = None,
                  lag: float | None = None, gain_across: float | None = None, band: float | str | None = None,
-                 band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None) -> Request:
+                 band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None,
+                 hold_mask: Path | None = None) -> Request:
     loop_dir = loop_dir.expanduser().resolve()
     metas = sorted(loop_dir.glob("*.strip.json"))
     if len(metas) != 1:
@@ -1060,7 +1102,7 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
         raise SystemExit(f"{verb}: a one-shot plays once; the follow-through is a loop's steady state")
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
                    breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
-                   verb=verb)
+                   hold_mask=hold_mask, verb=verb)
     return Request(loop_dir, name, meta_path, meta_bytes, meta, ask)
 
 
@@ -1095,6 +1137,7 @@ class Answer:
     stretch: dict[str, Any] | None = None  # the floor asked, and what it did to each region (`--stretch-floor`)
     reference: dict[str, Any] | None = None  # the frame the regions were read on, when not cell 0 (`--reference`)
     band: Banded | None = None  # what the band comes to (`--band`); None: the weight falls from the centre
+    hold: Held | None = None  # what the hold mask comes to (`--hold-mask`); None: none
 
     def carry(self, k: int) -> tuple[float, float]:
         """How far cell k's body lies from cell 0's, across and down: every region's ellipse is carried by it. Carried
@@ -1113,7 +1156,28 @@ class Answer:
             return move_regions(self.cells[k], self.moves_in(k), self.carry(k))
         if all(dx == 0 and dy == 0 for _, (dx, dy) in self.moves_in(k)):
             return self.cells[k].copy()
+        if self.hold is not None:
+            return (self.hold.drawn[k] if k in self.hold.drawn else self.held_cell(k)[0]).copy()
         return _draw(self.cells[k], lambda xx, yy: self.band_field(k, xx, yy)[0])
+
+    def held_cell(self, k: int) -> tuple[Image.Image, dict[str, np.ndarray]]:
+        """Under a hold mask, cell k drawn round it (`draw_held`), what it keeps there — the mask's pixels (`mask`), the
+        held pixels and the air (`hold_sets`) — and how each pixel was read. Kept in `Held.drawn`."""
+        assert self.hold is not None
+        cell = self.cells[k]
+        w, h = cell.size
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        mask = self.hold.mask_in(k)
+        held, air = hold_sets(mask, cell, self.hold.edge)
+        field = self.band_field(k, xx, yy)[0]
+        if field is None or all(dx == 0 and dy == 0 for _, (dx, dy) in self.moves_in(k)):
+            still = np.zeros((h, w))
+            drawn, read = cell.copy(), {"share": np.ones((h, w)), "readers": still > 0, "renormalised": still > 0,
+                                        "walked": still > 0, "read_x": still, "read_y": still}
+        else:
+            drawn, read = draw_held(cell, field, held, air)
+        self.hold.drawn.setdefault(k, drawn)
+        return drawn, {"mask": mask, "held": held, "air": air, **read}
 
     def band_field(self, k: int, xx: np.ndarray, yy: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray] | None, list[np.ndarray]]:
         """Under a band, cell k's move per pixel (`move_field`'s: covered, across, down; None where no region covers a
@@ -1158,7 +1222,8 @@ class Answer:
           | ({} if self.read_on is None and self.stretch is None and self.band is None else
              {"carry_basis": dict(CARRY_BASIS if self.band is None else CARRY_BASIS_BAND)}) \
           | ({} if self.reference is None else {"reference": self.reference}) \
-          | ({} if self.band is None else {"band": self.band_record()})
+          | ({} if self.band is None else {"band": self.band_record()}) \
+          | ({} if self.hold is None else {"hold": self.hold_record()})
 
     def band_record(self) -> dict[str, Any]:
         """The band as the record holds it (`--band`): what was asked, the reach it was read off, its px and the margin's,
@@ -1166,16 +1231,7 @@ class Answer:
         what, the cells carried by the lay and why, and the ledger."""
         assert self.band is not None
         band = self.band
-
-        def carried(entry: dict[str, Any]) -> dict[str, Any]:
-            out = {"px": [round(v, 4) + 0.0 for v in entry["px"]], "from": entry["from"]}
-            if "why" in entry:
-                out["why"] = entry["why"]
-            if "least" in entry:
-                out["least"] = round(entry["least"], 4)
-                out["curvature"] = None if entry["curvature"] is None else [round(v, 4) for v in entry["curvature"]]
-            return out
-
+        carried = _carried_record
         return {
             "policy": BAND_POLICY, "asked": band.asked.asked(), "reach_px": round(band.reach, 4),
             "band_px": band.band, "margin_px": band.margin,
@@ -1187,6 +1243,34 @@ class Answer:
                     for i, entry in enumerate(cell) if entry["from"] == "lay"],
             "ledger": band.ledger,
         }
+
+    def hold_record(self) -> dict[str, Any]:
+        """The hold mask as the record holds it (`--hold-mask`): what was asked, how its pieces are grown, kept round and
+        read round, each piece's size and box on the cell it was drawn on, where each is carried in every cell and from
+        what (None where a mask is given for each cell), the cells carried by the lay and why, and the ledger."""
+        assert self.hold is not None
+        hold, per_cell = self.hold, self.hold.asked.per_cell
+        return {
+            "policy": HOLD_POLICY, "asked": hold.asked.asked(), "grow_px": None if per_cell else HOLD_GROW, "edge_px": hold.edge,
+            "margin_px": HOLD_MARGIN, "slope": HOLD_SLOPE, "round_px": HOLD_ROUND, "steps": HOLD_STEPS,
+            "pieces": [{"px": int(piece.sum()), "box": _box(piece)} for piece in hold.pieces],
+            "carry": None if per_cell else {"search_px": CARRY_SEARCH,
+                                            "cells": [[_carried_record(entry) for entry in cell] for cell in hold.carried]},
+            "lay": [{"cell": k, "piece": i, "why": entry["why"]} for k, cell in enumerate(hold.carried)
+                    for i, entry in enumerate(cell) if entry["from"] == "lay"],
+            "ledger": hold.ledger,
+        }
+
+
+def _carried_record(entry: dict[str, Any]) -> dict[str, Any]:
+    """A carry (`carry_mask`'s entry) as the record holds it."""
+    out = {"px": [round(v, 4) + 0.0 for v in entry["px"]], "from": entry["from"]}
+    if "why" in entry:
+        out["why"] = entry["why"]
+    if "least" in entry:
+        out["least"] = round(entry["least"], 4)
+        out["curvature"] = None if entry["curvature"] is None else [round(v, 4) for v in entry["curvature"]]
+    return out
 
 
 def solve(request: Request, strip: Image.Image, *, strip_name: str, verb: str = VERB,
@@ -1353,20 +1437,28 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
             raise SystemExit(f"{verb}: {why}, and --on-fold lower would have to go under --gain {GAIN_MEASURED:g}; give a wider "
                              "--band" + (" or --band-up" if ask.band.up else ""))
         answer = answer_at([0.0 if hold else g for g, hold in zip(lowered, held)], held)
-    return _banded(answer, shaped, reach_requested, carried, steepest, verb)
+    banded = _banded(answer, shaped, reach_requested, carried, steepest, verb)
+    return banded if ask.hold is None else _held(banded, None if reference is None else reference[0], verb)
 
 
 def _carry_band(answer: Answer, reference: Image.Image | None) -> list[list[dict[str, Any]]]:
     """Each region carried by its own pixels (`carry_own`) from the cell it was read on: the reference frame; on a loop
     carried from its cut (`--read-on`, transported), the cut's cell 0 where the loop holds it, so the loop is carried as
     the cut is, cell for cell; else cell 0, where the lay or the cut's reading carried the regions."""
-    cells, regions = answer.cells, answer.ask.regions
+    base, base_shift, base_index, lays = _band_base(answer, reference)
+    return carry_own(base, answer.cells, answer.ask.regions, base_shift, lays, base_index=base_index)
+
+
+def _band_base(answer: Answer, reference: Image.Image | None) -> tuple[Image.Image, tuple[float, float], int | None, list[tuple[float, float]]]:
+    """The cell the regions were read on, as a band carries from it (`_carry_band`): the picture, how it lies from cell 0,
+    which of the cells it is (None: the reference frame, none of them), and every cell's lay."""
+    cells = answer.cells
     lays = [answer.carry(k) for k in range(len(cells))]
     if reference is not None:
-        return carry_own(reference, cells, regions, (0.0, 0.0), lays, base_index=None)
+        return reference, (0.0, 0.0), None, lays
     cut_cells = (answer.read_on or {}).get("cut_cells") or []
     base = cut_cells.index(0) if 0 in cut_cells else 0
-    return carry_own(cells[base], cells, regions, lays[base], lays, base_index=base)
+    return cells[base], lays[base], base, lays
 
 
 def band_steepest(regions: list[tuple[float, ...]], shapes: list[Any], carried: list[list[dict[str, Any]]],
@@ -1514,6 +1606,412 @@ def band_notes(record: dict[str, Any], verb: str = VERB, at: str = f"{loop_mod.S
     return notes
 
 
+@dataclass(frozen=True, eq=False)
+class Hold:
+    """A hold mask asked (`--hold-mask`): one PNG drawn on the cell the regions were read on, or a folder of PNGs, one per
+    cell in name order; a pixel is held where the PNG's alpha is ALPHA_SOLID or more — where it has no alpha, where it is
+    that light. The sha256 of each file's bytes."""
+
+    masks: list[np.ndarray]
+    sha256: list[str]
+    per_cell: bool
+
+    def asked(self) -> dict[str, Any]:
+        return {"per_cell": self.per_cell, "sha256": self.sha256 if self.per_cell else self.sha256[0]}
+
+
+def _mask_of(image: Image.Image) -> np.ndarray:
+    """The pixels a hold mask's PNG holds: alpha ALPHA_SOLID or more, or, where the PNG has no alpha, that light."""
+    if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
+        return np.asarray(image.convert("RGBA").getchannel("A")) >= ALPHA_SOLID
+    return np.asarray(image.convert("L")) >= ALPHA_SOLID
+
+
+def read_hold(path: Path, verb: str = VERB) -> Hold:
+    """A hold mask (`--hold-mask`) read: a PNG, or a folder of PNGs, one per cell, in name order. A single mask that holds
+    no pixel is refused; a cell of a folder may hold none."""
+    path = Path(path).expanduser()
+    files = sorted(path.glob("*.png")) if path.is_dir() else [path]
+    if not files:
+        raise SystemExit(f"{verb}: --hold-mask {path}: a folder of masks with no PNG in it")
+    masks, digests = [], []
+    for file in files:
+        try:
+            data = file.read_bytes()
+            with Image.open(io.BytesIO(data)) as image:
+                masks.append(_mask_of(image))
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"{verb}: --hold-mask {file}: not read ({exc})") from exc
+        digests.append(hashlib.sha256(data).hexdigest())
+    if not any(mask.any() for mask in masks):
+        raise SystemExit(f"{verb}: --hold-mask {path}: holds no pixel (alpha {ALPHA_SOLID} or more, or that light where it has "
+                         "no alpha)")
+    return Hold(masks, digests, path.is_dir())
+
+
+def _grow4(mask: np.ndarray, steps: int) -> np.ndarray:
+    """`mask` grown by `steps` 4-neighbour steps (a diamond), nothing carried round the cell's edge."""
+    out = mask.copy()
+    for _ in range(steps):
+        p = np.pad(out, 1)
+        out = p[1:-1, 1:-1] | p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]
+    return out
+
+
+def _grow8(mask: np.ndarray, steps: int = 1) -> np.ndarray:
+    """`mask` grown by `steps` 8-neighbour steps (a square), nothing carried round the cell's edge."""
+    h, w = mask.shape
+    for _ in range(steps):
+        p, out = np.pad(mask, 1), mask.copy()
+        for dy in range(3):
+            for dx in range(3):
+                out |= p[dy:dy + h, dx:dx + w]
+        mask = out
+    return mask
+
+
+def _pieces(mask: np.ndarray) -> list[np.ndarray]:
+    """`mask`'s 8-connected pieces, in the order of their first pixel row by row."""
+    left, pieces = mask.copy(), []
+    while left.any():
+        y, x = divmod(int(np.argmax(left)), mask.shape[1])
+        piece = np.zeros_like(mask)
+        piece[y, x] = True
+        while True:
+            grown = _grow8(piece) & left
+            if not (grown & ~piece).any():
+                break
+            piece = grown
+        pieces.append(piece)
+        left &= ~piece
+    return pieces
+
+
+def _shifted(mask: np.ndarray, shift: tuple[float, float]) -> np.ndarray:
+    """`mask` moved by `shift` (across, down): every pixel the moved mask covers some of, the whole-pixel moves on either
+    side of it joined, nothing carried round the cell's edge."""
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    for sx in {math.floor(shift[0]), math.ceil(shift[0])}:
+        for sy in {math.floor(shift[1]), math.ceil(shift[1])}:
+            if abs(sx) >= w or abs(sy) >= h:
+                continue
+            src = mask[max(0, -sy):h - max(0, sy), max(0, -sx):w - max(0, sx)]
+            out[max(0, sy):max(0, sy) + src.shape[0], max(0, sx):max(0, sx) + src.shape[1]] |= src
+    return out
+
+
+@dataclass(frozen=True, eq=False)
+class Held:
+    """What a hold mask comes to on the cells (`--hold-mask`): the mask in its 8-connected pieces on the cell it was drawn
+    on, which lies `base_shift` from cell 0, each piece carried into every cell by its own pixels (`carried`, per cell and
+    piece, as `carry_mask` carries it; none where a mask is given for each cell), how far round the held pixels their soft
+    edge and the air beside them reach (`edge`, 4-neighbour steps), and the ledger (`hold_ledger`). Each cell is drawn once
+    (`drawn`)."""
+
+    asked: Hold
+    pieces: list[np.ndarray]
+    base_shift: tuple[float, float]
+    carried: list[list[dict[str, Any]]]
+    edge: int
+    ledger: dict[str, Any] | None = None
+    drawn: dict[int, Image.Image] = dataclasses.field(default_factory=dict)
+
+    def mask_in(self, k: int) -> np.ndarray:
+        """The mask's pixels in cell k: the mask given for it, or each piece carried there and the whole grown by HOLD_GROW
+        px (4-neighbour steps), what a piece's carry may be off by where the part it holds changes its shape."""
+        if self.asked.per_cell:
+            return self.asked.masks[k]
+        carried = np.zeros_like(self.asked.masks[0])
+        for piece, entry in zip(self.pieces, self.carried[k]):
+            carried |= _shifted(piece, (entry["px"][0] - self.base_shift[0], entry["px"][1] - self.base_shift[1]))
+        return _grow4(carried, HOLD_GROW)
+
+
+def hold_sets(mask: np.ndarray, cell: Image.Image, edge: int) -> tuple[np.ndarray, np.ndarray]:
+    """What a hold keeps in a cell: the held pixels — the mask and every pixel not opaque (alpha over 0, under 255) within
+    `edge` 4-neighbour steps of it, its soft edge and the half-clear rim of a gap beside it — and the air, the clear pixels
+    within as far. Both keep their bytes; no pixel solid in the cell reads either, no clear one the held."""
+    alpha = np.asarray(cell.getchannel("A"))
+    near = _grow4(mask, edge) & ~mask
+    return mask | (near & (alpha > 0) & (alpha < 255)), near & (alpha == 0)
+
+
+def _bilinear(a: np.ndarray, sx: np.ndarray, sy: np.ndarray) -> np.ndarray:
+    """`a` (one value a pixel) read at (sx, sy) as `_sample` reads a cell."""
+    h, w = a.shape
+    x0 = np.clip(np.floor(sx).astype(int), 0, w - 2)
+    y0 = np.clip(np.floor(sy).astype(int), 0, h - 2)
+    fx, fy = np.clip(sx - x0, 0, 1), np.clip(sy - y0, 0, 1)
+    return (a[y0, x0] * (1 - fx) + a[y0, x0 + 1] * fx) * (1 - fy) + (a[y0 + 1, x0] * (1 - fx) + a[y0 + 1, x0 + 1] * fx) * fy
+
+
+def _mean_along(a: np.ndarray, r: int, axis: int) -> np.ndarray:
+    """The mean over 2·r + 1 along `axis`, the edge value carried past the cell's edge."""
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (r + 1, r)
+    c = np.cumsum(np.pad(a, pad, mode="edge"), axis=axis)
+    if axis == 0:
+        return (c[2 * r + 1:] - c[:-(2 * r + 1)]) / (2 * r + 1)
+    return (c[:, 2 * r + 1:] - c[:, :-(2 * r + 1)]) / (2 * r + 1)
+
+
+def _least_round(a: np.ndarray, r: int) -> np.ndarray:
+    """The least of `a` over each pixel's square of side 2·r + 1 (the edge value past the cell's edge)."""
+    out = a
+    for axis in (0, 1):
+        p = np.pad(out, [(r, r) if i == axis else (0, 0) for i in range(2)], mode="edge")
+        n = out.shape[axis]
+        out = np.min([np.take(p, range(i, i + n), axis=axis) for i in range(2 * r + 1)], axis=0)
+    return out
+
+
+def free_back(kept: np.ndarray, way: tuple[float, float], far: float) -> np.ndarray:
+    """Per pixel, how far (px) a read can go back against `way` (the unit vector the cell's part moves along) before the
+    four pixels it reads (`_sample`'s) take a `kept` pixel, or one within HOLD_MARGIN px of them (8-neighbour steps) where
+    the pixel is not itself that near: followed an eighth of a pixel at a time, `far` where it does not come to one within
+    `far`. Along a line the way the part moves, it rises by at most a px a px and falls past each kept pixel."""
+    h, w = kept.shape
+    near = _grow8(kept, HOLD_MARGIN)
+    free = np.full((h, w), float(far))
+    # Only a pixel `far` or less along `way` from the margin can come to it; between two whole steps a read's four pixels
+    # may pair the one step's column with the other's row, a pixel off either.
+    swept = near.copy()
+    for i in range(1, math.ceil(far) + 1):
+        swept |= _shifted(near, (i * way[0], i * way[1]))
+    ys, xs = np.nonzero(_grow8(swept) & ~kept)
+    if not len(ys):
+        return free
+    hard, soft = kept.astype(np.float64), near.astype(np.float64)
+    own = soft[ys, xs]  # 1 where the pixel is itself within the margin: then only the kept pixels stop it
+    found = np.full(len(ys), float(far))
+    left = np.arange(len(ys))
+    for i in range(1, math.ceil(8 * far) + 1):
+        tau = min(i / 8, far)
+        sx, sy = xs[left] - tau * way[0], ys[left] - tau * way[1]
+        stops = (_bilinear(hard, sx, sy) > 0) | (_bilinear(soft, sx, sy) > own[left] + 1e-9)
+        found[left[stops]] = (i - 1) / 8
+        left = left[~stops]
+        if not len(left):
+            break
+    free[ys, xs] = found
+    return free
+
+
+def _sloped(a: np.ndarray, slope: float) -> np.ndarray:
+    """`a` lowered until no pixel is more than `slope` over any of its 8 neighbours: per pixel the least of a(q) + slope
+    times q's distance in whole steps across or down, whichever is more (the edge value carried past the cell's edge)."""
+    for _ in range(sum(a.shape)):
+        p = np.pad(a, 1, mode="edge")
+        rows = np.minimum(np.minimum(p[:-2], p[1:-1]), p[2:])
+        lowered = np.minimum(a, np.minimum(np.minimum(rows[:, :-2], rows[:, 1:-1]), rows[:, 2:]) + slope)
+        if np.array_equal(lowered, a):
+            break
+        a = lowered
+    return a
+
+
+def read_share(free: np.ndarray, size: np.ndarray) -> np.ndarray:
+    """Per pixel, the share of its move (`size` px long) a read takes round a hold: the read goes back f = min(size, h) px,
+    h HOLD_SLOPE of `free` (`free_back`), taken at its least within HOLD_ROUND px each way and then averaged over as far,
+    and lowered until it is nowhere more than HOLD_SLOPE over a neighbour (`_sloped`); 1 where f is the whole move, so
+    those pixels read as without the hold."""
+    # Within a cell every move is s·ô, one way ô (the groups' offsets are one motion times their gains), so the read
+    # p − f·ô takes 1 − ∂ô f of the source's area, and 1 − (ôx·Dx f + ôy·Dy f) read between neighbours as `jacobian` reads
+    # it: h rises by at most κ (HOLD_SLOPE) a px every way, so where f = h a read takes at least 1 − κ (between
+    # neighbours 1 − κ(|ôx| + |ôy|) ≥ 1 − κ√2), and where f = s the move's own least area — over 0 wherever the move does
+    # not fold; where f turns from the one to the other the two mix between neighbours, and the ledger reads those
+    # (`read_turn_folded_px`, `read_turn_least`).
+    reach = HOLD_SLOPE * free
+    if HOLD_ROUND:
+        r = HOLD_ROUND
+        reach = _mean_along(_mean_along(_least_round(reach, r), r, 0), r, 1)
+    reach = _sloped(reach, HOLD_SLOPE)
+    return np.where(reach >= size, 1.0, reach / np.maximum(size, 1e-12))
+
+
+def draw_held(cell: Image.Image, field: tuple[np.ndarray, np.ndarray, np.ndarray], held: np.ndarray,
+              air: np.ndarray) -> tuple[Image.Image, dict[str, np.ndarray]]:
+    """`cell` moved by `field` (`_draw`'s: covered, across, down) round what a hold keeps (`hold_sets`: the held pixels and
+    the air beside them). The field is as it is; the held pixels and the air keep their bytes; every other pixel is read
+    as `_draw` reads it, but only as far back along its move as `read_share` lets it, which stops short of every kept
+    pixel. A read whose four pixels still take one it may not (a solid pixel a kept one, a clear pixel a held one) is read
+    from the others where they are half its weight or more (`renormalised`), else walked back a 1/HOLD_STEPS of its move
+    at a time until they are (`walked`). Where every read takes its whole move and no kept pixel the cell is `_draw`'s,
+    byte for byte. Also returns, per pixel, the share of its move each read took (`share`), the pixels read (`readers`)
+    and the move each read took (`read_x`, `read_y`; 0 on what is kept and on what does not move)."""
+    src = np.asarray(cell.convert("RGBA"), dtype=np.float32)
+    h, w = src.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    inside, move_x, move_y = field
+    size = np.hypot(move_x, move_y)
+    pm = src.copy()
+    pm[..., :3] *= pm[..., 3:4] / 255
+    kept = held | air
+    solid = src[..., 3] >= ALPHA_SOLID
+    readers = inside & ~kept & (size > 0)
+    share = np.ones((h, w))
+    if readers.any():
+        y, x = divmod(int(np.argmax(np.where(readers, size, -1))), w)
+        way = (float(move_x[y, x] / size[y, x]), float(move_y[y, x] / size[y, x]))
+        share = np.where(readers, read_share(free_back(kept, way, float(size[y, x]) / HOLD_SLOPE + 1), size), 1.0)
+    sx, sy = xx - share * move_x, yy - share * move_y
+    moved = _sample(pm, sx, sy)
+    x0 = np.clip(np.floor(sx).astype(int), 0, w - 2)
+    y0 = np.clip(np.floor(sy).astype(int), 0, h - 2)
+    fx, fy = np.clip(sx - x0, 0, 1), np.clip(sy - y0, 0, 1)
+    off = np.zeros((h, w), bool)
+    for oy, ox, weight in ((0, 0, (1 - fx) * (1 - fy)), (0, 1, fx * (1 - fy)), (1, 0, (1 - fx) * fy), (1, 1, fx * fy)):
+        off |= (weight > 0) & np.where(solid, kept[y0 + oy, x0 + ox], held[y0 + oy, x0 + ox])
+    off &= readers
+    renormalised, walked = np.zeros((h, w), bool), np.zeros((h, w), bool)
+    if off.any():
+        ys, xs = np.nonzero(off)
+        of_solid = solid[ys, xs]
+        t = share[ys, xs].copy()
+        left, first = np.arange(len(ys)), True
+        while len(left):
+            ly, lx = ys[left], xs[left]
+            px, py = lx - t[left] * move_x[ly, lx], ly - t[left] * move_y[ly, lx]
+            ax0 = np.clip(np.floor(px).astype(int), 0, w - 2)
+            ay0 = np.clip(np.floor(py).astype(int), 0, h - 2)
+            ax, ay = np.clip(px - ax0, 0, 1), np.clip(py - ay0, 0, 1)
+            total, taken = np.zeros((len(left), 4)), np.zeros(len(left))
+            for oy, ox, weight in ((0, 0, (1 - ax) * (1 - ay)), (0, 1, ax * (1 - ay)), (1, 0, (1 - ax) * ay), (1, 1, ax * ay)):
+                tap_y, tap_x = ay0 + oy, ax0 + ox
+                ok = np.where(of_solid[left], ~kept[tap_y, tap_x], ~held[tap_y, tap_x]) * weight
+                total += pm[tap_y, tap_x] * ok[:, None]
+                taken += ok
+            done = taken >= 0.5
+            moved[ly[done], lx[done]] = total[done] / taken[done][:, None]
+            (renormalised if first else walked)[ly[done], lx[done]] = True
+            share[ly[done], lx[done]] = t[left[done]]
+            left, first = left[~done], False
+            t[left] = np.maximum(t[left] - 1 / HOLD_STEPS, 0.0)  # at 0 a pixel reads itself, which it may
+    alpha = np.clip(np.round(moved[..., 3:4]), 0, 255)
+    moved[..., :3] = np.where(alpha > 0, moved[..., :3] * 255 / np.maximum(moved[..., 3:4], 1e-3), 0)
+    moved[..., 3:4] = alpha
+    out = np.where((inside & ~kept)[..., None], np.clip(np.round(moved), 0, 255), src).astype(np.uint8)
+    taken_x, taken_y = np.where(readers, share * move_x, 0.0), np.where(readers, share * move_y, 0.0)
+    return Image.fromarray(out, "RGBA"), {"share": share, "readers": readers, "renormalised": renormalised, "walked": walked,
+                                          "read_x": taken_x, "read_y": taken_y}
+
+
+def _held(answer: Answer, reference: Image.Image | None, verb: str) -> Answer:
+    """`answer` round its hold mask (`--hold-mask`): one mask, drawn on the cell the regions were read on (`_band_base`),
+    in its pieces, each carried into every cell by its own solid pixels there as a band carries a region (`carry_mask`),
+    or a mask for each cell as given; and the ledger of every cell (`hold_ledger`)."""
+    hold, cells = answer.ask.hold, answer.cells
+    assert hold is not None
+    w, h = cells[0].size
+    for mask in hold.masks:
+        if mask.shape != (h, w):
+            raise SystemExit(f"{verb}: --hold-mask is {mask.shape[1]}x{mask.shape[0]}, the cells are {w}x{h}: a mask is drawn on "
+                             "a cell, pixel for pixel")
+    if hold.per_cell and len(hold.masks) != len(cells):
+        raise SystemExit(f"{verb}: --hold-mask holds {len(hold.masks)} masks and there are {len(cells)} cells: a folder gives "
+                         "one mask per cell, in name order")
+    edge = math.ceil(answer.reach) + HOLD_EDGE
+    if hold.per_cell:
+        held = Held(hold, [], (0.0, 0.0), [], edge)
+    else:
+        base, base_shift, base_index, lays = _band_base(answer, reference)
+        solid = np.asarray(base.getchannel("A")) >= ALPHA_SOLID
+        whole, cell_wholes = _whole_premultiplied(base), {}
+        pieces = _pieces(hold.masks[0])
+        carried: list[list[dict[str, Any]]] = [[] for _ in cells]
+        for piece in pieces:
+            entries = carry_mask(whole, cells, cell_wholes, piece & solid, base_shift, lays, base_index,
+                                 "no solid pixel of the cell it was drawn on is under it")
+            for k in range(len(cells)):
+                carried[k].append(entries[k])
+        held = Held(hold, pieces, (float(base_shift[0]), float(base_shift[1])), carried, edge)
+    answer = dataclasses.replace(answer, hold=held)
+    return dataclasses.replace(answer, hold=dataclasses.replace(held, ledger=hold_ledger(answer)))
+
+
+def hold_ledger(answer: Answer) -> dict[str, Any]:
+    """Per cell, what a hold kept and how the reads round it went (`--hold-mask`), each count a list over the cells with its
+    largest beside it:
+    - `held_px`, `soft_px`, `air_px`: the mask's pixels, the pixels not opaque held round it, the clear ones kept round it;
+    - `short_px`: pixels read short of their move; `renormalised_px`, `walked_px`: those whose four pixels still took a kept
+      one, read from the others or walked back further (`draw_held`);
+    - `read_folded_px`: opaque pixels of the drawn cell, not kept nor beside a kept one (4-neighbours), whose read takes 0
+      or less of the source's area (`jacobian` of the move each read took: the source read backwards), and
+      `read_folded_edge_px` those beside a kept one, where the part moves under it and the read is meant to jump;
+    - `read_least`: the least area a read of the first kind takes, and where (area, x, y; None where none moves);
+    - `read_turn_folded_px` and `read_turn_least`: the same for those of the first kind where the read turns from the
+      whole move to the share round the hold (`read_share`): some of the pixel and its 4-neighbours read the whole move
+      and some less, the two mixed between neighbours, where the bound on the read's area does not hold."""
+    keys = ("held_px", "soft_px", "air_px", "short_px", "renormalised_px", "walked_px", "read_folded_px", "read_folded_edge_px",
+            "read_least", "read_turn_folded_px", "read_turn_least")
+    ledger: dict[str, list[Any]] = {key: [] for key in keys}
+    for k in range(len(answer.cells)):
+        drawn, read = answer.held_cell(k)
+        mask, held, air = read["mask"], read["held"], read["air"]
+        kept = held | air
+        h, w = mask.shape
+        area = np.ones((h, w))
+        area[1:-1, 1:-1] = jacobian(read["read_x"], read["read_y"])
+        counted = np.zeros((h, w), bool)
+        counted[1:-1, 1:-1] = True
+        counted &= (np.asarray(drawn.getchannel("A")) >= ALPHA_SOLID) & ~kept
+        beside = _grow4(kept, 1)
+        folded = counted & (area <= 0)
+        ledger["held_px"].append(int(mask.sum()))
+        ledger["soft_px"].append(int((held & ~mask).sum()))
+        ledger["air_px"].append(int(air.sum()))
+        ledger["short_px"].append(int((read["readers"] & (read["share"] < 1)).sum()))
+        ledger["renormalised_px"].append(int(read["renormalised"].sum()))
+        ledger["walked_px"].append(int(read["walked"].sum()))
+        ledger["read_folded_px"].append(int((folded & ~beside).sum()))
+        ledger["read_folded_edge_px"].append(int((folded & beside).sum()))
+        live = counted & ~beside & read["readers"]
+        sp = np.pad(read["share"], 1, mode="edge")
+        around = [read["share"], sp[:-2, 1:-1], sp[2:, 1:-1], sp[1:-1, :-2], sp[1:-1, 2:]]
+        turn = live & (np.minimum.reduce(around) < 1) & (np.maximum.reduce(around) >= 1)
+        ledger["read_turn_folded_px"].append(int((folded & turn).sum()))
+        for key, where in (("read_least", live), ("read_turn_least", turn)):
+            if where.any():
+                y, x = divmod(int(np.argmin(np.where(where, area, np.inf))), w)
+                ledger[key].append([round(float(area[y, x]), 4), x, y])
+            else:
+                ledger[key].append(None)
+    out: dict[str, Any] = {}
+    for key in keys:
+        out[key] = ledger[key]
+        if key.endswith("_px"):
+            out[f"{key}_max"] = max(ledger[key], default=0)
+    return out
+
+
+def hold_notes(record: dict[str, Any], verb: str = VERB, at: str = f"{loop_mod.SWAY_RECORD}.hold") -> list[str]:
+    """What to say of a hold's record (`--hold-mask`), a line each, as warnings: the cells a piece of the mask was carried
+    by the lay in and why, and the reads round it that took a kept pixel or turned back — in how many cells, up to how many
+    pixels and in which cell, and where in the record (`at`)."""
+    hold, notes = record["hold"], []
+    by_piece: dict[int, list[dict[str, Any]]] = {}
+    for entry in hold["lay"]:
+        by_piece.setdefault(entry["piece"], []).append(entry)
+    for i, entries in sorted(by_piece.items()):
+        whys = "; ".join(f"cell {e['cell']}: {e['why']}" for e in entries)
+        notes.append(f"{verb}: warning: --hold-mask carries its piece {i} by the body's lay in {len(entries)} cells, its own "
+                     f"pixels not found surely ({whys}) — {at}.lay")
+    ledger, n = hold["ledger"], len(hold["ledger"]["held_px"])
+    said = {"renormalised_px": "reads took a kept pixel and were read from the others",
+            "walked_px": "reads took a kept pixel and were walked back further",
+            "read_folded_px": "reads take the source backwards (0 or less of its area)"}
+    for key, what in said.items():
+        counts = ledger[key]
+        cells = [k for k, count in enumerate(counts) if count]
+        if not cells:
+            continue
+        top = max(range(n), key=lambda k: counts[k])
+        notes.append(f"{verb}: warning: --hold-mask: {what} in {len(cells)} of {n} cells, up to {ledger[key + '_max']} px (cell "
+                     f"{top}) — {at}.ledger.{key}")
+    return notes
+
+
 def _keep_floor(ask: Ask, radii: list[float], gains: list[float], held: list[bool],
                 move: tuple[np.ndarray, np.ndarray], verb: str) -> tuple[list[float], list[bool], dict[str, Any]]:
     """The fold rule's gains (`gains`, 0 where `held`) lowered where a region's move would leave a pixel less than
@@ -1549,10 +2047,11 @@ def sway_loop(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float |
               on_fold: str = "refuse", read_on: str | None = None, stretch_floor: float | None = None,
               breathe: Path | None = None, lag: float | None = None, gain_across: float | None = None,
               band: float | str | None = None, band_margin: float | str | None = None,
-              band_up: tuple[float, float | str] | str | None = None, verb: str = VERB) -> dict[str, Any]:
+              band_up: tuple[float, float | str] | str | None = None, hold_mask: Path | None = None,
+              verb: str = VERB) -> dict[str, Any]:
     request = read_request(loop_dir, regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on,
                            stretch_floor=stretch_floor, breathe=breathe, lag=lag, gain_across=gain_across, band=band,
-                           band_margin=band_margin, band_up=band_up, verb=verb)
+                           band_margin=band_margin, band_up=band_up, hold_mask=hold_mask, verb=verb)
     loop_dir, name, meta_path, meta = request.loop_dir, request.name, request.meta_path, request.meta
     strip_path = request.strip_path
     source = request.source_path
@@ -1605,7 +2104,7 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                 stretch_floor: float | None = None, breathe: Path | None = None, lag: float | None = None,
                 gain_across: float | None = None, reference: Path | None = None, band: float | str | None = None,
                 band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None,
-                verb: str = VERB) -> dict[str, Any]:
+                hold_mask: Path | None = None, verb: str = VERB) -> dict[str, Any]:
     """The sway of a folder of a cycle's frames — a loop's `cycle/`, or what `sprite-gen breathe` wrote from it — at their
     own size and count, past the strip's caps on cells and width: the same frames under the same names, the regions
     (in frame pixels) moved, and `sway.json` beside them, written whole into a new folder (`frames.folder`); the frames
@@ -1618,7 +2117,7 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
     from there, as they are on the loop's own cells."""
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
                    breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
-                   verb=verb)
+                   hold_mask=hold_mask, verb=verb)
     if ask.read_on is not None:
         raise SystemExit(f"{verb}: --read-on names the strip as cut that the regions were read on; frames are read as they are")
     if ask.breath is not None and fps is not None:
@@ -1733,6 +2232,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="with --band: above the centre the flat part stops FLAT (over 0, at most 1) of the region's height over "
                              f"it and the weight falls over PX from there ({AUTO}, the default: the band, or to {HANG_PAST:g} px over the "
                              "region's top where that is further): the upper part gives, the rest moves whole. Default: above as below")
+    parser.add_argument("--hold-mask", type=Path, default=None, metavar="MASK.png|DIR",
+                        help="with --band: pixels the band moves round and leaves as they are (an arm hanging over the part, a dress "
+                             "below it), a PNG drawn on the cell the regions were read on (alpha, or light where it has none, "
+                             f"{ALPHA_SOLID} or more holds), each piece carried into every cell by its own pixels and grown by "
+                             f"{HOLD_GROW} px; or a folder of one PNG per cell in name order, held as given. The pixels not opaque round "
+                             "it and the air beside it are kept too, and a read headed into them stops short, its share of the move "
+                             f"rising by {HOLD_SLOPE:g} a px from them. Off by default")
     parser.add_argument("--board", type=Path, help="write a before/after picture at the frames where the part sits lowest and highest")
 
 
@@ -1772,7 +2278,7 @@ def run(**kwargs: object) -> int:
              "on_fold": str(kwargs.get("on_fold") or "refuse"), "read_on": kwargs.get("read_on"),
              "stretch_floor": kwargs.get("stretch_floor"), "breathe": kwargs.get("breathe"), "lag": kwargs.get("lag"),
              "gain_across": kwargs.get("gain_across"), "band": kwargs.get("band"), "band_margin": kwargs.get("band_margin"),
-             "band_up": kwargs.get("band_up")}
+             "band_up": kwargs.get("band_up"), "hold_mask": kwargs.get("hold_mask")}
     if kwargs.get("frames") is not None:
         if kwargs.get("out") is None:
             raise SystemExit(f"{verb}: --frames needs --out, a new folder for the swayed frames")
@@ -1791,6 +2297,9 @@ def run(**kwargs: object) -> int:
     if "band" in result:
         for note in band_notes(result, verb, f"{FRAMES_RECORD} band" if where == "out" else f"{loop_mod.SWAY_RECORD}.band"):
             print(note, file=sys.stderr)
+    if "hold" in result:
+        for note in hold_notes(result, verb, f"{FRAMES_RECORD} hold" if where == "out" else f"{loop_mod.SWAY_RECORD}.hold"):
+            print(note, file=sys.stderr)
     print(json.dumps({k: result[k] for k in (where, "regions", "gain", "gain_requested", "on_fold", "body_bob_px", "reach_px")}
                      | ({"region_gains": [entry["gain"] for entry in fold["regions"]]} if own else {})
                      | ({"drive": result["drive"]["kind"]} if "drive" in result else {})
@@ -1798,6 +2307,9 @@ def run(**kwargs: object) -> int:
                      | ({"stretch_floor": result["stretch"]["floor"]} if "stretch" in result else {})
                      | ({"band": {"band_px": result["band"]["band_px"], "margin_px": result["band"]["margin_px"],
                                   "lay_cells": sorted({entry["cell"] for entry in result["band"]["lay"]})}} if "band" in result else {})
+                     | ({"hold": {"pieces": len(result["hold"]["pieces"]),
+                                  "lay_cells": sorted({entry["cell"] for entry in result["hold"]["lay"]}),
+                                  "read_folded_px_max": result["hold"]["ledger"]["read_folded_px_max"]}} if "hold" in result else {})
                      | ({"board": result["board"]} if "board" in result else {}), ensure_ascii=False, indent=2))
     return 0
 

@@ -453,9 +453,9 @@ def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
     cli.COMMANDS[cli.VERB_ALIASES['video-follow'][0]][1](parsers[0])
     add_arguments(parsers[1])
     followed, inspected = vars(parsers[0].parse_args(asked)), vars(parsers[1].parse_args([*asked, '--out-dir', str(out)]))
-    # video-sway's own: its board, the frames path beside the loop directory, and the band (`--band`), whose carry by the
-    # region's own pixels the inspection does not read
-    own = {'board', 'frames', 'out', 'fps', 'reference', 'band', 'band_margin', 'band_up'}
+    # video-sway's own: its board, the frames path beside the loop directory, the band (`--band`), whose carry by the
+    # region's own pixels the inspection does not read, and the pixels a band leaves as they are (`--hold-mask`)
+    own = {'board', 'frames', 'out', 'fps', 'reference', 'band', 'band_margin', 'band_up', 'hold_mask'}
     assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == own
     assert {key: inspected[key] for key in followed if key not in own} == {key: value for key, value in followed.items() if key not in own}
     capsys.readouterr()
