@@ -16,9 +16,12 @@ The walker is a back diagonal seen from behind: legs side by side swinging half 
 opposite, the arm on the facing side bright and the other dim, a light panel on the torso and the cheek on the head
 toward the facing. Over a turn the facing goes over to the still's mirror and back (`facing` 1 the still's three-quarter
 view, 0 square from behind, under 0 past it), the arms' tones crossing. A walker drawn square from behind (`square`) is
-the back walk whose still shows no side. A frame the reading cannot read — no head to centre on, no solid pixel across
-the still's torso rows, a crop of no width or with nothing in it, no frames — is not read, never read as 0 or as a
-middle no pixel holds. Synthetic frames only."""
+the back walk whose still shows no side; taken into its stride, or with a piece beside its head in the still, its still
+shows one its walk does not, each frame's mirror a frame of the walk half a stride on, and the walk, as near the still's
+mirror as the still at the median (WALK_SIDE_MIN), is not read — as a walk that turned to square and stayed is not: the
+frames alone do not tell the two apart, and a warning line says so. A frame the reading cannot read — no head to centre
+on, no solid pixel across the still's torso rows, a crop of no width or with nothing in it, no frames — is not read,
+never read as 0 or as a middle no pixel holds. Synthetic frames only."""
 
 from __future__ import annotations
 
@@ -52,10 +55,10 @@ def _facing(turns, t: float, low: float = LOW, edge: int = 3) -> float:
     return f
 
 
-def _walker(k: int, *, turns=(), every: tuple[int, int] | None = None, hold: int = 1, square: bool = False,
-            hood: bool = False, lead: int = 0, staff=(), apart=None, speck=(), speck_side: int = 3,
-            speck_at: tuple[int, int] | None = None, speck_xy: tuple[int, int] | None = None, loose: str | None = None,
-            joined=(), part: str | None = None, cut=(), droop: int = 0) -> Image.Image:
+def _walker(k: int, *, turns=(), every: tuple[int, int] | None = None, low: float = LOW, hold: int = 1,
+            square: bool = False, hood: bool = False, lead: int = 0, staff=(), apart=None, speck=(),
+            speck_side: int = 3, speck_at: tuple[int, int] | None = None, speck_xy: tuple[int, int] | None = None,
+            loose: str | None = None, joined=(), part: str | None = None, cut=(), droop: int = 0) -> Image.Image:
     """The walker's frame `k`: turning over `turns`, or `every` (at, span) frames of each cycle; drawn on `hold`s;
     square from behind (`square`); hooded, its head and shoulders one shape that widens downward with no neck (`hood`);
     filmed smaller over its first `lead` frames, from 0.6 of its size, about its feet (a lead-in); over the frames in
@@ -68,15 +71,16 @@ def _walker(k: int, *, turns=(), every: tuple[int, int] | None = None, hold: int
     frames in `joined`); where `part` is given, a thin part of its own joined to its head and cut loose over the frames
     in `cut` (its joining pixel transparent): an antenna over the head's right (`antenna`, a pixel wide, 31 px tall), or
     a whisker right of it (`whisker`, a pixel tall, 30 px from the head joined, 29 px from the pixel after cut loose,
-    `droop` rows lower then)."""
+    `droop` rows lower then). A turn goes over to `low`: LOW, past the still's mirror, or 0, square from behind."""
     t = k - k % hold
     ph = 2 * math.pi * t / CYCLE
     if square:
         f = 0.0
     elif every is not None:
-        f = _facing([(every[0] + c * CYCLE, every[0] + c * CYCLE + every[1]) for c in range(-1, FRAMES // CYCLE + 2)], t)
+        spans = [(every[0] + c * CYCLE, every[0] + c * CYCLE + every[1]) for c in range(-1, FRAMES // CYCLE + 2)]
+        f = _facing(spans, t, low)
     else:
-        f = _facing(turns, t)
+        f = _facing(turns, t, low)
     im = Image.new("RGBA", (W, H))
     d = ImageDraw.Draw(im)
     x, y = 150, 40 + round(3 * math.cos(2 * ph))
@@ -268,11 +272,13 @@ def test_a_turn_is_counted_in_frames_however_the_walk_is_held():
 
 
 @pytest.mark.slow
-def test_a_lead_in_is_read_against_the_still(tmp_path):
+def test_a_lead_in_is_read_against_the_still(tmp_path, monkeypatch):
     """The reference is the clip's first frame, the still, lead-in or not (the first 8 frames filmed from 0.6 of the
     size, which the search leaves out): the turn reads over the frames it reads over without the lead-in, and the walk
     where it does not turn stays clear of 0. Read from the first frame after the lead-in — a stride's pose, whose mirror
-    the walk draws half a cycle on — a walk that does not turn reads a turn every stride."""
+    the walk draws half a cycle on — a walk that does not turn reads a turn every stride with WALK_SIDE_MIN at 0 (as
+    e54dc9c read it); its walk lies as near that frame's mirror as the frame at the median, as a square walk's does, and
+    it is not read."""
     from sprite_gen.video import body_turn
 
     report = _cut(tmp_path / "out", _keyed(tmp_path, turns=[TURN], lead=8))
@@ -284,6 +290,9 @@ def test_a_lead_in_is_read_against_the_still(tmp_path):
     assert min(v for k, v in enumerate(turn["side"]) if k >= skip and not led["from"] - 2 <= k <= led["to"] + 2) > 0.1
     steady = _frames(lead=8)
     assert body_turn.read(steady)["turns"] == []
+    after = body_turn.read(steady[skip:])
+    assert after["read"] is False and abs(after["walk_side"]) < body_turn.WALK_SIDE_MIN
+    monkeypatch.setattr(body_turn, "WALK_SIDE_MIN", 0.0)
     assert len(body_turn.read(steady[skip:])["turns"]) >= 2
 
 
@@ -599,8 +608,10 @@ def test_the_stills_side_is_read_about_its_nearest_mirror(monkeypatch):
     6 px right of the head in the still of the walker seen square moves its centre 1.4 px; about its nearest mirror the
     still lies 0.060 off it, under SIDE_SHOWN_MIN, and the walk is not read (torso-side-v1, about the centre the column
     moved, read it 0.199 off its mirror, and turns). About the axes within 2 px (GUARD 2), or a pixel apart (STEP 1), it
-    lies 0.093 off its mirror, and the walk, read, reads turns it does not make; with SIDE_SHOWN_MIN under its 0.060
-    (0.06), too. Over the hooded walker's 0.090 (0.095), the hooded walker is not read."""
+    lies 0.093 off its mirror; with SIDE_SHOWN_MIN under its 0.060 (0.06), the still is read too. Its walk lies as near
+    the still's mirror as the still (0.000 at the median), under WALK_SIDE_MIN, and is not read; with WALK_SIDE_MIN at
+    0 as well, read, it reads turns it does not make. Over the hooded walker's 0.090 (0.095), the hooded walker is not
+    read."""
     from sprite_gen.video import body_turn
 
     square = _beside(_frames(square=True), (0,), (3, 12))
@@ -611,9 +622,79 @@ def test_the_stills_side_is_read_about_its_nearest_mirror(monkeypatch):
         with monkeypatch.context() as m:
             m.setattr(body_turn, bound, value)
             read = body_turn.read(square)
+            assert read["read"] is False and read["still_side"] >= body_turn.SIDE_SHOWN_MIN, bound
+            assert abs(read["walk_side"]) < 0.005 and read["why"].startswith("the walk is seen square"), bound
+            m.setattr(body_turn, "WALK_SIDE_MIN", 0.0)
+            read = body_turn.read(square)
         assert read["read"] and read["turns"], bound
     monkeypatch.setattr(body_turn, "SIDE_SHOWN_MIN", 0.095)
     assert body_turn.read(_frames(hood=True))["read"] is False
+
+
+@pytest.mark.parametrize("taken, piece", [(6, None), (3, None), (9, None), (1, (6, 6)), (2, (3, 12)), (11, (2, 18))],
+                         ids=["half-a-stride-on", "3-frames-on", "9-frames-on", "1-frame-on-6x6-beside",
+                              "2-frames-on-3x12-beside", "11-frames-on-2x18-beside"])
+def test_a_square_walk_whose_still_shows_a_side_is_not_read(monkeypatch, taken, piece):
+    """WALK_SIDE_MIN: the walker seen square from behind, its still taken `taken` frames into its stride (half a stride
+    on, the arms swung furthest apart), alone or with a 36 px piece beside its head in the still: its still lies 0.096
+    to 0.148 off its mirror, over SIDE_SHOWN_MIN, and read against it the walk reads a turn every stride, each frame's
+    mirror a frame of the walk half a stride on (e54dc9c read the walker taken 6 frames on turned over frames 7-17,
+    31-41 and 55-65). Its walk's head and shoulders lie as near the still's mirror as the still, 0.000 at the median,
+    under WALK_SIDE_MIN: not read, and cut as the search alone cuts it."""
+    from sprite_gen.video import body_turn
+
+    frames = [_walker(k + taken, square=True) for k in range(FRAMES)]
+    if piece:
+        frames = _beside(frames, (0,), piece)
+    read = body_turn.read(frames)
+    assert read["still_side"] >= body_turn.SIDE_SHOWN_MIN
+    assert read["read"] is False and read["turns"] == [] and abs(read["walk_side"]) < 0.005
+    assert read["why"].startswith("the walk is seen square: its frames' head and shoulders lie ")
+    monkeypatch.setattr(body_turn, "WALK_SIDE_MIN", 0.0)
+    assert len(body_turn.read(frames)["turns"]) == 3
+
+
+def test_a_walk_is_read_where_its_head_and_shoulders_lie_0_045_nearer_either_side():
+    """WALK_SIDE_MIN 0.045, between the synthetic walks seen at an angle, their frames' head and shoulders 0.07 nearer
+    the still's than their mirror at the median or more (the side walker with a 60 px tail on a beat of its own 0.072;
+    the hooded walker turning over frames 30-40 0.086, the plain walker 0.101), and those seen square whose still shows
+    a side, 0.000."""
+    from sprite_gen.video import body_turn
+
+    assert body_turn.WALK_SIDE_MIN == 0.045
+    for drawn in ({}, {"hood": True}, {"lead": 8}, {"turns": [TURN]}, {"turns": [TURN], "hood": True},
+                  {"every": (6, 8)}, {"turns": [TURN], "hold": 2}):
+        read = body_turn.read(_frames(**drawn))
+        assert read["read"] and 0.08 < read["walk_side"] < 0.11, drawn
+    read = body_turn.read(_tail())
+    assert read["read"] and 0.07 < read["walk_side"] < 0.075
+    for taken in (3, 6, 9):
+        read = body_turn.read([_walker(k + taken, square=True) for k in range(FRAMES)])
+        assert read["read"] is False and abs(read["walk_side"]) < 0.005, taken
+
+
+@pytest.mark.parametrize("turns, walk, turned", [((18, 53), "read", (20, 51)), ((16, 55), "not read", None),
+                                                 ((14, 57), "read", (16, 55))],
+                         ids=["36-of-73", "40-of-73", "44-of-73"])
+def test_a_walk_turned_over_about_half_its_frames_is_not_read(turns, walk, turned):
+    """The walker turned to its mirror over 36 of its 73 frames lies nearer the still's side at the median, over 44
+    past its mirror's (walk_side under 0): each is read, its turn with it, and no warning. Over 40, half its frames on
+    either side, it lies as near the still's mirror as the still, as a square walk does, and is not read — a limit of
+    the reading, named in docs/video-pipeline.md (e54dc9c read its turn over frames 18-53) — with the warning line
+    (`square`), as the walker turned over 15 frames of each 24-frame cycle is."""
+    from sprite_gen.video import body_turn
+
+    read = body_turn.read(_frames(turns=[turns]))
+    if walk == "read":
+        assert read["read"] and abs(read["walk_side"]) >= body_turn.WALK_SIDE_MIN
+        assert [(t["from"], t["to"]) for t in read["turns"]] == [turned]
+        assert (read["walk_side"] < 0) == (turns[1] - turns[0] + 1 > FRAMES / 2)
+        assert body_turn.square(read) is None
+    else:
+        assert read["read"] is False and abs(read["walk_side"]) < 0.005 and read["turns"] == []
+        assert "or to its mirror" in body_turn.square(read)
+        every = body_turn.read(_frames(every=(8, 15)))
+        assert every["read"] is False and abs(every["walk_side"]) < 0.005 and body_turn.square(every)
 
 
 def test_each_frame_is_read_at_its_best_within_tol(monkeypatch):
@@ -774,11 +855,38 @@ def test_a_turn_every_cycle_keeps_the_cut_with_a_warning_or_is_refused(tmp_path,
 
 @pytest.mark.slow
 @pytest.mark.parametrize("drawn", [{}, {"square": True}], ids=["diagonal", "square"])
-def test_a_walk_that_does_not_turn_is_cut_as_before(tmp_path, monkeypatch, drawn):
-    """No turn — read and none found, or a square still not read — and the cut is every byte the search alone made."""
+def test_a_walk_that_does_not_turn_is_cut_as_before(tmp_path, monkeypatch, capsys, drawn):
+    """No turn — read and none found, or a square still not read — and the cut is every byte the search alone made;
+    no warning line on either (the square still, showing no side, is left unread before its walk is read)."""
     keyed = _keyed(tmp_path, **drawn)
+    capsys.readouterr()
     report = _cut(tmp_path / "read", keyed)
     assert report["body_turn"]["verdict"] == ("none" if not drawn else "not-read")
+    assert "the walk reads square" not in capsys.readouterr().err
+    with monkeypatch.context() as m:
+        _unread(m)
+        _cut(tmp_path / "unread", keyed)
+    _same_cut(tmp_path / "read", tmp_path / "unread")
+
+
+@pytest.mark.slow
+def test_a_walk_turned_to_face_the_camera_and_held_is_cut_as_before_with_a_warning(tmp_path, monkeypatch, capsys):
+    """The walker turned to square at frame 24 and held there to the end (49 of its 73 frames, as a side walk that turns
+    to face the camera and walks on toward it): its frames lie as near the still's mirror as the still at the median
+    (0.006), as a front walk's do with a piece beside the head in its still — the frames alone do not tell the two
+    apart, and e54dc9c read this one turned at every stride after frame 27. Not read, it is cut every byte as the search
+    alone cuts it, and a warning line says the walk reads square against a still that shows a side, with both
+    readings."""
+    keyed = _keyed(tmp_path, turns=[(24, 200)], low=0.0)
+    capsys.readouterr()
+    report = _cut(tmp_path / "read", keyed)
+    turn = report["body_turn"]
+    assert turn["read"] is False and turn["verdict"] == "not-read" and abs(turn["walk_side"]) < 0.01
+    assert turn["why"].startswith("the walk is seen square")
+    (line,) = [x for x in capsys.readouterr().err.splitlines() if "the walk reads square" in x]
+    assert line.startswith("video-loop: warning: the walk reads square against a still that shows a side (still_side ")
+    assert f"still_side {turn['still_side']:.3f}, walk_side {turn['walk_side']:+.3f}," in line
+    assert "to face the camera, or to its mirror" in line and line.endswith("check the loop's facing")
     with monkeypatch.context() as m:
         _unread(m)
         _cut(tmp_path / "unread", keyed)

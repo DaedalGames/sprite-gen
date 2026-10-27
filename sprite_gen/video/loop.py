@@ -2021,12 +2021,15 @@ def _cut_loop(
             # The body's turn (sprite_gen/video/body_turn.py), read on the clip as keyed against its first frame, the still,
             # lead-in or not: a cut that holds a frame of one is not taken while another holds a cycle. Where none does,
             # --body-turn warn takes the cut the search takes with the turn in, and says so; refuse refuses the clip in a line
-            # of its own. A clip that turns nowhere is searched once, as before.
+            # of its own. A clip that turns nowhere is searched once, as before; one whose walk reads square against a
+            # still that shows a side is not read either, and a warning line says so.
             turning = {**body_turn_mod.read(gait_frames), "mode": body_turn}
             report_base["body_turn"] = turning
             turn = body_turn_mod.Turn(turning, skip) if turning["turns"] else None
             if turn is None:
                 turning["verdict"] = "none" if turning["read"] else "not-read"
+                if seen := body_turn_mod.square(turning):
+                    print(f"video-loop: warning: {seen}", file=sys.stderr)
             said: dict[str, Any] = {}
             found = avoided = None
             if turn is not None:

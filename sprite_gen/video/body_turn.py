@@ -16,7 +16,7 @@ size for 8 frames reads +0.87 at least where it does not turn (+0.92 filmed from
 the turn over the frames it reads it over filmed from its own size, a turn of 4 frames too (turning over frames 30-40,
 least -0.71 against -0.63).
 
-Three named bounds:
+Four named bounds:
 
 - SIDE_SHOWN_MIN: how far the still's head and shoulders (the top 45 % of its body) lie off their nearest mirror
   (1 - s.m; GUARD, below) for the clip to be read at all. Under it the still is seen square — a front or back walk,
@@ -24,6 +24,23 @@ Three named bounds:
   a diagonal is not seen. 0.08 lies between the synthetic walkers seen at an angle, 0.090 off it or more (the hooded
   one; the plain one 0.102), and the one seen square from behind with a 36 px piece beside its head in the still,
   0.060 at most.
+- WALK_SIDE_MIN: how much nearer the still's head and shoulders than their mirror the walk's lie at the median, or
+  nearer the mirror's, for the clip to be read (`walk_side`: each frame after the still, its top 45 % cropped about its
+  own head as wide as the still's, against the still's and against its mirror, each at its nearest about the axes
+  within GUARD px of the still's centre, v.s - v.m). Under it either way the walk is seen square: a front or back walk
+  whose still shows a side its walk does not — a piece beside the head in the still alone, or the still taken where
+  the arms swing apart — lies as near the still's mirror as the still, each frame's mirror a frame of the walk half a
+  stride on, and read against the still it reads a turn every stride (the synthetic walker seen square from behind,
+  taken 6 frames into its stride, its still 0.148 off its mirror: turns over frames 7-17, 31-41 and 55-65; its walk
+  0.000 at the median). A walk seen at an angle lies nearer the still's side (the plain walker 0.101, the hooded one
+  0.090); one turned past the still's mirror over most of its frames lies nearer the mirror's, under 0, and is read with
+  its turn. 0.045 lies between the synthetic walkers seen at an angle, 0.061 at least (the side walker of
+  tests/video/test_walk_steps.py with a 60 px tail on a beat of its own), and those seen square: 0.000 with a piece
+  beside the head or the arms swung apart in the still, 0.013 the front walker of tests/video/test_walk_steps.py with a
+  70 px tail. The frames alone do not tell a front or back walk whose still shows a side from a body that turned for
+  much of its walk, to face the camera or to its mirror (its frames square at the median, its still at an angle; the
+  named limits below): each is left unread, and `video-loop` says so in a warning line (`square`), the cut as the search
+  alone cuts it.
 - TURN_SIDE_MAX: a frame whose torso reads under it is turned.
 - TURN_RUN_MIN: a turn is that many turned frames in a row or more, counted in frames — the time the clip plays them —
   not in drawings: a walk held on twos holds a turn as long as one drawn on ones does, in half the drawings. A shorter
@@ -63,9 +80,10 @@ stride. So each crop is read about the axes STEP (a quarter of a pixel) apart ei
 as wide as the centre's:
 
 - GUARD: the still's head and shoulders lie off their nearest mirror about any axis within 2.5 px of the centre — the
-  side SIDE_SHOWN_MIN bounds. The walker seen square from behind with that column 6 px beside its head in the still
-  lies 0.060 off it; about the axes within 2 px, or a pixel apart, 0.093, and the walk, read, reads turns it does not
-  make.
+  side SIDE_SHOWN_MIN bounds — and each frame's lie nearer them or their mirror, each at its nearest (WALK_SIDE_MIN).
+  The walker seen square from behind with that column 6 px beside its head in the still lies 0.060 off it; about the
+  axes within 2 px, or a pixel apart, 0.093, and its walk, 0.000 at the median, is not read either way: read with
+  WALK_SIDE_MIN at 0, it reads turns it does not make.
 - TOL: each frame's torso is read against the still's torso and against its mirror, each at its nearest about any axis
   within 2 px of the still's centre. The walk with the still's centre read up to a pixel off reads no turn, no frame's
   side 0.07 from where it reads; the walker filmed small with that column beside its head over frames 30-39 reads no
@@ -90,10 +108,12 @@ read). The neck is read on the still's rows 2 % of its height apart: a box a pix
 of the grid higher or lower, and every frame's torso rows with it. A piece beside the still's head and shoulders (its
 head or an arm) can lay them under SIDE_SHOWN_MIN off their nearest mirror though the still is seen at an angle, and the
 clip is not read (34 of 2191 synthetic pieces under a hundredth of the body, placed about the heads and torsos of four
-walkers). A still seen square that a piece beside its head lays SIDE_SHOWN_MIN or more off its nearest mirror is read,
-and its walk against the side the piece shows: a front or back walk with a piece in its still alone can read turns it
-does not make (the synthetic walker seen square from behind with a 36 px piece beside its head in the still lies 0.060
-off it at most, and read with SIDE_SHOWN_MIN at 0.06, reads them). GUARD and TOL are pixels of the frame, not shares of
+walkers). A walk turned over about half its frames lies as near the still's mirror as the still at the median, as a
+square walk does, and is not read: the synthetic walker turned to its mirror over 39 to 41 of its 73 frames about their
+middle (38 to 41 hooded), or over 14 to 16 frames of each 24-frame cycle; over 38 or fewer (37 hooded), or 42 or more,
+it is read and its turn with it. One turned to square — a back-diagonal walk turned to a full back view — and held there
+over 41 of its 73 frames or more (40 hooded) is a square walk by its frames, and is not read either. Each of the three
+is left unread with the warning line (`square`), not in silence. GUARD and TOL are pixels of the frame, not shares of
 the body: a piece beside the head that moves the centre further than TOL is read about axes that do not reach the
 head's, and a larger body's margin is narrower (the plain walker drawn three times as large, the column beside its head
 in the still three times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn, least +0.31
@@ -110,6 +130,7 @@ from sprite_gen.video.frames import SPECK_MIN_FRACTION
 
 READING = "torso-side-v2"
 SIDE_SHOWN_MIN = 0.08
+WALK_SIDE_MIN = 0.045
 TURN_SIDE_MAX = 0.0
 TURN_RUN_MIN = 4
 MODES = ("warn", "refuse")  # --body-turn: a cut that holds a turn, where none without it holds a cycle, warned of or refused
@@ -121,13 +142,14 @@ HEAD_SHARE = 0.15  # the head's centre: the middle of the solid pixels of the to
 HEAD_CORE = 0.5  # ... in the columns holding at least this share of the fullest one
 HEAD_REACH = 0.3  # ... of those within this share of the body's height of it, read again until it settles
 # The axes the still is read about besides its head's centre, STEP px apart: its head and shoulders against their
-# nearest mirror about any within GUARD px (the side SIDE_SHOWN_MIN bounds), each frame against its torso and its
-# torso's mirror, each at its best, about any within TOL px.
+# nearest mirror about any within GUARD px (the side SIDE_SHOWN_MIN bounds), and each frame's against them and their
+# mirror (the walk's side, WALK_SIDE_MIN); each frame against its torso and its torso's mirror, each at its best, about
+# any within TOL px.
 GUARD = 2.5
 TOL = 2.0
 STEP = 0.25
 PAD = 4  # px of the frame either side of a crop's box, read by the resampling filter
-UPPER = (0.0, 0.45)  # the still's head and shoulders, read for SIDE_SHOWN_MIN
+UPPER = (0.0, 0.45)  # the head and shoulders, read for SIDE_SHOWN_MIN and WALK_SIDE_MIN
 NECK_RANGE = (0.10, 0.55)  # where the neck is looked for, in shares of the body's height from its top
 ROWS = np.arange(0.01, 1.0, 0.02)  # the rows the profile is read at, each 2 % of the height tall
 CROP = (48, 64)  # every crop is read at this size
@@ -270,10 +292,11 @@ def turns(side: list[float | None]) -> list[dict[str, Any]]:
 def read(frames: list[Image.Image]) -> dict[str, Any]:
     """The clip's facing against its first frame (`frames`, the clip as keyed, RGBA): the record the loop report keeps
     (`body_turn`) — the reading, its bounds, the frame read against (`reference`), the still's own side (`still_side`),
-    whether it was read (`why` where not), the neck, each frame's `side` and the `turns`. A frame not read is None in
-    `side`, and `unread` says why, each why with its frames (where any is)."""
-    out: dict[str, Any] = {"reading": READING, "bounds": {"SIDE_SHOWN_MIN": SIDE_SHOWN_MIN, "TURN_SIDE_MAX": TURN_SIDE_MAX,
-                                                          "TURN_RUN_MIN": TURN_RUN_MIN},
+    whether it was read (`why` where not), the neck, the walk's side (`walk_side`: the median of the frames after the
+    still, where any is read), each frame's `side` and the `turns`. A frame not read is None in `side`, and `unread`
+    says why, each why with its frames (where any is)."""
+    out: dict[str, Any] = {"reading": READING, "bounds": {"SIDE_SHOWN_MIN": SIDE_SHOWN_MIN, "WALK_SIDE_MIN": WALK_SIDE_MIN,
+                                                          "TURN_SIDE_MAX": TURN_SIDE_MAX, "TURN_RUN_MIN": TURN_RUN_MIN},
                            "reference": 0, "turns": []}
     if not frames:
         return {**out, "read": False, "still_side": None, "why": "the clip has no frames"}
@@ -284,8 +307,8 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     upper = _windows(first, still, UPPER, GUARD)
     if isinstance(upper, str):
         return {**out, "read": False, "still_side": None, "why": f"the clip's first frame {upper}"}
-    crops, mirrors, _ = upper
-    out["still_side"] = round(1 - float((mirrors @ crops[len(crops) // 2]).max()), 4)
+    uppers, umirrors, uheld = upper
+    out["still_side"] = round(1 - float((umirrors @ uppers[len(uppers) // 2]).max()), 4)
     if out["still_side"] < SIDE_SHOWN_MIN:
         return {**out, "read": False,
                 "why": f"the still is seen square: its head and shoulders lie {out['still_side']:.2f} off their mirror, under "
@@ -302,6 +325,7 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     if shown <= 1e-6:
         return {**out, "read": False, "why": "the still's torso is its own mirror: no side to read it by"}
     side: list[float | None] = []
+    walk: list[float] = []
     unread: dict[str, list[int]] = {}
     for k, frame in enumerate(frames):
         body = _body(frame)
@@ -312,6 +336,17 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
             continue
         v, _, _ = crop
         side.append(round((float((crops @ v).max()) - float((mirrors @ v).max())) / shown, 4))
+        top = _crop(frame, body, UPPER, uheld) if k else None
+        if top is not None and not isinstance(top, str):
+            walk.append(float((uppers @ top[0]).max()) - float((umirrors @ top[0]).max()))
+    if walk:
+        out["walk_side"] = round(float(np.median(walk)), 4)
+        if abs(out["walk_side"]) < WALK_SIDE_MIN:
+            return {**out, "read": False,
+                    "why": f"the walk is seen square: its frames' head and shoulders lie {out['walk_side']:+.3f} "
+                           f"nearer the still's than their mirror at the median, under {WALK_SIDE_MIN:g} either way (a "
+                           "front or back walk, or a body that turned for much of the walk), and its facing is not "
+                           "read"}
     out = {**out, "read": True, "side": side, "turns": turns(side)}
     if unread:
         out["unread"] = [{"frames": ks, "why": why} for why, ks in unread.items()]
@@ -362,6 +397,20 @@ def _over(reading: dict[str, Any]) -> str:
     return (f"its torso faces nearer the still's mirror than the still over frames {' and '.join(spans)} (least "
             f"{least['least']:+.2f} at frame {least['at']}; a turn is a torso under {TURN_SIDE_MAX:g} for {TURN_RUN_MIN} "
             "frames or more)")
+
+
+def square(reading: dict[str, Any]) -> str | None:
+    """The warning of `video-loop` where the still is read and its walk reads square (WALK_SIDE_MIN): a front or back
+    walk whose still shows a side, or a body that turned for much of the walk — to face the camera (or away from it),
+    or to its mirror over about half of it — the frames alone not telling which; the clip not read, cut as the search
+    alone cuts it. None where it was not left unread so."""
+    side = reading.get("walk_side")
+    bound = reading["bounds"].get("WALK_SIDE_MIN", WALK_SIDE_MIN)
+    if reading.get("read") is not False or side is None or abs(side) >= bound:
+        return None
+    return (f"the walk reads square against a still that shows a side (still_side {reading['still_side']:.3f}, "
+            f"walk_side {side:+.3f}, under {bound:g} either way): a front or back walk, or a body that turned for much "
+            "of the walk — to face the camera, or to its mirror; its facing is not read; check the loop's facing")
 
 
 def refusal(reading: dict[str, Any], *, cut: tuple[int, int] | None = None, held: list[int] | None = None) -> str:
