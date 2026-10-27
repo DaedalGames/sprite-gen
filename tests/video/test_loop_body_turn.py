@@ -1,9 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """A walk whose body turns inside its clip (docs/video-pipeline.md section 4, "The body turn";
 sprite_gen/video/body_turn.py): each frame's torso is read between the clip's first frame and that frame mirrored
-(`torso-side-v1`), a turn is the torso under TURN_SIDE_MAX for TURN_RUN_MIN frames or more, and `video-loop --anchor
-motion-auto` takes no cut that holds a frame of one while another holds a cycle. Where none does, `--body-turn warn` (the
-default) takes the cut it took before and says so; `--body-turn refuse` refuses the clip in a line of its own.
+(`torso-side-v2`), a turn is the torso under TURN_SIDE_MAX for TURN_RUN_MIN frames or more, and `video-loop --anchor
+motion-auto` takes no cut that holds a frame of one while another holds a cycle. Where none does, `--body-turn warn`
+(the default) takes the cut it took before and says so; `--body-turn refuse` refuses the clip in a line of its own. Each
+frame is read by its mass: its box tops at the row with a hundredth of its solid pixels over it (MASS_SHARE), its head's
+centre is read on the head's fullest columns (HEAD_CORE), and the still's torso is held as wide as the columns with a
+hundredth of its torso rows' pixels beside them — a fleck or a thin part apart from the body moves none of them. Each
+crop is cut about the middle of the head's centre column, its edges where they fall, between pixels too, and each frame
+is read against the still and against its mirror, each at its best about any axis within TOL px of the still's head's
+centre (the still's own side about any within GUARD px): a body that is its own mirror crops as its own mirror, and a
+piece beside the head that moves a centre a pixel or two moves no turn.
 
 The walker is a back diagonal seen from behind: legs side by side swinging half a cycle apart, arms either side swinging
 opposite, the arm on the facing side bright and the other dim, a light panel on the torso and the cheek on the head
@@ -31,6 +38,9 @@ W, H = 300, 240
 TURN = (30, 40)  # the frames the turning walker turns over, the still's mirror reached at their middle
 LOW = -0.6  # the facing the turn reaches
 APART = 240  # how much lower the walker is drawn, on a canvas as much taller, where a part is apart above it
+SPECK = (179, 0)  # a fleck's top left on the canvas: over the head (its top row 37-43) and right of it, apart
+NEAR = (26, -18)  # ... or from the head's top middle: 6 px square, 13 px above and right of its corner
+BESIDE = (20, 2)  # ... or 6 px square, 6 px right of the head's edge and 2 under its top: in its rows, not over them
 
 
 def _facing(turns, t: float, low: float = LOW, edge: int = 3) -> float:
@@ -43,13 +53,22 @@ def _facing(turns, t: float, low: float = LOW, edge: int = 3) -> float:
 
 
 def _walker(k: int, *, turns=(), every: tuple[int, int] | None = None, hold: int = 1, square: bool = False,
-            hood: bool = False, lead: int = 0, staff=(), apart=None) -> Image.Image:
-    """The walker's frame `k`: turning over `turns`, or `every` (at, span) frames of each cycle; drawn on `hold`s; square
-    from behind (`square`); hooded, its head and shoulders one shape that widens downward with no neck (`hood`); filmed
-    smaller over its first `lead` frames, from 0.6 of its size, about its feet (a lead-in); over the frames in `staff`,
-    holding a staff beside it that bobs with it, its ornament as high as the head and apart from it, the handle in its
-    hand; where `apart` is given, drawn APART px lower on a canvas as much taller, a pennant apart above it at the top
-    over the frames in `apart`."""
+            hood: bool = False, lead: int = 0, staff=(), apart=None, speck=(), speck_side: int = 3,
+            speck_at: tuple[int, int] | None = None, speck_xy: tuple[int, int] | None = None, loose: str | None = None,
+            joined=(), part: str | None = None, cut=(), droop: int = 0) -> Image.Image:
+    """The walker's frame `k`: turning over `turns`, or `every` (at, span) frames of each cycle; drawn on `hold`s;
+    square from behind (`square`); hooded, its head and shoulders one shape that widens downward with no neck (`hood`);
+    filmed smaller over its first `lead` frames, from 0.6 of its size, about its feet (a lead-in); over the frames in
+    `staff`, holding a staff beside it that bobs with it, its ornament as high as the head and apart from it, the handle
+    in its hand; where `apart` is given, drawn APART px lower on a canvas as much taller, a pennant apart above it at
+    the top over the frames in `apart`; over the frames in `speck`, a fleck `speck_side` px square apart from it, its
+    top left at SPECK on the canvas, at `speck_xy` on it, or `speck_at` (dx, dy) from the head's top middle; where
+    `loose` is given, a part of it cut loose a transparent row or column from it: its feet's last two rows (`toes`), a
+    tail's tip beside its legs (`tail`), or an ornament beside its head (`ornament`, joined to it by a pixel over the
+    frames in `joined`); where `part` is given, a thin part of its own joined to its head and cut loose over the frames
+    in `cut` (its joining pixel transparent): an antenna over the head's right (`antenna`, a pixel wide, 31 px tall), or
+    a whisker right of it (`whisker`, a pixel tall, 30 px from the head joined, 29 px from the pixel after cut loose,
+    `droop` rows lower then)."""
     t = k - k % hold
     ph = 2 * math.pi * t / CYCLE
     if square:
@@ -85,6 +104,25 @@ def _walker(k: int, *, turns=(), every: tuple[int, int] | None = None, hold: int
         d.rectangle((267, y, 293, y + 28), fill=(90, 60, 40, 255))
         d.rectangle((278, y + 28, 282, y + 90), fill=(140, 90, 40, 255))
         d.rectangle((170, y + 70, 282, y + 74), fill=(140, 90, 40, 255))
+    if k in speck:
+        sx, sy = speck_xy or (SPECK if speck_at is None else (x + speck_at[0], y + speck_at[1]))
+        d.rectangle((sx, sy, sx + speck_side - 1, sy + speck_side - 1), fill=(250, 220, 90, 255))
+    if loose == "toes":
+        d.rectangle((0, y + 130, W - 1, y + 130), fill=(0, 0, 0, 0))
+    elif loose == "tail":
+        d.rectangle((170, y + 94, 171, y + 105), fill=(90, 60, 40, 255))
+    elif loose == "ornament":
+        d.rectangle((165, y + 2, 168, y + 8), fill=(250, 220, 90, 255))
+        if k in joined:
+            d.point((x + 14, y + 5), fill=(250, 220, 90, 255))
+    if part == "antenna":
+        d.line((x + 12, y - 31, x + 12, y - 1), fill=(250, 220, 90, 255))
+        if k in cut:
+            d.point((x + 12, y - 1), fill=(0, 0, 0, 0))
+    elif part == "whisker" and k in cut:
+        d.line((x + 15, y + 5 + droop, x + 43, y + 5 + droop), fill=(250, 220, 90, 255))
+    elif part == "whisker":
+        d.line((x + 14, y + 5, x + 43, y + 5), fill=(250, 220, 90, 255))
     if k < lead:
         s = 0.6 + 0.4 * k / lead
         small = im.resize((round(W * s), round(H * s)), Image.Resampling.LANCZOS)
@@ -232,9 +270,9 @@ def test_a_turn_is_counted_in_frames_however_the_walk_is_held():
 @pytest.mark.slow
 def test_a_lead_in_is_read_against_the_still(tmp_path):
     """The reference is the clip's first frame, the still, lead-in or not (the first 8 frames filmed from 0.6 of the
-    size, which the search leaves out): the turn reads where it reads without the lead-in, and the walk where it does
-    not turn stays clear of 0. Read from the first frame after the lead-in — a stride's pose, whose mirror the walk
-    draws half a cycle on — a walk that does not turn reads a turn every stride."""
+    size, which the search leaves out): the turn reads over the frames it reads over without the lead-in, and the walk
+    where it does not turn stays clear of 0. Read from the first frame after the lead-in — a stride's pose, whose mirror
+    the walk draws half a cycle on — a walk that does not turn reads a turn every stride."""
     from sprite_gen.video import body_turn
 
     report = _cut(tmp_path / "out", _keyed(tmp_path, turns=[TURN], lead=8))
@@ -252,7 +290,7 @@ def test_a_lead_in_is_read_against_the_still(tmp_path):
 def test_a_part_swung_up_beside_the_head_does_not_pull_its_centre(monkeypatch):
     """HEAD_REACH: the side walker with a 60 px tail on a 45-frame beat (tests/video/test_walk_steps.py, the half step),
     its tail swung up into the head's rows every swing. The head's centre read within 0.3 of the body's height of it,
-    the walker reads no turn; within 0.4 the tail pulls the centre aside and the torso reads a turn every swing (the
+    the walker reads no turn; within 0.35 the tail pulls the centre aside and the torso reads a turn every swing (the
     search then took a cut that does not close)."""
     from sprite_gen.video import body_turn
     from tests.video.test_walk_steps import _side
@@ -261,7 +299,7 @@ def test_a_part_swung_up_beside_the_head_does_not_pull_its_centre(monkeypatch):
     assert body_turn.HEAD_REACH == 0.3
     read = body_turn.read(frames)
     assert read["read"] and read["turns"] == [] and min(read["side"]) > 0
-    monkeypatch.setattr(body_turn, "HEAD_REACH", 0.4)
+    monkeypatch.setattr(body_turn, "HEAD_REACH", 0.35)
     assert len(body_turn.read(frames)["turns"]) == 2
 
 
@@ -274,6 +312,334 @@ def test_a_body_with_no_neck_reads_its_head_and_chest():
     assert hooded["neck"] == round(min(float(f) for f in body_turn.ROWS if f >= body_turn.NECK_RANGE[0]), 2)
     assert len(hooded["turns"]) == 1 and TURN[0] <= hooded["turns"][0]["from"] and hooded["turns"][0]["to"] <= TURN[1]
     assert body_turn.read(_frames(hood=True))["turns"] == []
+
+
+# --- a piece apart from the body, read by its mass -----------------------------------------------------------------
+
+
+def _flag(far: bool = False) -> list[Image.Image]:
+    """The antenna cut loose over frames 30-39, and a 25 px square flag apart from the walker low on the left over those
+    frames and on the right in the still (`far`: at the canvas's edges): over a hundredth of the body, read as its
+    own."""
+    frames = _frames(part="antenna", cut=range(30, 40))
+    for k in [0, *range(30, 40)]:
+        y = 40 + round(3 * math.cos(4 * math.pi * k / CYCLE))
+        x = (275 if far else 260) if k == 0 else (0 if far else 15)
+        ImageDraw.Draw(frames[k]).rectangle((x, y + 100, x + 24, y + 124), fill=(60, 120, 60, 255))
+    return frames
+
+
+def _tail() -> list[Image.Image]:
+    from tests.video.test_walk_steps import _side
+
+    return [_side(k, cycle=29, tail_cycle=45, tail=60, arms=False) for k in range(FRAMES)]
+
+
+SHORT = (33, 40)
+WHISKER = dict(part="whisker", cut=range(30, 40))
+NAMED = [  # (id, read as, the frames a turn lies inside, the clip): a fleck, a part cut loose, a thin part of its own
+    ("plain-steady", "none", None, lambda: _frames()),
+    ("plain-turning-30-40", "turn", TURN, lambda: _frames(turns=[TURN])),
+    ("plain-short-33-40", "turn", SHORT, lambda: _frames(turns=[SHORT])),
+    ("hold2-turning", "turn", TURN, lambda: _frames(turns=[TURN], hold=2)),
+    ("dip-3-frames", "none", None, lambda: _frames(turns=[(12, 18)])),
+    ("dip-4-frames", "turn", (12, 19), lambda: _frames(turns=[(12, 19)])),
+    ("hood-steady", "none", None, lambda: _frames(hood=True)),
+    ("hood-turning", "turn", TURN, lambda: _frames(turns=[TURN], hood=True)),
+    ("square", "unread", None, lambda: _frames(square=True)),
+    ("staff-all", "unread", None, lambda: _frames(staff=range(FRAMES))),
+    ("pennant-all", "unread", None, lambda: _frames(apart=range(FRAMES))),
+    ("side-tail-60-beat45", "none", None, _tail),
+    ("fleck3-over-head-30-39", "none", None, lambda: _frames(speck=range(30, 40))),
+    ("fleck3-over-head-10-19", "none", None, lambda: _frames(speck=range(10, 20))),
+    ("fleck6-near-30-39", "none", None, lambda: _frames(speck=range(30, 40), speck_at=NEAR, speck_side=6)),
+    ("fleck6-beside-head-still", "none", None, lambda: _frames(speck=(0,), speck_at=BESIDE, speck_side=6)),
+    ("fleck6-beside-head-still-turning", "turn", TURN,
+     lambda: _frames(speck=(0,), speck_at=BESIDE, speck_side=6, turns=[TURN])),
+    ("fleck3-over-head-30-39-turning", "turn", TURN, lambda: _frames(speck=range(30, 40), turns=[TURN])),
+    ("fleck3-where-head-bobs-still", "none", None, lambda: _frames(speck=(0,), speck_xy=(148, 37))),
+    ("fleck6-where-head-bobs-10-14", "none", None,
+     lambda: _frames(speck=range(10, 15), speck_side=6, speck_xy=(148, 35))),
+    ("toes-loose-short-33-40", "turn", SHORT, lambda: _frames(turns=[SHORT], loose="toes")),
+    ("tail-loose-turning", "turn", TURN, lambda: _frames(turns=[TURN], loose="tail")),
+    ("antenna-cut-30-39", "none", None, lambda: _frames(part="antenna", cut=range(30, 40))),
+    ("antenna-cut-30-39+flag25", "none", None, _flag),
+    ("antenna-cut-30-39+flag25-farther", "none", None, lambda: _flag(far=True)),
+    ("antenna-cut-still", "none", None, lambda: _frames(part="antenna", cut=(0,))),
+    ("antenna-cut-0-39", "none", None, lambda: _frames(part="antenna", cut=range(40))),
+    ("antenna-joined-still-alone", "none", None, lambda: _frames(part="antenna", cut=range(1, FRAMES))),
+    ("antenna-cut-30-39-turning", "turn", TURN, lambda: _frames(part="antenna", cut=range(30, 40), turns=[TURN])),
+    ("whisker-cut-30-39", "none", None, lambda: _frames(**WHISKER)),
+    ("whisker-joined-still-alone", "none", None, lambda: _frames(part="whisker", cut=range(1, FRAMES))),
+    ("whisker-cut-30-39-droop2", "none", None, lambda: _frames(**WHISKER, droop=2)),
+    ("ornament-joined-still-alone", "none", None, lambda: _frames(loose="ornament", joined=(0,))),
+    ("ornament-cut-30-39", "none", None,
+     lambda: _frames(loose="ornament", joined=[k for k in range(FRAMES) if not 30 <= k < 40])),
+    ("ornament-loose-steady", "none", None, lambda: _frames(loose="ornament")),
+    ("ornament-loose-turning", "turn", TURN, lambda: _frames(loose="ornament", turns=[TURN])),
+    ("fleck7-over-head-30-39", "turn", (30, 39), lambda: _frames(speck=range(30, 40), speck_side=7)),
+    ("lead8-plain", "none", None, lambda: _frames(lead=8)),
+    ("lead8-turning", "turn", TURN, lambda: _frames(lead=8, turns=[TURN])),
+    ("lead8-ornament-joined-still", "none", None, lambda: _frames(loose="ornament", joined=(0,), lead=8)),
+    ("lead8-ornament-joined-still-turning", "turn", TURN,
+     lambda: _frames(loose="ornament", joined=(0,), lead=8, turns=[TURN])),
+    ("lead8-antenna-cut-30-39", "none", None, lambda: _frames(lead=8, part="antenna", cut=range(30, 40))),
+]
+
+
+def _outcome(read: dict) -> str:
+    return "unread" if not read["read"] else "turn" if read["turns"] else "none"
+
+
+@pytest.mark.parametrize("expect, inside, clip", [case[1:] for case in NAMED], ids=[case[0] for case in NAMED])
+def test_a_piece_apart_from_the_body_moves_no_turn(expect, inside, clip):
+    """Each walker reads as drawn: a turn where it turns, inside the frames it turns over, and none where it does not. A
+    fleck under a hundredth of the body over the head, near it or beside it, a part of its own cut loose (its toes, a
+    tail's tip, an ornament), or a thin part joined to the head and cut loose (an antenna, a whisker) — in some frames,
+    in the still alone or in every frame but the still — moves neither the box's top nor the head's centre nor the
+    still's torso width, where torso-side-v1, reading the box from its topmost and outermost pixel, read turns the body
+    does not make (a 3 px fleck over the head over 10 frames, those frames) or none where it does (an ornament cut loose
+    beside the head). A piece apart over a hundredth of the body (a 7 px fleck over the head, 49 px) is the body's own:
+    its frames read turned, as torso-side-v1 read them — a limit of the reading, named in docs/video-pipeline.md."""
+    from sprite_gen.video import body_turn
+
+    read = body_turn.read(clip())
+    assert _outcome(read) == expect, read.get("turns") or read.get("why")
+    if expect == "turn":
+        assert body_turn.turned(read) <= set(range(inside[0], inside[1] + 1))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("part", ["antenna", "whisker"])
+def test_a_fleck_and_a_thin_part_cut_loose_over_the_same_frames_read_no_turn(part):
+    """The antenna or the whisker cut loose over frames 30-39 and a 3 px fleck over the same frames anywhere along the
+    canvas's top (x 119-239 every 4 px, y 0, 2 or 4): no turn at any — each is under a hundredth of the body, and the
+    two together too (torso-side-v1, its box topped by whichever is higher, read a turn at 34 of the 186)."""
+    from sprite_gen.video import body_turn
+
+    for dy in (0, 2, 4):
+        for dx in range(-60, 61, 4):
+            read = body_turn.read(_frames(part=part, cut=range(30, 40), speck=range(30, 40), speck_xy=(179 + dx, dy)))
+            assert read["read"] and read["turns"] == [], (179 + dx, dy)
+
+
+FEET = (182, 176)  # under the feet: 13 px right of the farthest a foot swings (x 169), under its lowest row (175)
+
+
+@pytest.mark.parametrize("side", [3, 6, 7, 10])
+def test_a_piece_apart_under_the_feet_in_some_frames_reads_no_turn(side):
+    """The box's bottom is its last solid row, not a hundredth of the body up (the one end the mass does not set: the
+    legs crossing each stride lay their pixels over each other, and a bottom read by mass rises with them, the crop's
+    rows with it). A piece apart under the feet over frames 30-39 — 3 to 10 px square, 1 to 45 px under the lowest the
+    feet step — runs the box down to it in those frames: no turn reads, under a hundredth of the body or over it."""
+    from sprite_gen.video import body_turn
+
+    for gap in (0, 5, 11, 12, 19, 29, 44):
+        read = body_turn.read(_frames(speck=range(30, 40), speck_side=side, speck_xy=(FEET[0], FEET[1] + gap)))
+        assert read["read"] and read["turns"] == [], gap
+
+
+def test_the_box_tops_at_a_hundredth_of_the_body(monkeypatch):
+    """MASS_SHARE, the speck bound of sprite_gen/video/frames.py (SPECK_MIN_FRACTION): the box tops at the row with a
+    hundredth of the frame's solid pixels over it. A 6 px fleck over the head over frames 30-39 (36 px, under a
+    hundredth of the walker) does not top the box there, and no turn reads; a 7 px one (49 px, over it) tops it, its
+    frames read turned. Under the bound (0.005) the antenna over the head (31 px, 0.008 of the walker) tops the box 12
+    rows over the head and the walk reads a turn every stride; over it (0.0125) the 7 px fleck is under it, and its
+    frames read no turn."""
+    from sprite_gen.video import body_turn
+    from sprite_gen.video.frames import SPECK_MIN_FRACTION
+
+    assert body_turn.MASS_SHARE == SPECK_MIN_FRACTION == 0.01
+    six, seven = _frames(speck=range(30, 40), speck_side=6), _frames(speck=range(30, 40), speck_side=7)
+    antenna = _frames(part="antenna", cut=range(30, 40))
+    walker = sum(_frames()[0].getchannel("A").histogram()[body_turn.SOLID:])
+    assert 36 < body_turn.MASS_SHARE * walker < 49
+    assert body_turn.read(six)["turns"] == [] and body_turn.read(antenna)["turns"] == []
+    assert [(t["from"], t["to"]) for t in body_turn.read(seven)["turns"]] == [(30, 39)]
+    monkeypatch.setattr(body_turn, "MASS_SHARE", 0.005)
+    assert len(body_turn.read(antenna)["turns"]) == 3
+    monkeypatch.setattr(body_turn, "MASS_SHARE", 0.0125)
+    assert body_turn.read(seven)["turns"] == []
+
+
+def test_the_heads_centre_is_read_on_its_fullest_columns(monkeypatch):
+    """HEAD_CORE: the head's centre is the middle of the head band's columns holding at least half the fullest one's
+    pixels. Of the head band's 19 rows, a 6 px fleck beside the head in the still alone (in the head's rows, not over
+    them) holds 6 in each of its columns and an ornament cut loose beside it 7: under half a head column, they move no
+    centre. Read on columns of 0.3 of the fullest, the fleck's count, and the still's centre moves 1.5 px; on 0.35, the
+    ornament's, 0.9 px. Under TOL either way, the walk reads as it reads (no turn; the ornament's turn): each frame is
+    read against the still at its best within TOL px of its centre."""
+    from sprite_gen.video import body_turn
+
+    assert body_turn.HEAD_CORE == 0.5
+    centre = body_turn._body(_walker(0))[3]
+    fleck = _frames(speck=(0,), speck_at=BESIDE, speck_side=6)
+    ornament = _frames(loose="ornament", turns=[TURN])
+    assert body_turn._body(fleck[0])[3] == centre == body_turn._body(ornament[0])[3]
+    assert body_turn.read(fleck)["turns"] == [] and len(body_turn.read(ornament)["turns"]) == 1
+    monkeypatch.setattr(body_turn, "HEAD_CORE", 0.3)
+    assert body_turn.read(fleck)["turns"] == [] and 1 < body_turn._body(fleck[0])[3] - centre < body_turn.TOL
+    monkeypatch.setattr(body_turn, "HEAD_CORE", 0.35)
+    assert len(body_turn.read(ornament)["turns"]) == 1 and 0 < body_turn._body(ornament[0])[3] - centre < body_turn.TOL
+
+
+# --- the crop about the head's axis, the still at its best about it ------------------------------------------------
+
+
+def _grey(frame: Image.Image) -> Image.Image:
+    """The frame's silhouette alone: every pixel one grey, its alpha kept."""
+    grey = Image.new("RGBA", frame.size, (128, 128, 128, 0))
+    grey.putalpha(frame.getchannel("A"))
+    return grey
+
+
+def _beside(frames: list[Image.Image], at, size: tuple[int, int], gap: int = 6) -> list[Image.Image]:
+    """A piece `size` (w, h) px right of the head, `gap` px from its edge (x 163) and 2 rows under its top, in the
+    frames `at` — 6 px apart, BESIDE's place."""
+    for k in at:
+        top = 40 + round(3 * math.cos(4 * math.pi * k / CYCLE))
+        x, y = 164 + gap, top + BESIDE[1]
+        ImageDraw.Draw(frames[k]).rectangle((x, y, x + size[0] - 1, y + size[1] - 1), fill=(250, 220, 90, 255))
+    return frames
+
+
+def _moved(monkeypatch, frames: list[Image.Image], still: float = 0.0, rest: float = 0.0) -> None:
+    """The still's head centre read `still` px right of where it is read, every other frame's `rest` px."""
+    from sprite_gen.video import body_turn
+
+    real = body_turn._body
+
+    def moved(frame):
+        body = real(frame)
+        return (*body[:3], body[3] + (still if frame is frames[0] else rest))
+
+    monkeypatch.setattr(body_turn, "_body", moved)
+
+
+def test_a_body_that_is_its_own_mirror_crops_as_its_own_mirror():
+    """The walker's silhouette is its own mirror about the middle of its head's centre column (the head x 137-163, the
+    column 150), its side drawn in tone alone. Cropped about that axis, the box's edges where they fall, the still's
+    head and shoulders and its torso, every pixel one grey, are their own mirror. torso-side-v1 rounded each edge of the
+    box to a whole pixel and mirrored the crop about the box's middle, the column's edge, half a pixel off the axis: one
+    grey, the head and shoulders lay 0.050 off their mirror and the torso 0.028, a side the still does not show (in its
+    own tones, the still read 0.146 off its mirror, 0.102 about the axis)."""
+    from sprite_gen.video import body_turn
+
+    still = _grey(_walker(0))
+    body = body_turn._body(still)
+    assert body[3] == 150.0
+    for rows in (body_turn.UPPER, body_turn.torso_rows(body_turn.neck(body))):
+        v, m, _ = body_turn._crop(still, body, rows)
+        assert 1 - float(v @ m) < 1e-6, rows
+    assert 0.1 < body_turn.read(_frames())["still_side"] < 0.11
+
+
+def test_a_still_read_off_its_heads_centre_reads_the_walk_as_it_is(monkeypatch):
+    """TOL and STEP: each frame is read against the still and against the still's mirror, each at its best of the crops
+    about every axis within 2 px of the still's head's centre, a quarter of a pixel apart. The walker with its still's
+    centre read up to a pixel either way of where it is (as a piece beside the head moves it) reads no turn, no frame's
+    side 0.07 from where it reads with the still read at its centre. torso-side-v1, reading about the centre alone, its
+    box's edges whole pixels, read the walk turned every stride with the still's centre 0.75 px right (least -0.06)."""
+    from sprite_gen.video import body_turn
+
+    frames = _frames()
+    plain = body_turn.read(frames)["side"]
+    for dc in (-1.0, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1.0):
+        with monkeypatch.context() as m:
+            _moved(m, frames, still=dc)
+            read = body_turn.read(frames)
+        assert read["read"] and read["turns"] == [], dc
+        assert max(abs(a - b) for a, b in zip(read["side"], plain)) < 0.07, dc
+
+
+@pytest.mark.parametrize("drawn, at, size",
+                         [({}, (0,), (6, 6)), ({}, (0,), (3, 12)), ({"lead": 8}, range(30, 40), (3, 12))],
+                         ids=["6x6-in-the-still", "3x12-in-the-still", "3x12-over-30-39-lead-in"])
+def test_a_piece_beside_the_head_that_moves_its_centre_moves_no_turn(drawn, at, size):
+    """36 px BESIDE the head, 6 px right of it and 2 rows under its top — a 6x6 near-square, or a column 3 wide and 12
+    tall — in the still alone, or over frames 30-39 of the walker filmed from 0.6 of its size for 8 frames: under a
+    hundredth of the walker. Each of the column's columns holds 12 of the head band's 19 rows, over HEAD_CORE's half,
+    and moves the head's centre 1.4 px right; read at its best within TOL px, the walk reads no turn, and the walker
+    turning over frames 30-40 reads its turn there. torso-side-v1, reading about the centre alone, read the walk with
+    either piece in the still turned over frames 1-72 (least -0.14), and with the column over frames 30-39 of the
+    lead-in walker turned there (least -0.18)."""
+    from sprite_gen.video import body_turn
+
+    read = body_turn.read(_beside(_frames(**drawn), at, size))
+    assert read["read"] and read["turns"] == []
+    (turn,) = body_turn.read(_beside(_frames(turns=[TURN], **drawn), at, size))["turns"]
+    assert TURN[0] <= turn["from"] and turn["to"] <= TURN[1]
+
+
+def test_a_still_is_read_where_its_head_and_shoulders_lie_0_08_off_their_mirror():
+    """SIDE_SHOWN_MIN 0.08, between the stills the synthetic walkers are read by and those seen square: the hooded
+    walker's head and shoulders lie 0.090 off their mirror at their best within GUARD px of the head's centre, the
+    walker filmed from 0.6 of its size for 8 frames 0.098, the plain walker 0.102; the walker seen square from behind
+    0.0002, and with a 36 px piece beside its head in the still alone (a column 3 or 2 wide, a 6x6 near-square, against
+    the head or 6 px from it) 0.060 at most — not read, where a front or back walk with a piece beside the head in its
+    still, read, reads its walk against the side the piece shows."""
+    from sprite_gen.video import body_turn
+
+    for drawn in ({"hood": True}, {"lead": 8}, {}):
+        read = body_turn.read(_frames(**drawn))
+        assert read["read"] and 0.08 < read["still_side"] < 0.11, drawn
+    assert body_turn.SIDE_SHOWN_MIN == 0.08
+    sides = []
+    for size in ((3, 12), (2, 18), (6, 6)):
+        for gap in (0, 6):
+            read = body_turn.read(_beside(_frames(square=True), (0,), size, gap))
+            assert read["read"] is False and "square" in read["why"], (size, gap)
+            sides.append(read["still_side"])
+    assert 0.05 < max(sides) < 0.07
+
+
+def test_the_stills_side_is_read_about_its_nearest_mirror(monkeypatch):
+    """GUARD and STEP: the still's head and shoulders are read against their mirror about every axis within 2.5 px of
+    the head's centre, a quarter of a pixel apart, and their side is the least of them. The column 3 wide and 12 tall
+    6 px right of the head in the still of the walker seen square moves its centre 1.4 px; about its nearest mirror the
+    still lies 0.060 off it, under SIDE_SHOWN_MIN, and the walk is not read (torso-side-v1, about the centre the column
+    moved, read it 0.199 off its mirror, and turns). About the axes within 2 px (GUARD 2), or a pixel apart (STEP 1), it
+    lies 0.093 off its mirror, and the walk, read, reads turns it does not make; with SIDE_SHOWN_MIN under its 0.060
+    (0.06), too. Over the hooded walker's 0.090 (0.095), the hooded walker is not read."""
+    from sprite_gen.video import body_turn
+
+    square = _beside(_frames(square=True), (0,), (3, 12))
+    read = body_turn.read(square)
+    assert read["read"] is False and 0.055 < read["still_side"] < body_turn.SIDE_SHOWN_MIN
+    assert (body_turn.GUARD, body_turn.STEP) == (2.5, 0.25)
+    for bound, value in (("GUARD", 2.0), ("STEP", 1.0), ("SIDE_SHOWN_MIN", 0.06)):
+        with monkeypatch.context() as m:
+            m.setattr(body_turn, bound, value)
+            read = body_turn.read(square)
+        assert read["read"] and read["turns"], bound
+    monkeypatch.setattr(body_turn, "SIDE_SHOWN_MIN", 0.095)
+    assert body_turn.read(_frames(hood=True))["read"] is False
+
+
+def test_each_frame_is_read_at_its_best_within_tol(monkeypatch):
+    """TOL: each frame is read against the still and its mirror at their best within 2 px of the still's head's centre.
+    The column 3 wide and 12 tall beside the head over frames 30-39 of the walker filmed from 0.6 of its size for 8
+    frames moves those frames' centres 1.4 px: read about the still's centre alone (TOL 0), they read turned. The side
+    walker with the 60 px tail (tests/video/test_walk_steps.py, the half step), its arms drawn: a 36 px column against
+    its head moves its centre 2.3 px. With every frame's centre read 3 px left of its own, the walk reads no turn; read
+    within 1 px of the still's centre, it reads a turn with them 2.25 px off."""
+    from sprite_gen.video import body_turn
+    from tests.video.test_walk_steps import _side
+
+    lead = _beside(_frames(lead=8), range(30, 40), (3, 12))
+    assert body_turn.read(lead)["turns"] == []
+    assert body_turn.TOL == 2.0
+    with monkeypatch.context() as m:
+        m.setattr(body_turn, "TOL", 0.0)
+        assert [(t["from"], t["to"]) for t in body_turn.read(lead)["turns"]] == [(30, 39)]
+    arms = [_side(k, cycle=29, tail_cycle=45, tail=60) for k in range(FRAMES)]
+    with monkeypatch.context() as m:
+        _moved(m, arms, rest=-3.0)
+        assert body_turn.read(arms)["turns"] == []
+    with monkeypatch.context() as m:
+        _moved(m, arms, rest=-2.25)
+        m.setattr(body_turn, "TOL", 1.0)
+        assert body_turn.read(arms)["turns"]
 
 
 # --- what the reading cannot read ----------------------------------------------------------------------------------

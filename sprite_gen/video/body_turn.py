@@ -4,38 +4,74 @@ docs/video-pipeline.md section 4, "The body turn").
 
 A clip filmed from a still walks at the still's angle, or should: a back-diagonal walk that turns to a full back view
 half way and back holds no two steps in one facing, and a cut across the turn plays the body swinging round. The
-reading (`torso-side-v1`) puts each frame's torso between the clip's first frame — the still it was filmed from, a
-standing pose, lead-in or not — and that frame mirrored about its head:
-`side = (v.s - v.m) / (1 - s.m)`, 1 where the torso shows the side the still's does, 0 where it is as near the still as
-its mirror (a body seen square, from behind or in front), under 0 past it. A pose the walk changes moves both
-correlations alike; a turn moves them apart. Each clip is read against its own first frame, never against a kind of
-motion or a direction's name. Not against the first frame after a lead-in (the video model reframing the still to the
-walk's size, which the search leaves out): that frame is a stride's pose, whose mirror the walk draws half a cycle on, so
-a walk that does not turn reads a turn every stride (a synthetic one, least -0.24); the still filmed small reads blurred,
-but only nearer 0 (a synthetic walk filmed from 0.6 of its size for 8 frames: +0.41 where it does not turn, its turn
--0.14).
+reading (`torso-side-v2`) puts each frame's torso between the clip's first frame — the still it was filmed from, a
+standing pose, lead-in or not — and that frame mirrored about its head: `side = (v.s - v.m) / (1 - s.m)`, 1 where the
+torso shows the side the still's does, 0 where it is as near the still as its mirror (a body seen square, from behind or
+in front), under 0 past it. A pose the walk changes moves both correlations alike; a turn moves them apart. Each clip is
+read against its own first frame, never against a kind of motion or a direction's name. Not against the first frame
+after a lead-in (the video model reframing the still to the walk's size, which the search leaves out): that frame is a
+stride's pose, whose mirror the walk draws half a cycle on, so a walk that does not turn reads a turn every stride (a
+synthetic one, least -0.34). The still filmed small reads blurred, but hardly: a synthetic walk filmed from 0.6 of its
+size for 8 frames reads +0.87 at least where it does not turn (+0.92 filmed from its own size), and where it turns,
+the turn over the frames it reads it over filmed from its own size, a turn of 4 frames too (turning over frames 30-40,
+least -0.71 against -0.63).
 
 Three named bounds:
 
-- SIDE_SHOWN_MIN: how far the still's head and shoulders (the top 45 % of its body) lie off their mirror (1 - s.m) for
-  the clip to be read at all. Under it the still is seen square — a front or back walk, whose far step lays the torso
-  nearer its mirror each step — and its facing is not read: a square still that turns to a diagonal is not seen.
+- SIDE_SHOWN_MIN: how far the still's head and shoulders (the top 45 % of its body) lie off their nearest mirror
+  (1 - s.m; GUARD, below) for the clip to be read at all. Under it the still is seen square — a front or back walk,
+  whose far step lays the torso nearer its mirror each step — and its facing is not read: a square still that turns to
+  a diagonal is not seen. 0.08 lies between the synthetic walkers seen at an angle, 0.090 off it or more (the hooded
+  one; the plain one 0.102), and the one seen square from behind with a 36 px piece beside its head in the still,
+  0.060 at most.
 - TURN_SIDE_MAX: a frame whose torso reads under it is turned.
 - TURN_RUN_MIN: a turn is that many turned frames in a row or more, counted in frames — the time the clip plays them —
   not in drawings: a walk held on twos holds a turn as long as one drawn on ones does, in half the drawings. A shorter
   dip is the walk's own.
 
-Each crop is centred on the head: the middle of the solid pixels of the top 15 % of the body (HEAD_SHARE), read again on
-those within HEAD_REACH of the body's height of it until it settles. A part swung up beside the head (a tail on a beat of
-its own, a held prop) would pull a plain mass centre aside every swing, and the torso would read as turning with it (a
-synthetic side walk with a 60 px tail on a 45-frame beat read a turn every swing, least -0.21); where nothing lies that
-far out, the middle is the mass centre itself. Where nothing lies within HEAD_REACH of the middle — the top's parts lie
-apart either side of it: a prop held as high as the head and apart from it, or a body too small for a pixel to lie that
-near — the top does not tell which part is the head, and the frame is not read (None in `side`, its why in `unread`); a
-still not read so leaves the clip unread, cut as the search alone cuts it. The largest part is not taken for the head: a
-prop can weigh what the head does in those rows (a synthetic staff's ornament beside the head weighs the same), and a
-crop about the prop would read turns the body does not make, which the cut search would leave out, or
-`--body-turn refuse` refuse.
+Each frame is read by its mass (MASS_SHARE, the speck bound of sprite_gen/video/frames.py: a hundredth). Its box tops at
+the row with a hundredth of its solid pixels over it, and the still's torso is held as wide, about the head, as the
+columns of its torso rows with a hundredth of those rows' pixels beside them. A fleck apart from the body, a part of its
+own cut loose (its toes, a tail's tip, an ornament) or a thin part (an antenna, a whisker) is under a hundredth and
+moves neither: `torso-side-v1` read the box from the frame's topmost and outermost solid pixel, and a 3 px fleck over
+the head for 10 frames read a turn over them, while an ornament cut loose beside the head hid the turn the walk made
+(synthetic walkers, tests/video/test_loop_body_turn.py). The box's bottom is its last solid row, as `torso-side-v1`
+read it — the one end the mass does not set: where the legs cross each stride they lay their pixels over each other,
+and a bottom read by mass rises with them (the synthetic lead-in walker's, a row over its last solid row in most
+frames, 3 where they cross), the crop's rows with it; its turns read over the same frames either way.
+
+Each crop is centred on the head: the middle of the top 15 % of the body (HEAD_SHARE), of its columns holding at least
+HEAD_CORE (half) of the fullest one's solid pixels — a fleck or an ornament beside the head, a few rows of each column,
+does not count — read again on those within HEAD_REACH of the body's height of it until it settles. A part swung up
+beside the head (a tail on a beat of its own, a held prop) would pull a plain mass centre aside every swing, and the
+torso would read as turning with it (a synthetic side walk with a 60 px tail on a 45-frame beat read a turn every
+swing, least -0.19); where nothing lies that far out, the middle is the mass centre itself. Where nothing lies within
+HEAD_REACH of the middle — the top's parts lie apart either side of it: a prop held as high as the head and apart from
+it, or a body too small for a pixel to lie that near — the top does not tell which part is the head, and the frame is
+not read (None in `side`, its why in `unread`); a still not read so leaves the clip unread, cut as the search alone cuts
+it. The largest part is not taken for the head: a prop can weigh what the head does in those rows (a synthetic staff's
+ornament beside the head weighs the same), and a crop about the prop would read turns the body does not make, which the
+cut search would leave out, or `--body-turn refuse` refuse.
+
+The crop's axis is the middle of the centre's column (column c spans c to c + 1), and its edges lie where they fall,
+between pixels too, the crop resampled from the frame about them: a body that is its own mirror about its head crops as
+its own mirror wherever its centre falls (`torso-side-v1` rounded each edge to a whole pixel, and the synthetic walker
+drawn in one grey lay 0.050 off its mirror, a side its silhouette does not show). A part holding over HEAD_CORE of the
+fullest column in each of its own columns still moves the centre — a column 3 wide and 12 tall beside a head 19 rows
+tall, 1.4 px — and read about a centre 0.75 px off, `torso-side-v1` read a walk that does not turn as turning every
+stride. So each crop is read about the axes STEP (a quarter of a pixel) apart either side of the centre as well, each
+as wide as the centre's:
+
+- GUARD: the still's head and shoulders lie off their nearest mirror about any axis within 2.5 px of the centre — the
+  side SIDE_SHOWN_MIN bounds. The walker seen square from behind with that column 6 px beside its head in the still
+  lies 0.060 off it; about the axes within 2 px, or a pixel apart, 0.093, and the walk, read, reads turns it does not
+  make.
+- TOL: each frame's torso is read against the still's torso and against its mirror, each at its nearest about any axis
+  within 2 px of the still's centre. The walk with the still's centre read up to a pixel off reads no turn, no frame's
+  side 0.07 from where it reads; the walker filmed small with that column beside its head over frames 30-39 reads no
+  turn there, where read about the still's centre alone (TOL 0) it reads one. Under it, HEAD_CORE moves no synthetic
+  walker's reading anywhere from 0 to 0.9: a fleck beside the head moving the centre 1.5 px (at 0.3), or an ornament
+  0.9 px (at 0.35), is read within TOL.
 
 A crop reads only what it holds. A still with no solid pixel across its torso's rows (a part apart above the body tops
 its box, its narrowest row in the gap between), a crop of no width, or one of a single value throughout (an empty crop)
@@ -44,23 +80,53 @@ mirror.
 
 The torso (`torso_rows`) is the rows from the neck — the narrowest row of the first frame between NECK_RANGE of its
 height — down half the body below it. A body with no neck narrower than its head (a hood, a robe) has its narrowest row
-at the range's top, so its crop starts in the head and holds the head and the chest, which turn with it."""
+at the range's top, so its crop starts in the head and holds the head and the chest, which turn with it.
+
+Named limits. A piece apart over a hundredth of the body is the body's own: it tops the box, and the frames it lies in
+read as a turn where it moves the crop far enough (a synthetic 7 px fleck over the head, 49 px of a 3849 px walker,
+reads its frames turned, as `torso-side-v1` did). A piece apart under the feet runs the box down to it (no turn reads
+over the frames it lies in; in the still, far enough down, the still's torso reads its own mirror and the clip is not
+read). The neck is read on the still's rows 2 % of its height apart: a box a pixel taller or shorter can read it a row
+of the grid higher or lower, and every frame's torso rows with it. A piece beside the still's head and shoulders (its
+head or an arm) can lay them under SIDE_SHOWN_MIN off their nearest mirror though the still is seen at an angle, and the
+clip is not read (34 of 2191 synthetic pieces under a hundredth of the body, placed about the heads and torsos of four
+walkers). A still seen square that a piece beside its head lays SIDE_SHOWN_MIN or more off its nearest mirror is read,
+and its walk against the side the piece shows: a front or back walk with a piece in its still alone can read turns it
+does not make (the synthetic walker seen square from behind with a 36 px piece beside its head in the still lies 0.060
+off it at most, and read with SIDE_SHOWN_MIN at 0.06, reads them). GUARD and TOL are pixels of the frame, not shares of
+the body: a piece beside the head that moves the centre further than TOL is read about axes that do not reach the
+head's, and a larger body's margin is narrower (the plain walker drawn three times as large, the column beside its head
+in the still three times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn, least +0.31
+against +0.94 without the column)."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.video.frames import SPECK_MIN_FRACTION
 
-READING = "torso-side-v1"
-SIDE_SHOWN_MIN = 0.10
+READING = "torso-side-v2"
+SIDE_SHOWN_MIN = 0.08
 TURN_SIDE_MAX = 0.0
 TURN_RUN_MIN = 4
 MODES = ("warn", "refuse")  # --body-turn: a cut that holds a turn, where none without it holds a cycle, warned of or refused
 SOLID = 128  # an alpha at least this is the body
+# The box's top, and the still's torso width: the row (the columns) with more than this share of the solid pixels over
+# (beside) it — frames.py's speck bound, a fleck or a thin part apart from the body under it.
+MASS_SHARE = SPECK_MIN_FRACTION
 HEAD_SHARE = 0.15  # the head's centre: the middle of the solid pixels of the top 15 % of the body's box
+HEAD_CORE = 0.5  # ... in the columns holding at least this share of the fullest one
 HEAD_REACH = 0.3  # ... of those within this share of the body's height of it, read again until it settles
+# The axes the still is read about besides its head's centre, STEP px apart: its head and shoulders against their
+# nearest mirror about any within GUARD px (the side SIDE_SHOWN_MIN bounds), each frame against its torso and its
+# torso's mirror, each at its best, about any within TOL px.
+GUARD = 2.5
+TOL = 2.0
+STEP = 0.25
+PAD = 4  # px of the frame either side of a crop's box, read by the resampling filter
 UPPER = (0.0, 0.45)  # the still's head and shoulders, read for SIDE_SHOWN_MIN
 NECK_RANGE = (0.10, 0.55)  # where the neck is looked for, in shares of the body's height from its top
 ROWS = np.arange(0.01, 1.0, 0.02)  # the rows the profile is read at, each 2 % of the height tall
@@ -68,16 +134,25 @@ CROP = (48, 64)  # every crop is read at this size
 LUMA = np.array([0.299, 0.587, 0.114])
 
 
+def _ends(mass: np.ndarray, cut: float) -> tuple[int, int]:
+    """The first and the last index of `mass` with more than `cut` of it before (after) them."""
+    first = int(np.searchsorted(np.cumsum(mass), cut, side="right"))
+    return first, len(mass) - 1 - int(np.searchsorted(np.cumsum(mass[::-1]), cut, side="right"))
+
+
 def _body(frame: Image.Image) -> tuple[np.ndarray, int, int, float] | str:
-    """The frame's solid pixels, its box's top row and height, and its head's centre column (HEAD_SHARE, HEAD_REACH);
-    where they are not read, why, said of the frame: no solid pixel, or no head to centre on — the top's parts lie
-    apart either side of their middle, none within HEAD_REACH of it."""
+    """The frame's solid pixels, its box's top row and height, and its head's centre column (HEAD_SHARE, HEAD_CORE,
+    HEAD_REACH); where they are not read, why, said of the frame: no solid pixel, or no head to centre on — the top's
+    parts lie apart either side of their middle, none within HEAD_REACH of it."""
     solid = np.asarray(frame.getchannel("A")) >= SOLID
-    rows = np.nonzero(solid.any(axis=1))[0]
+    mass = solid.sum(axis=1)
+    rows = np.nonzero(mass)[0]
     if not len(rows):
         return "has no solid body to read"
-    top, height = int(rows[0]), int(rows[-1]) - int(rows[0]) + 1
+    top = _ends(mass, MASS_SHARE * float(mass.sum()))[0]
+    height = int(rows[-1]) - top + 1
     mass = solid[top:top + max(2, int(HEAD_SHARE * height))].sum(axis=0).astype(np.float64)
+    mass[mass < HEAD_CORE * mass.max()] = 0.0
     cols = np.arange(len(mass))
     centre = float((mass * cols).sum() / mass.sum())
     for _ in range(20):
@@ -105,28 +180,55 @@ def _crop(frame: Image.Image, body: tuple[np.ndarray, int, int, float], rows: tu
           held: float | None = None) -> tuple[np.ndarray, np.ndarray, float] | str:
     """The crop of `rows` (shares of the body's height from its top) about the head's centre, `held` wide (a share of
     the height; where None, the frame's own extent across those rows, about the head), read at CROP: unit vectors of
-    its luma times alpha and its alpha, of the same mirrored about the head's centre, and the width held. Where it
-    holds nothing to read, why, said of the frame — no solid pixel across those rows (the width the frame's own), a
-    crop of no width, or one of a single value throughout (an empty crop's 0): not read as a torso at 0."""
+    its luma times alpha and its alpha, of the same mirrored about the head's centre, and the width held. The axis is
+    the middle of the centre's column (column c spans c to c + 1), and the box's edges lie where they fall, between
+    pixels too, the crop resampled from the frame about them: a body that is its own mirror about its head crops as its
+    own mirror, wherever its centre falls. Where it holds nothing to read, why, said of the frame — no solid pixel
+    across those rows (the width the frame's own), a crop of no width (a torso of one column, nothing beside the axis
+    to mirror, or a box under a pixel wide), or one of a single value throughout (an empty crop's 0): not read as a
+    torso at 0."""
     solid, top, height, centre = body
     r0 = top + int(rows[0] * height)
     r1 = max(r0 + 2, top + int(rows[1] * height))
     span = f"rows {rows[0]:.2f}-{rows[1]:.2f} of its height"
+    axis = centre + 0.5
     if held is None:
-        cols = np.nonzero(solid[r0:r1].any(axis=0))[0]
-        if not len(cols):
+        mass = solid[r0:r1].sum(axis=0)
+        if not mass.any():
             return f"has no solid pixel in its {span}"
-        held = 2 * max(centre - cols.min(), cols.max() - centre) / height
-    half = held * height / 2
-    box = (int(round(centre - half)), r0, int(round(centre + half)), r1)
-    if box[2] <= box[0]:
+        lo, hi = _ends(mass, MASS_SHARE * float(mass.sum()))
+        if hi <= lo:
+            return f"has a crop of no width over its {span}"
+        held = 2 * max(axis - lo, hi + 1 - axis) / height
+    x0, x1 = axis - held * height / 2, axis + held * height / 2
+    if x1 - x0 < 1:
         return f"has a crop of no width over its {span}"
-    y = np.asarray(frame.crop(box).resize(CROP, Image.Resampling.LANCZOS), dtype=np.float64) / 255.0
+    left = math.floor(x0) - PAD
+    y = np.asarray(frame.crop((left, r0, math.ceil(x1) + PAD, r1)).resize(
+        CROP, Image.Resampling.LANCZOS, box=(x0 - left, 0.0, x1 - left, float(r1 - r0))), dtype=np.float64) / 255.0
     luma, alpha = (y[..., :3] @ LUMA) * y[..., 3], y[..., 3]
     v = _unit(luma, alpha)
     if not v.any():
         return f"has nothing to read in its crop of {span}"
     return v, _unit(luma[:, ::-1], alpha[:, ::-1]), held
+
+
+def _windows(frame: Image.Image, body: tuple[np.ndarray, int, int, float], rows: tuple[float, float],
+             reach: float) -> tuple[np.ndarray, np.ndarray, float] | str:
+    """The crops of `rows` about the head's centre and about every axis within `reach` px of it, STEP apart, each as
+    wide as the centre's own (`_crop`): their unit vectors and their mirrors', stacked in the order of the axes (the
+    centre's in the middle), and the width held; where one holds nothing to read, why."""
+    centred = _crop(frame, body, rows)
+    if isinstance(centred, str):
+        return centred
+    solid, top, height, centre = body
+    n = round(reach / STEP)
+    crops = [_crop(frame, (solid, top, height, centre + j * STEP), rows, centred[2]) if j else centred
+             for j in range(-n, n + 1)]
+    for crop in crops:
+        if isinstance(crop, str):
+            return crop
+    return np.stack([crop[0] for crop in crops]), np.stack([crop[1] for crop in crops]), centred[2]
 
 
 def neck(body: tuple[np.ndarray, int, int, float]) -> float:
@@ -179,11 +281,11 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     still = _body(first)
     if isinstance(still, str):
         return {**out, "read": False, "still_side": None, "why": f"the clip's first frame {still}"}
-    upper = _crop(first, still, UPPER)
+    upper = _windows(first, still, UPPER, GUARD)
     if isinstance(upper, str):
         return {**out, "read": False, "still_side": None, "why": f"the clip's first frame {upper}"}
-    s, m, _ = upper
-    out["still_side"] = round(1 - float(s @ m), 4)
+    crops, mirrors, _ = upper
+    out["still_side"] = round(1 - float((mirrors @ crops[len(crops) // 2]).max()), 4)
     if out["still_side"] < SIDE_SHOWN_MIN:
         return {**out, "read": False,
                 "why": f"the still is seen square: its head and shoulders lie {out['still_side']:.2f} off their mirror, under "
@@ -191,11 +293,11 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     at = neck(still)
     out["neck"] = round(at, 2)
     rows = torso_rows(at)
-    torso = _crop(first, still, rows)
+    torso = _windows(first, still, rows, TOL)
     if isinstance(torso, str):
         return {**out, "read": False, "why": f"the clip's first frame {torso}, its torso's from the neck down"}
-    s, m, held = torso
-    shown = 1 - float(s @ m)
+    crops, mirrors, held = torso
+    shown = 1 - float((mirrors @ crops[len(crops) // 2]).max())
     out["torso_still_side"] = round(shown, 4)
     if shown <= 1e-6:
         return {**out, "read": False, "why": "the still's torso is its own mirror: no side to read it by"}
@@ -209,7 +311,7 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
             unread.setdefault(crop, []).append(k)
             continue
         v, _, _ = crop
-        side.append(round((float(v @ s) - float(v @ m)) / shown, 4))
+        side.append(round((float((crops @ v).max()) - float((mirrors @ v).max())) / shown, 4))
     out = {**out, "read": True, "side": side, "turns": turns(side)}
     if unread:
         out["unread"] = [{"frames": ks, "why": why} for why, ks in unread.items()]
