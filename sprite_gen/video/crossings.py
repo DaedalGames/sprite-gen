@@ -252,6 +252,12 @@ class Reading:
             return None
         return float(np.median(whole)) / self.interval
 
+    @property
+    def hides(self) -> bool:
+        """Gap mode: whether a pass can hide among the feet seen together (`overlap` over HIDE_SHARE)."""
+        overlap = self.overlap
+        return overlap is not None and overlap > HIDE_SHARE
+
     def record(self) -> dict[str, Any]:
         """The reading as the report keeps it."""
         out: dict[str, Any] = {"method": "observed-crossings-v1", "mode": self.mode, "readable": self.readable,

@@ -1269,7 +1269,7 @@ crossings, joined at the wrap where the walk itself goes on, is one cycle (`cros
 | `step_range` | the clip's own step (the median between crossings) and the range a step must lie in, a factor of √2 either way |
 | `readable`, `why`, `alternation` | whether the clip shows its steps: three crossings or more, and in sign mode a lean that turns over a step on (correlation one step on at most **−0.7**, `crossings.ALTERNATION_MAX`) |
 | `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring` |
-| `cycles` | whether crossings mark cycles: `asked`, `interval`, `overlap`, `half`, `one`, `two`, `slack`, `cue` (`range`, `floor`, `swapped`, `half`, `one`, `says`, `why`), `cycles` (`true` or `false`), and `why`; absent where not asked |
+| `cycles` | whether crossings mark cycles: `asked`, `interval`, `overlap`, `half`, `one`, `two`, `slack`, `cue` (`range`, `floor`, `swapped`, `half`, `one`, `says`, `why`; `says` is `"steps"`, `"cycles"`, `"alike"` or null; with no view, where a pass can hide, `cue` has only `range`, `floor`, `says`, `why`), `cycles` (`true` or `false`), and `why`; absent where not asked |
 | `stands`, `run_limit` | gap mode, the runs of the feet together longer than any pass (over `run_limit`, √2 times the median run the clip shows whole: whole, or cut by the first or last frame), recorded as pairs of frames; only where there is one |
 | `chosen_by` | `search` (kept), `two steps` (chosen on the count), and the search again where the count refutes its cut (`searched_again`) |
 | `declined` | the best two-step cut, where none closed and the search's cut stood: its `cut`, `phase`, whether it passed the gates (`gated`) and its `seam` |
@@ -1308,55 +1308,75 @@ it). It is read at half the crossing interval (`half`), one interval (`one`) and
 The crossings mark cycles where `one < half` (one interval on is nearer than the pose a half interval on)
 and `one <= two + CYCLE_SLACK` (`CYCLE_SLACK` = 0.5 of the mean step: one interval on is as near as two
 on, so the same leg leads one interval on). Then the view's foot cue is asked
-(`local_cycle.cue_word(cue, interval, step=None)`): `legs.shade_cue` (the near foot's shade against the
-far one's) from the side or a diagonal, `legs.depth_cue` (the picture's right foot drawn lower than its
-left) from the front or back, per frame. A cue whose range over the clip (largest value minus smallest)
-is under `CUE_FLOOR` (0.5) of the step it is drawn in does not move: legs drawn alike to the cue leave it
-still, and what is left of it is floating point rounding, which repeats with the legs and can correlate
-fully one interval on; it says nothing (`says` null) and its correlations are not read. The step a cue is
-drawn in is `legs.TONE` (1/255, one 8-bit level of luma) for the shade cue, or one pixel row of the
-body's median height (1 over the median body height in pixels) for the depth cue. Otherwise its
-correlation half an interval on (`half`) and one interval on (`one`) is read with
-`crossings.correlation_on` (trend removed). The cue says `"steps"` where it turns over one interval on
-(correlation at `CUE_SWAPPED`, −0.2, or under: the other leg leads there, so the interval is a step);
-`"cycles"` where it turns over half an interval on (−0.2 or under) and does not turn over one interval on
-(the other leg leads a step on, so the interval is two steps); and null where it does neither (the cue
-does not tell the legs apart). Where a pass can hide (`reading.overlap` over `crossings.HIDE_SHARE`,
-0.5), the picture marks cycles unless the cue says `"steps"`; a cue that says nothing leaves the
-picture's word. Where only the view asks (the view is given and is not `side`, and passes are brief), the
-picture alone marks nothing, because legs drawn alike are the same picture a step on as a cycle on: the
-crossings mark cycles only where the cue says `"cycles"`; where it says `"steps"`, the count stands (two
-steps); where it says nothing (it does not move, or it turns over neither a step on nor an interval on),
-the crossings stay on steps, as from the side, and the cut is the one taken without a view. In that last
-case `cycles.why` says the view's foot cue does not tell the legs apart: a step on draws as a cycle on,
-as from the side, and the crossings mark steps; and the loop's warnings (`jolt.warnings`, from
-`local_cycle.step_verdict`) gain a line: the clip one interval on is the same picture, as a walk whose
-feet meet once a cycle draws it, but the view's foot cue does not tell its legs apart, so its crossings
-are counted as steps, as from the side, and where its feet do meet once a cycle, each step counted in the
-cut is a cycle. Where they mark cycles the reading holds two steps an interval (`Reading.mark_cycles`:
-`per` 2, `step` half the interval, `step_range` halved): a cut one interval long is two steps (one cycle)
-and is taken as such (`steps: {count: 2, by: crossings}` written). Recorded in `cycle.step_count.cycles`:
-`{asked, interval, overlap, half, one, two, slack, cue: {range, floor, swapped, half, one, says, why}, cycles: true|false, why}`;
-absent where not asked. The same reading is used for the search's cut (`--anchor motion-auto`), a fixed
-cut (`--cycle fixed`, `fixed_count`), and the loop as it plays round (`ring_steps`, told the clip's
-`cycles` since a loop alone is too short to read two intervals on). `video-set` passes each item's view.
-On the synthetic walkers of `tests/video/test_walk_steps.py`, a walker seen from behind whose far foot
-hides behind the near one (feet seen together over half the interval) has a cycle of 20 frames drawn on
-twos, 24 on threes, and 17.5 and 18.5 frames on ones (a cycle not a whole number of frames): cut one
-cycle (within a frame of it), `cycles` true, `steps` 2. A side walker whose two steps are one silhouette
-(46-frame cycle, near and far a tone or four apart) is not asked with no view or with `--view side`, and
-is cut two steps (46 frames) as before. A front-diagonal walker whose near foot steps out toward the
-camera and passes the far one apart (feet together under half the interval), cycle 16 and 18 frames: its
-foot cue moves over the floor and turns over half an interval on and not one interval on
-(`says: "cycles"`); with `--view front_diagonal` cut one cycle (16, 18 frames); without a view it is not
-asked and is cut as before (32, 36 frames: two cycles, as the engine cannot tell without the view). The
-same 46-frame walker filmed as a front diagonal, its far leg four tones off the near one, is asked with
-`--view front_diagonal`: one interval on is as near as two on, but the foot cue turns over one interval
-on (`says: "steps"`): two steps (46 frames), the count stands. The same 46-frame walker with its legs
-drawn alike (its arms still four tones apart), asked with `--view` set to `front`, `front_diagonal`,
-`back` and `back_diagonal`: one interval on (a step on) is the same picture, as near as two on, and the
-foot cue does not move (its range far under the floor). The crossings stay on steps: two steps, 46
-frames, `cycles` false, and a warning that names the cut.
+(`local_cycle.cue_word(cue, interval, step=None, lead=True)`): `legs.shade_cue` (the near foot's shade
+against the far one's) from the side or a diagonal, `legs.depth_cue` (the picture's right foot drawn
+lower than its left) from the front or back, per frame. With no view given, where a pass can hide
+(`reading.hides`), `video-loop` reads the shade of the feet's two halves (`legs.shade_cue`, in steps of
+`legs.TONE`) and passes it to `local_cycle.read_cycles` as the cue, read only for whether it moves
+(`lead` false). A cue whose range over the clip (largest value minus smallest) is under `CUE_FLOOR` (0.5)
+of the step it is drawn in does not move: legs drawn alike to the cue leave it still, and what is left of
+it is floating point rounding, which repeats with the legs and can correlate fully one interval on; it
+says `"alike"`, its correlations are not read (`half` and `one` absent), and `why` gives its range and
+the step. The step a cue is drawn in is `legs.TONE` (1/255, one 8-bit level of luma) for the shade cue,
+or one pixel row of the body's median height (1 over the median body height in pixels) for the depth cue.
+Otherwise, with `lead` true (the view's foot cue), its correlation half an interval on (`half`) and one
+interval on (`one`) is read with `crossings.correlation_on` (trend removed). The cue says `"steps"` where
+it turns over one interval on (correlation at `CUE_SWAPPED`, −0.2, or under: the other leg leads there,
+so the interval is a step); `"cycles"` where it turns over half an interval on (−0.2 or under) and does
+not turn over one interval on (the other leg leads a step on, so the interval is two steps); and null
+where it does neither (the cue does not tell the legs apart). With `lead` false (no view), only whether
+the cue moves is read: its correlations are not read, because the two halves are the picture's halves,
+which are the two legs only from the side or a diagonal; a cue that moves says null, `why` "it moves;
+with no view, which leg leads is not read", and the record has only `range`, `floor`, `says` and `why`
+(no `swapped`, `half` or `one`). Where a pass can hide (`reading.overlap` over `crossings.HIDE_SHARE`,
+0.5), the picture marks cycles unless the cue says `"steps"` (the view's cue) or `"alike"` (the view's
+cue, or with no view the feet's shade). Legs drawn alike to the cue are the same picture a step on as a
+cycle on, so the picture cannot tell; the crossings stay on steps, as from the side, with the warning. A
+cue that moves and says null leaves the picture's word. Where only the view asks (the view is given and
+is not `side`, and passes are brief), the picture alone marks nothing, because legs drawn alike are the
+same picture a step on as a cycle on: the crossings mark cycles only where the cue says `"cycles"`; where
+it says `"steps"`, the count stands (two steps); where it says `"alike"` or null, the crossings stay on
+steps, as from the side, the cut taken without a view, with the warning. Where the crossings stay on
+steps this way, `cycles.why` says the view's foot cue does not tell the legs apart (with the cue's own
+`why` in parentheses): a step on draws as a cycle on, as from the side, and the crossings mark steps
+(with no view, "the feet's shade" in place of "the view's foot cue"); and the loop's warnings
+(`jolt.warnings`, from `local_cycle.step_verdict`) gain a line: the clip one interval on is the same
+picture, as a walk whose feet meet once a cycle draws it, but its foot cue does not tell its legs apart,
+so its crossings are counted as steps, as from the side, and where its feet do meet once a cycle, each
+step counted in the cut is a cycle. It is given wherever the crossings stay on steps because the cue says
+`"alike"` or null, where a pass can hide too. Where they mark cycles the reading holds two steps an
+interval (`Reading.mark_cycles`: `per` 2, `step` half the interval, `step_range` halved): a cut one
+interval long is two steps (one cycle) and is taken as such (`steps: {count: 2, by: crossings}` written).
+Recorded in `cycle.step_count.cycles`:
+`{asked, interval, overlap, half, one, two, slack, cue: {range, floor, swapped, half, one, says, why}, cycles: true|false, why}`
+(the cue's `half` and `one` absent where `says` is `"alike"`), and with no view where a pass can hide and
+the picture repeats each interval `cue: {range, floor, says, why}`; `says` is `"steps"`, `"cycles"`,
+`"alike"` or null; absent where not asked. The same reading is used for the search's cut
+(`--anchor motion-auto`), a fixed cut (`--cycle fixed`, `fixed_count`), and the loop as it plays round
+(`ring_steps`, told the clip's `cycles` since a loop alone is too short to read two intervals on).
+`video-set` passes each item's view. On the synthetic walkers of `tests/video/test_walk_steps.py`, a
+walker seen from behind whose far foot hides behind the near one (feet seen together over half the
+interval) has a cycle of 20 frames drawn on twos, 24 on threes, and 17.5 and 18.5 frames on ones (a cycle
+not a whole number of frames): cut one cycle (within a frame of it), `cycles` true, `steps` 2. A side
+walker whose two steps are one silhouette (46-frame cycle, near and far a tone or four apart) is not
+asked with no view or with `--view side`, and is cut two steps (46 frames) as before. A front-diagonal
+walker whose near foot steps out toward the camera and passes the far one apart (feet together under half
+the interval), cycle 16 and 18 frames: its foot cue moves over the floor and turns over half an interval
+on and not one interval on (`says: "cycles"`); with `--view front_diagonal` cut one cycle (16, 18
+frames); without a view it is not asked and is cut as before (32, 36 frames: two cycles, as the engine
+cannot tell without the view). The same 46-frame walker filmed as a front diagonal, its far leg four
+tones off the near one, is asked with `--view front_diagonal`: one interval on is as near as two on, but
+the foot cue turns over one interval on (`says: "steps"`): two steps (46 frames), the count stands. The
+same 46-frame walker with its legs drawn alike (its arms still four tones apart), asked with `--view` set
+to `front`, `front_diagonal`, `back` and `back_diagonal`: one interval on (a step on) is the same
+picture, as near as two on, and the foot cue does not move (its range far under the floor,
+`says: "alike"`). The crossings stay on steps: two steps, 46 frames, `cycles` false, and a warning that
+names the cut. The same 46-frame walker with its legs drawn alike and each leg twice as wide (10 px
+either side of its line instead of 5), so the feet are seen together over half the interval at each pass,
+where a pass could hide: asked with no view and with `--view` set to `side`, `front_diagonal` and `back`.
+One interval on (a step on) is the same picture, as near as two on, but the foot cue (the view's, or with
+no view the feet's shade) does not move (`says: "alike"`): two steps, 46 frames, `cycles` false, and a
+warning that names the cut.
 
 **Choosing the cut.**
 
@@ -1420,8 +1440,8 @@ the feet together inside the clip as long as a pass, and a wobble that reaches t
 step's beat read as steps; a narrow step that opens the feet only just past the reading's threshold reads
 at that threshold. Where a pass is hidden behind the other foot, or where the view is given and is not
 `side`, the cycles reading (`local_cycle.read_cycles`) sees whether the crossings mark cycles: where the
-clip repeats one interval on as near as two on, a pass that can hide marks cycles unless the foot cue
-says `"steps"`, and where only the view asks, the crossings mark cycles only where the cue says
+clip repeats one interval on as near as two on, a pass that can hide marks cycles unless the cue says
+`"steps"` or `"alike"`, and where only the view asks, the crossings mark cycles only where the cue says
 `"cycles"`; where they mark cycles, the reading cuts one cycle as two steps. What it still cannot tell: a
 side walk with brief passes whose two steps are one silhouette is not asked, because from the side the
 legs a step on are one silhouette, as near as a cycle on, and the picture cannot tell; a clip with no
@@ -1432,7 +1452,12 @@ its crossings left on steps: where its feet do meet once a cycle, it is cut two 
 warning; and a cue that moves with how the feet meet rather than with which leg leads (for example both
 feet drawn lighter as they part) turns over half an interval on just as swapped legs do, and can still
 read a step as a cycle; so can a cue that flickers on a beat of its own and turns over half an interval
-on by chance. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+on by chance. With no view the feet's shade is read only for whether it moves, so where a pass can hide,
+a walk whose legs are drawn a few tones apart (its shade moves) and whose two steps look alike in the
+picture can still be read as cycles from the picture: give `--view`. And a walk whose far foot does pass
+hidden while its legs are drawn alike to its cue (the view's, or with no view the feet's shade) has its
+crossings left on steps: where its feet do meet once a cycle, it is cut two cycles long, with the
+warning. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
 
 ### The step gate: every step between drawings, and a fixed cut's count
 
