@@ -5,6 +5,8 @@ Grok Imagine keeps the input image's framing and ignores `aspect_ratio` on
 image-to-video (2026-09-08 실측: a `3:4` request still returned 960x960). So the
 canvas is decided HERE, on the still: a jump needs head-room above (tall), an
 attack needs room above and in front, a projectile needs room in front (wide), everything else stays square.
+A walk or run filmed from the side stays square too, the square widened by whatever room the still does
+not leave its silhouette for the stride and what trails behind it (`gait_room`, `--view`).
 The state -> canvas table below is the single owner of that rule; `--shape`
 overrides it per call, with the state's own row for that shape where it has one (a walk or run
 forced wide gets no head-room).
@@ -43,6 +45,7 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.frames.cutout import KEY_TARGETS, extract_route
 from sprite_gen.frames.extract import is_border_key_candidate
+from sprite_gen.gen.handedness import VIEWS
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.console import utf8_streams
 
@@ -60,8 +63,23 @@ class CanvasProfile:
     lead: float  # fraction of the canvas width kept empty IN FRONT of the subject (wide)
     trail: float  # fraction of the canvas width kept empty BEHIND the subject (wide)
     why: str
+    # A square row that, filmed in a view the motion crosses (ROOM_VIEWS), reads the still's room around its
+    # silhouette and widens the square by the room it lacks (`gait_room`).
+    room: bool = False
 
 
+# Filmed from the side, a walk's stride reaches in front of the standing silhouette, and behind it the stride
+# and whatever trails behind the body — a big tail, a long coat — swing past it, in the picture's plane. The
+# square a walk is filmed on keeps GAIT_ROOM of the silhouette's height clear between the silhouette and the
+# frame's edge on each side, more behind than in front: where the still leaves less, the square is widened by what
+# it lacks on that side, the extra height going above (`video-frames` refuses a clip whose subject meets a side of
+# the frame). The frame stays square — the clip keeps the 1:1 a walk is filmed at, and the subject loses only the
+# share of the clip the room takes. A diagonal walk strides half into the picture and a front or back walk wholly
+# into it, so their room is not read (ROOM_VIEWS). A run is read at the walk's bounds. The rule:
+# docs/video-pipeline.md section 1.
+GAIT_ROOM = {"front": 0.15, "behind": 0.25}
+ROOM_VIEWS = frozenset({"side"})
+GAIT_ROOM_WHY = "the still leaves its silhouette too little room for a walk or run from the side: the square is widened by the room it lacks"
 # The one table. Keys are state names as the sprite-request uses them; unknown
 # states fall through to `default`.
 STATE_CANVAS: dict[str, CanvasProfile] = {
@@ -85,6 +103,9 @@ STATE_CANVAS: dict[str, CanvasProfile] = {
     "cast": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the cast terminal pose"),
     "hurt_hold": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.1, 0.32, 0.32, "room for the hurt_hold terminal pose"),
     "transform": CanvasProfile(SHAPE_WIDE, 16 / 9, 0.25, 0.25, 0.25, "room for the transform terminal pose"),
+    # In place on the still's own frame, as any state, while the still leaves the stride its room (GAIT_ROOM).
+    "walk": CanvasProfile(SHAPE_SQUARE, 1.0, 0.0, 0.0, 0.0, "in-place motion fits the still's own frame", room=True),
+    "run": CanvasProfile(SHAPE_SQUARE, 1.0, 0.0, 0.0, 0.0, "in-place motion fits the still's own frame", room=True),
     "default": CanvasProfile(SHAPE_SQUARE, 1.0, 0.0, 0.0, 0.0, "in-place motion fits the still's own frame"),
 }
 # `--shape wide` is not the attack row. It is forced on a state whose own row is
@@ -202,14 +223,49 @@ def normalize_key(image: Image.Image, kind: str) -> tuple[Image.Image, dict[str,
     return Image.fromarray(data, "RGB"), report
 
 
-def subject_rows(image: Image.Image, fill: tuple[int, int, int], tolerance: int) -> tuple[int, int]:
-    """First and one-past-last row holding a pixel that is not the background `fill`."""
+def subject_box(image: Image.Image, fill: tuple[int, int, int], tolerance: int) -> tuple[int, int, int, int] | None:
+    """The box (left, top, right, bottom; right and bottom one past) of the pixels more than `tolerance` off the
+    background `fill` on some channel, or None when there are none."""
     data = np.asarray(image.convert("RGB"), dtype=np.int16)
-    diff = np.abs(data - np.array(fill, dtype=np.int16)).max(axis=2)
-    rows = np.flatnonzero((diff > tolerance).any(axis=1))
+    subject = np.abs(data - np.array(fill, dtype=np.int16)).max(axis=2) > tolerance
+    rows = np.flatnonzero(subject.any(axis=1))
     if rows.size == 0:
-        raise SystemExit("video-canvas: --fit tight found no subject on the still's background")
-    return int(rows[0]), int(rows[-1]) + 1
+        return None
+    cols = np.flatnonzero(subject.any(axis=0))
+    return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
+
+
+def gait_room(image: Image.Image, fill: tuple[int, int, int], tolerance: int, *, facing: str, view: str) -> dict[str, Any]:
+    """The empty margin between the still's silhouette (`subject_box`) and the left and right edges of the square frame
+    a square row makes of it (`pad_canvas`: max(w, h) wide, the still centred, so a still taller than it is wide gains
+    room on either side), read as the room in front of the subject (the side it faces) and behind it, in px and of the
+    silhouette's height. `short` names the sides under their GAIT_ROOM of that height, front first; `added_px` is what
+    each side lacks, in whole px, the columns the square gains there, and `added_rows` the rows it gains above."""
+    box = subject_box(image, fill, tolerance)
+    if box is None:
+        raise SystemExit("video-canvas: found no subject on the still's background to read a walk's room around")
+    left, top, right, bottom = box
+    height = bottom - top
+    w, h = image.size
+    x = (max(w, h) - w) // 2
+    margin = {"left": x + left, "right": max(w, h) - x - right}
+    ahead, behind = ("right", "left") if facing == "right" else ("left", "right")
+    room = {"front": margin[ahead], "behind": margin[behind]}
+    need = {side: GAIT_ROOM[side] * height for side in ("front", "behind")}
+    added = {side: max(0, math.ceil(need[side] - room[side])) for side in ("front", "behind")}
+    return {
+        "view": view,
+        "silhouette": [left, top, right, bottom],
+        "front_px": room["front"],
+        "behind_px": room["behind"],
+        "front": round(room["front"] / height, 4),
+        "behind": round(room["behind"] / height, 4),
+        "need": dict(GAIT_ROOM),
+        "need_px": {side: round(need[side], 1) for side in ("front", "behind")},
+        "short": [side for side in ("front", "behind") if room[side] < need[side]],
+        "added_px": added,
+        "added_rows": added["front"] + added["behind"],
+    }
 
 
 def tight_canvas(src: Image.Image, fill: tuple[int, int, int], *, tolerance: int) -> tuple[Image.Image, dict[str, Any]]:
@@ -220,7 +276,10 @@ def tight_canvas(src: Image.Image, fill: tuple[int, int, int], *, tolerance: int
     split evenly, because a tight frame adds no room in front on purpose.
     """
     w, h = src.size
-    top, bottom = subject_rows(src, fill, tolerance)
+    box = subject_box(src, fill, tolerance)
+    if box is None:
+        raise SystemExit("video-canvas: --fit tight found no subject on the still's background")
+    _, top, _, bottom = box
     head = round((bottom - top) * TIGHT_HEADROOM)
     kept_top = max(0, top - head)
     band = src.crop((0, kept_top, w, bottom))
@@ -255,11 +314,16 @@ def pad_canvas(
     trail: float | None = None,
     key: str = "auto",
     fit: str = "state",
+    view: str | None = None,
 ) -> tuple[Image.Image, dict[str, Any]]:
     """Return (padded RGB image, placement report). Never downsizes the still.
 
     On a green/magenta base the background is normalized to the exact key and
     the padding is that key; otherwise the padding is the corner colour.
+    A `room` row filmed in one of ROOM_VIEWS (`view`) has the still's room read
+    (`gait_room`, the report's `room`); a side that is short gains the columns it
+    lacks and the square the rows to match, above the still. With no `view` the
+    room is not read.
     """
     corner = corner_key(image)
     kind = resolve_key(corner, key)
@@ -287,6 +351,9 @@ def pad_canvas(
             "why": "tight: no room for the motion; the subject fills the frame and a motion that leaves it is clipped",
         }
         return canvas, report
+    room = None
+    if profile.room and view in ROOM_VIEWS:
+        room = gait_room(src, tuple(fill), 0 if kind is not None else CORNER_TOLERANCE, facing=facing, view=view)  # type: ignore[arg-type]
     w, h = src.size
     head = profile.headroom if headroom is None else headroom
     front = profile.lead if lead is None else lead
@@ -295,8 +362,15 @@ def pad_canvas(
         raise SystemExit("video-canvas: --headroom/--lead/--trail must be in [0, 0.9) and lead + trail below 0.9")
     if profile.shape == SHAPE_SQUARE:
         side = max(w, h)
+        x = (side - w) // 2
+        if room is not None and room["short"]:
+            # the columns each side lacks; the square's rows grow to match, above the still
+            added = {"left": room["added_px"]["behind" if facing == "right" else "front"],
+                     "right": room["added_px"]["front" if facing == "right" else "behind"]}
+            side += added["left"] + added["right"]
+            x += added["left"]
         canvas_w, canvas_h = side, side
-        x, y = (side - w) // 2, side - h
+        y = side - h
     elif profile.shape == SHAPE_TALL:
         # the still becomes the bottom (1 - headroom) of a canvas at least as tall as the
         # profile ratio demands for the still's width — never narrower than the still
@@ -326,7 +400,8 @@ def pad_canvas(
         "key_rgb": list(fill),
         "corner_rgb": list(corner),
         **key_report,
-        "why": profile.why,
+        "why": GAIT_ROOM_WHY if room is not None and room["short"] else profile.why,
+        **({"room": room} if room is not None else {}),
     }
     return canvas, report
 
@@ -344,6 +419,7 @@ def run_canvas(
     key: str = "auto",
     trail: float | None = None,
     fit: str = "state",
+    view: str | None = None,
 ) -> dict[str, Any]:
     still = still.expanduser().resolve()
     if not still.is_file():
@@ -358,7 +434,7 @@ def run_canvas(
             canvas, report = effect.canvas(image)
     else:
         profile = profile_for(state, shape)
-        canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit)
+        canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit, view=view)
     out = out.expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".part")
@@ -383,6 +459,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trail", type=float, help="wide: empty fraction behind the subject, for a weapon drawn back (default from the profile)")
     parser.add_argument("--key", choices=KEYS, default="auto", help="chroma key of the still (auto reads the corners; green/magenta are normalized to the exact key; white pads with the corner colour)")
     parser.add_argument("--fit", choices=FITS, default="state", help="state: the state's room for the motion (default); tight: drop the empty rows around the subject and add no room, so it fills the frame and a motion that leaves it is clipped")
+    parser.add_argument("--view", choices=VIEWS, help="the still's view; a walk or run from the side has the still's room around its silhouette read, and its square widened by the room it lacks (`room` in the report). Left out, the room is not read")
     parser.add_argument("--report", type=Path, help="write the canvas report JSON here")
 
 
@@ -391,7 +468,7 @@ def run(**kwargs: object) -> int:
         Path(str(kwargs["still"])), Path(str(kwargs["out"])),
         state=kwargs.get("state"), shape=kwargs.get("shape"), facing=str(kwargs.get("facing") or "right"),  # type: ignore[arg-type]
         headroom=kwargs.get("headroom"), lead=kwargs.get("lead"), trail=kwargs.get("trail"), report_path=kwargs.get("report"),  # type: ignore[arg-type]
-        key=str(kwargs.get("key") or "auto"), fit=str(kwargs.get("fit") or "state"),
+        key=str(kwargs.get("key") or "auto"), fit=str(kwargs.get("fit") or "state"), view=kwargs.get("view"),  # type: ignore[arg-type]
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

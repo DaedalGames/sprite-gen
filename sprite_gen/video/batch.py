@@ -804,12 +804,19 @@ def run_item(
                 else:
                     still = item_dir / "facing.png"
                     facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix)
-            # a lifetime is framed as an effect, whatever its name: on black, its centre kept
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit)
+            # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
+            # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
         result["canvas"] = {k: canvas_report[k] for k in ("fit", "shape", "canvas", "offset") if k in canvas_report}
+        if "room" in canvas_report:
+            # the still's room around its silhouette, and why the square is widened when it is short
+            result["canvas"]["room"] = {k: canvas_report["room"][k]
+                                        for k in ("view", "front_px", "behind_px", "front", "behind", "need", "short", "added_px", "added_rows")}
+            if canvas_report["room"]["short"]:
+                result["canvas"]["why"] = canvas_report["why"]
         if "facing_check" in canvas_report:
             result["facing"] = canvas_report["facing_check"]
 
@@ -1258,7 +1265,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto")
     parser.add_argument("--concurrency", type=int, default=3, help="parallel clip generations (starts are staggered regardless)")
     parser.add_argument("--start-gap", type=float, default=START_GAP_SECONDS, help="seconds between clip request starts")
-    parser.add_argument("--shape", choices=canvas_mod.SHAPES, help="force one canvas shape for every state (e.g. wide for a costume or arms that leave a 1:1 frame)")
+    parser.add_argument("--shape", choices=canvas_mod.SHAPES, help="force one canvas shape for every state (e.g. wide for a costume or arms that leave a 1:1 frame; square keeps a side walk or run square whatever room its still leaves)")
     parser.add_argument("--anchor", choices=tuple(a for a in loop_mod.ANCHOR_MODES if a != "motion"), default="none", help="motion-auto: automatic regions, local period and XY correction (walk/run only); feet: remove in-canvas drift")
     parser.add_argument("--spill", choices=frames_mod.SPILL_MODES, default="auto", help="auto: judge key reflections from each item's canvas still (default); small / full: force")
     parser.add_argument("--fit", choices=canvas_mod.FITS, default="state", help="state: each state's room for the motion (default); tight: no room, the subject fills the frame and a motion that leaves it is clipped (use with --body-height at a low --resolution)")
