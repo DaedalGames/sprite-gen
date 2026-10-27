@@ -133,6 +133,7 @@ def test_a_ghost_kept_at_a_made_time_is_a_take_to_film_again_and_its_fault_line_
 
 @pytest.mark.slow
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 28 calls of the binary at 100 x 120, each run 16 ways (-x -z): seconds on a GPU, two minutes on a CPU's Vulkan driver
 def test_real_rife_a_ghost_kept_at_a_made_time_is_a_take_to_film_again(tmp_path):
     """A2 through the real RIFE: its frame between the two ghosts carries them, and the cell keeps the ghost.
     The real RIFE makes each frame beside a filmed ghost, the frames this case reads; the stand-in makes the
