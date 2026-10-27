@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -165,6 +168,46 @@ def _held(taken: int, hold: tuple[int, int], **drawn) -> list[Image.Image]:
     held hold[0] frames and each of the second hold[1]: a stride whose two halves the clip plays at two paces."""
     return [_walker(k, **drawn) for k in range(taken, taken + FRAMES)
             for _ in range(hold[0] if k % CYCLE < CYCLE // 2 else hold[1])]
+
+
+def _flecked(frames: list[Image.Image], n: int) -> list[Image.Image]:
+    """`frames` with each frame that holds the frame before it (the same pixels) `n` of its edge pixels cleared, solid
+    pixels beside a clear one, spread through the edge from a place of its own: the noise a codec and the key leave over
+    a held frame, no held frame the same pixels as the frame before."""
+    out = []
+    for k, frame in enumerate(frames):
+        if k and np.array_equal(np.asarray(frame), np.asarray(frames[k - 1])):
+            a = np.asarray(frame).copy()
+            solid = a[..., 3] >= 128
+            inner = solid.copy()
+            inner[1:] &= solid[:-1]
+            inner[:-1] &= solid[1:]
+            inner[:, 1:] &= solid[:, :-1]
+            inner[:, :-1] &= solid[:, 1:]
+            ys, xs = np.nonzero(solid & ~inner)
+            pick = np.arange(k % 7, len(ys), len(ys) // n)[:n]
+            a[ys[pick], xs[pick], 3] = 0
+            frame = Image.fromarray(a)
+        out.append(frame)
+    return out
+
+
+def _coded(frames: list[Image.Image], root: Path) -> list[Image.Image]:
+    """`frames` as a clip comes to the reading: on the key's green, encoded by libx264 (yuv420p, its own crf 23), and
+    decoded and keyed by `video-frames` (extract, key_frames: green)."""
+    from sprite_gen.video import frames as video_frames
+
+    made = root / "made"
+    made.mkdir(parents=True)
+    for k, f in enumerate(frames):
+        canvas = Image.new("RGB", f.size, (0, 255, 0))
+        canvas.paste(f, mask=f.getchannel("A"))
+        canvas.save(made / f"frame-{k:04}.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-framerate", "24", "-i", str(made / "frame-%04d.png"), "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(root / "clip.mp4")], check=True)
+    raw = video_frames.extract(root / "clip.mp4", root / "raw")
+    video_frames.key_frames(raw, root / "keyed", key="green", check_edges=False)
+    return [Image.open(p).convert("RGBA") for p in sorted((root / "keyed").glob("*.png"))]
 
 
 def _cut(out: Path, keyed: Path, *extra: str) -> dict:
@@ -713,6 +756,70 @@ def test_a_walk_seen_at_an_angle_held_longer_over_half_its_stride_reads_as_on_on
     assert len(read["turns"]) == len(ones["turns"]) == (1 if "turns" in drawn else 0)
     for turn in read["turns"]:
         assert TURN[0] <= drawing[turn["from"]] and drawing[turn["to"]] <= TURN[1]
+
+
+@pytest.mark.parametrize("piece", [None, (6, 6)], ids=["alone", "6x6-beside"])
+def test_a_held_frame_with_noise_over_it_holds_the_frame_before(monkeypatch, piece):
+    """HELD_MAX: a frame holds the frame before it where under 0.5 % of the frame before's solid pixels flip in it, not
+    only where it is the same pixels, for a clip comes to the reading through a codec and the key, which leave hardly a
+    held frame as it was. The square walker taken half a stride on, each drawing of the first half of its stride held 3
+    frames and each of the second 1, alone or with a 36 px piece beside its head in the still, each held frame with 6 of
+    its edge pixels cleared (under 0.2 % of its solid pixels, two such frames in a row under 0.4 % apart): each drawing
+    counted once, its walk lies where it lies held without the noise, as on ones, and it is not read. Counted wherever
+    not the same pixels (HELD_MAX at 0: every frame, as the clip plays it), the walk lies 0.075 off and the clip is
+    read, with the turns it does not make."""
+    from sprite_gen.video import body_turn
+
+    def drawn():
+        frames = _held(6, (3, 1), square=True)
+        return _beside(frames, (0,), piece) if piece else frames
+
+    clean = body_turn.read(drawn())
+    noisy = _flecked(drawn(), 6)
+    read = body_turn.read(noisy)
+    assert body_turn.HELD_MAX == 0.005
+    assert read["read"] is False and read["turns"] == [] and read["walk_side"] == clean["walk_side"]
+    assert abs(read["walk_side"]) < 0.005 and read["why"].startswith("the walk is seen square")
+    monkeypatch.setattr(body_turn, "HELD_MAX", 0.0)
+    read = body_turn.read(noisy)
+    assert read["read"] and read["walk_side"] >= body_turn.WALK_SIDE_MIN and len(read["turns"]) >= 2
+
+
+def test_a_walk_seen_at_an_angle_held_with_noise_over_its_held_frames_reads_its_turn():
+    """The walker seen at an angle turning over drawings 30-40, each drawing of the first half of its stride held 3
+    frames and each of the second 1, each held frame with 6 of its edge pixels cleared: its walk lies where it lies held
+    without the noise, and it reads its turn over the frames that hold the drawings it turns over."""
+    from sprite_gen.video import body_turn
+
+    drawing = [k for k in range(FRAMES) for _ in range(3 if k % CYCLE < CYCLE // 2 else 1)]
+    clean = body_turn.read(_held(0, (3, 1), turns=[TURN]))
+    read = body_turn.read(_flecked(_held(0, (3, 1), turns=[TURN]), 6))
+    assert read["read"] and read["walk_side"] == clean["walk_side"]
+    (turn,) = read["turns"]
+    assert TURN[0] <= drawing[turn["from"]] and drawing[turn["to"]] <= TURN[1]
+
+
+@pytest.mark.slow
+def test_a_held_walk_through_the_codec_and_the_key_reads_as_drawn(tmp_path):
+    """The held walkers through the path a clip takes (`_coded`: libx264 at its own crf 23 and `video-frames`' key),
+    which leaves hardly a held frame the same pixels as the frame before: the square walker taken half a stride on, each
+    drawing of the first half of its stride held 3 frames and each of the second 1, lies under 0.02 off at the median of
+    its drawings and is not read (counted wherever not the same pixels, 0.078, and read with turns over frames 19-29,
+    67-77 and 115-125); the walker seen at an angle turning over drawings 30-40, held the same way, reads its turn over
+    the frames that hold them."""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg required")
+    from sprite_gen.video import body_turn
+
+    square = _coded(_held(6, (3, 1), square=True), tmp_path / "square")
+    assert len(square) == 147
+    read = body_turn.read(square)
+    assert read["read"] is False and abs(read["walk_side"]) < 0.02 and read["turns"] == []
+    drawing = [k for k in range(FRAMES) for _ in range(3 if k % CYCLE < CYCLE // 2 else 1)]
+    read = body_turn.read(_coded(_held(0, (3, 1), turns=[TURN]), tmp_path / "turning"))
+    assert read["read"] and read["walk_side"] > 0.08
+    (turn,) = read["turns"]
+    assert TURN[0] <= drawing[turn["from"]] and drawing[turn["to"]] <= TURN[1]
 
 
 def test_a_walk_is_read_where_its_head_and_shoulders_lie_0_045_nearer_either_side():
