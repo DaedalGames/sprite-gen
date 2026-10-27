@@ -91,11 +91,30 @@ A region's fifth number, flat, is the share of the way from its centre to its ri
 layer's chest weight (`breathe.flat_cos2`) — so a large part moves as one piece instead of pressed in at its middle;
 the fold rule and the floor read it by the radius left (1 − flat of it). `--gain-across` moves across by a gain of its
 own; a gain the fold rule or the floor lowers lowers both in proportion.
+
+`--band PX|auto` moves a region as one mass instead (`BAND_POLICY`; off by default, and off nothing of it is read or
+written). The weight is 1 over the region's ellipse grown by `--band-margin` every way and falls to 0 (cos², along the
+ray from the centre) over the band past it: the whole part moves, and only what is round it gives. A pixel of the part
+lands where the weight is still 1 only if the flat part reaches as far as the part goes, so the margin left auto is the
+move's reach and a pixel (ceil(reach) + 1), and the band left auto is the narrowest the move does not fold
+(ceil(reach × π / 2) + 1): the reach is read off the move first, at the gain asked, and the band and margin from it.
+The fold rule reads a region by its narrowest band, `--on-fold lower` as ever, and then the steepest its weight falls
+along the move (`band_steepest`): where the flat ellipse and the outer one differ in shape the band is narrower across
+its ring than its px. `--band-up FLAT[,PX|auto]` gives the
+part above the centre its own: the flat part stops FLAT of the region's height over the centre and the weight falls
+over PX from there — left auto, the band or as far as HANG_PAST px over the region's top, whichever is further — so the
+upper part gives and the rest moves whole. A region's flat share is the other way of moving it whole and is refused
+with it. A band carries each region by its own pixels, not by the body's lay: the solid pixels under its ellipse in
+the cell it was read on are looked for in each cell within CARRY_SEARCH px of where the cell before had them, or of the
+lay (`carry_match`, `carry_own`), and a cell where that is uncertain is carried by the lay, the record saying which and
+why. Outside every region's band no pixel changes. The record holds the band, the carry of each region in every cell
+and a ledger of what the move did in each cell, and what is in the ledger is said in a warning line.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import io
 import json
@@ -152,6 +171,16 @@ STRETCH_POLICY = "stretch-floor/cos2-direction/1"
 # What carries a region into a cell: the lay of the body's outline. Whose pixels the carried ellipse holds is not read.
 CARRY_BASIS = {"reading": "outline-lay", "region": "unverified"}
 READ_ON = re.compile(r"[0-9a-f]{64}")  # a strip's sha256, as `--read-on` names it
+# A region moved as one mass (`--band`): flat over its ellipse grown by a margin, cos² to 0 over a band past it,
+# carried by its own pixels. The record names it, as POLICY names the way without it.
+BAND_POLICY = "own-pixels/margin-band-cos2/1"
+AUTO = "auto"  # a band, margin or band above read off the move
+HANG_PAST = 3.0  # px over a region's top the band above runs at least, left auto: all of the ellipse moves some, nothing over it
+# Under a band, a region is carried by its own pixels; a cell where they are not found surely is carried by the lay.
+CARRY_BASIS_BAND = {"reading": "outline-lay", "region": "own-pixels"}
+CARRY_SEARCH = 9  # px either way a region's pixels are looked for in a cell (whole pixels), around where the cell before had them
+PRESSED, STRETCHED = 0.85, 1.15  # of a pixel's area: the ledger counts a moved pixel left with less, or more
+MOVED_PX = 0.5  # px: a pixel outside every region moved this far or more is counted
 
 
 def parse_region(text: str) -> tuple[float, ...]:
@@ -198,6 +227,41 @@ def parse_read_on(text: str) -> str:
         raise argparse.ArgumentTypeError(f"--read-on wants the sha256 of the strip the regions were read on (64 lowercase "
                                          f"hexadecimal digits), got {text!r}")
     return text
+
+
+def _px_or_auto(flag: str, text: str, *, least: float, above: bool) -> float | str:
+    """A px number (over `least` when `above`, else at least it), or AUTO."""
+    if text == AUTO:
+        return AUTO
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not (value > least if above else value >= least) or not math.isfinite(value):  # a NaN is neither
+        raise argparse.ArgumentTypeError(f"{flag} wants px ({'over' if above else 'at least'} {least:g}) or {AUTO}, got {text!r}")
+    return value
+
+
+def parse_band(text: str) -> float | str:
+    return _px_or_auto("--band", text, least=0.0, above=True)
+
+
+def parse_band_margin(text: str) -> float | str:
+    return _px_or_auto("--band-margin", text, least=0.0, above=False)
+
+
+def parse_band_up(text: str) -> tuple[float, float | str]:
+    """`--band-up FLAT[,PX|auto]`: the share of the region's height over its centre that stays flat (over 0, at most 1),
+    and the band above it (AUTO when left out)."""
+    flat, _, band = text.partition(",")
+    try:
+        share = float(flat)
+    except ValueError:
+        share = math.nan
+    if not 0 < share <= 1:  # a NaN is not
+        raise argparse.ArgumentTypeError(f"--band-up wants FLAT[,PX|auto], FLAT the share of the region's height over its "
+                                         f"centre that stays flat (over 0, at most 1), got {text!r}")
+    return share, _px_or_auto("--band-up", band or AUTO, least=0.0, above=True)
 
 
 def _run_depth(solid: np.ndarray, axis: int) -> np.ndarray:
@@ -549,13 +613,37 @@ def move_field(xx: np.ndarray, yy: np.ndarray, moves: list[tuple[list[tuple[floa
         for region in regions:
             weight = np.maximum(weight, region_weight(xx, yy, region, shift))
         weights.append(weight)
+    return _largest_move(weights, [offset for _, offset in moves])
+
+
+def _largest_move(weights: list[np.ndarray], offsets: list[tuple[float, float]]) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Per pixel, whether a group's weight (one per offset) is over 0 there, and the largest of the groups' weighted
+    moves, across and down. None when no weight is over 0 anywhere."""
     inside = np.logical_or.reduce([weight > 0 for weight in weights])
     if not inside.any():
         return None
-    largest = np.argmax(np.stack([math.hypot(*offset) * weight for (_, offset), weight in zip(moves, weights)]), axis=0)[None]
-    move_x = np.take_along_axis(np.stack([offset[0] * weight for (_, offset), weight in zip(moves, weights)]), largest, 0)[0]
-    move_y = np.take_along_axis(np.stack([offset[1] * weight for (_, offset), weight in zip(moves, weights)]), largest, 0)[0]
+    largest = np.argmax(np.stack([math.hypot(*offset) * weight for offset, weight in zip(offsets, weights)]), axis=0)[None]
+    move_x = np.take_along_axis(np.stack([offset[0] * weight for offset, weight in zip(offsets, weights)]), largest, 0)[0]
+    move_y = np.take_along_axis(np.stack([offset[1] * weight for offset, weight in zip(offsets, weights)]), largest, 0)[0]
     return inside, move_x, move_y
+
+
+def band_weight(xx: np.ndarray, yy: np.ndarray, centre: tuple[float, float], flat: tuple[float, float, float],
+                band: tuple[float, float, float]) -> np.ndarray:
+    """Per pixel, how much of a banded region's move it takes (`--band`): 1 inside the flat ellipse about `centre` — its
+    radii across, above and below (`flat`) — 0 on and past the outer one, whose radii are those and `band`'s (across,
+    above, below), and between them cos² of the share of the way across, along the ray from the centre. The pixels the
+    region covers are those where this is over 0."""
+    (cx, cy), (ax, up, down), (bx, band_up, band_down) = centre, flat, band
+    dx, dy = np.asarray(xx, np.float64) - cx, np.asarray(yy, np.float64) - cy
+    above = dy < 0
+    ay, by = np.where(above, up, down), np.where(above, band_up, band_down)
+    inner = np.hypot(dx / ax, dy / ay)
+    outer = np.hypot(dx / (ax + bx), dy / (ay + by))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Along the ray, inner/outer is the outer radius over the flat one: the share across is linear in the distance.
+        share = np.clip((inner - 1) * outer / (inner - outer), 0.0, 1.0)
+        return np.where(inner <= 1, 1.0, np.where(outer < 1, np.cos(0.5 * math.pi * share) ** 2, 0.0))
 
 
 def move_regions(cell: Image.Image, moves: list[tuple[list[tuple[float, float, float, float]], tuple[float, float]]],
@@ -568,10 +656,16 @@ def move_regions(cell: Image.Image, moves: list[tuple[list[tuple[float, float, f
     byte — the colour under its clear pixels too, which a move clears."""
     if all(dx == 0 and dy == 0 for _, (dx, dy) in moves):
         return cell.copy()
+    return _draw(cell, lambda xx, yy: move_field(xx, yy, moves, shift))
+
+
+def _draw(cell: Image.Image, field_of: Any) -> Image.Image:
+    """`cell` moved by the field `field_of(xx, yy)` gives (whether a pixel is covered, its move across and down; None:
+    nothing is), sampled as premultiplied bilinear colour; a pixel no region covers keeps its bytes."""
     src = np.asarray(cell.convert("RGBA"), dtype=np.float32)
     h, w = src.shape[:2]
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    field = move_field(xx, yy, moves, shift)
+    field = field_of(xx, yy)
     if field is None:
         return cell.copy()
     inside, move_x, move_y = field
@@ -585,6 +679,165 @@ def move_regions(cell: Image.Image, moves: list[tuple[list[tuple[float, float, f
     moved[..., 3:4] = alpha
     out = np.where(inside[..., None], np.clip(np.round(moved), 0, 255), src).astype(np.uint8)
     return Image.fromarray(out, "RGBA")
+
+
+def jacobian(move_x: np.ndarray, move_y: np.ndarray) -> np.ndarray:
+    """Per pixel of a moved cell, but for those on its edge, the area of the source it takes. The moved cell's
+    pixel p is read from the source at p less its move, so the area is read between p's neighbours on either
+    side, across and down, as half of how far apart those are read: 1 where nothing moves, 0 where the picture
+    stops, under 0 where it runs backwards. Between the neighbours on either side, not from p to the next pixel
+    one way: read one way, a round region a few pixels across reads steeper on the side it bulges to than its
+    weight is anywhere. One row and one column shorter than the cell at each edge."""
+    across_x, across_y = (move_x[1:-1, 2:] - move_x[1:-1, :-2]) / 2, (move_y[1:-1, 2:] - move_y[1:-1, :-2]) / 2
+    down_x, down_y = (move_x[2:, 1:-1] - move_x[:-2, 1:-1]) / 2, (move_y[2:, 1:-1] - move_y[:-2, 1:-1]) / 2
+    return (1 - across_x) * (1 - down_y) - down_x * across_y
+
+
+def _whole_premultiplied(cell: Image.Image) -> np.ndarray:
+    """A cell's premultiplied RGBA as whole numbers, 255 times it (each colour times the alpha, and the alpha times 255):
+    a squared difference of two of them, summed, is a whole number, the same on every machine."""
+    rgba = np.asarray(cell.convert("RGBA"), np.int64)
+    return np.concatenate([rgba[..., :3] * rgba[..., 3:4], rgba[..., 3:4] * 255], axis=-1)
+
+
+@dataclass(frozen=True)
+class Carried:
+    """Where a region's own pixels are in a cell (`carry_match`): their shift from the cell they were read on, or None
+    and why that is uncertain; the least of the masked squared difference, and its second difference across and down
+    there, each per pixel of the mask in premultiplied colour (0 to 255) squared."""
+
+    shift: tuple[float, float] | None
+    why: str | None
+    least: float
+    curvature: tuple[float, float] | None = None
+
+
+def carry_match(base: np.ndarray, cell: np.ndarray, mask: np.ndarray, guess: tuple[float, float],
+                search: int = CARRY_SEARCH, around: str = "the lay") -> Carried:
+    """Where the pixels of `base` under `mask` are in `cell` (both `_whole_premultiplied`): the whole-pixel move, within
+    `search` px of `guess` each way (`around` says what it is: the body's lay, or where the cell before had them), with
+    the least squared difference over the mask — past the cell's edge is clear — and a parabola through it and its
+    neighbours each way for the part of a pixel. Uncertain where the least is on the search's edge (the pixels may be
+    further), where it is tied with a place more than a pixel away, or where the difference does not curve up across or
+    down (nothing there tells one place from the next)."""
+    ys, xs = np.nonzero(mask)
+    gx, gy = int(round(guess[0])), int(round(guess[1]))
+    pad = search + math.ceil(max(abs(guess[0]), abs(guess[1]))) + 2
+    padded = np.pad(cell, ((pad, pad), (pad, pad), (0, 0)))
+    steps = np.arange(-search, search + 1)
+    rows = ys[None, None, :] + (gy + steps)[:, None, None] + pad
+    cols = xs[None, None, :] + (gx + steps)[None, :, None] + pad
+    grid = ((padded[rows, cols] - base[ys, xs]) ** 2).sum(axis=(2, 3))  # [down, across], whole numbers
+    unit = len(ys) * 255 ** 2
+    iy, ix = np.unravel_index(int(np.argmin(grid)), grid.shape)
+    least = int(grid[iy, ix])
+    edge = 2 * search
+    if iy in (0, edge) or ix in (0, edge):
+        return Carried(None, f"the least is on the search's edge, {search} px from {around}", least / unit)
+    if (np.abs(np.argwhere(grid == least) - [iy, ix]).max(axis=1) > 1).any():
+        return Carried(None, "the least is tied with a place more than a pixel away", least / unit)
+    across = int(grid[iy, ix - 1]) - 2 * least + int(grid[iy, ix + 1])
+    down = int(grid[iy - 1, ix]) - 2 * least + int(grid[iy + 1, ix])
+    curvature = (across / unit, down / unit)
+    if across <= 0 or down <= 0:
+        way = "across" if across <= 0 else "down"
+        return Carried(None, f"the difference does not curve up {way}", least / unit, curvature)
+    fx = float(np.clip(0.5 * (int(grid[iy, ix - 1]) - int(grid[iy, ix + 1])) / across, -0.5, 0.5))
+    fy = float(np.clip(0.5 * (int(grid[iy - 1, ix]) - int(grid[iy + 1, ix])) / down, -0.5, 0.5))
+    return Carried((gx - search + int(ix) + fx, gy - search + int(iy) + fy), None, least / unit, curvature)
+
+
+def carry_own(base: Image.Image, cells: list[Image.Image], regions: list[tuple[float, ...]], base_shift: tuple[float, float],
+              lays: list[tuple[float, float]], base_index: int | None) -> list[list[dict[str, Any]]]:
+    """Per cell and region, where a band carries the region (`--band`): by its own pixels — the solid pixels under its
+    ellipse in `base`, the cell it was read on or carried to by `base_shift`, found in the cell (`carry_match`) — or by
+    the lay where that is uncertain, saying why. The cell `base_index` is `base` itself. The cells are looked at in the
+    loop's order from it (from cell 0 where `base` is none of them), each around where the cell before had the pixels:
+    a part moves little from one cell to the next, and the outline's lay can jump where the outline changes (an arm
+    swung out from the body); around the cell's own lay where the cell before had them by its lay, or is `base`."""
+    w, h = base.size
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    solid = np.asarray(base.getchannel("A")) >= ALPHA_SOLID
+    whole = _whole_premultiplied(base)
+    cell_wholes: dict[int, np.ndarray] = {}
+    n = len(cells)
+    order = list(range(n)) if base_index is None else [(base_index + i) % n for i in range(1, n)]
+    out: list[list[dict[str, Any]]] = [[] for _ in cells]
+    for region in regions:
+        mask = (region_weight(xx, yy, region, base_shift) > 0) & solid
+        entries: dict[int, dict[str, Any]] = {}
+        if base_index is not None:
+            entries[base_index] = {"px": [float(base_shift[0]), float(base_shift[1])], "from": "base"}
+        before: tuple[int, tuple[float, float]] | None = None  # the cell before and where its own pixels were found
+        for k in order:
+            lay = (float(lays[k][0]), float(lays[k][1]))
+            if not mask.any():
+                entries[k] = {"px": list(lay), "from": "lay", "why": "no solid pixel of the cell it was read on is under it"}
+                continue
+            if k not in cell_wholes:
+                cell_wholes[k] = _whole_premultiplied(cells[k])
+            if before is None:
+                guess, around = (lay[0] - base_shift[0], lay[1] - base_shift[1]), "the lay"
+            else:
+                guess, around = before[1], f"where cell {before[0]} had it"
+            found = carry_match(whole, cell_wholes[k], mask, guess, around=around)
+            entry: dict[str, Any] = {"least": found.least, "curvature": None if found.curvature is None else list(found.curvature)}
+            if found.shift is None:
+                entries[k] = {"px": list(lay), "from": "lay", "why": found.why} | entry
+                before = None
+            else:
+                entries[k] = {"px": [base_shift[0] + found.shift[0], base_shift[1] + found.shift[1]], "from": "pixels"} | entry
+                before = (k, found.shift)
+        for k in range(n):
+            out[k].append(entries[k])
+    return out
+
+
+@dataclass(frozen=True)
+class Band:
+    """A band asked (`--band`): its px, the margin's (`--band-margin`) and, above the centre, the share of the region's
+    height that stays flat and the band from there (`--band-up`; None: above as below). Each px is a number or AUTO, read
+    off the move (`band_shapes`)."""
+
+    band: float | str
+    margin: float | str = AUTO
+    up: tuple[float, float | str] | None = None
+
+    def asked(self) -> dict[str, Any]:
+        return {"band": self.band, "margin": self.margin, "up": None if self.up is None else {"flat": self.up[0], "band": self.up[1]}}
+
+
+def band_shapes(band: Band, regions: list[tuple[float, ...]], reach: float) -> tuple[float, float, list[tuple[tuple[float, float, float], tuple[float, float, float]]]]:
+    """The band's px and the margin's, AUTO read off the move's reach at the gain asked — the margin the reach and a
+    pixel, ceil(reach) + 1, so the part is still on the flat where it goes, and the band the narrowest the move does
+    not fold, ceil(reach × π / 2) + 1 — and per region its flat radii and its bands, each across, above and below."""
+    band_px = float(math.ceil(reach * math.pi / 2) + 1) if band.band == AUTO else float(band.band)
+    margin_px = float(math.ceil(reach) + 1) if band.margin == AUTO else float(band.margin)
+    shapes = []
+    for _, _, rx, ry in regions:
+        flat, bands = [rx + margin_px, ry + margin_px, ry + margin_px], [band_px, band_px, band_px]
+        if band.up is not None:
+            share, up = band.up
+            flat[1] = share * ry
+            bands[1] = max(band_px, (1 - share) * ry + HANG_PAST) if up == AUTO else float(up)
+        shapes.append((tuple(flat), tuple(bands)))
+    return band_px, margin_px, shapes
+
+
+@dataclass(frozen=True, eq=False)
+class Banded:
+    """What a band comes to on the cells: its px and the margin's, read off `reach` (the move's at the gain asked), each
+    region's flat radii and bands, where each region is carried in every cell (`carry_own`), the steepest its weight falls
+    along the move (`band_steepest`), and the ledger of what the move does in each cell (`band_ledger`)."""
+
+    asked: Band
+    reach: float
+    band: float
+    margin: float
+    shapes: list[tuple[tuple[float, float, float], tuple[float, float, float]]]
+    carried: list[list[dict[str, Any]]]  # per cell, per region
+    steepest: list[tuple[float, int]]  # per region, u·∇w at its steepest per unit of gain, and the cell (`band_steepest`)
+    ledger: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -689,6 +942,7 @@ class Ask:
     stretch_floor: float | None = None  # the least area a moved pixel keeps; None: the fold rule alone
     gain_across: float | None = None  # the gain across asked; None: --gain, across as down
     breath: Breath | None = None  # the breath the part follows; None: the body's motion, answered by the damped mass
+    band: Band | None = None  # each region moved as one mass over a band (`--band`); None: the weight falls from the centre
 
     @property
     def across(self) -> float:
@@ -703,9 +957,11 @@ class Ask:
 def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, freq: float | None = None,
              zeta: float | None = None, on_fold: str = "refuse", read_on: str | None = None,
              stretch_floor: float | None = None, breathe: Path | None = None, lag: float | None = None,
-             gain_across: float | None = None, verb: str = VERB) -> Ask:
+             gain_across: float | None = None, band: float | str | None = None, band_margin: float | str | None = None,
+             band_up: tuple[float, float | str] | str | None = None, verb: str = VERB) -> Ask:
     """A sway's ask, read and checked. A number left out (None) is its default: the damped mass's gain, freq and zeta,
-    or, on the breath (`breathe`), the breath's gain and lag."""
+    or, on the breath (`breathe`), the breath's gain and lag. `band` (px or AUTO; None: off) moves each region as one
+    mass, `band_margin` and `band_up` shaping it."""
     # The numbers go into the record, which is JSON, and into the cells' arithmetic: a numpy number from a
     # caller (an int64 has no JSON form) is read as the float the command line gives, so every caller of the
     # same numbers writes the same strip and record.
@@ -742,7 +998,29 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
             raise SystemExit(f"{verb}: --stretch-floor is the least area a moved pixel keeps, at least 0 and under 1; got {stretch_floor:g}")
     breath = None if breathe is None else read_breath(breathe, lag, verb=verb)
     return Ask(regions, gain, freq, zeta, on_fold, None if read_on is None else str(read_on), stretch_floor, gain_across,
-               breath)
+               breath, _read_band(regions, band, band_margin, band_up, stretch_floor, verb))
+
+
+def _read_band(regions: list[tuple[float, ...]], band: float | str | None, margin: float | str | None,
+               up: tuple[float, float | str] | str | None, stretch_floor: float | None, verb: str) -> Band | None:
+    """The band asked (`--band`, `--band-margin`, `--band-up`), checked as the command line checks it; None when off."""
+    if band is None:
+        if margin is not None or up is not None:
+            raise SystemExit(f"{verb}: --band-margin and --band-up shape a band; they need --band")
+        return None
+    flat = [region for region in regions if len(region) > 4]
+    if flat:
+        raise SystemExit(f"{verb}: --band moves a region whole over its ellipse grown by the margin, and a region's fifth number "
+                         f"(flat, {flat[0][4]:g} on --region {','.join(f'{v:g}' for v in flat[0])}) is the other way of moving it "
+                         "whole: give the region as cx,cy,rx,ry with --band")
+    if stretch_floor is not None:
+        raise SystemExit(f"{verb}: --stretch-floor reads the weight that falls from a region's centre; with --band the fold "
+                         "rule reads the band")
+    try:
+        return Band(parse_band(str(band)), AUTO if margin is None else parse_band_margin(str(margin)),
+                    None if up is None else parse_band_up(up if isinstance(up, str) else ",".join(str(v) for v in up)))
+    except argparse.ArgumentTypeError as exc:
+        raise SystemExit(f"{verb}: {exc}") from exc
 
 
 @dataclass(frozen=True, eq=False)
@@ -768,7 +1046,8 @@ class Request:
 def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float | None = None,
                  freq: float | None = None, zeta: float | None = None, on_fold: str = "refuse", verb: str = VERB,
                  read_on: str | None = None, stretch_floor: float | None = None, breathe: Path | None = None,
-                 lag: float | None = None, gain_across: float | None = None) -> Request:
+                 lag: float | None = None, gain_across: float | None = None, band: float | str | None = None,
+                 band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None) -> Request:
     loop_dir = loop_dir.expanduser().resolve()
     metas = sorted(loop_dir.glob("*.strip.json"))
     if len(metas) != 1:
@@ -780,7 +1059,8 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
     if meta.get("kind") == "one-shot" or meta.get("loop") is False:
         raise SystemExit(f"{verb}: a one-shot plays once; the follow-through is a loop's steady state")
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
-                   breathe=breathe, lag=lag, gain_across=gain_across, verb=verb)
+                   breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
+                   verb=verb)
     return Request(loop_dir, name, meta_path, meta_bytes, meta, ask)
 
 
@@ -814,6 +1094,7 @@ class Answer:
     read_on: dict[str, Any] | None = None  # how the strip the regions were read on stands to this one (`--read-on`)
     stretch: dict[str, Any] | None = None  # the floor asked, and what it did to each region (`--stretch-floor`)
     reference: dict[str, Any] | None = None  # the frame the regions were read on, when not cell 0 (`--reference`)
+    band: Banded | None = None  # what the band comes to (`--band`); None: the weight falls from the centre
 
     def carry(self, k: int) -> tuple[float, float]:
         """How far cell k's body lies from cell 0's, across and down: every region's ellipse is carried by it. Carried
@@ -828,7 +1109,23 @@ class Answer:
         return [(group, (mx[k], my[k])) for group, (mx, my) in self.groups]
 
     def moved(self, k: int) -> Image.Image:
-        return move_regions(self.cells[k], self.moves_in(k), self.carry(k))
+        if self.band is None:
+            return move_regions(self.cells[k], self.moves_in(k), self.carry(k))
+        if all(dx == 0 and dy == 0 for _, (dx, dy) in self.moves_in(k)):
+            return self.cells[k].copy()
+        return _draw(self.cells[k], lambda xx, yy: self.band_field(k, xx, yy)[0])
+
+    def band_field(self, k: int, xx: np.ndarray, yy: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray] | None, list[np.ndarray]]:
+        """Under a band, cell k's move per pixel (`move_field`'s: covered, across, down; None where no region covers a
+        pixel) and each region's weight, every region carried by its own carry in the cell (`Banded.carried`)."""
+        assert self.band is not None
+        weights = [band_weight(xx, yy, (region[0] + carried["px"][0], region[1] + carried["px"][1]), *shape)
+                   for region, shape, carried in zip(self.ask.regions, self.band.shapes, self.band.carried[k])]
+        # The groups as `solve_cells` makes them: one per gain a region moves by, in the order of `moves`.
+        groups = [[i for i, (rg, hold) in enumerate(zip(self.gains, self.held)) if rg == g and not hold] for g in self.moves]
+        group_weights = [np.max([weights[i] for i in members], axis=0) if members else np.zeros(np.shape(xx)) for members in groups]
+        offsets = [(mx[k], my[k]) for mx, my in self.moves.values()]
+        return _largest_move(group_weights, offsets), weights
 
     def record(self, source: str = SOURCE) -> dict[str, Any]:
         """The sway as the strip's meta records it, `source` the strip as cut kept beside it (`video-sway` adds its
@@ -858,8 +1155,38 @@ class Answer:
                             for radius, ratio, g, hold in zip(self.radii, self.ratios, self.gains, self.held)],
             },
         } | ({} if self.read_on is None else {"read_on": self.read_on}) | ({} if self.stretch is None else {"stretch": self.stretch}) \
-          | ({} if self.read_on is None and self.stretch is None else {"carry_basis": dict(CARRY_BASIS)}) \
-          | ({} if self.reference is None else {"reference": self.reference})
+          | ({} if self.read_on is None and self.stretch is None and self.band is None else
+             {"carry_basis": dict(CARRY_BASIS if self.band is None else CARRY_BASIS_BAND)}) \
+          | ({} if self.reference is None else {"reference": self.reference}) \
+          | ({} if self.band is None else {"band": self.band_record()})
+
+    def band_record(self) -> dict[str, Any]:
+        """The band as the record holds it (`--band`): what was asked, the reach it was read off, its px and the margin's,
+        each region's flat radii and bands (across, above, below), where each region is carried in every cell and from
+        what, the cells carried by the lay and why, and the ledger."""
+        assert self.band is not None
+        band = self.band
+
+        def carried(entry: dict[str, Any]) -> dict[str, Any]:
+            out = {"px": [round(v, 4) + 0.0 for v in entry["px"]], "from": entry["from"]}
+            if "why" in entry:
+                out["why"] = entry["why"]
+            if "least" in entry:
+                out["least"] = round(entry["least"], 4)
+                out["curvature"] = None if entry["curvature"] is None else [round(v, 4) for v in entry["curvature"]]
+            return out
+
+        return {
+            "policy": BAND_POLICY, "asked": band.asked.asked(), "reach_px": round(band.reach, 4),
+            "band_px": band.band, "margin_px": band.margin,
+            "regions": [{"flat_px": [round(v, 4) for v in flat], "band_px": [round(v, 4) for v in bands],
+                         "steepest": {"per_gain": round(per_gain, 4), "cell": k, "ratio": round(g * per_gain, 3)}}
+                        for (flat, bands), (per_gain, k), g in zip(band.shapes, band.steepest, self.gains)],
+            "carry": {"search_px": CARRY_SEARCH, "cells": [[carried(entry) for entry in cell] for cell in band.carried]},
+            "lay": [{"cell": k, "region": i, "why": entry["why"]} for k, cell in enumerate(band.carried)
+                    for i, entry in enumerate(cell) if entry["from"] == "lay"],
+            "ledger": band.ledger,
+        }
 
 
 def solve(request: Request, strip: Image.Image, *, strip_name: str, verb: str = VERB,
@@ -953,7 +1280,14 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
         return float(np.max(np.hypot(g * whole_across, g * whole_down)))
 
     reach = reach_at(gain)
-    radii = [region_radius(region) for region in regions]
+    shaped = None
+    if ask.band is None:
+        radii, sized, larger = [region_radius(region) for region in regions], "a region of radius", "give the region larger radii"
+    else:
+        # The reach first, at the gain asked: the band and the margin are read off it, and the fold rule reads each
+        # region by its narrowest band.
+        shaped = band_shapes(ask.band, regions, reach)
+        radii, sized, larger = [min(bands) for _, bands in shaped[2]], "a region's band of", "give a wider --band"
     smallest = min(radii)
     requested, reach_requested = gain, reach
     # The offset is the gain times the answer at gain 1, so one move decides every gain.
@@ -961,8 +1295,8 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
     gains, held = [requested] * len(regions), [False] * len(regions)
     if fold_ratio(reach, smallest) >= 1:
         if on_fold == "refuse":
-            raise SystemExit(f"{verb}: a move of {reach:.1f} px folds a region of radius {smallest:g} px over itself; "
-                             "lower --gain or give the region larger radii")
+            raise SystemExit(f"{verb}: a move of {reach:.1f} px folds {sized} {smallest:g} px over itself; "
+                             f"lower --gain or {larger}")
         # A gain for each region: every part hangs on the same body and answers the same motion, but
         # how far it moves before it folds is its own size, so a small part (an ear) does not hold a
         # large one (a chest) back. A region that does not fold keeps the gain asked for.
@@ -974,26 +1308,210 @@ def solve_cells(ask: Ask, cells: list[Image.Image], frame_ms: float | None, *, v
         if all(held):
             k = radii.index(max(radii))  # the largest folds at the largest gain: if it is held, every region is
             every = f" (the largest of {len(regions)} regions: every one folds)" if len(regions) > 1 else ""
-            raise SystemExit(f"{verb}: a move of {reach:.1f} px folds a region of radius {radii[k]:g} px over itself{every}, and "
+            raise SystemExit(f"{verb}: a move of {reach:.1f} px folds {sized} {radii[k]:g} px over itself{every}, and "
                              f"--on-fold lower would have to go under --gain {GAIN_MEASURED:g} (the mass as measured moves "
-                             f"{reach_per_gain:.1f} px; the largest gain that does not fold is {gains[k]:g}); give the region larger radii")
+                             f"{reach_per_gain:.1f} px; the largest gain that does not fold is {gains[k]:g}); {larger}")
         gains = [0.0 if hold else g for g, hold in zip(gains, held)]
     stretch = None
     if ask.stretch_floor is not None:
         gains, held, stretch = _keep_floor(ask, radii, gains, held, (whole_across, whole_down), verb)
-    # One move per gain: a region's offset is its gain times the answer at gain 1. The strip's `gain`
-    # is the largest any region moves by, and `dx_px`/`dy_px` and `reach_px` are that gain's (the reach,
-    # like the fold, over the whole move the fold rule reads).
-    moves = {g: move(g) for g, hold in zip(gains, held) if not hold}
-    reaches = {g: reach_at(g) for g in moves}
-    gain = max(moves)
-    dx, dy = moves[gain]
-    reach = reaches[gain]
-    ratios = [0.0 if hold else fold_ratio(reaches[g], radius) for radius, g, hold in zip(radii, gains, held)]
-    groups = [([r for r, rg, hold in zip(regions, gains, held) if rg == g and not hold], offset) for g, offset in moves.items()]
-    return Answer(ask, cells, cols, rows, height0, worn, requested, reach_requested, reach_per_gain, radii, gains, held,
-                  ratios, moves, reaches, gain, dx, dy, reach, groups, read_on, stretch,
-                  None if reference is None else reference[1])
+
+    def answer_at(gains: list[float], held: list[bool]) -> Answer:
+        # One move per gain: a region's offset is its gain times the answer at gain 1. The strip's `gain`
+        # is the largest any region moves by, and `dx_px`/`dy_px` and `reach_px` are that gain's (the reach,
+        # like the fold, over the whole move the fold rule reads).
+        moves = {g: move(g) for g, hold in zip(gains, held) if not hold}
+        reaches = {g: reach_at(g) for g in moves}
+        gain = max(moves)
+        dx, dy = moves[gain]
+        ratios = [0.0 if hold else fold_ratio(reaches[g], radius) for radius, g, hold in zip(radii, gains, held)]
+        groups = [([r for r, rg, hold in zip(regions, gains, held) if rg == g and not hold], offset) for g, offset in moves.items()]
+        return Answer(ask, cells, cols, rows, height0, worn, requested, reach_requested, reach_per_gain, radii, gains, held,
+                      ratios, moves, reaches, gain, dx, dy, reaches[gain], groups, read_on, stretch,
+                      None if reference is None else reference[1])
+
+    answer = answer_at(gains, held)
+    if shaped is None:
+        return answer
+    # Under a band the regions are carried by their own pixels, whatever the gain; and where the flat ellipse and the
+    # outer one differ in shape (above the centre under --band-up) the band is narrower across its ring than its px,
+    # so the weight falls steeper than the fold rule reads. A pixel moved by the gain times u (the move at gain 1)
+    # keeps 1 − gain · u·∇w of its area: each region's steepest u·∇w over the cells may lower its gain further.
+    carried = _carry_band(answer, None if reference is None else reference[0])
+    steepest = band_steepest(regions, shaped[2], carried, move(1.0), (w, h))
+    over = [not hold and g * per_gain >= 1 for g, hold, (per_gain, _) in zip(gains, held, steepest)]
+    if any(over):
+        i = over.index(True)
+        per_gain, k = steepest[i]
+        why = (f"--band's weight falls steeper than its {shaped[0]:g} px where the band is narrower across its ring (cell {k}: "
+               f"at --gain {gains[i]:g} a pixel keeps {1 - gains[i] * per_gain:.3f} of its area)")
+        if on_fold == "refuse":
+            raise SystemExit(f"{verb}: {why}; lower --gain or give a wider --band" + (" or --band-up" if ask.band.up else ""))
+        lowered = [steepest_gain(g, per_gain) if fold else g for g, fold, (per_gain, _) in zip(gains, over, steepest)]
+        held = [hold or (fold and g < GAIN_MEASURED) for g, hold, fold in zip(lowered, held, over)]
+        if all(held):
+            raise SystemExit(f"{verb}: {why}, and --on-fold lower would have to go under --gain {GAIN_MEASURED:g}; give a wider "
+                             "--band" + (" or --band-up" if ask.band.up else ""))
+        answer = answer_at([0.0 if hold else g for g, hold in zip(lowered, held)], held)
+    return _banded(answer, shaped, reach_requested, carried, steepest, verb)
+
+
+def _carry_band(answer: Answer, reference: Image.Image | None) -> list[list[dict[str, Any]]]:
+    """Each region carried by its own pixels (`carry_own`) from the cell it was read on: the reference frame; on a loop
+    carried from its cut (`--read-on`, transported), the cut's cell 0 where the loop holds it, so the loop is carried as
+    the cut is, cell for cell; else cell 0, where the lay or the cut's reading carried the regions."""
+    cells, regions = answer.cells, answer.ask.regions
+    lays = [answer.carry(k) for k in range(len(cells))]
+    if reference is not None:
+        return carry_own(reference, cells, regions, (0.0, 0.0), lays, base_index=None)
+    cut_cells = (answer.read_on or {}).get("cut_cells") or []
+    base = cut_cells.index(0) if 0 in cut_cells else 0
+    return carry_own(cells[base], cells, regions, lays[base], lays, base_index=base)
+
+
+def band_steepest(regions: list[tuple[float, ...]], shapes: list[Any], carried: list[list[dict[str, Any]]],
+                  unit: tuple[np.ndarray, np.ndarray], size: tuple[int, int]) -> list[tuple[float, int]]:
+    """Per region, the steepest its band's weight falls along the move at gain 1 (`unit`, per cell), u·∇w over every
+    pixel of every cell (∇ read between each pixel's neighbours, as `jacobian` reads it), and that cell: a pixel moved
+    by gain g keeps 1 − g · u·∇w of its area, so the region folds at g · this ≥ 1."""
+    w, h = size
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    out = []
+    for i, (region, shape) in enumerate(zip(regions, shapes)):
+        per_cell = []
+        for k, cell in enumerate(carried):
+            px = cell[i]["px"]
+            weight = band_weight(xx, yy, (region[0] + px[0], region[1] + px[1]), *shape)
+            across = (weight[1:-1, 2:] - weight[1:-1, :-2]) / 2
+            down = (weight[2:, 1:-1] - weight[:-2, 1:-1]) / 2
+            per_cell.append(float(np.max(unit[0][k] * across + unit[1][k] * down)))
+        k = int(np.argmax(per_cell))
+        out.append((per_cell[k], k))
+    return out
+
+
+def steepest_gain(gain: float, per_gain: float) -> float:
+    """The largest gain, in steps of GAIN_STEP and no more than `gain`, at which a slope of `per_gain` per unit of gain
+    (`band_steepest`) stays under 1."""
+    if per_gain <= 0:
+        return gain
+    steps = math.ceil(1 / per_gain / GAIN_STEP) - 1  # under the limit, never on it
+    while steps > 0 and round(steps * GAIN_STEP, 2) * per_gain >= 1:
+        steps -= 1
+    return min(gain, round(steps * GAIN_STEP, 2))
+
+
+def _banded(answer: Answer, shaped: tuple[float, float, list[Any]], reach: float, carried: list[list[dict[str, Any]]],
+            steepest: list[tuple[float, int]], verb: str) -> Answer:
+    """`answer` under its band, each region carried as `_carry_band` carried it, the steepest its weight falls
+    (`band_steepest`), and the ledger of every cell (`band_ledger`). Refused where the move folds the picture all the
+    same."""
+    band_px, margin_px, shapes = shaped
+    ask = answer.ask
+    assert ask.band is not None
+    banded = dataclasses.replace(answer, band=Banded(ask.band, reach, band_px, margin_px, shapes, carried, steepest))
+    ledger = band_ledger(banded)
+    if min(ledger["jacobian_min"]) <= 0:
+        k = int(np.argmin(ledger["jacobian_min"]))
+        raise SystemExit(f"{verb}: --band {band_px:g} px passes the fold rule (a move of {reach:.1f} px), and cell {k}'s move "
+                         f"folds the picture all the same (a pixel takes {ledger['jacobian_min'][k]:g} of its area); this is "
+                         "the engine's fault — nothing was written")
+    return dataclasses.replace(banded, band=dataclasses.replace(banded.band, ledger=ledger))
+
+
+def _box(mask: np.ndarray) -> list[int] | None:
+    """The box (x0, y0, x1, y1, the last pixel's included) of a mask's pixels; None when it has none."""
+    ys, xs = np.nonzero(mask)
+    return None if not len(ys) else [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def band_ledger(answer: Answer) -> dict[str, Any]:
+    """Per cell, what a band's move does (`--band`), each count a list over the cells with its largest beside it:
+    - `band_on_regions_px`: solid pixels under a region's ellipse, carried, that the weight takes less than 1 of — the
+      band lies over the part;
+    - `pressed_px`, `stretched_px`: pixels of the moved cell, solid and moved, left with under PRESSED or over STRETCHED
+      of their area (the area of the source a pixel takes, `jacobian`, is 1 over it), the box they lie in, and the least
+      and the most area with where it is (`area_least`, `area_most`: area, x, y);
+    - `outside_moved_px`: solid pixels under no region's ellipse that the move takes MOVED_PX or more;
+    - `jacobian_min`: the least area of the source any pixel of the moved cell takes (0 or under: the picture folds)."""
+    assert answer.band is not None
+    w, h = answer.cells[0].size
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    keys = ("band_on_regions_px", "pressed_px", "pressed_box", "area_least", "stretched_px", "stretched_box", "area_most",
+            "outside_moved_px", "jacobian_min")
+    ledger: dict[str, list[Any]] = {key: [] for key in keys}
+    for k, cell in enumerate(answer.cells):
+        alpha = np.asarray(cell.getchannel("A"), np.float32)
+        solid = alpha >= ALPHA_SOLID
+        field, weights = answer.band_field(k, xx, yy)
+        regions = np.logical_or.reduce([region_weight(xx, yy, region, entry["px"]) > 0
+                                        for region, entry in zip(answer.ask.regions, answer.band.carried[k])])
+        ledger["band_on_regions_px"].append(int((solid & regions & (np.max(weights, axis=0) < 1)).sum()))
+        moving = field is not None and any(dx != 0 or dy != 0 for _, (dx, dy) in answer.moves_in(k))
+        if not moving:
+            for key, empty in (("pressed_px", 0), ("pressed_box", None), ("area_least", None), ("stretched_px", 0),
+                               ("stretched_box", None), ("area_most", None), ("outside_moved_px", 0), ("jacobian_min", 1.0)):
+                ledger[key].append(empty)
+            continue
+        inside, move_x, move_y = field
+        # The moved cell's alpha as `_draw` draws it: the alpha channel read alone, bilinear, is the premultiplied mix's.
+        drawn = np.where(inside, np.clip(np.round(_sample(alpha[..., None], xx - move_x, yy - move_y)[..., 0]), 0, 255), alpha)
+        area_of = jacobian(move_x, move_y)
+        counted = np.zeros((h, w), bool)
+        counted[1:-1, 1:-1] = (inside & (drawn >= ALPHA_SOLID))[1:-1, 1:-1] & (area_of > 0)
+        area = np.ones((h, w))
+        area[1:-1, 1:-1] = 1 / np.where(area_of > 0, area_of, 1.0)  # each pixel's area: 1 over the source's it takes
+        pressed, stretched = counted & (area < PRESSED), counted & (area > STRETCHED)
+        for key, mask in (("pressed", pressed), ("stretched", stretched)):
+            ledger[f"{key}_px"].append(int(mask.sum()))
+            ledger[f"{key}_box"].append(_box(mask))
+        for key, pick, empty in (("area_least", np.argmin, np.inf), ("area_most", np.argmax, -np.inf)):
+            if counted.any():
+                y, x = divmod(int(pick(np.where(counted, area, empty))), w)
+                ledger[key].append([round(float(area[y, x]), 4), x, y])
+            else:
+                ledger[key].append(None)
+        ledger["outside_moved_px"].append(int((solid & ~regions & (np.hypot(move_x, move_y) >= MOVED_PX)).sum()))
+        ledger["jacobian_min"].append(round(float(area_of.min()), 4))
+    out: dict[str, Any] = {}
+    for key in keys:
+        out[key] = ledger[key]
+        if key.endswith("_px"):
+            out[f"{key}_max"] = max(ledger[key], default=0)
+    return out
+
+
+def band_notes(record: dict[str, Any], verb: str = VERB, at: str = f"{loop_mod.SWAY_RECORD}.band") -> list[str]:
+    """What to say of a band's record (`--band`), a line each, as warnings: the cells a region was carried by the lay
+    in and why, and every count of the ledger that is not 0 in some cell — in how many cells, up to how many pixels and
+    in which cell, and where in the record (`at`: the band's key in the strip's meta, or in a frames folder's record)."""
+    band, notes = record["band"], []
+    by_region: dict[int, list[dict[str, Any]]] = {}
+    for entry in band["lay"]:
+        by_region.setdefault(entry["region"], []).append(entry)
+    for i, entries in sorted(by_region.items()):
+        name = "--region " + ",".join(f"{v:g}" for v in record["regions"][i])
+        whys = "; ".join(f"cell {e['cell']}: {e['why']}" for e in entries)
+        notes.append(f"{verb}: warning: --band carries {name} by the body's lay in {len(entries)} cells, its own pixels not "
+                     f"found surely ({whys}) — {at}.lay")
+    ledger, n = band["ledger"], len(band["ledger"]["jacobian_min"])
+    said = {"band_on_regions_px": "the band lies over solid pixels of the regions",
+            "pressed_px": f"moved pixels are left under {PRESSED:g} of their area",
+            "stretched_px": f"moved pixels are left over {STRETCHED:g} of their area",
+            "outside_moved_px": f"solid pixels outside every region move {MOVED_PX:g} px or more"}
+    for key, what in said.items():
+        counts = ledger[key]
+        cells = [k for k, count in enumerate(counts) if count]
+        if not cells:
+            continue
+        top = max(range(n), key=lambda k: counts[k])
+        extra = ""
+        if key in ("pressed_px", "stretched_px"):
+            spot = ledger["area_least" if key == "pressed_px" else "area_most"][top]
+            extra = f", {'least' if key == 'pressed_px' else 'most'} {spot[0]:g} at {spot[1]},{spot[2]}"
+        notes.append(f"{verb}: warning: --band: {what} in {len(cells)} of {n} cells, up to {ledger[key + '_max']} px (cell "
+                     f"{top}{extra}) — {at}.ledger.{key}")
+    return notes
 
 
 def _keep_floor(ask: Ask, radii: list[float], gains: list[float], held: list[bool],
@@ -1030,9 +1548,11 @@ def sway_loop(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float |
               freq: float | None = None, zeta: float | None = None, board: Path | None = None,
               on_fold: str = "refuse", read_on: str | None = None, stretch_floor: float | None = None,
               breathe: Path | None = None, lag: float | None = None, gain_across: float | None = None,
-              verb: str = VERB) -> dict[str, Any]:
+              band: float | str | None = None, band_margin: float | str | None = None,
+              band_up: tuple[float, float | str] | str | None = None, verb: str = VERB) -> dict[str, Any]:
     request = read_request(loop_dir, regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on,
-                           stretch_floor=stretch_floor, breathe=breathe, lag=lag, gain_across=gain_across, verb=verb)
+                           stretch_floor=stretch_floor, breathe=breathe, lag=lag, gain_across=gain_across, band=band,
+                           band_margin=band_margin, band_up=band_up, verb=verb)
     loop_dir, name, meta_path, meta = request.loop_dir, request.name, request.meta_path, request.meta
     strip_path = request.strip_path
     source = request.source_path
@@ -1083,7 +1603,9 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                 gain: float | None = None, freq: float | None = None, zeta: float | None = None,
                 board: Path | None = None, on_fold: str = "refuse", read_on: str | None = None,
                 stretch_floor: float | None = None, breathe: Path | None = None, lag: float | None = None,
-                gain_across: float | None = None, reference: Path | None = None, verb: str = VERB) -> dict[str, Any]:
+                gain_across: float | None = None, reference: Path | None = None, band: float | str | None = None,
+                band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None,
+                verb: str = VERB) -> dict[str, Any]:
     """The sway of a folder of a cycle's frames — a loop's `cycle/`, or what `sprite-gen breathe` wrote from it — at their
     own size and count, past the strip's caps on cells and width: the same frames under the same names, the regions
     (in frame pixels) moved, and `sway.json` beside them, written whole into a new folder (`frames.folder`); the frames
@@ -1095,7 +1617,8 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
     regions are read on it and not on the first frame: each frame's body is read from it and the regions carried
     from there, as they are on the loop's own cells."""
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
-                   breathe=breathe, lag=lag, gain_across=gain_across, verb=verb)
+                   breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
+                   verb=verb)
     if ask.read_on is not None:
         raise SystemExit(f"{verb}: --read-on names the strip as cut that the regions were read on; frames are read as they are")
     if ask.breath is not None and fps is not None:
@@ -1197,6 +1720,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "first cell, for a way in or out of the loop (sprite-gen breathe --loop-cells --start-cell): each "
                              "frame's body is read from it and the regions carried from there (one size with the frames)")
     add_request_arguments(parser, loop_dir=False)
+    parser.add_argument("--band", type=parse_band, default=None, metavar=f"PX|{AUTO}",
+                        help="move each region as one mass: 1 over its ellipse grown by --band-margin, falling to 0 (cos²) over PX px "
+                             f"past it ({AUTO}: ceil(reach x π/2) + 1, the narrowest the move does not fold), carried into each cell by "
+                             "its own pixels (the body's lay where they are not found surely, named in the record and a warning); "
+                             "the fold rule reads the band. Off by default: the weight falls from the centre. Not with a region's "
+                             "flat share, nor --stretch-floor")
+    parser.add_argument("--band-margin", type=parse_band_margin, default=None, metavar=f"PX|{AUTO}",
+                        help=f"with --band: how far past the ellipse the weight stays 1, every way (default {AUTO}: the move's reach "
+                             "and a pixel, ceil(reach) + 1, so the part is still on the flat where it goes)")
+    parser.add_argument("--band-up", type=parse_band_up, default=None, metavar=f"FLAT[,PX|{AUTO}]",
+                        help="with --band: above the centre the flat part stops FLAT (over 0, at most 1) of the region's height over "
+                             f"it and the weight falls over PX from there ({AUTO}, the default: the band, or to {HANG_PAST:g} px over the "
+                             "region's top where that is further): the upper part gives, the rest moves whole. Default: above as below")
     parser.add_argument("--board", type=Path, help="write a before/after picture at the frames where the part sits lowest and highest")
 
 
@@ -1235,7 +1771,8 @@ def run(**kwargs: object) -> int:
     asked = {"gain": kwargs.get("gain"), "freq": kwargs.get("freq"), "zeta": kwargs.get("zeta"), "board": kwargs.get("board"),
              "on_fold": str(kwargs.get("on_fold") or "refuse"), "read_on": kwargs.get("read_on"),
              "stretch_floor": kwargs.get("stretch_floor"), "breathe": kwargs.get("breathe"), "lag": kwargs.get("lag"),
-             "gain_across": kwargs.get("gain_across")}
+             "gain_across": kwargs.get("gain_across"), "band": kwargs.get("band"), "band_margin": kwargs.get("band_margin"),
+             "band_up": kwargs.get("band_up")}
     if kwargs.get("frames") is not None:
         if kwargs.get("out") is None:
             raise SystemExit(f"{verb}: --frames needs --out, a new folder for the swayed frames")
@@ -1251,11 +1788,16 @@ def run(**kwargs: object) -> int:
     for note in fold_notes(result, verb):
         print(note, file=sys.stderr)
     where = "out" if "out" in result else "strip"
+    if "band" in result:
+        for note in band_notes(result, verb, f"{FRAMES_RECORD} band" if where == "out" else f"{loop_mod.SWAY_RECORD}.band"):
+            print(note, file=sys.stderr)
     print(json.dumps({k: result[k] for k in (where, "regions", "gain", "gain_requested", "on_fold", "body_bob_px", "reach_px")}
                      | ({"region_gains": [entry["gain"] for entry in fold["regions"]]} if own else {})
                      | ({"drive": result["drive"]["kind"]} if "drive" in result else {})
                      | ({"read_on": result["read_on"]["relation"]} if "read_on" in result else {})
                      | ({"stretch_floor": result["stretch"]["floor"]} if "stretch" in result else {})
+                     | ({"band": {"band_px": result["band"]["band_px"], "margin_px": result["band"]["margin_px"],
+                                  "lay_cells": sorted({entry["cell"] for entry in result["band"]["lay"]})}} if "band" in result else {})
                      | ({"board": result["board"]} if "board" in result else {}), ensure_ascii=False, indent=2))
     return 0
 
