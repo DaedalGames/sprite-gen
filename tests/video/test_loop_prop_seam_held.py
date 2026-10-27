@@ -401,6 +401,9 @@ CYCLE_ALIGN_KEYS_2350 = {"between", "cycle_screen", "cycles_given", "drawings", 
 CORRESPONDENCE_KEYS_2410 = {"cells_from", "origin"}
 # 2.43.0: the ghost screen of the loop as filmed, and each cell where a filmed ghost gave way or was kept
 GHOST_KEYS_2430 = {"ghost_screen", "ghost_at"}
+# Unreleased: every cut of the cut's length the clip holds, read for the same foot twice (video-loop), and the aligned
+# loop's beat and its cut's screen steps (docs/loop-repair.md section 4)
+CLIP_FEET_KEYS, BEAT_KEYS = {"clip_feet"}, {"beat", "screen"}
 
 
 def test_cycle_align_writes_a_loop_without_a_held_part_as_before(tmp_path, staffless):
@@ -422,8 +425,8 @@ def test_cycle_align_writes_a_loop_without_a_held_part_as_before(tmp_path, staff
     assert all("cycles_kept" not in row and "steps" not in row for row in out["loops"])
     for d in dirs:
         meta = json.loads((d / "loop.strip.json").read_text())
-        assert set(meta) == STRIP_KEYS_2350 | SOURCE_KEYS_2390
-        assert set(meta["cycle_align"]) == CYCLE_ALIGN_KEYS_2350 | CORRESPONDENCE_KEYS_2410 | GHOST_KEYS_2430
+        assert set(meta) == STRIP_KEYS_2350 | SOURCE_KEYS_2390 | CLIP_FEET_KEYS
+        assert set(meta["cycle_align"]) == CYCLE_ALIGN_KEYS_2350 | CORRESPONDENCE_KEYS_2410 | GHOST_KEYS_2430 | BEAT_KEYS
         # The cut's source stays as the cut wrote it: `cycle_align` says the cells were turned after it, so it
         # no longer names each cell's frame (docs/loop-comparison.md). The rebuilt strip names its own cells —
         # the same frames, turned, under the same crop.

@@ -13,8 +13,9 @@ outline too.
 
 The fixtures are synthetic: a coat over two legs in boots, outlined 3 px in near-black, with a hand beside the coat; the
 near boot lifted 18 px in the first source frame and planted in the second. The frame drawn between, and the same with a
-source frame's near-boot lines laid over it at part strength; blurred, smeared along the step; a hand moving 60 px over
-the coat; boots drawn with a second line; a hem drawn with two lines and softened; a crease one source frame draws. And
+source frame's near-boot lines laid over it at part strength; blurred, smeared along the step (a ghost by its window
+reading, its feet part-covered); a hand moving 60 px over the coat; boots drawn with a second line; a hem drawn with two
+lines and softened; a crease one source frame draws. And
 the walker of tests/video/test_crossfade.py: its drawing between far-apart drawings, and its cross-fades."""
 
 from __future__ import annotations
@@ -187,7 +188,6 @@ def _clean() -> dict[str, tuple[Image.Image, Image.Image, Image.Image]]:
     return {
         "drawn between": (_step(0), _step(1), _step(0.5)),
         "drawn between, soft": (_step(0), _step(1), _soft(_step(0.5), 1.5)),
-        "drawn between, smeared along the step": (_step(0), _step(1), _smeared(_step, 0.5, 0.15)),
         "a hand moving 60 px over the coat": (_hand(0), _hand(1), _hand(0.5)),
         "the hand, soft": (_hand(0), _hand(1), _soft(_hand(0.5), 1.5)),
         "the hand, smeared along its way": (_hand(0), _hand(1), _smeared(_hand, 0.5, 0.15)),
@@ -197,9 +197,21 @@ def _clean() -> dict[str, tuple[Image.Image, Image.Image, Image.Image]]:
     }
 
 
+def test_feet_smeared_along_the_step_read_no_double_outline_and_are_a_ghost_in_their_window():
+    """The drawing between smeared along the step (the mean of drawings from t 0.35 to 0.65): no double outline, but the
+    feet are left part-covered over a band 4.5 % of the solid pixels in the feet's tenth of the body, so the frame is a
+    ghost by its window reading (`rife.ghost_window`) though 0.25 % of the whole body; smeared half as far, it is not."""
+    a, b = _step(0), _step(1)
+    made = _smeared(_step, 0.5, 0.15)
+    assert rife.doubled(made, a, b) == 0
+    m = align.measure_made(made, a, b, 0.5, reads=True)
+    assert m["ghost"] < 0.003 < 0.014 < m["ghost_window"] and m["ghost_window_at"][0] > 0.85 and faults(m) == ["ghost"]
+    assert faults(align.measure_made(_smeared(_step, 0.5, 0.075), a, b, 0.5, reads=True)) == []
+
+
 @pytest.mark.parametrize("name", list(_clean()))
 def test_a_clean_soft_or_source_drawn_frame_reads_no_double_outline_and_keeps_its_bytes(name):
-    """The drawing between, blurred, or smeared along the step; a hand moving fast over the coat, drawn, soft or smeared;
+    """The drawing between, or blurred; a hand moving fast over the coat, drawn, soft or smeared;
     boots both source frames draw with two lines; a hem both draw with two lines, softened to 60 % in the frame between (a
     line both draw is theirs at any strength); a light crease one draws, carried at its own strength: each reads 0, passes
     every fault and is delivered as the very frame made."""

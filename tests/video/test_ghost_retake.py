@@ -76,9 +76,12 @@ def test_a_ghost_kept_at_a_whole_time_is_a_take_to_film_again(tmp_path, capsys):
     (kept,) = _kept(e)
     assert kept["source"] == 10 and kept["kept"] == "no-clean-frame"
     assert rife.ghost(_cell(e, kept["at"])) > GHOST_WARN  # the cell shows the ghost
-    assert e["retake"] == {"reason": "filmed-ghost", "reasons": ["filmed-ghost"],
-                           "ghost": {"kept": [kept["at"]], "sources": [10], "ghost_max": kept["ghost"], "limit": GHOST_WARN},
-                           "limits": {"ghost_kept_min": 1}}
+    # the ghosts given way to the frames beside them stand off their times, and the beat they break is a reason too
+    assert {k: v for k, v in e["retake"].items() if k != "broken_beat"} == {
+        "reason": "filmed-ghost", "reasons": ["filmed-ghost", "broken-beat"],
+        "ghost": {"kept": [kept["at"]], "sources": [10], "ghost_max": kept["ghost"], "limit": GHOST_WARN},
+        "limits": {"ghost_kept_min": 1, "beat_jolt": 0.25}}
+    assert e["retake"]["broken_beat"]["named"] == [] and e["retake"]["broken_beat"]["remedy"] == "recut-or-retake"
     assert "hold" not in e["retake"] and s["retake"] is None  # the held numbers only where that reason applies
     assert report["retake"] == [{"dir": e["dir"], "name": "walk", **e["retake"]}]
     assert json.loads(captured.out)["retake"] == report["retake"]
@@ -102,9 +105,10 @@ def _check_made_time(report: dict) -> None:
     assert kept["source"] == 5 and kept["kept"] == "no-clean-frame"
     made = next(m for m in e["smear"] if m["at"] == kept["at"])
     assert made["method"] == "nearest" and "ghost" in made["faults"]
-    assert e["drawings"]["hold"] == 1 and "hold" not in e["retake"] and e["retake"]["reasons"] == ["filmed-ghost"]
+    assert e["drawings"]["hold"] == 1 and "hold" not in e["retake"] and e["retake"]["reasons"] == ["filmed-ghost", "broken-beat"]
     assert e["retake"]["ghost"]["kept"] == [kept["at"]] and e["retake"]["ghost"]["sources"] == [5]
-    assert [r["reason"] for r in report["retake"]] == ["filmed-ghost"]
+    assert [r["reason"] for r in report["retake"] if r["dir"] == e["dir"]] == ["filmed-ghost"]
+    assert all(r["reasons"] == ["broken-beat"] for r in report["retake"] if r["dir"] != e["dir"])
     # The fault line says what became of the cell: kept, the nearer frame a ghost and the other too — not
     # that the nearer source frame was taken, as if that settled it. (Both loops are `walk`: E's line is
     # the one that reads its made frame's ghost.)
@@ -129,6 +133,7 @@ def test_a_ghost_kept_at_a_made_time_is_a_take_to_film_again_and_its_fault_line_
 
 @pytest.mark.slow
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 28 calls of the binary at 100 x 120, each run 16 ways (-x -z): seconds on a GPU, two minutes on a CPU's Vulkan driver
 def test_real_rife_a_ghost_kept_at_a_made_time_is_a_take_to_film_again(tmp_path):
     """A2 through the real RIFE: its frame between the two ghosts carries them, and the cell keeps the ghost.
     The real RIFE makes each frame beside a filmed ghost, the frames this case reads; the stand-in makes the
@@ -139,8 +144,12 @@ def test_real_rife_a_ghost_kept_at_a_made_time_is_a_take_to_film_again(tmp_path)
     def beside_a_ghost(a: Image.Image, b: Image.Image, t: float) -> Image.Image:
         return real(a, b, t) if max(rife.ghost(a), rife.ghost(b)) > GHOST_WARN else tg._follow(a, b, t)
 
-    _check_made_time(_made_time(tmp_path, beside_a_ghost))
-    assert real.made == 3  # E's frames made between source frames 4 and 5, 5 and 6, 6 and 7
+    report = _made_time(tmp_path, beside_a_ghost)
+    _check_made_time(report)
+    # E's frames made between source frames 4 and 5, 5 and 6, 6 and 7, and each tried again at another fraction of its
+    # pair where the frames given way break the beat (`retime`)
+    again = [m["retime"] for m in _row(report, "E")["smear"] if "retime" in m and set(m["retime"]["between"]) & {5, 6}]
+    assert real.made == 3 + sum(len(r["tried"]) for r in again)
 
 
 def test_a_held_loop_that_keeps_a_ghost_carries_both_reasons_held_drawings_first(tmp_path):
@@ -156,7 +165,7 @@ def test_a_held_loop_that_keeps_a_ghost_carries_both_reasons_held_drawings_first
     report = align.align_set([tmp_path / "NE", th._cut(tmp_path, "S", 24, 1)], interpolate=th._cross_fade, length=24)
     ne = _row(report, "NE")
     again = ne["retake"]
-    assert again["reason"] == "held-drawings" and again.get("reasons") == ["held-drawings", "filmed-ghost"]  # before: held alone
+    assert again["reason"] == "held-drawings" and again.get("reasons") == ["held-drawings", "filmed-ghost", "broken-beat"]
     kept = _kept(ne)
     assert kept and all(g["kept"] == "no-clean-frame" for g in kept)
     assert again["hold"] == 2 and again["drawings"] == 8 and again["drawings_per_second"] == pytest.approx(8.0)
@@ -164,8 +173,8 @@ def test_a_held_loop_that_keeps_a_ghost_carries_both_reasons_held_drawings_first
                               "ghost_max": max(g["ghost"] for g in kept), "limit": GHOST_WARN}
     assert again["ghost"]["sources"] == [7, 8, 9]  # 6 gives way to the clean 5; 9 to the clean 10 at one of its cells
     assert again["limits"] == {"drawings_per_second_min": align.RETAKE_DRAWINGS_MIN, "unmade_min": align.RETAKE_UNMADE_MIN,
-                               "ghost_kept_min": align.RETAKE_GHOST_KEPT_MIN}
-    assert [(r["reason"], r["reasons"]) for r in report["retake"]] == [("held-drawings", ["held-drawings", "filmed-ghost"])]
+                               "ghost_kept_min": align.RETAKE_GHOST_KEPT_MIN, "beat_jolt": 0.25}
+    assert [(r["reason"], r["reasons"]) for r in report["retake"]] == [("held-drawings", ["held-drawings", "filmed-ghost", "broken-beat"])]
     assert _row(report, "S")["retake"] is None
     for reason in ("held-drawings", "filmed-ghost"):
         assert len([w for w in report["warnings"] if f"film this direction again ({reason})" in w]) == 1
@@ -174,11 +183,13 @@ def test_a_held_loop_that_keeps_a_ghost_carries_both_reasons_held_drawings_first
     assert lines and all(w.endswith("being filmed ghosts too (--between auto)") for w in lines)
 
 
-def test_a_held_loop_with_no_ghost_carries_its_one_reason(tmp_path):
+def test_a_held_loop_with_no_ghost_carries_no_ghost_reason(tmp_path):
     report = align.align_set([th._cut(tmp_path, "NE", 16, 2), th._cut(tmp_path, "S", 24, 1)], interpolate=th._cross_fade, length=24)
     again = _row(report, "NE")["retake"]
-    assert again["reason"] == "held-drawings" and again.get("reasons") == ["held-drawings"] and "ghost" not in again
-    assert again["limits"] == {"drawings_per_second_min": align.RETAKE_DRAWINGS_MIN, "unmade_min": align.RETAKE_UNMADE_MIN}
+    # its frames given way (the cross-fade stand-in at every fraction) break its beat too, as in A3 above
+    assert again["reason"] == "held-drawings" and again.get("reasons") == ["held-drawings", "broken-beat"] and "ghost" not in again
+    assert again["limits"] == {"drawings_per_second_min": align.RETAKE_DRAWINGS_MIN, "unmade_min": align.RETAKE_UNMADE_MIN,
+                               "beat_jolt": 0.25}
 
 
 def test_a_ghost_rife_keeps_beside_a_clean_frame_is_no_reason(tmp_path):
