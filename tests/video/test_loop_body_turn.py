@@ -160,6 +160,13 @@ def _frames(**drawn) -> list[Image.Image]:
     return [_walker(k, **drawn) for k in range(FRAMES)]
 
 
+def _held(taken: int, hold: tuple[int, int], **drawn) -> list[Image.Image]:
+    """The walker's 73 drawings from drawing `taken` on, each of the first half of its stride (drawings 0-11 of each 24)
+    held hold[0] frames and each of the second hold[1]: a stride whose two halves the clip plays at two paces."""
+    return [_walker(k, **drawn) for k in range(taken, taken + FRAMES)
+            for _ in range(hold[0] if k % CYCLE < CYCLE // 2 else hold[1])]
+
+
 def _cut(out: Path, keyed: Path, *extra: str) -> dict:
     assert loop.main(["--frames-dir", str(keyed), "--out-dir", str(out), "--state", "walk", "--anchor", "motion-auto",
                       "--repair", "off", *extra]) == 0
@@ -652,6 +659,60 @@ def test_a_square_walk_whose_still_shows_a_side_is_not_read(monkeypatch, taken, 
     assert read["why"].startswith("the walk is seen square: its frames' head and shoulders lie ")
     monkeypatch.setattr(body_turn, "WALK_SIDE_MIN", 0.0)
     assert len(body_turn.read(frames)["turns"]) == 3
+
+
+@pytest.mark.parametrize("taken, hold, piece", [(6, (3, 1), None), (6, (3, 1), (6, 6)), (3, (1, 3), None),
+                                                (9, (4, 1), None), (2, (2, 1), (3, 12)), (11, (1, 4), (2, 18))],
+                         ids=["half-a-stride-on-held-3-1", "half-a-stride-on-held-3-1-6x6-beside",
+                              "3-frames-on-held-1-3", "9-frames-on-held-4-1", "2-frames-on-held-2-1-3x12-beside",
+                              "11-frames-on-held-1-4-2x18-beside"])
+def test_a_square_walk_held_longer_over_half_its_stride_is_not_read(monkeypatch, taken, hold, piece):
+    """The walk's side is the median of its drawings, not of the time the clip gives each: the walker seen square from
+    behind whose still shows a side, each drawing of one half of its stride held longer than each of the other's (half
+    a stride on, held three frames and one, 147 frames; alone or with a 36 px piece beside its head in the still, its
+    still 0.148 or 0.200 off its mirror). Each frame of one half lies as near the still's mirror as its frame half a
+    stride on lies near the still, and the frames of the half held longer are 3 in 4 of the clip: at the median of its
+    frames the walk lay 0.075 nearer the still's side (0.074 with the piece), and it was read, and the other half read
+    turned, over frames 19-29, 67-77 and 115-125. Each frame that is the frame before it held is counted once, and the
+    walk lies where it lies drawn on ones (the same drawings; with the piece, one frame more: the still held, without
+    it), as near the still's mirror as the still: not read, with the warning line, and with WALK_SIDE_MIN at 0, read, it
+    reads the turns it does not make."""
+    from sprite_gen.video import body_turn
+
+    def drawn(hold):
+        frames = _held(taken, hold, square=True)
+        return _beside(frames, (0,), piece) if piece else frames
+
+    read = body_turn.read(drawn(hold))
+    ones = body_turn.read(drawn((1, 1)))
+    assert read["still_side"] >= body_turn.SIDE_SHOWN_MIN
+    assert read["read"] is False and read["turns"] == [] and abs(read["walk_side"]) < 0.005
+    if piece:
+        assert abs(read["walk_side"] - ones["walk_side"]) < 0.002
+    else:
+        assert read["walk_side"] == ones["walk_side"]
+    assert read["why"].startswith("the walk is seen square") and "or to its mirror" in body_turn.square(read)
+    monkeypatch.setattr(body_turn, "WALK_SIDE_MIN", 0.0)
+    assert len(body_turn.read(drawn(hold))["turns"]) >= 2
+
+
+@pytest.mark.parametrize("drawn, hold", [({}, (3, 1)), ({"hood": True}, (1, 3)), ({"turns": [TURN]}, (3, 1)),
+                                         ({"turns": [TURN]}, (1, 4)), ({"turns": [TURN], "hood": True}, (4, 1))],
+                         ids=["plain-held-3-1", "hood-held-1-3", "turning-held-3-1", "turning-held-1-4",
+                              "hood-turning-held-4-1"])
+def test_a_walk_seen_at_an_angle_held_longer_over_half_its_stride_reads_as_on_ones(drawn, hold):
+    """The walker seen at an angle, turning over drawings 30-40 or not, each drawing of one half of its stride held
+    longer than each of the other's: each drawing counted once, its walk lies where it lies drawn on ones, and it reads
+    its turn over the frames that hold the drawings it turns over, and none where it does not turn."""
+    from sprite_gen.video import body_turn
+
+    drawing = [k for k in range(FRAMES) for _ in range(hold[0] if k % CYCLE < CYCLE // 2 else hold[1])]
+    read = body_turn.read(_held(0, hold, **drawn))
+    ones = body_turn.read(_frames(**drawn))
+    assert read["read"] and read["walk_side"] == ones["walk_side"]
+    assert len(read["turns"]) == len(ones["turns"]) == (1 if "turns" in drawn else 0)
+    for turn in read["turns"]:
+        assert TURN[0] <= drawing[turn["from"]] and drawing[turn["to"]] <= TURN[1]
 
 
 def test_a_walk_is_read_where_its_head_and_shoulders_lie_0_045_nearer_either_side():

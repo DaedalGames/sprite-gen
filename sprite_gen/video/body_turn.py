@@ -32,7 +32,13 @@ Four named bounds:
   the arms swing apart — lies as near the still's mirror as the still, each frame's mirror a frame of the walk half a
   stride on, and read against the still it reads a turn every stride (the synthetic walker seen square from behind,
   taken 6 frames into its stride, its still 0.148 off its mirror: turns over frames 7-17, 31-41 and 55-65; its walk
-  0.000 at the median). A walk seen at an angle lies nearer the still's side (the plain walker 0.101, the hooded one
+  0.000 at the median). The median is of the walk's drawings, not of the time the clip gives each: a frame that is the
+  frame before it held, the same pixels (the still the frame before the first), is not counted again. Each frame of a
+  square walk lies as near the still's mirror as its frame half a stride on lies near the still, and a clip that holds
+  one half of the stride longer than the other lay toward the half held longer at the median of its frames: the same
+  walker, each drawing of the first half of each stride held 3 frames and each of the second 1 (147 frames), 0.075,
+  and it read turns over frames 19-29, 67-77 and 115-125; each drawing counted once, 0.000, as on ones. A walk seen at
+  an angle lies nearer the still's side (the plain walker 0.101, the hooded one
   0.090); one turned past the still's mirror over most of its frames lies nearer the mirror's, under 0, and is read with
   its turn. 0.045 lies between the synthetic walkers seen at an angle, 0.061 at least (the side walker of
   tests/video/test_walk_steps.py with a 60 px tail on a beat of its own), and those seen square: 0.000 with a piece
@@ -113,11 +119,14 @@ square walk does, and is not read: the synthetic walker turned to its mirror ove
 middle (38 to 41 hooded), or over 14 to 16 frames of each 24-frame cycle; over 38 or fewer (37 hooded), or 42 or more,
 it is read and its turn with it. One turned to square — a back-diagonal walk turned to a full back view — and held there
 over 41 of its 73 frames or more (40 hooded) is a square walk by its frames, and is not read either. Each of the three
-is left unread with the warning line (`square`), not in silence. GUARD and TOL are pixels of the frame, not shares of
-the body: a piece beside the head that moves the centre further than TOL is read about axes that do not reach the
-head's, and a larger body's margin is narrower (the plain walker drawn three times as large, the column beside its head
-in the still three times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn, least +0.31
-against +0.94 without the column)."""
+is left unread with the warning line (`square`), not in silence. A frame is counted once only where it is the same
+pixels as the frame before it: a part of the stride a clip plays slower in drawings of its own, or a held frame with
+noise over it, counts frame by frame, and a square walk so played lies off the still's mirror at the median toward
+that part, and over WALK_SIDE_MIN it is read, and reads turns it does not make. GUARD and TOL are pixels of the frame,
+not shares of the body: a piece beside the head that moves the centre further than TOL is read about axes that do not
+reach the head's, and a larger body's margin is narrower (the plain walker drawn three times as large, the column beside
+its head in the still three times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn,
+least +0.31 against +0.94 without the column)."""
 from __future__ import annotations
 
 import math
@@ -293,8 +302,8 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     """The clip's facing against its first frame (`frames`, the clip as keyed, RGBA): the record the loop report keeps
     (`body_turn`) — the reading, its bounds, the frame read against (`reference`), the still's own side (`still_side`),
     whether it was read (`why` where not), the neck, the walk's side (`walk_side`: the median of the frames after the
-    still, where any is read), each frame's `side` and the `turns`. A frame not read is None in `side`, and `unread`
-    says why, each why with its frames (where any is)."""
+    still, a frame the clip holds from the frame before it counted once, where any is read), each frame's `side` and
+    the `turns`. A frame not read is None in `side`, and `unread` says why, each why with its frames (where any is)."""
     out: dict[str, Any] = {"reading": READING, "bounds": {"SIDE_SHOWN_MIN": SIDE_SHOWN_MIN, "WALK_SIDE_MIN": WALK_SIDE_MIN,
                                                           "TURN_SIDE_MAX": TURN_SIDE_MAX, "TURN_RUN_MIN": TURN_RUN_MIN},
                            "reference": 0, "turns": []}
@@ -336,9 +345,10 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
             continue
         v, _, _ = crop
         side.append(round((float((crops @ v).max()) - float((mirrors @ v).max())) / shown, 4))
-        top = _crop(frame, body, UPPER, uheld) if k else None
-        if top is not None and not isinstance(top, str):
-            walk.append(float((uppers @ top[0]).max()) - float((umirrors @ top[0]).max()))
+        if k and not np.array_equal(np.asarray(frame), np.asarray(frames[k - 1])):
+            top = _crop(frame, body, UPPER, uheld)
+            if not isinstance(top, str):
+                walk.append(float((uppers @ top[0]).max()) - float((umirrors @ top[0]).max()))
     if walk:
         out["walk_side"] = round(float(np.median(walk)), 4)
         if abs(out["walk_side"]) < WALK_SIDE_MIN:
