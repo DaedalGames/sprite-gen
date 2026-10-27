@@ -15,6 +15,11 @@ Both read the same per-frame signals (`strike_signals`) and choose between them 
 - `gap`: the widest empty run between the foot band's two ends, of the frame's height — two feet
   seen apart.
 
+Which of the two feet is which is read on cues the view draws (`depth_cue`, `shade_cue`): from the front or back the
+foot nearer the viewer is drawn lower, from the side or a diagonal the far leg is drawn in shade. `video-cycle-align`
+names the foot that lands by them (`align.strike_foot`), and the step count asks whether the same leg leads again one
+crossing interval on (`local_cycle.read_cycles`).
+
 The swing of the stride or the lowest row says there is something to read, not that it is legs:
 a legless body that squashes as it bounces widens its foot band once a cycle, where a walker's
 widens once a step. Counting steps therefore also asks for two feet seen apart (`feet_apart`).
@@ -41,6 +46,7 @@ REACH_MIN = 0.015  # the lowest row's swing (of the body's height) that says a f
 # each step, from any view; a legless body's foot band is one run.
 FEET_APART = 0.02
 FEET_APART_SHARE = 0.2
+SHADE_BAND = 0.15  # the shade cue reads the feet and lower legs: the lowest 15 % of the body
 
 
 def _longest_runs(solid: np.ndarray) -> np.ndarray:
@@ -116,3 +122,35 @@ def step_signal(sig: dict[str, list[float]]) -> dict[str, Any]:
     if apart < FEET_APART_SHARE:
         return {**record, "by": None, "why": f"no two feet seen apart ({apart:.0%} of the frames, legs from {FEET_APART_SHARE:.0%})"}
     return {**record, "by": by[0], "values": [float(v) for v in sig[by[0]]]}
+
+
+def feet_halves(frame: Image.Image) -> tuple[np.ndarray, np.ndarray, int]:
+    """(solid mask, the picture's right half of the feet as a column mask, body height): the halves
+    split at the middle of the foot band (the lowest FOOT_BAND of the frame's own height)."""
+    solid = np.asarray(frame.getchannel("A")) >= LOW_ALPHA
+    rows = np.nonzero(solid.any(axis=1))[0]
+    y1, height = int(rows[-1]), int(rows[-1] - rows[0] + 1)
+    xs = np.nonzero(solid[y1 + 1 - max(1, round(height * FOOT_BAND)) : y1 + 1].any(axis=0))[0]
+    return solid, np.arange(solid.shape[1]) >= (xs[0] + xs[-1]) / 2, height
+
+
+def depth_cue(frame: Image.Image) -> float:
+    """How much lower the picture's right foot is drawn than its left, as a fraction of the body's
+    height (the lowest solid row of each half)."""
+    solid, right, height = feet_halves(frame)
+    low = [int(np.nonzero(solid[:, half].any(axis=1))[0].max()) if solid[:, half].any() else 0 for half in (~right, right)]
+    return (low[1] - low[0]) / height
+
+
+def shade_cue(frame: Image.Image, facing: str) -> float:
+    """How much lighter the front foot is drawn than the back one (mean luma 0..1 of the lowest
+    SHADE_BAND of the body, front half against back half; the front is the side faced)."""
+    solid, right, height = feet_halves(frame)
+    rows = np.nonzero(solid.any(axis=1))[0]
+    band = np.zeros_like(solid)
+    band[rows[-1] + 1 - max(1, round(height * SHADE_BAND)) : rows[-1] + 1] = True
+    rgb = np.asarray(frame.convert("RGB"), dtype=np.float32) / 255.0
+    luma = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    front = right if facing == "right" else ~right
+    parts = [luma[solid & band & cols[None, :]] for cols in (front, ~front)]
+    return float(parts[0].mean() - parts[1].mean()) if all(p.size for p in parts) else 0.0

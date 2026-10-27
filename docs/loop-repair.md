@@ -943,6 +943,8 @@ A take to film again: where a part pops on the loop as it plays, the report's to
 
 `--unfixed refuse` refuses a loop with such a `retake`, whatever `--repair` says (the repair makes no frame for a part pop and the cut stays, so whatever `--repair` says the pop plays as filmed). `--unfixed warn` (the default) keeps it with a warning line.
 
+A take to film again where the walk starts or stops: where the clip shows its steps, it stands still somewhere (`stands`), and the cut kept is not counted two steps (its `verdict` is not `two`), no cut of two steps closes between the stands: `loop.stand_retake` sets the report's `retake` to `{reason: "start-stop", reasons: ["start-stop"], start_stop: {stands, run_limit, crossings, cut, verdict, code, why}, remedy: "retake"}`. Where a part also pops, one `retake` names both: the first reason's record, `reasons` lists both (`["part-pop", "start-stop"]`), and each reason's numbers sit under its own key (`part_pop`, `start_stop`) (`loop.retakes`). The cut is kept as cut (nothing else changes in the loop). `--unfixed refuse` does not refuse a `start-stop` loop (it refuses jump-repair leftovers and `part-pop` only, as before); the loop is kept and named.
+
 A loop is cut to the same bytes whether a part pops in it or not (`cycle/`, the strip, the GIF, the WebP); every walk and run report gains `part_pop` and `retake` (`retake` is `null` where no part pops).
 
 Cost: the reading is NumPy on the CPU, about a second a loop; nothing else is read.
@@ -1266,7 +1268,9 @@ crossings, joined at the wrap where the walk itself goes on, is one cycle (`cros
 | `unconfirmed` | frames no reading confirms: a run of feet together cut by the clip's first or last frame that its twin does not confirm, the frames before the first side is seen, a change the clip ends on |
 | `step_range` | the clip's own step (the median between crossings) and the range a step must lie in, a factor of √2 either way |
 | `readable`, `why`, `alternation` | whether the clip shows its steps: three crossings or more, and in sign mode a lean that turns over a step on (correlation one step on at most **−0.7**, `crossings.ALTERNATION_MAX`) |
-| `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring`; the search's cut counted an odd number of steps where a pass can hide also with `same_picture` (the clip a cut on, in its playback steps, and `overlap`, the feet together at a pass over the step) |
+| `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring` |
+| `cycles` | whether crossings mark cycles: `asked`, `interval`, `overlap`, `half`, `one`, `two`, `slack`, `cue` (`one`, `swapped`), `cycles` (`true` or `false`), and `why`; absent where not asked |
+| `stands`, `run_limit` | gap mode, the runs of the feet together longer than any pass (over `run_limit`, √2 times the median run the clip shows whole: whole, or cut by the first or last frame), recorded as pairs of frames; only where there is one |
 | `chosen_by` | `search` (kept), `two steps` (chosen on the count), and the search again where the count refutes its cut (`searched_again`) |
 | `declined` | the best two-step cut, where none closed and the search's cut stood: its `cut`, `phase`, whether it passed the gates (`gated`) and its `seam` |
 
@@ -1283,32 +1287,57 @@ with the loop as played showing exactly two crossings as well (`ring`); **refute
 seen (`one step`, `three steps`); anything else is **uncertain** and never taken as two. `phase` is how
 far the wrap is from joining the same point of the walk, in frames, the worst over the bounds.
 
+**Crossings that mark cycles.** In gap mode (side and diagonal views) the step count reads a crossing
+where the feet meet on the screen, taking one crossing interval to be one step. That is wrong where the
+feet do not meet on the screen at every pass: the far foot passes hidden behind the near one (seen from
+behind on a diagonal), or a foot steps toward or away from the camera and passes the other apart (a front
+diagonal, a front view). There the feet meet once a cycle, the engine called a cycle one step, and two
+steps were two cycles: a loop twice as long as the walk's cycle, which then plays at half the walk's
+speed beside the rest of a set. Before any cut is judged,
+`local_cycle.read_cycles(reading, distances, view=None, cue=None)` asks whether the crossings mark cycles
+instead of steps. It is asked only in gap mode, on a readable reading, and only where a pass can hide
+(`reading.overlap` over `crossings.HIDE_SHARE`, 0.5: the feet seen together over half the interval at a
+pass) or where the clip's view is given (`--view front|back|side|front_diagonal|back_diagonal`, default
+none) and is not `side`. From the side the legs a step on are one silhouette, as near as a cycle on, and
+the picture cannot tell; so a side clip with brief passes, or a clip with no view and brief passes, is
+not asked (the count stands exactly as before). `repeat_at(distances, span)` measures how far the clip
+lies from itself `span` frames on: the mean distance of every frame to the one a lag on, over the clip's
+mean step from one frame to the next, the nearer of the two whole lags about `span` (none where the clip
+holds under half a lag of frames past it). It is read at half the crossing interval (`half`), one
+interval (`one`) and two intervals (`two`). The crossings mark cycles where `one < half` (one interval on
+is nearer than the pose a half interval on) and `one <= two + CYCLE_SLACK` (`CYCLE_SLACK` = 0.5 of the
+mean step: one interval on is as near as two on, so the same leg leads one interval on). Then the view's
+foot cue is asked: `legs.shade_cue` (the near foot's shade against the far one's) from the side or a
+diagonal, `legs.depth_cue` (the picture's right foot drawn lower than its left) from the front or back,
+per frame; its correlation one interval on is read with `crossings.correlation_on(values, span)` (trend
+removed). At `CUE_SWAPPED` (-0.2) or under, the other leg leads one interval on: the interval is a step,
+and the count stands. A cue that does not follow the feet reads near 0 and decides nothing. Where they
+mark cycles the reading holds two steps an interval (`Reading.mark_cycles`: `per` 2, `step` half the
+interval, `step_range` halved): a cut one interval long is two steps (one cycle) and is taken as such
+(`steps: {count: 2, by: crossings}` written). Recorded in `cycle.step_count.cycles`:
+`{asked, interval, overlap, half, one, two, slack, cue: {one, swapped}, cycles: true|false, why}`; absent
+where not asked. The same reading is used for the search's cut (`--anchor motion-auto`), a fixed cut
+(`--cycle fixed`, `fixed_count`), and the loop as it plays round (`ring_steps`, told the clip's `cycles`
+since a loop alone is too short to read two intervals on). `video-set` passes each item's view. On the
+synthetic walkers of `tests/video/test_walk_steps.py`, a walker seen from behind whose far foot hides
+behind the near one (feet seen together over half the interval) has a cycle of 20 frames drawn on twos,
+24 on threes, and 17.5 and 18.5 frames on ones (a cycle not a whole number of frames): cut one cycle
+(within a frame of it), `cycles` true, `steps` 2. A side walker whose two steps are one silhouette
+(46-frame cycle, near and far a tone or four apart) is not asked with no view or with `--view side`, and
+is cut two steps (46 frames) as before. A front-diagonal walker whose near foot steps out toward the
+camera and passes the far one apart (feet together under half the interval), cycle 16 and 18 frames: with
+`--view front_diagonal` cut one cycle (16, 18 frames); without a view it is not asked and is cut as
+before (32, 36 frames: two cycles, as the engine cannot tell without the view). The same 46-frame walker
+filmed as a front diagonal, its far leg four tones off the near one, is asked with
+`--view front_diagonal`: one interval on is as near as two on, but the foot cue turns over one interval
+on: two steps (46 frames), the count stands.
+
 **Choosing the cut.**
 
 - The clip does not show its steps (no feet seen, a legless body, a lean that does not turn over, under
   three crossings): the search's cut, exactly as before. Only `cycle.step_count` is new.
 - The search's cut is a two within **1.5** frames of phase (`crossings.PHASE_TOLERANCE`): kept, every
   image and frame as the search alone cuts it.
-- The count says the search's cut is an odd number of steps — one or three, the legs swapped a cut on —
-  where a pass can hide, and the clip a cut on is the same picture. A pass is brief; seen from behind on
-  a diagonal the far foot stands hidden behind the near one through part of the step, so the feet are
-  seen together for most of it, its pass among them, and apart once a cycle. Gap mode, the feet seen
-  together at a pass over more than **0.5** of a step (`crossings.Reading.overlap`, the median of the runs
-  the clip shows whole over the step; `crossings.HIDE_SHARE`), and frame by frame along the cut its frame
-  a cut on at most **1.0** of the cut's playback steps off (`local_cycle.same_picture`,
-  `SAME_PICTURE_MAX`; both in `step_count.search.same_picture`): a step on, the legs are swapped, and a
-  swap that draws nearer than the next frame is none — the count missed a crossing, and proves nothing.
-  The search's cut is kept, every image as the search alone cuts it, its count `uncertain`
-  (`same-picture`), and no `steps` is written: the set alignment screens it as any loop. Both are asked
-  because neither tells alone: from the side, with the legs drawn alike, a step on can draw as near as
-  the next frame — the very half step the count was made for — but there the feet pass briefly and the
-  count stands; where the feet stand together through a step, a lookalike step a cut on still draws
-  further off than a frame. On the synthetic walkers of `tests/video/test_walk_steps.py` the frame a cut
-  on lies 0.03 and 0.27 playback steps off where the far foot hides (on twos and on threes, the feet
-  together 0.60 and 0.63 of a step), and 2.12 on the half step drawn with a tail on its own beat. The side
-  walker whose two steps are one silhouette, near and far a tone apart, reads 0.89 a step on — under the
-  bound, so the picture alone kept its half step — and 1.04 at two tones; its feet pass briefly, and it is
-  cut two steps.
 - Otherwise the cut is among the cuts that cover two steps — any start, any length the count allows,
   inside an explicit `--min-len`/`--max-len` but not the state's window, half the clip or the gait
   fallback's ceiling (a walk slower than the window is cut two steps long). Those in phase, if any, are
@@ -1362,22 +1391,22 @@ crossings are not asked.
 
 **What crossings cannot see**: a hold the step range absorbs (a 13-frame step held to 17), a still run of
 the feet together inside the clip as long as a pass, and a wobble that reaches the reading's sides at a
-step's beat read as steps; a narrow step that opens the feet only just past the reading's threshold
-reads at that threshold. A pass hidden behind the other foot leaves one crossing a cycle, and the count
-reads a cycle as one step: the clip's own repeat overrules it where the pixel search found it and the feet
-stand together through most of a step (the same picture a cut on, above); where the search found no cycle,
-the cut is two cycles long and says `steps: 2`. A pass that falls between two drawings with the feet seen
-together only briefly is not overruled: from there the same picture a cut on is what a side walk with its
-legs drawn alike does. And a walk whose feet do stand together through most of a step, its two steps drawn
-nearer than a frame apart, is cut as the search cuts it — one step long, as before the count: neither the
-pixels nor the crossings tell its step from its cycle there, and only someone who counts the steps (`--steps`)
-settles it. Four-legged gaits are read as one foot band (`legs.strike_signals`), as before.
+step's beat read as steps; a narrow step that opens the feet only just past the reading's threshold reads
+at that threshold. Where a pass is hidden behind the other foot, or where the view is given and is not
+`side`, the cycles reading (`local_cycle.read_cycles`) sees whether the crossings mark cycles: where the
+clip repeats one interval on as near as two on, and the foot cue does not show the legs swapped, the
+reading marks cycles and cuts one cycle as two steps. What it still cannot tell: a side walk with brief
+passes whose two steps are one silhouette is not asked, because from the side the legs a step on are one
+silhouette, as near as a cycle on, and the picture cannot tell; a clip with no view and brief passes is
+not asked, so a front diagonal whose near foot steps out apart is then cut two cycles, so give `--view`;
+and a cue that does not follow the feet reads near 0 and decides nothing. Four-legged gaits are read as
+one foot band (`legs.strike_signals`), as before.
 
 ### The step gate: every step between drawings, and a fixed cut's count
 
 On every walk or run loop that plays round (not a single play cut), after the seam gate passes, the strip cells are read between their drawings: a loop drawn on twos or threes shows each drawing for two or three frames (`repair.flow_drawings` finds them), so read frame by frame it steps nothing and then two or three steps at each drawing, making its largest step two or three times its mean even when playing evenly. Each drawing first cell is read on analysis features the seam gate reads (`loop._small_features`), taking the step from each drawing to the next and from the last drawing into the first across the wrap. The largest of these steps, wrap included, over the mean of the others must be at most `STEP_RATIO_MAX` (2.5) (`loop.drawing_steps`). Because a pixel of jitter can look large against a tiny mean step, a step over 2.5 is exempt from the bound when it is a pixel's jitter (`loop.step_jitter`): the move that aligns its drawing with the previous drawing while producing the least coverage difference (`stop.register`, read on alpha so colour has no effect) is at most `STEP_JITTER_PX` (1.5) pixels of the frames as filmed. Each such pixel is the strip's `scale` in cell pixels, and the allowed move is never less than one cell pixel. With that move taken back, the step must also be within 2.5 of the mean. The gate holds the largest step that is not a pixel's jitter to the bound. On synthetic frames, a walk going away from the camera has a step where the feet rise a whole crop row that measures 2.5 to 3.6 times the mean as drawn, black or grey. Its move is one pixel, the step taken back is at most 1.3 times the mean, and the loop passes. A frame of a walk cut 400 px tall moved 2 px and back moves 6 cell pixels, or 2.0 pixels of the frames as filmed, and fails in every colour. Measured instead as a mean RGBA difference, that jump reads 0.057 in colour, 0.025 in a grey near the backdrop and 0.021 in black. Past the bound, the loop fails with `video-loop: loop step ratio <ratio> exceeds 2.5 (<kind> length <L> frames from <start>, into frame <frame>, read between its <n> drawings); the loop jumps inside — regenerate the clip`. Where jump repair says why the step jumps, the line says it before ` — regenerate the clip`: `: frame <frame> lies off the walk's flow, and the jump repair's frame there was refused (<faults>), so it plays as filmed`, or `: frame <frame> lies off the walk's flow, and no group of up to 2 drawings brings it back`. The report records `step_gate` on every walk or run loop, passed or failed: `read` (`drawings`), `drawings`, `hold`, `mean_step`, `largest_ratio`, `largest_from` and `largest_into` (the cut frames from and into which the largest step that is not a pixel's jitter runs, each the first frame of its drawing), `wrap_ratio`, `max` (the bound used), `jitter` for steps over 2.5 that are a pixel's jitter (each step's `from` and `into` frames, its `ratio`, its `move` in cell pixels and `ratio_moved_back`, with the larger first), `lifted`, and `kept` when a lifted gate kept a loop over 2.5; a loop with fewer than three drawings records `skipped` instead.
 
-`--cycle fixed --start S --length L` of a walk or run now reads clip foot crossings (`crossings.read`) and judges the cut (`Reading.judge`), as `--anchor motion-auto` already does for the cut it takes. The report records this as `cycle.step_count` (the reading record, `chosen_by: caller`, and `cut` with `verdict`, `code`, `k`, `phase`, `ring`). A walk loops on two steps; a cut whose crossings count an odd number of steps (one, three) swaps legs at the wrap however close frames look, failing with `video-loop: loop step count refutes the fixed cut <start>/<L> — the clip's crossings count one step, each seen where a walk loops on two, and an odd count swaps the legs at the wrap; cut it again two steps long (about <2 steps> frames)`. An even count of four steps is not refused. The exemption from `--anchor motion-auto` applies (`local_cycle.same_picture_count`, shared by both now): where feet are seen together over half a step at a pass (`crossings.HIDE_SHARE`) and the clip one cut on is the same picture (at most `local_cycle.SAME_PICTURE_MAX`, 1.0 playback steps along the cut), the count missed a crossing; verdict reads `uncertain`, code `same-picture`, recorded with `same_picture`, and the cut is not refused. A fixed cut gets no `steps` field and leaves its strip unchanged.
+`--cycle fixed --start S --length L` of a walk or run now reads clip foot crossings (`crossings.read`) and judges the cut (`Reading.judge`), as `--anchor motion-auto` already does for the cut it takes. The report records this as `cycle.step_count` (the reading record, `chosen_by: caller`, and `cut` with `verdict`, `code`, `k`, `phase`, `ring`). A walk loops on two steps; a cut whose crossings count an odd number of steps (one, three) swaps legs at the wrap however close frames look, failing with `video-loop: loop step count refutes the fixed cut <start>/<L> — the clip's crossings count one step, each seen where a walk loops on two, and an odd count swaps the legs at the wrap; cut it again two steps long (about <2 steps> frames)`. An even count of four steps is not refused. The fixed cut's count reads the same cycles reading (`fixed_count`, with the view), so a cut one interval long where the crossings mark cycles counts two steps and is not refused. A fixed cut gets no `steps` field and leaves its strip unchanged.
 
 The step gate stands where the seam gate does. Its bound is the larger of 2.5 and `--seam-max`. Setting `--seam-max` past 2.5 lifts it with the seam: every step bound is then `--seam-max`, a loop whose largest step is over 2.5 is kept with the warning line `video-loop: warning: the loop's largest step between drawings is <ratio>x their mean (into frame <frame>), over 2.5: it jumps inside — kept, as --seam-max <seam-max> lifts the step gate` (and `step_gate.kept`, `step_gate.lifted: true`), and a fixed cut counted an odd number of steps is kept with `video-loop: warning: the clip's crossings count the fixed cut <start>/<L> one step, each seen: a walk loops on two steps, and an odd count swaps the legs at the wrap — kept, as --seam-max <seam-max> lifts the step gate` (and `cycle.step_count.lifted`, which records `seam_max`). A forced delivery with `--seam-max 1000` therefore passes as before, with these lines.
 

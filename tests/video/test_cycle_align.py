@@ -335,6 +335,28 @@ def test_video_set_aligns_each_gait_filmed_in_two_or_more_directions(tmp_path):
     assert batch.align_gaits(rows, tmp_path, "off") == {}
 
 
+@pytest.mark.slow
+def test_video_set_leaves_a_take_to_film_again_for_a_start_or_stop_out_of_the_alignment(tmp_path):
+    """A loop named a take to film again because the walk starts or stops in it (`retake` `start-stop`) loops no two
+    steps: it is left out, its loop as cut, and the rest are aligned without it. Left alone, the state is not aligned."""
+    from sprite_gen.video import batch
+
+    stand = {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}
+    rows = []
+    for direction, length, retake in (("front", 20, None), ("side", 24, None), ("back", 19, stand)):
+        item = tmp_path / f"{direction}-walk"
+        item.mkdir()
+        _cut(item, "loop", length)
+        rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
+                     "loop": {"n_out": length, **({"retake": retake} if retake else {})}})
+    out = batch.align_gaits(rows, tmp_path, "auto", interpolate=Recorder())
+    assert out["walk"]["applied"] and out["walk"]["lengths"] == [20, 24] and out["walk"]["left_out"] == {"back-walk": ["start-stop"]}
+    assert [r["loop"]["n_out"] for r in rows] == [out["walk"]["length"]] * 2 + [19] and "cycle_align" not in rows[2]["loop"]
+    alone = batch.align_gaits(rows[1:], tmp_path, "auto", interpolate=Recorder())
+    assert alone == {"walk": {"ok": True, "applied": False, "why": "fewer than two directions left to align",
+                              "left_out": {"back-walk": ["start-stop"]}}}
+
+
 def _no_rife(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("SPRITE_GEN_RIFE", raising=False)
     # PATH keeps every other tool (img2webp, ffmpeg); only the directories holding a RIFE go

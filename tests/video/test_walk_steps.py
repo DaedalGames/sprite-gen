@@ -12,9 +12,13 @@ Each walker is drawn so the pixel search alone makes one of the faults a walk lo
 - a slow front walk in a short clip, refused outright (no periodic cycle found);
 - a walk that stalls, its cut playing the stalled step.
 
-And two the count alone gets wrong, where the search's cut stands: a held walk seen from behind whose far foot
-passes hidden (one crossing a cycle, the cycle counted one step), and a walk on threes whose tail closes on no cut
-of two steps.
+Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle: a walk
+seen from behind whose far foot passes hidden behind the near one, on ones, twos or threes, a cycle a whole number of
+frames or not (the parent engine counted the cycle one step and cut two cycles, or kept the search's cut unwritten); and
+a walk on a front diagonal whose near foot steps out toward the camera and passes the far one apart, read so where its
+view is given. Two guards: from the side, or where the view's foot cue says the other leg leads an interval on, the
+count stands however alike a step on draws. And one the count alone gets wrong, where the search's cut stands: a walk on
+threes whose tail closes on no cut of two steps.
 
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
@@ -81,7 +85,7 @@ def _front(k: float, *, cycle: float, phase: float = 0, tail_cycle: float = 1, t
     return im
 
 
-def _behind(k: int, *, cycle: int, hold: int) -> Image.Image:
+def _behind(k: int, *, cycle: float, hold: int) -> Image.Image:
     """A walker seen from behind on a diagonal, drawn on twos or threes (`hold`): the near leg swings ahead and back,
     and the far one is seen beside it only while it is behind — ahead, it stands hidden behind the near leg. The feet
     are seen apart once a cycle and together through the other step, its pass hidden among them: one crossing shows a
@@ -98,6 +102,25 @@ def _behind(k: int, *, cycle: int, hold: int) -> Image.Image:
     d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(50, 50, 60, 255))
     d.rectangle((near - 5, y + 80, near + 5, y + 126), fill=(70, 70, 80, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200 + 12 * redraw, 80, 80, 255))
+    d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
+    d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
+    return im
+
+
+def _outward(k: float, *, cycle: float) -> Image.Image:
+    """A walker on a front diagonal whose near foot steps out toward the camera: it swings wide ahead and back, and the
+    far foot hardly moves, so the feet meet on the screen once a cycle, where the near foot passes the far one on its
+    way back; its pass on the way out is made apart. Arms opposite, the far one darker; the far leg a tone off the near."""
+    ph = 2 * math.pi * k / cycle
+    im = Image.new("RGBA", (300, 220))
+    d = ImageDraw.Draw(im)
+    x, y = 90, 40 + round(3 * math.cos(2 * ph))
+    sw = 16 * math.sin(ph)
+    near, far = x + 14 + sw, x + 34 - 4 * math.sin(ph)
+    d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
+    d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(61, 61, 71, 255))
+    d.rectangle((near - 5, y + 80, near + 5, y + 126), fill=(60, 60, 70, 255))
+    d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
     d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
     return im
@@ -191,8 +214,8 @@ def test_a_half_step_diagonal_walk_is_cut_two_steps(tmp_path):
     counted = _two_steps(report, 29)
     assert counted["mode"] == "gap" and counted["step_range"][1] == 14.5
     assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1] and counted["search"]["cut"][1] in (14, 15)
-    # Its feet pass briefly: no pass can hide, and the count is not asked whether the clip a cut on is the same picture.
-    assert "same_picture" not in counted["search"]
+    # Its feet pass briefly and no view is given: whether its crossings mark cycles is not asked.
+    assert "cycles" not in counted
     strip = json.loads((tmp_path / "out" / "loop.strip.json").read_text())
     assert strip["steps"] == 2 and strip["cycle_frames"] == report["cycle"]["length"]
     # The step screen's pixel suspicion of a cycle twice as long is settled by the count.
@@ -246,25 +269,53 @@ def test_a_walk_that_stalls_is_not_cut_across_the_stalled_step(tmp_path):
     assert counted["search"]["code"] == "step-long"
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize("cycle, hold", [(20, 2), (24, 3)])
-def test_a_held_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
-    """Seen from behind on a diagonal, on twos or threes, the far foot passes hidden behind the near one: one crossing
-    shows a cycle, and the count takes the cycle for one step. The search's cut is the clip's cycle, the same picture a
-    cut on, which the count calls one step; a step on the legs are swapped, and a swap nearer than the next frame is
-    none — the count missed a crossing. The search's cut stands, one cycle, and no `steps` is written (the parent
-    engine cut it two cycles long, `steps: 2`, the set alignment's two-cycle screen settled by it)."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold)))
+def _one_cycle(out: Path, cycle: float) -> dict:
+    """The cut in `out` is one cycle of the walker, `cycle` frames, two steps by its crossings read as cycles, and says
+    so — in its strip too."""
+    report = json.loads((out / "loop.loop.report.json").read_text())
     c = report["cycle"]
     counted = c["step_count"]
-    assert c["length"] == cycle and "steps" not in c
-    assert "steps" not in json.loads((tmp_path / "out" / "loop.strip.json").read_text())
-    assert report["drawings"]["hold"] == hold and report["status"] == "passed"
-    assert counted["mode"] == "gap" and abs(counted["step_range"][1] - cycle) <= 1
-    assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1]
-    assert counted["search"]["same_picture"]["over_step"] <= local_cycle.SAME_PICTURE_MAX
-    assert counted["chosen_by"] == "search" and counted["cut"]["verdict"] == "uncertain" and counted["cut"]["code"] == "same-picture"
-    assert c["method"] == "local-repeat-drift-v1"
+    assert abs(c["length"] - cycle) <= 1
+    assert c["steps"] == {"count": 2, "by": "crossings"}
+    assert counted["mode"] == "gap" and counted["cycles"]["cycles"] is True
+    assert abs(counted["step_range"][1] - cycle / 2) <= 1
+    assert counted["cut"]["verdict"] == "two" and counted["cut"]["k"] == [2] and counted["cut"]["ring"] == 2
+    assert abs(counted["cut"]["phase"]) <= crossings.PHASE_TOLERANCE
+    assert json.loads((out / "loop.strip.json").read_text())["steps"] == 2
+    assert report["status"] == "passed"
+    return counted
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("cycle, hold", [(20, 2), (24, 3), (17.5, 1), (18.5, 1)])
+def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
+    """Seen from behind on a diagonal, the far foot passes hidden behind the near one: the feet are seen together over
+    more than half the interval between two crossings, one crossing a cycle. The clip one interval on is the same
+    picture, a cycle on, and the count reads the crossings as cycles: two steps an interval. The cut is one cycle,
+    `steps: 2` (the parent engine counted the cycle one step: on twos and threes it kept the search's cut unwritten, and
+    on ones, a cycle a whole number of frames or not, cut two cycles, 35 and 37 frames)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold)))
+    counted = _one_cycle(tmp_path / "out", cycle)
+    assert report["drawings"]["hold"] == hold
+    assert counted["cycles"]["asked"].startswith("the feet together") and counted["cycles"]["overlap"] > crossings.HIDE_SHARE
+    assert counted["cycles"]["one"] < counted["cycles"]["half"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("cycle", [16, 18])
+def test_a_diagonal_walk_whose_near_foot_steps_out_is_cut_one_cycle_from_its_view(tmp_path, cycle):
+    """On a front diagonal the near foot steps out toward the camera and passes the far one apart: the feet meet on the
+    screen once a cycle, and briefly — no pass hides. Given the view, the count asks the picture: the clip one interval
+    on is the same picture, the legs as they were, and the view's foot cue does not turn over there. One cycle,
+    `steps: 2` (the parent engine counted each meeting a step and cut two cycles, 32 and 36 frames). Without the view
+    it is not asked, and cuts as before."""
+    keyed = _keyed(tmp_path, lambda k: _outward(k, cycle=cycle))
+    _cut(tmp_path / "view", keyed, "--view", "front_diagonal")
+    counted = _one_cycle(tmp_path / "view", cycle)
+    assert counted["cycles"]["overlap"] <= crossings.HIDE_SHARE and counted["cycles"]["asked"] == "the front_diagonal view, the legs side by side"
+    assert counted["cycles"]["cue"]["one"] > local_cycle.CUE_SWAPPED
+    plain = _cut(tmp_path / "plain", keyed)
+    assert "cycles" not in plain["cycle"]["step_count"] and abs(plain["cycle"]["length"] - 2 * cycle) <= 1
 
 
 @pytest.mark.slow
@@ -273,12 +324,25 @@ def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_
     """The case the count was made for, guarded: from the side the two steps are one silhouette, the near leg and arm
     a tone or a few apart from the far ones. The walk is slower than the window, so the search cuts one step, and at
     one tone the clip a step on draws nearer than the next frame (0.89 playback steps). Its feet pass briefly — no pass
-    can hide — so the count stands: two steps, a cycle long (as the parent engine cut it; asking the picture alone kept
-    the half step)."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=tone, lean=lean)))
+    can hide — and from the side the picture is not asked: the count stands, two steps, a cycle long."""
+    keyed = _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=tone, lean=lean))
+    for out, extra in (("plain", ()), ("side", ("--view", "side"))):
+        counted = _two_steps(_cut(tmp_path / out, keyed, *extra), 46)
+        assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1]
+        assert "cycles" not in counted
+
+
+@pytest.mark.slow
+def test_a_diagonal_walk_whose_foot_cue_turns_over_a_step_on_is_cut_two_steps(tmp_path):
+    """The same walker filmed as a front diagonal: its legs a step on are one silhouette, so the clip one interval on is
+    as near as a cycle on, but its far leg is drawn a few tones off the near one, and the view's foot cue turns over one
+    interval on — the other leg leads. The count stands: two steps, a cycle long."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1)),
+                  "--view", "front_diagonal")
     counted = _two_steps(report, 46)
-    assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1]
-    assert "same_picture" not in counted["search"]
+    said = counted["cycles"]
+    assert said["cycles"] is False and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
+    assert said["cue"]["one"] <= local_cycle.CUE_SWAPPED and "the other leg leads" in said["why"]
 
 
 @pytest.mark.slow
@@ -374,15 +438,23 @@ def test_the_search_refuses_what_the_crossings_refute_and_names_their_count(unce
     assert "refute after the rest" in refused.value.diagnostics["order"]
 
 
-def _choose(found: dict, *, period: int, seam: float, run: int = 9, search_seam: float = 1.0) -> tuple[dict, dict]:
-    """`by_steps` on a clip whose picture goes round every `period` frames, its feet passing every 15 (crossings at 8,
-    23 … 68), seen together `run` frames at each pass (9: over half a step, a pass can hide there; 3: brief), with the
-    search's cut `found`: every two-step cut's seam reads `seam` at the gate, its top calm and its flow off 1.0 either
-    side, and the search's own cut `search_seam`."""
-    D = _distances(period=period, frames=FRAMES)
+def _reading(run: int) -> crossings.Reading:
+    """A clip whose feet meet every 15 frames (crossings at 8, 23 … 68), seen together `run` frames at each meeting
+    (9: over half the interval, a pass can hide there; 3: brief)."""
     middles = (8, 23, 38, 53, 68)
-    reading = crossings.Reading(FRAMES, "gap", [(float(c), float(c)) for c in middles],
-                                runs=[(c - run // 2, c + run // 2) for c in middles])
+    return crossings.Reading(FRAMES, "gap", [(float(c), float(c)) for c in middles],
+                             runs=[(c - run // 2, c + run // 2) for c in middles])
+
+
+def _choose(found: dict, *, period: int, seam: float, run: int = 9, search_seam: float = 1.0, view: str | None = None,
+            cue: list[float] | None = None) -> tuple[dict, dict]:
+    """`by_steps` on a clip whose picture goes round every `period` frames and whose feet meet every 15 (`_reading`),
+    its crossings read as `read_cycles` reads them from `view` and its foot `cue`, with the search's cut `found`: every
+    two-step cut's seam reads `seam` at the gate, its top calm and its flow off 1.0 either side, and the search's own
+    cut `search_seam`."""
+    D = _distances(period=period, frames=FRAMES)
+    reading = _reading(run)
+    local_cycle.read_cycles(reading, D, view=view, cue=cue)
     return local_cycle.by_steps(
         D, np.zeros(FRAMES), reading, found=dict(found), refused=None, min_len=12, max_len=FRAMES,
         seam_flow=lambda s, L: {"off": [1.0, 1.0], "turn": [0.0, 0.0], "window": [[0, 0, 1, 1], [0, 0, 1, 1]]},
@@ -412,26 +484,73 @@ def test_a_cut_the_count_does_not_refute_gives_way_only_to_a_two_step_cut_that_c
 
 def test_a_cut_the_count_refutes_gives_way_to_two_steps_closing_or_not():
     """A search's cut the count refutes, one step seen, is a fault of its own: the two-step cut is taken though its seam
-    fails the gate, and the gate says whether the loop passes."""
+    fails the gate, and the gate says whether the loop passes. The picture goes round every 30 frames: one interval on
+    it is half a cycle off, and the crossings mark steps."""
     picked, record = _choose({"start": 10, "length": 15}, period=30, seam=3.0)
+    assert record["cycles"]["cycles"] is False and record["cycles"]["one"] > record["cycles"]["half"]
     assert record["search"]["verdict"] == "refuted" and record["search"]["k"] == [1]
-    assert record["search"]["same_picture"]["over_step"] > local_cycle.SAME_PICTURE_MAX
-    assert record["chosen_by"] == "two steps" and picked["steps"] == {"count": 2, "by": "crossings"}
+    assert record["chosen_by"] == "two steps" and picked["steps"] == {"count": 2, "by": "crossings"} and abs(picked["length"] - 30) <= 1
 
 
-def test_a_one_step_cut_that_is_the_same_picture_a_cut_on_is_the_searchs_cycle():
-    """The same count — one step — on a clip whose picture goes round every 15 frames: the frame a cut on is the
-    frame itself, so no legs were swapped and the count missed a crossing. The search's cut stands, no steps written."""
+def test_where_a_pass_can_hide_and_the_picture_repeats_each_interval_the_crossings_mark_cycles():
+    """The same meetings on a clip whose picture goes round every 15 frames, the feet together 9 frames at each: a pass
+    can hide there, and one interval on the clip is the same picture as two on — the same leg leads. The crossings mark
+    cycles, the step is half the interval, and the search's cut 10/15 is two steps joined at the walk's own point: it
+    stands, `steps` written."""
     picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0)
-    assert (picked["start"], picked["length"]) == (10, 15) and "steps" not in picked
-    assert record["chosen_by"] == "search" and record["cut"]["code"] == "same-picture" and record["cut"]["verdict"] == "uncertain"
-    assert record["search"]["same_picture"]["over_step"] <= local_cycle.SAME_PICTURE_MAX
-    assert record["search"]["same_picture"]["overlap"] > crossings.HIDE_SHARE
+    said = record["cycles"]
+    assert said["cycles"] is True and said["asked"].startswith("the feet together") and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
+    assert record["step_range"][1] == 7.5
+    assert (picked["start"], picked["length"]) == (10, 15) and picked["steps"] == {"count": 2, "by": "crossings"}
+    assert record["chosen_by"] == "search" and record["cut"]["verdict"] == "two"
 
 
-def test_where_the_feet_pass_briefly_the_count_stands_however_alike_a_step_on():
-    """The same clip, its feet seen together only at the moment they pass: no pass can hide, and a step on drawing as
-    near as the next frame is what legs drawn alike do from the side. The count stands: two steps."""
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3)
-    assert record["search"]["verdict"] == "refuted" and "same_picture" not in record["search"]
-    assert record["chosen_by"] == "two steps" and picked["steps"] == {"count": 2, "by": "crossings"}
+@pytest.mark.parametrize("view", [None, "side"])
+def test_where_the_feet_meet_briefly_the_count_stands_from_the_side_or_no_view(view):
+    """The same clip, its feet seen together only at the moment they meet: no pass can hide, and from the side (or with
+    no view given) a step on drawing as near as a cycle on is what legs drawn alike do. Not asked: two steps."""
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view=view)
+    assert "cycles" not in record
+    assert record["search"]["verdict"] == "refuted" and record["chosen_by"] == "two steps" and abs(picked["length"] - 30) <= 1
+
+
+@pytest.mark.parametrize("turns, cycles", [(True, False), (False, True)])
+def test_from_a_diagonal_the_foot_cue_says_which_leg_leads_an_interval_on(turns, cycles):
+    """The same brief meetings from a front diagonal: asked. One interval on is the same picture; where the view's foot
+    cue turns over there (the near foot's shade leading one interval, the far one's the next) the other leg leads and
+    the count stands, two steps of 15; where it does not, the crossings mark cycles and the search's 15 frames are the
+    cycle."""
+    t = np.arange(FRAMES)
+    cue = list(np.sin(2 * np.pi * (t - 8) / (30 if turns else 15)))
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view="front_diagonal", cue=cue)
+    said = record["cycles"]
+    assert said["asked"] == "the front_diagonal view, the legs side by side" and said["cycles"] is cycles
+    assert (said["cue"]["one"] <= local_cycle.CUE_SWAPPED) is turns
+    assert abs(picked["length"] - (15 if cycles else 30)) <= (0 if cycles else 1)
+
+
+@pytest.mark.parametrize("verdict, named", [("uncertain", True), ("two", False)])
+def test_a_walk_that_starts_and_stops_in_the_take_is_named_to_film_again(verdict, named):
+    """Feet together 15 frames at the head and 14 at the tail, longer than any pass the clip shows whole (8, 3): the
+    walk stands still there. Where the cut kept is not two steps, no cut of two closes between the stands and the loop
+    names the take to film again (`start-stop`), its stands, crossings and cut; a cut counted two steps is a walk
+    looped, and nothing is named. Feet that only pass name nothing."""
+    reading = crossings.Reading(FRAMES, "gap", [(10.0, 10.0), (20.0, 20.0), (40.5, 40.5)],
+                                runs=[(3, 17), (19, 21), (37, 44), (59, 72)], unconfirmed=[(59, 72)])
+    assert reading.stands == [(3, 17), (59, 72)] and reading.run_limit == pytest.approx(8 * math.sqrt(2))
+    record = reading.record()
+    assert record["stands"] == [[3, 17], [59, 72]] and record["run_limit"] == round(8 * math.sqrt(2), 2)
+    cut = {"verdict": verdict, "code": "tail-stall" if verdict == "uncertain" else "two", "why": "plays the clip's tail"}
+    retake = loop.stand_retake({"start": 37, "length": 19, "step_count": {**record, "cut": cut}})
+    if named:
+        assert retake["reason"] == "start-stop" and retake["reasons"] == ["start-stop"] and retake["remedy"] == "retake"
+        assert retake["start_stop"]["stands"] == [[3, 17], [59, 72]] and retake["start_stop"]["cut"] == [37, 19]
+        assert retake["start_stop"]["code"] == "tail-stall"
+        assert loop.retakes(None, retake) == retake
+        assert loop.retakes({"reason": "part-pop", "reasons": ["part-pop"], "part_pop": {}, "remedy": "retake"}, retake)["reasons"] == \
+            ["part-pop", "start-stop"]
+    else:
+        assert retake is None
+    passing = _reading(3)
+    assert passing.stands == [] and "stands" not in passing.record()
+    assert loop.stand_retake({"start": 10, "length": 15, "step_count": {**passing.record(), "cut": {"verdict": "uncertain"}}}) is None

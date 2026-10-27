@@ -115,9 +115,8 @@ RATE_TOLERANCE = 0.002  # frame rates read back from the strip metadata agree wi
 # The foot-strike turn (docs/loop-repair.md section 4) reads the legs as the two-cycle screen
 # records them (sprite_gen/video/legs.py). With a view the view picks the signal and the swings only
 # say whether there are legs to read (`foot_strike`).
-LOW_ALPHA, STRIDE_MIN, REACH_MIN, BODY_RUN = legs_mod.LOW_ALPHA, legs_mod.STRIDE_MIN, legs_mod.REACH_MIN, legs_mod.BODY_RUN
+STRIDE_MIN, REACH_MIN, BODY_RUN = legs_mod.STRIDE_MIN, legs_mod.REACH_MIN, legs_mod.BODY_RUN
 START_FOOT = "right"  # every loop of a set starts as this own foot lands, where its view can tell
-SHADE_BAND = 0.15  # the shade cue reads the feet and lower legs: the lowest 15 % of the body
 # The two strikes must differ by this to name a foot (`strike_foot`): shade in luma (0..1), depth in
 # body heights. A smaller difference is the drawing as much as the feet, and the foot is left unnamed
 # (`low-margin`) for whoever looks (`unnamed_feet`): a foot named wrong turns the loop half a cycle off
@@ -664,36 +663,7 @@ def _keep_the_beat(frames: list[Image.Image], out: list[Image.Image], provenance
 strike_signals = legs_mod.strike_signals
 
 
-def _feet(frame: Image.Image) -> tuple[np.ndarray, np.ndarray, int]:
-    """(solid mask, the picture's right half of the feet as a column mask, body height): the halves
-    split at the middle of the foot band (the lowest FOOT_BAND of the frame's own height)."""
-    solid = np.asarray(frame.getchannel("A")) >= LOW_ALPHA
-    rows = np.nonzero(solid.any(axis=1))[0]
-    y1, height = int(rows[-1]), int(rows[-1] - rows[0] + 1)
-    xs = np.nonzero(solid[y1 + 1 - max(1, round(height * legs_mod.FOOT_BAND)) : y1 + 1].any(axis=0))[0]
-    return solid, np.arange(solid.shape[1]) >= (xs[0] + xs[-1]) / 2, height
-
-
-def _depth_cue(frame: Image.Image) -> float:
-    """How much lower the picture's right foot is drawn than its left, as a fraction of the body's
-    height (the lowest solid row of each half)."""
-    solid, right, height = _feet(frame)
-    low = [int(np.nonzero(solid[:, half].any(axis=1))[0].max()) if solid[:, half].any() else 0 for half in (~right, right)]
-    return (low[1] - low[0]) / height
-
-
-def _shade_cue(frame: Image.Image, facing: str) -> float:
-    """How much lighter the front foot is drawn than the back one (mean luma 0..1 of the lowest
-    SHADE_BAND of the body, front half against back half; the front is the side faced)."""
-    solid, right, height = _feet(frame)
-    rows = np.nonzero(solid.any(axis=1))[0]
-    band = np.zeros_like(solid)
-    band[rows[-1] + 1 - max(1, round(height * SHADE_BAND)) : rows[-1] + 1] = True
-    rgb = np.asarray(frame.convert("RGB"), dtype=np.float32) / 255.0
-    luma = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    front = right if facing == "right" else ~right
-    parts = [luma[solid & band & cols[None, :]] for cols in (front, ~front)]
-    return float(parts[0].mean() - parts[1].mean()) if all(p.size for p in parts) else 0.0
+_depth_cue, _shade_cue = legs_mod.depth_cue, legs_mod.shade_cue
 
 
 def strike_foot(frames: list[Image.Image], strikes: tuple[int, int], view: str, facing: str | None) -> dict[str, Any]:

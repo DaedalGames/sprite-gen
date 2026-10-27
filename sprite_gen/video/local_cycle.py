@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from sprite_gen._deps import np
 from sprite_gen.video import period as period_mod
+from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video.crossings import HIDE_SHARE
 
 REFUSED_SHOWN = 12  # refused windows a failed search reports, as many as a found cycle's candidates
@@ -26,11 +27,15 @@ REFUSED_SHOWN = 12  # refused windows a failed search reports, as many as a foun
 SEAM_FLOW_BAND = 0.5
 REPEAT_OVER_STEP_MAX = 2  # `detect` refuses a repeat further off than two playback steps ('repeat error over two steps')
 SEAM_TRIES = 4  # two-step cuts, best first, whose seam is read as the seam gate reads it before one is taken (`by_steps`)
-# The clip a cut on, frame by frame along the cut, at most this many of the cut's playback steps off: the same picture
-# again (`same_picture`). An odd count of steps swaps the legs a cut on, and a step drawn nearer than the next frame
-# is no swap: the count missed a crossing — asked only where a pass can hide (crossings.HIDE_SHARE), since from the
-# side a step on can draw as near as that, its legs alike.
-SAME_PICTURE_MAX = 1.0
+# Whether the crossings mark cycles (`read_cycles`): the clip one interval between crossings on is nearer than half an
+# interval on and as near as two intervals on within CYCLE_SLACK of the clip's mean step (each read at a whole lag, up
+# to half a frame off the interval: about half a step).
+CYCLE_SLACK = 0.5
+# ... unless the view's foot cue (`legs.shade_cue` from a diagonal or the side, `legs.depth_cue` from the front or
+# back) correlates at CUE_SWAPPED or under one interval on (`crossings.correlation_on`): the other leg leads there,
+# and the interval is a step. A cue that does not follow the feet reads near 0 and decides nothing.
+CUE_SWAPPED = -0.2
+SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as near as a cycle on: asked only where a pass hides
 
 
 def _around(start, length):
@@ -480,37 +485,60 @@ def _calm(row):
     return 'pops' in row['top'] and not row['top']['pops']
 
 
-def same_picture(distances, start, length):
-    """How far the clip one cut on lies from the cut, frame by frame along it, in the cut's playback steps: the mean of
-    each frame's distance to the frame `length` on, over the cut's mean step. None where under half the cut has a
-    frame one cut on in the clip, or the cut does not move."""
+def repeat_at(distances, span):
+    """How far the clip lies from itself `span` frames on, the nearer at the two whole lags about it: the mean distance of
+    every frame to the one a lag on, over the clip's mean step from one frame to the next. None where the clip holds
+    under half a lag of frames past it, or does not move."""
     n = len(distances)
-    js = np.arange(start, start+length)
-    js = js[js+length < n]
-    step = float(np.diag(distances[start:start+length, start:start+length], 1).mean())
-    if len(js) < length/2 or step <= 1e-10:
+    step = float(np.diag(distances, 1).mean()) if n > 1 else 0.0
+    found = [float(np.diag(distances, lag).mean())/step for lag in sorted({math.floor(span), math.ceil(span)})
+             if lag >= 1 and n-lag >= max(2, lag/2) and step > 1e-10]
+    return min(found) if found else None
+
+
+def read_cycles(reading, distances, *, view=None, cue=None):
+    """Whether the crossings the clip shows (`reading`, gap mode) mark its cycles, not its steps, read and kept on the
+    reading (`Reading.mark_cycles`; crossings.py, "Crossings that mark cycles"). The feet need not meet on the screen
+    at every pass: the far foot can pass hidden behind the near one, or a foot step toward or away from the camera and
+    pass the other apart. Then they meet once a cycle, and the clip one interval between crossings on (`repeat_at`) has
+    the same leg leading, not the other: it is nearer than half an interval on (the pose a step on) and as near as two
+    intervals on within CYCLE_SLACK. Where the clip says so, the view's foot cue (`cue`, per frame) is asked whether the
+    other leg leads one interval on (`crossings.correlation_on` at CUE_SWAPPED or under): there the interval is a step.
+
+    Asked where a pass can hide (`reading.overlap` over HIDE_SHARE, the far foot behind the near one), or where the
+    `view` is given and is not the side; from the side the legs a step on are one silhouette, as near as a cycle on, and
+    the picture cannot tell. Returns what was read, None where it is not asked."""
+    if reading.mode != 'gap' or not reading.readable:
         return None
-    return float(distances[js, js+length].mean())/step
-
-
-def same_picture_count(reading, distances, judged):
-    """A cut the crossings count an odd number of steps (`judged`, `reading.judge`), asked whether the count missed a
-    crossing: where the feet are seen together over more than HIDE_SHARE of a step at a pass (`reading.overlap`) and the
-    clip a cut on is the same picture (`same_picture`, at most SAME_PICTURE_MAX playback steps along the cut), no legs
-    swapped. Returns (what was read, None where it is not asked; the cut's count, `uncertain` (`same-picture`) where the
-    count missed a crossing, else `judged` itself)."""
     overlap = reading.overlap
-    if not (judged['verdict'] == 'refuted' and judged['k'][0] % 2 and overlap is not None and overlap > HIDE_SHARE):
-        return None, judged
-    near = same_picture(distances, *judged['cut'])
-    said = {'over_step': None if near is None else round(near, 3), 'max': SAME_PICTURE_MAX, 'overlap': round(overlap, 3),
-            'hides': HIDE_SHARE}
-    if near is None or near > SAME_PICTURE_MAX:
-        return said, judged
-    return said, {**judged, 'verdict': 'uncertain', 'code': 'same-picture',
-                  'why': f"the crossings count {judged['why']}, but the feet are seen together {overlap:.2f} of a step at a "
-                         f"pass (over {HIDE_SHARE:g}: a pass can hide there) and the clip a cut on is the same picture ({near:.2f} "
-                         f"playback steps along the cut, at most {SAME_PICTURE_MAX:g}): no legs swapped, a crossing unseen"}
+    hides = overlap is not None and overlap > HIDE_SHARE
+    if not hides and view in (None, SIDE_VIEW):
+        return None
+    d = reading.interval
+    near = {name: repeat_at(distances, span) for name, span in (('half', d/2), ('one', d), ('two', 2*d))}
+    said = {'asked': (f'the feet together {overlap:.2f} of an interval at a pass, over {HIDE_SHARE:g}: a pass can hide there'
+                      if hides else f'the {view} view, the legs side by side'),
+            'interval': round(d, 2), 'overlap': None if overlap is None else round(overlap, 3),
+            **{k: None if v is None else round(v, 3) for k, v in near.items()}, 'slack': CYCLE_SLACK}
+    if None in near.values():
+        said.update(cycles=False, why='the clip is too short to be read two intervals on')
+    elif not (near['one'] < near['half'] and near['one'] <= near['two']+CYCLE_SLACK):
+        said.update(cycles=False, why=f"the clip one interval on ({near['one']:.2f} steps off) is not the same picture as half "
+                                      f"an interval on ({near['half']:.2f}) and two on ({near['two']:.2f}, +{CYCLE_SLACK:g}) "
+                                      "would make it: the crossings mark steps")
+    else:
+        turned = None if cue is None else crossings_mod.correlation_on(cue, d)
+        if cue is not None:
+            said['cue'] = {'one': None if turned is None else round(turned, 3), 'swapped': CUE_SWAPPED}
+        if turned is not None and turned <= CUE_SWAPPED:
+            said.update(cycles=False, why=f"the clip one interval on is the same picture, but the view's foot cue turns over "
+                                          f"there ({turned:+.2f}, at most {CUE_SWAPPED:+g}): the other leg leads, a step")
+        else:
+            said.update(cycles=True, why=f"the clip one interval on ({near['one']:.2f} steps off) is nearer than half an "
+                                         f"interval on ({near['half']:.2f}) and as near as two on ({near['two']:.2f}, "
+                                         f"+{CYCLE_SLACK:g}): the same leg leads, the feet meet once a cycle")
+    reading.mark_cycles(said)
+    return said
 
 
 def _rank(rows, *, flow_limit, seam_max, in_phase):
@@ -537,20 +565,14 @@ def _gates(tried, seam_max):
 
 def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len, seam_flow, wrap_pop, seam_gate, flow_limit,
              seam_max, gait_floor, periodicity_min, signals, pop_gate=None):
-    """The cut the clip's own steps choose (`reading`, crossings.Reading), after the pixel search: `found`, its cut,
-    or `refused`, why it found none. Returns (the cut, or None where the search's word stands and it found none;
-    `step_count`, the record).
+    """The cut the clip's own steps choose (`reading`, crossings.Reading, whose crossings mark steps or cycles as
+    `read_cycles` read them), after the pixel search: `found`, its cut, or `refused`, why it found none. Returns (the
+    cut, or None where the search's word stands and it found none; `step_count`, the record).
 
     - The clip does not show its steps (`reading.readable` false: no feet seen, a lean that is not feet stepping,
       under two steps): the search's cut, as it chose it.
     - The search's cut covers two steps (`two`) and its wrap joins the walk at its own point (`reading.in_phase`):
       that cut, as it chose it.
-    - The crossings count the search's cut an odd number of steps — the legs swapped a cut on — but the feet are seen
-      together over more than HIDE_SHARE of a step at a pass (`reading.overlap`: the far foot behind the near one, a
-      pass can hide there) and the clip a cut on is the same picture (`same_picture`, at most SAME_PICTURE_MAX
-      playback steps along the cut): no swap, so the count missed a crossing and proves nothing. The search's cut, as
-      it chose it, its count `uncertain` (`same-picture`). Where passes are brief — from the side, where a step on
-      draws as near as the next frame with the legs alike — the count stands.
     - Else the cuts [min_len, max_len] frames long that cover two steps, any start, however long — the window that
       binds the search binds no count; none, and the search's word stands. Those in phase, if any, else all, are
       read at the wrap (`seam_flow(start, length)`: the flow off of the cut's last and first frames; `wrap_pop`, the
@@ -586,12 +608,6 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
         if reading.in_phase(searched):
             record.update(chosen_by='search', cut=searched)
             return _two_steps(found, record), record
-        said, counted = same_picture_count(reading, distances, searched)
-        if said is not None:
-            record['search']['same_picture'] = said
-            if counted is not searched:
-                record.update(chosen_by='search', cut=counted)
-                return found, record
     twos = reading.twos(min_len, max_len)
     record['two_cuts'] = len(twos)
     if not twos:
