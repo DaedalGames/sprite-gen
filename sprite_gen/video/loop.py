@@ -1542,20 +1542,22 @@ def wrap_on_cells(frames: list[Image.Image]) -> float:
 def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = None, facing: str = "right",
                signals: dict[str, list[float]] | None = None) -> crossings_mod.Reading:
     """The clip's crossings (`crossings.read`), and whether they mark its cycles (`local_cycle.read_cycles`, on `D`, the
-    clip's distances, and the `view`'s foot cue: `legs.shade_cue` from the side or a diagonal, `legs.depth_cue` from the
-    front or back). Every count the clip's steps make is read on it: the search's cut (`_by_steps`), a fixed cut
-    (`fixed_count`) and, carried to the loop, the loop as it plays (`ring_steps`). `signals` are the frames' leg signals
-    where already read."""
+    clip's distances, and the `view`'s foot cue: `legs.shade_cue` from the side or a diagonal, drawn in tones of
+    `legs.TONE`, `legs.depth_cue` from the front or back, in pixel rows of the body's median height). Every count the
+    clip's steps make is read on it: the search's cut (`_by_steps`), a fixed cut (`fixed_count`) and, carried to the
+    loop, the loop as it plays (`ring_steps`). `signals` are the frames' leg signals where already read."""
     signals = leg_signals(frames) if signals is None else signals
     try:
         reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
     except ValueError:
         return crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
-    cue = None
+    cue = step = None
     if view is not None:
         lateral = view in handed_mod.LATERAL_VIEWS
         cue = [legs_mod.shade_cue(f, facing) if lateral else legs_mod.depth_cue(f) for f in frames]
-    local_cycle.read_cycles(reading, D, view=view, cue=cue)
+        heights = signals["height"] if signals else legs_mod.strike_signals(frames)["height"]
+        step = legs_mod.TONE if lateral else 1.0 / float(np.median(heights))
+    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step)
     return reading
 
 
@@ -2780,7 +2782,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="walk/run: the view the clip is filmed from. The step count asks whether the feet, which need not "
                              "meet on the screen at every pass, meet once a cycle (`cycle.step_count.cycles`): where a pass "
                              "can hide, as without it, and from the front, the back or a diagonal also where passes are brief, "
-                             "the view's foot cue saying whether the other leg leads an interval on (docs/loop-repair.md "
+                             "there only where the view's foot cue says the other leg leads a step on, half an interval on — "
+                             "a cue that does not tell the legs apart leaves them on steps, as from the side (docs/loop-repair.md "
                              "section 3, \"The step count\"). Default: not given, asked only where a pass can hide")
     parser.add_argument("--name", default="loop", help="basename for strip/gif/webp outputs")
     parser.add_argument("--report", type=Path)

@@ -18,7 +18,9 @@ Both read the same per-frame signals (`strike_signals`) and choose between them 
 Which of the two feet is which is read on cues the view draws (`depth_cue`, `shade_cue`): from the front or back the
 foot nearer the viewer is drawn lower, from the side or a diagonal the far leg is drawn in shade. `video-cycle-align`
 names the foot that lands by them (`align.strike_foot`), and the step count asks whether the same leg leads again one
-crossing interval on (`local_cycle.read_cycles`).
+crossing interval on (`local_cycle.read_cycles`). Legs drawn alike to a cue leave it still: its range over the clip
+under half the step it is drawn in (a TONE of luma, a pixel row of the body's height) is the arithmetic's, not the
+feet's (`local_cycle.cue_word`).
 
 The swing of the stride or the lowest row says there is something to read, not that it is legs:
 a legless body that squashes as it bounces widens its foot band once a cycle, where a walker's
@@ -47,6 +49,7 @@ REACH_MIN = 0.015  # the lowest row's swing (of the body's height) that says a f
 FEET_APART = 0.02
 FEET_APART_SHARE = 0.2
 SHADE_BAND = 0.15  # the shade cue reads the feet and lower legs: the lowest 15 % of the body
+TONE = 1 / 255  # one 8-bit level of luma (0..1): the step the shade cue's tones are drawn in; the depth cue's is a pixel row
 
 
 def _longest_runs(solid: np.ndarray) -> np.ndarray:
