@@ -33,26 +33,30 @@ Four named bounds:
   stride on, and read against the still it reads a turn every stride (the synthetic walker seen square from behind,
   taken 6 frames into its stride, its still 0.148 off its mirror: turns over frames 7-17, 31-41 and 55-65; its walk
   0.000 at the median). The median is of the walk's drawings, not of the time the clip gives each: a frame that holds
-  the frame before it (the still the frame before the first) is not counted again. Each frame of a square walk lies as
-  near the still's mirror as its frame half a stride on lies near the still, and a clip that holds one half of the
-  stride longer than the other lay toward the half held longer at the median of its frames: the same walker, each
-  drawing of the first half of each stride held 3 frames and each of the second 1 (147 frames), 0.075, and it read
-  turns over frames 19-29, 67-77 and 115-125; each drawing counted once, 0.000, as on ones. A held frame is the frame
-  before with under HELD_MAX (0.5 %) of its solid pixels flipped, not the same pixels: the codec and the key leave
-  hardly a held frame of a clip as it was. Through libx264 at crf 0 to 28 and `video-frames`' key, at most 2 of that
-  clip's 74 held frames came back the frame before's pixels, and the rest with up to 0.9 % of their solid pixels
+  the drawing last counted (the still the first) is not counted again. Each frame of a square walk lies as near the
+  still's mirror as its frame half a stride on lies near the still, and a clip that holds one half of the stride longer
+  than the other lay toward the half held longer at the median of its frames: the same walker, each drawing of the first
+  half of each stride held 3 frames and each of the second 1 (147 frames), 0.075, and it read turns over frames 19-29,
+  67-77 and 115-125; each drawing counted once, 0.000, as on ones. A frame holds the drawing last counted where under
+  HELD_MAX (0.5 %) of that drawing's solid pixels flip in it, not only where it is the same pixels: the codec and the
+  key leave hardly a held frame of a clip as it was. Through libx264 at crf 0 to 28 and `video-frames`' key, at most 2
+  of that clip's 74 held frames came back the frame before's pixels, and the rest with up to 0.9 % of their solid pixels
   flipped (under 0.5 % in 99 of 100 at crf 23, the default): counted again wherever not the same pixels, the walk lay
-  0.076 to 0.083 off and read the turns; counted once under HELD_MAX, 0.002 to 0.013. A drawing of the synthetic
-  walkers flips 1.9 % of the one before's solid pixels at least, but the front walker of tests/video/test_walk_steps.py
-  with a 70 px tail: 0.44 % at one drawing and none at another, square either way. A walk seen at an angle lies nearer
-  the still's side (the plain walker 0.101, the hooded one 0.090); one turned past the still's mirror over most of its
-  frames lies nearer the mirror's, under 0, and is read with its turn. 0.045 lies between the synthetic walkers seen at
-  an angle, 0.061 at least (the side walker of tests/video/test_walk_steps.py with a 60 px tail on a beat of its own),
-  and those seen square: 0.000 with a piece beside the head or the arms swung apart in the still, or the front walker
-  of tests/video/test_walk_steps.py with a 70 px tail. The frames alone do not tell a front or back walk whose still
-  shows a side from a body that turned for much of its walk, to face the camera or to its mirror (its frames square at
-  the median, its still at an angle; the named limits below): each is left unread, and `video-loop` says so in a
-  warning line (`square`), the cut as the search alone cuts it.
+  0.076 to 0.083 off and read the turns; counted once under HELD_MAX, 0.013 at most, and not read. Against the drawing
+  last counted, not the frame before: a walk whose every frame flips under HELD_MAX of the one before (a large or slow
+  body; the synthetic square walker stepped from each drawing to the next over such frames) is counted each time it has
+  moved HELD_MAX from the drawing last counted, and its walk lies under WALK_SIDE_MIN, as its drawings' does; held
+  against the frame before, no frame of it was counted, and it was read with no walk's side to hold it. A drawing of the
+  synthetic walkers flips 1.9 % of the one before's solid pixels at least, but the front walker of
+  tests/video/test_walk_steps.py with a 70 px tail: 0.44 % at one drawing and none at another, square either way. A walk
+  seen at an angle lies nearer the still's side (the plain walker 0.101, the hooded one 0.090); one turned past the
+  still's mirror over most of its frames lies nearer the mirror's, under 0, and is read with its turn. 0.045 lies
+  between the synthetic walkers seen at an angle, 0.061 at least (the side walker of tests/video/test_walk_steps.py with
+  a 60 px tail on a beat of its own), and those seen square: 0.000 with a piece beside the head or the arms swung apart
+  in the still, or the front walker of tests/video/test_walk_steps.py with a 70 px tail. The frames alone do not tell a
+  front or back walk whose still shows a side from a body that turned for much of its walk, to face the camera or to its
+  mirror (its frames square at the median, its still at an angle; the named limits below): each is left unread, and
+  `video-loop` says so in a warning line (`square`), the cut as the search alone cuts it.
 - TURN_SIDE_MAX: a frame whose torso reads under it is turned.
 - TURN_RUN_MIN: a turn is that many turned frames in a row or more, counted in frames — the time the clip plays them —
   not in drawings: a walk held on twos holds a turn as long as one drawn on ones does, in half the drawings. A shorter
@@ -126,15 +130,15 @@ middle (38 to 41 hooded), or over 14 to 16 frames of each 24-frame cycle; over 3
 it is read and its turn with it. One turned to square — a back-diagonal walk turned to a full back view — and held there
 over 41 of its 73 frames or more (40 hooded) is a square walk by its frames, and is not read either. Each of the three
 is left unread with the warning line (`square`), not in silence. A frame is counted once only where it flips under
-HELD_MAX of the frame before's solid pixels: a part of the stride a clip plays slower in drawings of its own, or a held
-frame under noise over HELD_MAX (at crf 28, some of the synthetic walker's, up to 0.9 %), counts frame by frame, and a
-square walk so played lies off the still's mirror at the median toward that part, and over WALK_SIDE_MIN it is read,
-and reads turns it does not make; a drawing that flips under HELD_MAX of the one before (a large or slow walker where
-its stride turns) is taken for that one held, and not counted. GUARD and TOL are pixels of the frame, not shares of
-the body: a piece beside the head that moves the centre further than TOL is read about axes that do not reach the
-head's, and a larger body's margin is narrower (the plain walker drawn three times as large, the column beside its head
-in the still three times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn, least +0.31
-against +0.94 without the column)."""
+HELD_MAX of the drawing last counted's solid pixels: a part of the stride a clip plays slower in drawings of its own, or
+a held frame under noise over HELD_MAX (at crf 28, some of the synthetic walker's), counts frame by frame, and a square
+walk so played lies off the still's mirror at the median toward that part, and over WALK_SIDE_MIN it is read, and reads
+turns it does not make; a drawing under HELD_MAX of the drawing last counted (a large or slow walker where its stride
+turns) is taken for it held, and not counted. GUARD and TOL are pixels of the frame, not shares of the body: a piece
+beside the head that moves the centre further than TOL is read about axes that do not reach the head's, and a larger
+body's margin is narrower (the plain walker drawn three times as large, the column beside its head in the still three
+times as large, under a hundredth: the centre moves 4.0 px, and the walk reads no turn, least +0.31 against +0.94
+without the column)."""
 from __future__ import annotations
 
 import math
@@ -152,7 +156,7 @@ TURN_SIDE_MAX = 0.0
 TURN_RUN_MIN = 4
 MODES = ("warn", "refuse")  # --body-turn: a cut that holds a turn, where none without it holds a cycle, warned of or refused
 SOLID = 128  # an alpha at least this is the body
-HELD_MAX = 0.005  # a frame that flips under this share of the frame before's solid pixels holds it (WALK_SIDE_MIN)
+HELD_MAX = 0.005  # a frame that flips under this share of the drawing last counted's solid pixels holds it (WALK_SIDE_MIN)
 # The box's top, and the still's torso width: the row (the columns) with more than this share of the solid pixels over
 # (beside) it — frames.py's speck bound, a fleck or a thin part apart from the body under it.
 MASS_SHARE = SPECK_MIN_FRACTION
@@ -311,8 +315,8 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     """The clip's facing against its first frame (`frames`, the clip as keyed, RGBA): the record the loop report keeps
     (`body_turn`) — the reading, its bounds, the frame read against (`reference`), the still's own side (`still_side`),
     whether it was read (`why` where not), the neck, the walk's side (`walk_side`: the median of the frames after the
-    still, a frame the clip holds from the frame before it, under HELD_MAX of its solid pixels flipped, counted once,
-    where any is read), each frame's `side` and the `turns`. A frame not read is None in `side`, and `unread` says why,
+    still, a frame that holds the drawing last counted, under HELD_MAX of its solid pixels flipped, not counted, where
+    any is read), each frame's `side` and the `turns`. A frame not read is None in `side`, and `unread` says why,
     each why with its frames (where any is)."""
     out: dict[str, Any] = {"reading": READING, "bounds": {"SIDE_SHOWN_MIN": SIDE_SHOWN_MIN, "WALK_SIDE_MIN": WALK_SIDE_MIN,
                                                           "TURN_SIDE_MAX": TURN_SIDE_MAX, "TURN_RUN_MIN": TURN_RUN_MIN},
@@ -346,12 +350,13 @@ def read(frames: list[Image.Image]) -> dict[str, Any]:
     side: list[float | None] = []
     walk: list[float] = []
     unread: dict[str, list[int]] = {}
-    before = None  # the frame before's solid pixels
+    counted = None  # the solid pixels of the drawing last counted (the still the first)
     for k, frame in enumerate(frames):
         solid = np.asarray(frame.getchannel("A")) >= SOLID
-        drawn = (before is None or before.shape != solid.shape
-                 or float((solid ^ before).sum()) / max(1, int(before.sum())) >= HELD_MAX)
-        before = solid
+        drawn = (counted is None or counted.shape != solid.shape
+                 or float((solid ^ counted).sum()) / max(1, int(counted.sum())) >= HELD_MAX)
+        if drawn:
+            counted = solid
         body = _body(frame)
         crop = body if isinstance(body, str) else _crop(frame, body, rows, held)
         if isinstance(crop, str):

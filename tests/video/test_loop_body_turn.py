@@ -210,6 +210,25 @@ def _coded(frames: list[Image.Image], root: Path) -> list[Image.Image]:
     return [Image.open(p).convert("RGBA") for p in sorted((root / "keyed").glob("*.png"))]
 
 
+def _stepped(frames: list[Image.Image], most: float = 0.004) -> list[Image.Image]:
+    """`frames` with each drawing reached from the one before over frames of its own, each turning the next share of
+    the solid pixels that come and go between the two, under `most` of the fewer solid pixels of the two: a walk whose
+    every frame flips under HELD_MAX of the frame before, as a large or slow body's does."""
+    out = [frames[0]]
+    for a, b in zip(frames, frames[1:]):
+        pa, pb = np.asarray(a), np.asarray(b)
+        sa, sb = pa[..., 3] >= 128, pb[..., 3] >= 128
+        coming, going = np.argwhere(sb & ~sa), np.argwhere(sa & ~sb)
+        n = max(1, math.ceil((len(coming) + len(going)) / (most * min(int(sa.sum()), int(sb.sum())))))
+        f = pa.copy()
+        for c, g in zip(np.array_split(coming, n), np.array_split(going, n)):
+            f[c[:, 0], c[:, 1]] = pb[c[:, 0], c[:, 1]]
+            f[g[:, 0], g[:, 1]] = pb[g[:, 0], g[:, 1]]
+            out.append(Image.fromarray(f.copy()))
+        out[-1] = b
+    return out
+
+
 def _cut(out: Path, keyed: Path, *extra: str) -> dict:
     assert loop.main(["--frames-dir", str(keyed), "--out-dir", str(out), "--state", "walk", "--anchor", "motion-auto",
                       "--repair", "off", *extra]) == 0
@@ -759,15 +778,15 @@ def test_a_walk_seen_at_an_angle_held_longer_over_half_its_stride_reads_as_on_on
 
 
 @pytest.mark.parametrize("piece", [None, (6, 6)], ids=["alone", "6x6-beside"])
-def test_a_held_frame_with_noise_over_it_holds_the_frame_before(monkeypatch, piece):
-    """HELD_MAX: a frame holds the frame before it where under 0.5 % of the frame before's solid pixels flip in it, not
-    only where it is the same pixels, for a clip comes to the reading through a codec and the key, which leave hardly a
-    held frame as it was. The square walker taken half a stride on, each drawing of the first half of its stride held 3
-    frames and each of the second 1, alone or with a 36 px piece beside its head in the still, each held frame with 6 of
-    its edge pixels cleared (under 0.2 % of its solid pixels, two such frames in a row under 0.4 % apart): each drawing
-    counted once, its walk lies where it lies held without the noise, as on ones, and it is not read. Counted wherever
-    not the same pixels (HELD_MAX at 0: every frame, as the clip plays it), the walk lies 0.075 off and the clip is
-    read, with the turns it does not make."""
+def test_a_held_frame_with_noise_over_it_holds_the_drawing_last_counted(monkeypatch, piece):
+    """HELD_MAX: a frame holds the drawing last counted where under 0.5 % of that drawing's solid pixels flip in it,
+    not only where it is the same pixels, for a clip comes to the reading through a codec and the key, which leave
+    hardly a held frame as it was. The square walker taken half a stride on, each drawing of the first half of its
+    stride held 3 frames and each of the second 1, alone or with a 36 px piece beside its head in the still, each held
+    frame with 6 of its edge pixels cleared (under 0.2 % of its solid pixels): each drawing counted once, its walk lies
+    where it lies held without the noise, as on ones, and it is not read. Counted wherever not the same pixels
+    (HELD_MAX at 0: every frame, as the clip plays it), the walk lies 0.075 off and the clip is read, with the turns it
+    does not make."""
     from sprite_gen.video import body_turn
 
     def drawn():
@@ -797,6 +816,30 @@ def test_a_walk_seen_at_an_angle_held_with_noise_over_its_held_frames_reads_its_
     assert read["read"] and read["walk_side"] == clean["walk_side"]
     (turn,) = read["turns"]
     assert TURN[0] <= drawing[turn["from"]] and drawing[turn["to"]] <= TURN[1]
+
+
+@pytest.mark.parametrize("square", [True, False], ids=["square", "plain"])
+def test_a_walk_whose_every_frame_flips_under_held_max_of_the_one_before_is_read_by_its_drawings(square):
+    """HELD_MAX is held against the drawing last counted, not the frame before: a large or slow body can flip under
+    0.5 % of its solid pixels from each frame to the next, and held against the frame before, no frame of its walk was
+    counted, and it was read with no walk's side to hold it. The walker over one stride, each drawing reached from the
+    one before over frames that each flip under 0.4 % of the frame before's solid pixels, is counted each time it has
+    moved HELD_MAX from the drawing last counted: seen square from behind, taken 6 frames into its stride (its still a
+    side its walk does not show), its walk lies under WALK_SIDE_MIN and it is not read; seen at an angle, its walk lies
+    over WALK_SIDE_MIN and it is read."""
+    from sprite_gen.video import body_turn
+
+    taken = 6 if square else 0
+    frames = _stepped([_walker(k, square=square) for k in range(taken, taken + CYCLE + 1)])
+    solid = [np.asarray(f.getchannel("A")) >= body_turn.SOLID for f in frames]
+    assert all((a ^ b).sum() < body_turn.HELD_MAX * a.sum() for a, b in zip(solid, solid[1:]))
+    read = body_turn.read(frames)
+    if square:
+        assert read["still_side"] >= body_turn.SIDE_SHOWN_MIN
+        assert read["read"] is False and read["turns"] == [] and abs(read["walk_side"]) < body_turn.WALK_SIDE_MIN
+        assert read["why"].startswith("the walk is seen square")
+    else:
+        assert read["read"] and read["walk_side"] >= body_turn.WALK_SIDE_MIN
 
 
 @pytest.mark.slow
