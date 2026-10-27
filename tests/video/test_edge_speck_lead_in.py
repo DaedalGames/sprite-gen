@@ -371,8 +371,12 @@ def test_a_walk_or_run_forced_wide_gets_no_room_above():
         assert canvas.profile_for(state, shape="wide") is canvas.WIDE_OVERRIDE
     _, jump = canvas.pad_canvas(still, canvas.profile_for("jump", shape="wide"))
     assert jump["canvas"] == [2800, 1575]
-    # Unforced, a walk is square as before.
-    assert canvas.profile_for("walk") is canvas.STATE_CANVAS["default"]
+    # Unforced, a walk is square as before: its own row frames a still as the default does, and reads the still's
+    # room only from the side (tests/video/test_walk_canvas_room.py).
+    walk, default = canvas.profile_for("walk"), canvas.STATE_CANVAS["default"]
+    assert walk is canvas.STATE_CANVAS["walk"] and walk.room and not default.room
+    assert (walk.shape, walk.ratio, walk.headroom, walk.lead, walk.trail, walk.why) == (
+        default.shape, default.ratio, default.headroom, default.lead, default.trail, default.why)
     assert math.isclose(canvas.GAIT_WIDE.ratio, 16 / 9)
 
 

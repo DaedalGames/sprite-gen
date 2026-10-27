@@ -20,6 +20,11 @@ It routes on the corner background colour:
   cut is safe there — the exact case a white matte's position guard is *not*
   needed. Empirically (2026-07-20) feeding an ivory key to the extract engine
   holes out bench stone / lamp glass; the two routes are deliberate.
+- **any other flat colour** (a muted yellow-green, an off-cyan, a grey, a key
+  behind dark edge strips) → the measured matte (`measured_matte.py`), which reads
+  the colour, its spread and its shade off the image itself. A magenta or green
+  request whose background the chroma engine does not recognise as that key goes
+  there too (`extract_route`), instead of keying nothing.
 
 Sibling note: `unmix_key_blend`/`_matte_ycc` in `extract.py` and the matte
 despill here are the same "despill + soft edge" idea in two colour spaces
@@ -107,6 +112,17 @@ def _corner_average(image: Image.Image) -> tuple[int, int, int]:
         return (248, 247, 242)
     n = len(samples)
     return tuple(sum(s[i] for s in samples) // n for i in range(3))  # type: ignore[return-value]
+
+
+def _bright_corners(image: Image.Image) -> bool:
+    """Whether a corner is bright and achromatic enough for the white matte's estimate
+    (`estimate_background`): otherwise the white matte would key against its ivory guess."""
+    width, height = image.size
+    for x, y in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        r, g, b, a = image.crop((x, y, x + 1, y + 1)).convert("RGBA").getpixel((0, 0))
+        if a > 0 and min(r, g, b) >= CORNER_MIN_BRIGHT:
+            return True
+    return False
 
 
 def _detect_key_kind(color: tuple[int, int, int]) -> str:
@@ -271,12 +287,52 @@ def _matte_route(
     }
 
 
+def key_recognised(image: Image.Image, kind: str) -> tuple[bool, list[int] | None]:
+    """Whether the chroma engine would key ``image``'s background as the ``kind`` key: (recognised,
+    the measured background colour or None).
+
+    The background is measured on the ring inside any edge strip (`measured_matte.measure_background`).
+    It is the key when that colour is a border key candidate for it (`extract.is_border_key_candidate`,
+    the detector's own rule) or within the hard cut of the pure key; a background nothing on the ring
+    holds is left to the engine, whose detector falls back to the declared key as before."""
+    from sprite_gen._deps import np
+    from sprite_gen.frames.extract import is_border_key_candidate
+    from sprite_gen.frames.measured_matte import measure_background
+
+    measured = measure_background(np.asarray(image.convert("RGB"), dtype=np.float32))
+    if measured is None:
+        return True, None
+    colour = tuple(int(round(v)) for v in measured["colour"])
+    target = KEY_TARGETS[kind]
+    distance = sum((a - b) ** 2 for a, b in zip(colour, target)) ** 0.5
+    return is_border_key_candidate(colour, target) or distance <= _EXTRACT_KEY_THRESHOLD, list(colour)
+
+
+def _measured_route(image: Image.Image, decontam: str, requested: str) -> tuple[Image.Image, dict[str, Any]]:
+    """The measured matte, its stats carrying what was asked for and what the edge pass did."""
+    from sprite_gen.frames.measured_matte import measured_matte
+
+    if decontam == "palette":
+        raise SystemExit(f"cutout: --decontam palette needs a chroma key background (magenta/green); "
+                         f"the background was keyed as measured (asked: {requested})")
+    result, stats = measured_matte(image)
+    stats["requested_key"] = requested
+    if requested in KEY_TARGETS:
+        stats["chroma_key"] = list(KEY_TARGETS[requested])
+        stats["chroma_key_painted"] = list(stats["background"])
+    if decontam == "auto":
+        stats["decontam"] = {"mode": "auto", "applied": False,
+                             "reason": "the measured matte unmixes its own edge against the measured background"}
+    return result, stats
+
+
 def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | None = None,
                   spill_min_tint: float | None = None,
                   spill_require_hue: bool = False, decontam: str = "off", decontam_fit: str = "still",
                   decontam_palette: dict[str, Any] | None = None, decontam_edge_band: int = 0,
                   background_key: tuple[int, int, int] | None = None,
-                  decontam_history: dict[str, Any] | None = None) -> tuple[Image.Image, dict[str, Any]]:
+                  decontam_history: dict[str, Any] | None = None,
+                  measure_unrecognised: bool = True) -> tuple[Image.Image, dict[str, Any]]:
     """Magenta/green key background → reuse the verified `extract` chroma engine (no drift).
 
     The engine keys from the background colour it detects on the borders
@@ -291,10 +347,19 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
     `decontam` is the engine's edge decontamination pass (`extract.remove_chroma_background`);
     what it did comes back under `decontam` in the stats. `decontam_history` is a clip's record of
     its last frame for the video fit, handed on to the pass.
+
+    A background the engine does not recognise as the ``kind`` key (`key_recognised`: a muted or
+    shifted colour, or a key behind dark edge strips) is keyed by the measured matte instead, its
+    stats `route` "measured" and `chroma_key_painted` the measured colour; before it, such a
+    background was keyed against the pure key and nothing came off (2026-10-26).
+    `measure_unrecognised=False` keeps the engine on it anyway: `video-frames` refuses such a clip
+    and sends its still to `video-canvas`, so every frame of a clip is keyed from one exact key.
     """
     from sprite_gen.frames.extract import detect_background_key_rgb, remove_chroma_background
 
     target = KEY_TARGETS[kind]
+    if background_key is None and measure_unrecognised and not key_recognised(image, kind)[0]:
+        return _measured_route(image, decontam, kind)
     if background_key is None:
         painted = detect_background_key_rgb(image, target, _EXTRACT_KEY_THRESHOLD)
     else:
@@ -344,11 +409,16 @@ def cutout(
     decontam_palette: dict[str, Any] | None = None,
     decontam_edge_band: int = 0,
     decontam_history: dict[str, Any] | None = None,
+    measure_unrecognised: bool = True,
+    refuse_empty: bool = True,
 ) -> dict[str, Any]:
     """Cut a uniform-background imported image to a clean transparent RGBA PNG.
 
     `key`: "auto" (detect from corners) | "white" (matte) | "magenta" | "green"
-    (reuse the extract chroma engine). `spill_max_fraction` overrides the chroma
+    (reuse the extract chroma engine) | "measured" (the measured matte, any flat colour).
+    Auto sends a corner that is neither a key nor bright and achromatic to the measured
+    matte, and a magenta/green background the engine does not recognise goes there too
+    (`extract_route`). `spill_max_fraction` overrides the chroma
     engine's trapped-spill cluster cap and `spill_min_tint` its tint bar (None = the
     engine default for either). `decontam` is the engine's edge decontamination
     pass: "off" (the default) keeps the matte as it is; "auto" runs it on chroma routes
@@ -356,11 +426,15 @@ def cutout(
     it cannot run (the white matte has no key colour to remove). `decontam_edge_band`
     keeps what the matte left transparent along the top, left and right edges
     transparent (`video-frames` passes its edge band), and `decontam_history` carries a
-    clip's last frame to the next (`video-frames` keeps one per clip). Returns a stats dict. Raises SystemExit if the key is unknown, the background cannot be
-    located, or any transparent pixel keeps non-zero RGB (No Silent Fallback).
+    clip's last frame to the next (`video-frames` keeps one per clip). `measure_unrecognised`
+    is handed to `extract_route`, and `refuse_empty=False` leaves a cut with nothing transparent
+    to the caller (`video-frames` passes both False: it refuses such frames itself, with its own
+    report and guidance). Returns a stats dict. Raises SystemExit if the key is unknown, the background cannot be
+    located, nothing was made transparent, or any transparent pixel keeps non-zero RGB
+    (No Silent Fallback).
     """
-    if key not in ("auto", "white", "magenta", "green"):
-        raise SystemExit(f"cutout: unknown key {key!r}; expected one of auto|white|magenta|green")
+    if key not in ("auto", "white", "magenta", "green", "measured"):
+        raise SystemExit(f"cutout: unknown key {key!r}; expected one of auto|white|magenta|green|measured")
     if decontam not in ("off", "auto", "palette"):
         raise SystemExit(f"cutout: unknown decontam {decontam!r}; expected off|auto|palette")
 
@@ -368,12 +442,16 @@ def cutout(
     width, height = image.size
 
     route = _detect_key_kind(_corner_average(image)) if key == "auto" else key
-    if route in ("magenta", "green"):
+    if key == "auto" and route == "white" and not _bright_corners(image):
+        route = "measured"
+    if route == "measured":
+        result, route_stats = _measured_route(image, decontam, key)
+    elif route in ("magenta", "green"):
         result, route_stats = extract_route(image, route, spill_max_fraction=spill_max_fraction,
                                             spill_min_tint=spill_min_tint, spill_require_hue=spill_require_hue,
                                             decontam=decontam, decontam_fit=decontam_fit,
                                             decontam_palette=decontam_palette, decontam_edge_band=decontam_edge_band,
-                                            decontam_history=decontam_history)
+                                            decontam_history=decontam_history, measure_unrecognised=measure_unrecognised)
     else:
         if decontam == "palette":
             raise SystemExit(f"cutout: --decontam {decontam} needs a chroma key background (magenta/green); "
@@ -401,6 +479,11 @@ def cutout(
         raise SystemExit(
             f"cutout: transparent pixels still contain non-zero RGB ({stale_rgb} px) in {out_path}"
         )
+    if refuse_empty and not alpha_zero:
+        raise SystemExit(
+            f"cutout: nothing of {input_path} was made transparent (route {route_stats.get('route')}); "
+            "refusing a successful cutout that keyed no background"
+        )
 
     stats: dict[str, Any] = {
         "out": str(out_path),
@@ -427,13 +510,14 @@ def cutout(
 
 
 def add_arguments(p: Any) -> None:
-    p.add_argument("input", type=Path, help="imported image with a uniform (white/ivory or magenta/green key) background")
+    p.add_argument("input", type=Path, help="imported image with a flat background of any colour (white, a key, a muted green...)")
     p.add_argument("--out", type=Path, help="output PNG (default: <input>_cutout.png)")
     p.add_argument(
         "--key",
-        choices=["auto", "white", "magenta", "green"],
+        choices=["auto", "white", "magenta", "green", "measured"],
         default="auto",
-        help="background type; auto detects from corners (white→matte, magenta/green→extract engine)",
+        help="background type; auto detects from corners (white→matte, magenta/green→extract engine, any other "
+        "colour→measured matte); a magenta/green background the engine does not recognise is measured too",
     )
     p.add_argument(
         "--strength",
