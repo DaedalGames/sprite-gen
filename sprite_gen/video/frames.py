@@ -548,7 +548,10 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
         dst = keyed_dir / src.name
         stats = cutout(src, dst, key=key, spill_max_fraction=spill_max, spill_min_tint=spill_tint,
                        spill_require_hue=spill == "full", decontam=decontam, decontam_fit=DECONTAM_FIT,
-                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS, decontam_history=clip_history)
+                       decontam_palette=clip_palette, decontam_edge_band=EDGE_ROWS, decontam_history=clip_history,
+                       # one exact key for the whole clip: an unrecognised background is refused below and its
+                       # still normalized by `video-canvas` (docs/chroma-alpha.md "The measured background")
+                       measure_unrecognised=False, refuse_empty=False)
         image = Image.open(dst).convert("RGBA")
         # The specks go before anything reads the frame: the edge band, the coverage, the loop.
         image, specks = drop_specks(image)
