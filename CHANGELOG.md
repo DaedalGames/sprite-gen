@@ -85,9 +85,10 @@ All notable public changes to `sprite-gen` are recorded here. Versions track the
   - laid over the figure under it, the lower edge moves as much as the part above it does (at gain 2.5 and 1.25), while without `--region-over` the crease pins it;
   - the layer draws the band and the air where it lands, no read of the move taken there, and they keep their bytes elsewhere; nothing outside the region, its soft edge, the air and the band changes; the layer covers no deeper than the band; nothing folds;
   - where the part lifts it shows the figure under it, with no hole;
-  - where the part lifts, the torso's soft side under it keeps its alpha in the rows the part leaves (no notch), and what the lift uncovers is read in its own column;
+  - where the part lifts, the torso's soft side under it keeps its alpha in the rows the part leaves (no notch), and what the lift uncovers is read in its own column, with the read never reaching above the torso's first row under the part's lower edge (it is clamped to that row), so the torso is drawn up from its own first row and never from the part's last row, and what the lift uncovers over an opaque torso stays opaque, with no part-transparent line along the lower edge;
   - its outline against the air goes with it and leaves the air behind, and its outline against the figure (the crease) keeps its bytes;
   - `--hold-mask` leaves the arm out of the region and the band (one PNG carried, and a folder per cell), the arm keeping its bytes in every cell; without it the arm's rows the mask covers move;
+  - on a synthetic figure with a piece in the arm's colour right under the part's lower edge, left out with `--hold-mask` (a folder per cell), in every cell where the part lifts, what the lift uncovers over that piece (pixels opaque in the source) stays fully opaque, and the piece keeps its bytes;
   - `--region-shear` 0.5 and 0.25 widen the rim to the least it asks, so the drawn move's step across the rim stays within the bound, and less than without it;
   - the still strip is read from the region to its side (beside the arm, the px the mask left short; over the air, 0);
   - the tip is read on the side over the air; a tip moved whole is 0 px off its own shape, its shift found;

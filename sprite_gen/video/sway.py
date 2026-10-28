@@ -2568,10 +2568,11 @@ def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.
     where it does not, the band pixel keeps its bytes. Where it lands on the air (a drawn alpha of 1 or more), that pixel
     is the layer alone, and the air keeps its bytes where it does not: the air shows the region moved into it, never the
     figure beside it. Where the region lifts off the figure under it (`uncovered`), the layer is laid over that figure read
-    in the pixel's own column as far under it as the move (its rows under the lower edge drawn up, never moved sideways:
-    the figure's side under the region stays where it is). Also the pixels of the band the layer lands on (`laid`), the
-    band's it covers half or more (`over`, its outline not counted) and the region's pixels under which the figure shows
-    half or more where its layer does not (`lifted`)."""
+    in the pixel's own column as far under it as the move, never above its first row under the lower edge (the cell as cut
+    under the lower edge, a piece `--hold-mask` leaves out too, drawn up, never moved sideways: the figure's side under the
+    region stays where it is, and what the lift uncovers over it is as opaque as it is). Also the pixels of the band the
+    layer lands on (`laid`), the band's it covers half or more (`over`, its outline not counted) and the region's pixels
+    under which the figure shows half or more, by its alpha, where its layer does not (`lifted`)."""
     as_cut = np.asarray(cell.convert("RGBA"))
     src = as_cut.astype(np.float64)
     out = np.asarray(drawn.convert("RGBA")).astype(np.float64)
@@ -2595,18 +2596,17 @@ def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.
     shown = uncovered(sets, move_y)
     share = np.zeros((h, w))
     if shown.any():
-        under = sets["under"]
         ys, xs = np.nonzero(shown)
-        depth = ys - move_y[ys, xs].astype(np.float64)
+        depth = np.maximum(ys - move_y[ys, xs].astype(np.float64), sets["floor"][xs])  # never above its first row
         row = np.clip(np.floor(depth).astype(int), 0, h - 2)
         fy = np.clip(depth - row, 0, 1)
-        figure = pm * under[..., None]
+        figure = pm * (~(region | soft))[..., None]  # the cell as cut under the lower edge, a piece left out too
         below = (1 - fy)[:, None] * figure[row, xs] + fy[:, None] * figure[row + 1, xs]
         on = read[ys, xs] + (1 - read[ys, xs, 3:4] / 255) * below
         a = np.clip(on[:, 3:4], 0, 255)
         on[:, :3] = np.where(a > 0, on[:, :3] * 255 / np.maximum(a, 1e-3), 0)
         out[ys, xs] = on
-        share[ys, xs] = (1 - fy) * under[row, xs] + fy * under[row + 1, xs]
+        share[ys, xs] = below[:, 3] / 255
     out = np.clip(np.round(out), 0, 255).astype(np.uint8)
     out[(laid | landed | shown) & (out[..., 3] == 0)] = 0  # clear, no colour: as `draw_held` writes a pixel it clears
     kept = (band & ~laid) | (air & ~landed)

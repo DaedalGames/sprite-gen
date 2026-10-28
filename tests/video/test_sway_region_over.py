@@ -9,7 +9,7 @@ way rises across it the other way by at most S px a px. With either, the ledger 
 strip a region drawn short of its side leaves standing, and its tip. `--region-crease` with `--region-shrink`: the wear
 leaves the lower edge on the crease. Synthetic figures only: the region test's body and its striped part over the torso's
 right side and past it over the air, a dark crease under it on the torso; an arm block beside the part's lower left; a dark
-outline under the part over the air.
+outline under the part over the air; a piece of the arm's colour right under the part's lower edge.
 
 Each case first reads what a sway writes with the new keys (its cells, its record), so on a release without them the
 same input fails on what comes out.
@@ -60,12 +60,29 @@ def outlined_figure(k, n=N):
     return Image.fromarray(a, 'RGBA')
 
 
-def arm_masks(path):
-    """The arm in every cell, a folder of one PNG per cell, held as given."""
+def arm_masks(path, at=arm_at):
+    """The arm (or `at`'s piece) in every cell, a folder of one PNG per cell, held as given."""
     path.mkdir()
     for k in range(N):
-        mask_png(path/f'cell-{k:03d}.png', arm_at(k))
+        mask_png(path/f'cell-{k:03d}.png', at(k))
     return path
+
+
+UNDER_BOX = (56, BOTTOM+1, 64, BOTTOM+10)  # x0, y0, x1, y1 in cell 0, last included: right under the part's lower edge
+
+
+def under_at(k):
+    """A piece of the arm's colour right under the part's lower edge in cell k, carried with the body."""
+    sx, sy = body_sway(k)
+    yy, xx = np.mgrid[0:H, 0:W]
+    x0, y0, x1, y1 = UNDER_BOX
+    return (xx >= x0+sx) & (xx <= x1+sx) & (yy >= y0+sy) & (yy <= y1+sy)
+
+
+def under_figure(k, n=N):
+    a = np.asarray(part_figure(k, n)).copy()
+    a[under_at(k)] = ARM
+    return Image.fromarray(a, 'RGBA')
 
 
 def lower_rows(region, solid, columns, rows=3):
@@ -208,7 +225,7 @@ def test_where_the_part_lifts_it_shows_the_figure_under_it(tmp_path):
     loop_dir = strip_dir(tmp_path/'loop', part_figure)
     record = sway.sway_loop(loop_dir, [PART], **kw)
     answer = answer_of(strip_dir(tmp_path/'again', part_figure), [PART], **kw)
-    moved = cells_of(loop_dir)
+    source, moved = cells_of(strip_dir(tmp_path/'source', part_figure)), cells_of(loop_dir)
     cells = lifting(answer)
     assert cells
     shown = 0
@@ -218,6 +235,13 @@ def test_where_the_part_lifts_it_shows_the_figure_under_it(tmp_path):
         assert lifted.any(), k
         sx, sy = body_sway(k)
         side = np.mgrid[0:H, 0:W][1] == 86+sx  # the torso's soft side
+        # what the lift uncovers over an opaque figure stays opaque, the row read between the part's last row and the
+        # figure's first too: the figure is drawn up from its first row under the lower edge, never from the part's
+        floor = read['floor']
+        under_opaque = source[k][np.minimum(floor, H-1), np.arange(W), 3] == 255
+        opaque = sway.uncovered(read, read['field'][2]) & under_opaque[None, :] & (source[k][..., 3] == 255)
+        assert opaque.any(), k
+        assert (moved[k][opaque][:, 3] == 255).all(), (k, sorted(set(moved[k][opaque][:, 3].tolist())))
         # the torso and the crease read up into the part's lower rows, each in its own column: no hole (the torso's soft
         # side shows as soft as it is), the torso's and the crease's red, none of the stripes' (200 or more)
         assert (moved[k][lifted & ~side][:, 3] >= 128).all(), k
@@ -229,6 +253,27 @@ def test_where_the_part_lifts_it_shows_the_figure_under_it(tmp_path):
         assert (moved[k][rows, 86+sx, 3] >= SOFT-1).all(), k
         shown += int(lifted.sum())
     assert shown > 0 and record['region_mask']['ledger']['lifted_px_max'] > 0
+
+
+def test_where_the_part_lifts_off_a_piece_left_out_it_shows_that_piece(tmp_path):
+    mask = mask_png(tmp_path/'mask.png', part_at(0))
+    kw = dict(region_mask=mask, region_shrink=0, region_over=True, hold_mask=arm_masks(tmp_path/'piece', under_at))
+    loop_dir = strip_dir(tmp_path/'loop', under_figure)
+    sway.sway_loop(loop_dir, [PART], **kw)
+    answer = answer_of(strip_dir(tmp_path/'again', under_figure), [PART], **kw)
+    source, moved = cells_of(strip_dir(tmp_path/'source', under_figure)), cells_of(loop_dir)
+    cells = lifting(answer)
+    assert cells
+    for k in cells:
+        _, read = answer.masked_cell(k)
+        piece = under_at(k)
+        # the piece left out under the lower edge is the figure under it there: what the lift uncovers over it stays
+        # opaque, the piece drawn up, and the piece keeps its bytes
+        over_piece = piece[np.minimum(read['floor'], H-1), np.arange(W)]
+        opaque = sway.uncovered(read, read['field'][2]) & over_piece[None, :] & (source[k][..., 3] == 255)
+        assert opaque.any(), k
+        assert (moved[k][opaque][:, 3] == 255).all(), (k, sorted(set(moved[k][opaque][:, 3].tolist())))
+        assert np.array_equal(moved[k][piece], source[k][piece]), k
 
 
 def test_its_outline_against_the_air_goes_with_it_and_against_the_figure_stays(tmp_path):
