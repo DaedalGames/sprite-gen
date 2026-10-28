@@ -37,6 +37,7 @@ from sprite_gen.video import facing as facing_mod
 from sprite_gen.video import canvas as canvas_mod
 from sprite_gen.video import frames as frames_mod
 from sprite_gen.video import loop as loop_mod
+from sprite_gen.video import local_cycle
 from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
@@ -882,6 +883,9 @@ def run_item(
         if "steps" in lp["cycle"]:
             # the cut's steps are known: its frame count is two steps — one cycle — not twice its siblings' one
             result["loop"]["steps"] = lp["cycle"]["steps"]["count"]
+        if ((lp["cycle"].get("step_count") or {}).get("cycles") or {}).get("unwitnessed"):
+            # its crossings may mark cycles, and nothing witnesses whether: its two steps may be two cycles
+            result["loop"][local_cycle.UNWITNESSED] = True
         if (lp["cycle"].get("step_screen") or {}).get("suspect"):
             # the cut may be one step of a cycle twice as long (recorded, not cut again)
             result["loop"]["step_screen"] = {k: lp["cycle"]["step_screen"][k] for k in ("lag", "ratio", "depth", "coverage")}
@@ -964,6 +968,17 @@ def _align_view(r: dict[str, Any]) -> str | None:
     return r["direction"] + (f"@{r['turned']}" if r["direction"] in handed_mod.LATERAL_VIEWS else "")
 
 
+def left_out_why(reasons: list[str], *, stands: bool = False) -> str:
+    """Why `align_gaits` left a loop out of its state's alignment (`reasons`, as `left_out` keeps them), in words: a take
+    to film again (its retake reasons, `start-stop` among them; `stands` says why the walk is filmed again), and a loop
+    whose crossings may mark cycles with nothing to witness whether (`cycle-unwitnessed`)."""
+    retake = [r for r in reasons if r != local_cycle.UNWITNESSED]
+    stood = ": the walk starts or stops in it" if stands and loop_mod.STAND_REASON in retake else ""
+    return " and ".join([*([f"a take to film again ({', '.join(retake)}){stood}"] if retake else []),
+                         *([f"its crossings may mark cycles and nothing witnesses whether ({local_cycle.UNWITNESSED}): its two "
+                            "steps may be two cycles"] if local_cycle.UNWITNESSED in reasons else [])])
+
+
 def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpolate: Any = None, between: str = align_mod.DEFAULT_BETWEEN,
                 feet: dict[str, str] | None = None) -> dict[str, Any]:
     """One cycle length per gait state across the set's directions (`video-cycle-align`,
@@ -974,8 +989,11 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
     RIFE is installed (`rife-not-installed`), or a loop may hold two or three cycles and nobody has
     counted them (`cycle-suspects`, the loops under `suspects`; `video-cycle-align --cycles`).
     A loop whose take is to be filmed again because the walk starts or stops in it (`retake` reason
-    `start-stop`, loop.stand_retake) loops no two steps and has no cycle to match: it is left out, its
-    loop kept as cut, the rest aligned without it, and its state names it under `left_out`.
+    `start-stop`, loop.stand_retake) loops no two steps and has no cycle to match, and a loop whose clip's
+    crossings may mark cycles with nothing to witness whether (`cycle-unwitnessed`,
+    local_cycle.read_cycles) may loop two cycles where it counts two steps: each is left out, its loop
+    kept as cut, the rest aligned without it, and its state names it under `left_out`, with its reasons —
+    no loop is played at twice its speed, and no count of its cycles is asked for.
 
     `feet` maps an item to the own foot that lands on its loop's first strike (`--align-foot`,
     `video-cycle-align --foot`), handed to its state's alignment. A state that names loops whose foot
@@ -991,8 +1009,10 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
     for r in results:
         if r.get("ok") and loop_mod.profile_for(r["state"]).gait:
             reasons = (r["loop"].get("retake") or {}).get("reasons") or []
-            if loop_mod.STAND_REASON in reasons:
-                left_out.setdefault(r["state"], {})[r["item"]] = reasons
+            why = [*(reasons if loop_mod.STAND_REASON in reasons else []),
+                   *([local_cycle.UNWITNESSED] if r["loop"].get(local_cycle.UNWITNESSED) else [])]
+            if why:
+                left_out.setdefault(r["state"], {})[r["item"]] = why
                 continue
             by_state.setdefault(r["state"], []).append(r)
     for state, rows in by_state.items():
@@ -1040,8 +1060,9 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
             r["loop"]["n_out"] = row["strip"]["frames"]
     for state, items in left_out.items():
         out.setdefault(state, {"ok": True, "applied": False, "why": "fewer than two directions left to align"})["left_out"] = items
-        print(f"video-set: warning: {state}: {', '.join(items)} left out of the cycle alignment — a take to film again "
-              f"({loop_mod.STAND_REASON}): the walk starts or stops in it, and its loop is kept as cut", file=sys.stderr)
+        for item, reasons in items.items():
+            print(f"video-set: warning: {state}: {item} left out of the cycle alignment — {left_out_why(reasons, stands=True)}, "
+                  "and its loop is kept as cut", file=sys.stderr)
     # a foot told for an item no alignment took (its state not aligned, or the item failed) is never dropped quietly
     for state, told_items in asked.items():
         if told_items and not out[state].get("applied"):
@@ -1051,7 +1072,7 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
         if r is None:
             raise SystemExit(f"video-set: --align-foot {item}={foot} names no item of the set")
         why = (f"{item} failed" if not r.get("ok") else
-               f"{item} was left out of the alignment, a take to film again ({loop_mod.STAND_REASON})" if item in left_out.get(r["state"], {}) else
+               f"{item} was left out of the alignment, {left_out_why(left_out[r['state']][item])}" if item in left_out.get(r["state"], {}) else
                f"{r['state']} was not aligned (filmed in fewer than two directions)")
         out.setdefault(r["state"], {"ok": True, "applied": False, "why": why}).setdefault("feet_unused", {})[item] = foot
     for state, a in out.items():
@@ -1207,7 +1228,7 @@ def run_set(
     # A take to film again its loop named (`retake`) — never a failure, never silent — and one the alignment left out.
     warnings += [f"{r['item']}: film this direction again ({', '.join(r['loop']['retake']['reasons'])}) — {r['dir']}/loop.report.json `retake`"
                  for r in results if r.get("ok") and r["loop"].get("retake")]
-    warnings += [f"cycle-align:{st}: {item} left out — a take to film again ({', '.join(reasons)}), its loop kept as cut"
+    warnings += [f"cycle-align:{st}: {item} left out — {left_out_why(reasons)}, its loop kept as cut"
                  for st, a in aligned.items() for item, reasons in a.get("left_out", {}).items()]
     warnings += [f"cycle-align:{st}: --align-foot {item}={foot} not applied ({a.get('why') or a.get('error') or 'the item failed'})"
                  for st, a in aligned.items() for item, foot in a.get("feet_unused", {}).items()]

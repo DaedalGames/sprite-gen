@@ -12,15 +12,18 @@ Each walker is drawn so the pixel search alone makes one of the faults a walk lo
 - a slow front walk in a short clip, refused outright (no periodic cycle found);
 - a walk that stalls, its cut playing the stalled step.
 
-Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle: a walk
-seen from behind whose far foot passes hidden behind the near one, on ones, twos or threes, a cycle a whole number of
-frames or not (the parent engine counted the cycle one step and cut two cycles, or kept the search's cut unwritten); and
-a walk on a front diagonal whose near foot steps out toward the camera and passes the far one apart, read so where its
-view is given and its foot cue turns over a step on. Four guards: from the side, where the view's foot cue says the
-other leg leads an interval on, where the cue cannot tell the legs apart (legs drawn alike, filmed from the front, the
-back or a diagonal), and where legs drawn alike and wide keep the feet together over half the interval at a pass, as a
-hidden pass does (with a view or none), the count stands however alike a step on draws. And one the count alone gets
-wrong, where the search's cut stands: a walk on threes whose tail closes on no cut of two steps.
+Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle, their
+body rising and falling twice an interval between crossings — the witness that reads no leg: a walk seen from behind
+whose far foot passes hidden behind the near one, on ones, twos or threes, a cycle a whole number of frames or not,
+its legs drawn apart or alike (the parent engine counted the cycle one step and cut two cycles, or kept the search's
+cut unwritten); and a walk on a front diagonal whose near foot steps out toward the camera and passes the far one
+apart, read so where its view is given. The guards: from the side, and where the view's foot cue says the other leg
+leads an interval on, the count stands however alike a step on draws; and where nothing that reads no leg witnesses
+two steps an interval — legs drawn alike from any view, alike and wide as a hidden pass is, alike and wide under a
+light fixed on the screen, the swing foot lifted under such a light, a far leg a few tones off with no view, and a
+walk whose feet do meet once a cycle but whose body does not bob — the crossings stay on steps, named in a warning.
+And one the count alone gets wrong, where the search's cut stands: a walk on threes whose tail closes on no cut of
+two steps.
 
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
@@ -87,21 +90,22 @@ def _front(k: float, *, cycle: float, phase: float = 0, tail_cycle: float = 1, t
     return im
 
 
-def _behind(k: int, *, cycle: float, hold: int) -> Image.Image:
+def _behind(k: int, *, cycle: float, hold: int, alike: bool = False, bob: int = 3) -> Image.Image:
     """A walker seen from behind on a diagonal, drawn on twos or threes (`hold`): the near leg swings ahead and back,
     and the far one is seen beside it only while it is behind — ahead, it stands hidden behind the near leg. The feet
     are seen apart once a cycle and together through the other step, its pass hidden among them: one crossing shows a
-    cycle. Arms opposite, the far one darker; each repeat of a drawing redrawn a little (a pixel aside, a few tones)."""
+    cycle. The body bobs `bob` px once a step; the far leg darker (`alike`: drawn as the near one); arms opposite, the
+    far one darker; each repeat of a drawing redrawn a little (a pixel aside, a few tones)."""
     redraw = k % hold
     ph = 2 * math.pi * (k - redraw) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
-    x, y = 90 + redraw, 40 + round(3 * math.cos(2 * ph))
+    x, y = 90 + redraw, 40 + round(bob * math.cos(2 * ph))
     sw = 16 * math.sin(ph)
     near = x + 14 + sw
     far = x + 14 - sw if sw > 0 else near
     d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
-    d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(50, 50, 60, 255))
+    d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(70, 70, 80, 255) if alike else (50, 50, 60, 255))
     d.rectangle((near - 5, y + 80, near + 5, y + 126), fill=(70, 70, 80, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200 + 12 * redraw, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
@@ -109,14 +113,15 @@ def _behind(k: int, *, cycle: float, hold: int) -> Image.Image:
     return im
 
 
-def _outward(k: float, *, cycle: float) -> Image.Image:
+def _outward(k: float, *, cycle: float, bob: int = 3) -> Image.Image:
     """A walker on a front diagonal whose near foot steps out toward the camera: it swings wide ahead and back, and the
     far foot hardly moves, so the feet meet on the screen once a cycle, where the near foot passes the far one on its
-    way back; its pass on the way out is made apart. Arms opposite, the far one darker; the far leg a tone off the near."""
+    way back; its pass on the way out is made apart. The body bobs `bob` px once a step; arms opposite, the far one
+    darker; the far leg a tone off the near."""
     ph = 2 * math.pi * k / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
-    x, y = 90, 40 + round(3 * math.cos(2 * ph))
+    x, y = 90, 40 + round(bob * math.cos(2 * ph))
     sw = 16 * math.sin(ph)
     near, far = x + 14 + sw, x + 34 - 4 * math.sin(ph)
     d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
@@ -129,24 +134,46 @@ def _outward(k: float, *, cycle: float) -> Image.Image:
 
 
 def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0, leg_tone: int | None = None,
-           leg_half: int = 5) -> Image.Image:
+           leg_half: int = 5, lift: int = 0, light: tuple[str, int] | None = None) -> Image.Image:
     """A side walker whose two steps are the same silhouette: the far leg and arm `tone` tones lighter than the near
     ones (the far leg `leg_tone`, where given: 0 draws the legs alike), the arms swinging `lean` px further back than
     forward — nothing else tells a step from the next. Each leg is drawn `leg_half` px either side of its line: at 10
-    the feet are seen together over half the interval at a pass, as where the far foot passes hidden."""
+    the feet are seen together over half the interval at a pass, as where the far foot passes hidden. The leg swinging
+    forward is lifted up to `lift` px, most at its pass; `light` lays a light fixed on the screen over the legs (`_lit`)."""
     ph = 2 * math.pi * (k + phase) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
+    drawn = Image.new("L", im.size)
     x, y = 90, 40 + round(3 * math.cos(2 * ph))
     for sign, t in ((1, 0), (-1, tone)):
         sw = sign * (16 * math.sin(ph) + lean)
         d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(190 + t, 190 + t, 190 + t, 255))
     for sign, t in ((1, 0), (-1, tone if leg_tone is None else leg_tone)):
         lx = x + 14 + 14 * sign * math.sin(ph)
-        d.rectangle((lx - leg_half, y + 80, lx + leg_half, y + 126), fill=(60 + t, 60 + t, 70 + t, 255))
+        up = round(lift * max(0.0, sign * math.cos(ph)))
+        box = (lx - leg_half, y + 80 - up, lx + leg_half, y + 126 - up)
+        d.rectangle(box, fill=(60 + t, 60 + t, 70 + t, 255))
+        ImageDraw.Draw(drawn).rectangle(box, fill=255)
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
+    ImageDraw.Draw(drawn).rectangle((x, y + 30, x + 28, y + 84), fill=0)
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
-    return im
+    return _lit(im, drawn, light)
+
+
+def _lit(im: Image.Image, legs_drawn: Image.Image, light: tuple[str, int] | None) -> Image.Image:
+    """`im` under a light fixed on the screen, laid over the pixels drawn as legs (`legs_drawn`), both legs alike:
+    `("x", n)` up to n tones lighter to the right across the feet, `("y", n)` up to n tones lighter lower down the legs.
+    It lights a foot by where it is drawn on the screen, not by which leg it is."""
+    if light is None:
+        return im
+    axis, tones = light
+    a = np.array(im)
+    h, w = a.shape[:2]
+    field = (np.clip((np.arange(w) - 80) * tones // 48, 0, tones)[None, :].repeat(h, 0) if axis == "x" else
+             np.clip((np.arange(h) - 120) * tones // 46, 0, tones)[:, None].repeat(w, 1))
+    on = np.asarray(legs_drawn) > 0
+    a[..., :3][on] = np.clip(a[..., :3][on].astype(int) + field[on][:, None], 0, 255).astype(np.uint8)
+    return Image.fromarray(a)
 
 
 def _tailed(k: int) -> Image.Image:
@@ -296,14 +323,61 @@ def _one_cycle(out: Path, cycle: float) -> dict:
 def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
     """Seen from behind on a diagonal, the far foot passes hidden behind the near one: the feet are seen together over
     more than half the interval between two crossings, one crossing a cycle. The clip one interval on is the same
-    picture, a cycle on, and the count reads the crossings as cycles: two steps an interval. The cut is one cycle,
-    `steps: 2` (the parent engine counted the cycle one step: on twos and threes it kept the search's cut unwritten, and
-    on ones, a cycle a whole number of frames or not, cut two cycles, 35 and 37 frames)."""
+    picture, a cycle on, and the body rises and falls twice an interval — a step each rise: the count reads the
+    crossings as cycles, two steps an interval. The cut is one cycle, `steps: 2` (the parent engine counted the cycle
+    one step: on twos and threes it kept the search's cut unwritten, and on ones, a cycle a whole number of frames or
+    not, cut two cycles, 35 and 37 frames). With no view, no foot cue is read."""
     report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold)))
     counted = _one_cycle(tmp_path / "out", cycle)
+    said = counted["cycles"]
     assert report["drawings"]["hold"] == hold
-    assert counted["cycles"]["asked"].startswith("the feet together") and counted["cycles"]["overlap"] > crossings.HIDE_SHARE
-    assert counted["cycles"]["one"] < counted["cycles"]["half"]
+    assert said["asked"].startswith("the feet together") and said["overlap"] > crossings.HIDE_SHARE
+    assert said["one"] < said["half"] and "cue" not in said and "unwitnessed" not in said
+    assert said["bob"]["says"] == "cycles" and said["bob"]["half"] >= local_cycle.BOB_TWICE and said["bob"]["swing"] >= local_cycle.BOB_FLOOR
+    assert "rises and falls twice an interval" in said["why"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("view", [None, "back_diagonal"])
+@pytest.mark.parametrize("cycle, hold", [(17.5, 1), (20, 2)])
+def test_a_walk_whose_far_foot_hides_is_cut_one_cycle_however_alike_its_legs(tmp_path, view, cycle, hold):
+    """The same walker with its far leg drawn as the near one: the view's shade of the feet does not move (`alike`) and
+    says nothing, and the body's bob, which reads no leg, still witnesses two steps an interval: one cycle (the parent
+    engine left legs drawn alike to the cue on steps and cut two cycles, with a warning)."""
+    _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold, alike=True)), *(("--view", view) if view else ()))
+    said = _one_cycle(tmp_path / "out", cycle)["cycles"]
+    assert said["bob"]["says"] == "cycles" and (view is None) == ("cue" not in said)
+    assert view is None or said["cue"]["says"] == "alike"
+
+
+def _unwitnessed(report: dict, interval: float) -> dict:
+    """The cut is two crossing intervals long, `interval` frames each, two steps by its crossings left on steps because
+    nothing that reads no leg witnesses two steps an interval (`cycles.unwitnessed`), and a warning names it."""
+    c = report["cycle"]
+    counted = c["step_count"]
+    said = counted["cycles"]
+    assert abs(c["length"] - 2 * interval) <= 1.5 and c["steps"] == {"count": 2, "by": "crossings"}
+    assert counted["cut"]["verdict"] == "two" and report["status"] == "passed"
+    assert said["one"] < said["half"] and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
+    assert said["cycles"] is False and said["unwitnessed"] is True and said["bob"]["says"] is None
+    assert "nothing that reads no leg witnesses two steps an interval" in said["why"]
+    assert any(local_cycle.UNWITNESSED in w and f"the cut {c['start']}/{c['length']}" in w for w in report["jolt"]["warnings"])
+    return said
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("walker, view, interval", [("behind", None, 17.5), ("behind", "back_diagonal", 17.5),
+                                                    ("outward", "front_diagonal", 16)])
+def test_a_walk_whose_feet_meet_once_a_cycle_but_whose_body_does_not_bob_is_cut_two_intervals_with_a_warning(tmp_path, walker, view,
+                                                                                                         interval):
+    """The two walkers whose feet meet once a cycle, their body held still: its top line does not rise and fall, and
+    nothing else that reads no leg can tell a step on from a cycle on. The crossings stay on steps: two intervals, two
+    cycles, named in a warning — never one interval read as two steps on a word that cannot tell (the parent engine cut
+    one cycle on the picture where a pass hid, and on the foot cue's turn half an interval on from the view)."""
+    draw = (lambda k: _behind(k, cycle=interval, hold=1, bob=0)) if walker == "behind" else (lambda k: _outward(k, cycle=interval, bob=0))
+    report = _cut(tmp_path / "out", _keyed(tmp_path, draw), *(("--view", view) if view else ()))
+    said = _unwitnessed(report, interval)
+    assert said["bob"]["swing"] < local_cycle.BOB_FLOOR and "does not rise and fall" in said["bob"]["why"]
 
 
 @pytest.mark.slow
@@ -311,18 +385,20 @@ def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
 def test_a_diagonal_walk_whose_near_foot_steps_out_is_cut_one_cycle_from_its_view(tmp_path, cycle):
     """On a front diagonal the near foot steps out toward the camera and passes the far one apart: the feet meet on the
     screen once a cycle, and briefly — no pass hides. Given the view, the count asks the picture: the clip one interval
-    on is the same picture, the legs as they were, and the view's foot cue does not turn over there. One cycle,
-    `steps: 2` (the parent engine counted each meeting a step and cut two cycles, 32 and 36 frames). Without the view
-    it is not asked, and cuts as before."""
+    on is the same picture, the legs as they were, the view's foot cue does not turn over there, and the body rises and
+    falls twice an interval. One cycle, `steps: 2` (the parent engine counted each meeting a step and cut two cycles,
+    32 and 36 frames). Without the view it is not asked, and cuts as before."""
     keyed = _keyed(tmp_path, lambda k: _outward(k, cycle=cycle))
     _cut(tmp_path / "view", keyed, "--view", "front_diagonal")
     counted = _one_cycle(tmp_path / "view", cycle)
     assert counted["cycles"]["overlap"] <= crossings.HIDE_SHARE and counted["cycles"]["asked"] == "the front_diagonal view, the legs side by side"
-    # The far leg a tone off the near one moves the cue a tone where the feet part: over the floor, and it turns over
-    # half an interval on (a step on) and not one — the other leg leads a step on, the interval is two.
+    # The far leg a tone off the near one moves the cue a tone where the feet part: over the floor, and it does not turn
+    # over one interval on — it does not refuse. Its turn half an interval on is no witness (a light fixed on the screen
+    # turns a cue so too); the body's bob is.
     cue = counted["cycles"]["cue"]
-    assert cue["says"] == "cycles" and cue["range"] >= cue["floor"] == pytest.approx(local_cycle.CUE_FLOOR * legs.TONE, rel=0.01)
-    assert cue["half"] <= local_cycle.CUE_SWAPPED < cue["one"]
+    assert cue["says"] is None and cue["range"] >= cue["floor"] == pytest.approx(local_cycle.CUE_FLOOR * legs.TONE, rel=0.01)
+    assert cue["one"] > local_cycle.CUE_SWAPPED and "half" not in cue
+    assert counted["cycles"]["bob"]["says"] == "cycles"
     plain = _cut(tmp_path / "plain", keyed)
     assert "cycles" not in plain["cycle"]["step_count"] and abs(plain["cycle"]["length"] - 2 * cycle) <= 1
 
@@ -359,20 +435,17 @@ def test_a_diagonal_walk_whose_foot_cue_turns_over_a_step_on_is_cut_two_steps(tm
 def test_a_walk_whose_legs_are_drawn_alike_is_cut_two_steps_from_any_view(tmp_path, view):
     """The same walker with its legs drawn alike, its arms still four tones apart, filmed from the front, the back or a
     diagonal: one interval on (a step on) is the same picture, as near as two on, and the view's foot cue does not move
-    — the shade of legs drawn alike, feet drawn on one row — its range far under half the step it is drawn in. The cue
-    does not tell the legs apart and the picture cannot, and the crossings stay on steps, as from the side: two steps,
-    46 frames, and a warning naming why (the parent engine read the still cue's float roundings, or no correlation, as
-    the same leg leading and cut 23 frames, one step, counted two)."""
+    — the shade of legs drawn alike, feet drawn on one row — its range far under half the step it is drawn in. The body
+    rises and falls once an interval, a step: nothing witnesses two steps an interval, and the crossings stay on steps,
+    as from the side: two steps, 46 frames, and a warning naming why (the parent engine read the still cue's float
+    roundings, or no correlation, as the same leg leading and cut 23 frames, one step, counted two)."""
     report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0)),
                   "--view", view)
-    counted = _two_steps(report, 46)
-    said = counted["cycles"]
+    _two_steps(report, 46)
+    said = _unwitnessed(report, 23)
     assert said["asked"] == f"the {view} view, the legs side by side" and said["overlap"] <= crossings.HIDE_SHARE
-    assert said["cycles"] is False and said["one"] < said["half"] and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
     assert said["cue"]["says"] == "alike" and said["cue"]["range"] < said["cue"]["floor"] and "one" not in said["cue"]
-    assert "does not tell the legs apart" in said["why"]
-    assert any("does not tell its legs apart" in w and f"the cut {report['cycle']['start']}/46" in w
-               for w in report["jolt"]["warnings"])
+    assert said["bob"]["half"] < -local_cycle.BOB_TWICE
 
 
 @pytest.mark.slow
@@ -380,21 +453,62 @@ def test_a_walk_whose_legs_are_drawn_alike_is_cut_two_steps_from_any_view(tmp_pa
 def test_a_walk_whose_legs_are_drawn_alike_and_wide_is_cut_two_steps_where_a_pass_could_hide(tmp_path, view):
     """The same walker with its legs drawn alike and twice as wide: the feet are seen together over half the interval at
     each pass, as where the far foot passes hidden, so the count asks the picture with or without a view — and one
-    interval on (a step on) is the same picture, as near as two on. But the foot cue does not move: the view's, or with
-    no view the shade of the feet's two halves, its range far under half the step it is drawn in. The legs are drawn
-    alike to it, the picture cannot tell a step on from a cycle on, and the crossings stay on steps: two steps, 46
-    frames, and a warning naming why (the parent engine let the picture mark cycles and cut 23 frames, one step, counted
-    two)."""
+    interval on (a step on) is the same picture, as near as two on. The view's foot cue does not move (with no view
+    none is read), and the body rises and falls once an interval: nothing witnesses two steps an interval, and the
+    crossings stay on steps: two steps, 46 frames, and a warning naming why (the parent engine let the picture mark
+    cycles and cut 23 frames, one step, counted two)."""
     keyed = _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, leg_half=10))
     report = _cut(tmp_path / "out", keyed, *(("--view", view) if view else ()))
-    counted = _two_steps(report, 46)
-    said = counted["cycles"]
+    _two_steps(report, 46)
+    said = _unwitnessed(report, 23)
     assert said["asked"].startswith("the feet together") and said["overlap"] > crossings.HIDE_SHARE
-    assert said["cycles"] is False and said["one"] < said["half"] and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
-    assert said["cue"]["says"] == "alike" and said["cue"]["range"] < said["cue"]["floor"] and "one" not in said["cue"]
-    assert ("the view's foot cue" if view else "the feet's shade") + " does not tell the legs apart" in said["why"]
-    assert any("does not tell its legs apart" in w and f"the cut {report['cycle']['start']}/46" in w
-               for w in report["jolt"]["warnings"])
+    assert (said["cue"]["says"] == "alike" and said["cue"]["range"] < said["cue"]["floor"]) if view else "cue" not in said
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("view", [None, "side", "front_diagonal", "back_diagonal"])
+def test_a_walk_whose_legs_are_drawn_alike_under_a_light_fixed_on_the_screen_is_cut_two_steps(tmp_path, view):
+    """The wide walker with its legs drawn alike, lit from the right by a light fixed on the screen (up to 12 tones
+    across the feet): the shade of the feet moves with how far apart they are drawn, whichever leg leads, and so turns
+    over half an interval on. The body rises and falls once an interval: nothing that reads no leg witnesses two steps
+    an interval, and the crossings stay on steps — 46 frames, a warning (the parent engine let the picture mark cycles
+    where a pass could hide, and cut 23 frames, one step, counted two, from every one of these views)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, leg_half=10,
+                                                                       light=("x", 12))), *(("--view", view) if view else ()))
+    _two_steps(report, 46)
+    said = _unwitnessed(report, 23)
+    assert view is None or (said["cue"]["says"] is None and said["cue"]["range"] >= said["cue"]["floor"])
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("view", ["front", "front_diagonal", "back", "back_diagonal"])
+def test_a_walk_whose_swing_foot_lifts_under_a_light_fixed_on_the_screen_is_cut_two_steps(tmp_path, view):
+    """The walker with its legs drawn alike, the leg swinging forward lifted 6 px at its pass, lit lower down by a light
+    fixed on the screen: the depth and the shade of the feet move with the swing, whichever leg swings, and turn over
+    half an interval on. Nothing that reads no leg witnesses two steps an interval: 46 frames, a warning (the parent
+    engine read the cue's turn half an interval on as the other leg leading a step on, and cut 23 frames)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, lift=6,
+                                                                       light=("y", 12))), "--view", view)
+    _two_steps(report, 46)
+    assert _unwitnessed(report, 23)["cue"]["says"] in (None, "alike")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("view", [None, "side", "front_diagonal"])
+def test_a_wide_walk_whose_far_leg_is_drawn_a_few_tones_off_is_cut_two_steps(tmp_path, view):
+    """The wide walker with its far leg four tones off the near one: a pass can hide. From the side or a diagonal the
+    view's shade turns over one interval on — the other leg leads — and refuses cycles; with no view no cue is read,
+    and the body rising and falling once an interval witnesses nothing: two steps, 46 frames either way, a warning
+    only where nothing refused (the parent engine let the picture mark cycles with no view and cut 23 frames)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_half=10)),
+                  *(("--view", view) if view else ()))
+    counted = _two_steps(report, 46)
+    if view is None:
+        _unwitnessed(report, 23)
+    else:
+        said = counted["cycles"]
+        assert said["cycles"] is False and said["cue"]["says"] == "steps" and "unwitnessed" not in said
+        assert not any(local_cycle.UNWITNESSED in w for w in report["jolt"]["warnings"])
 
 
 @pytest.mark.slow
@@ -498,15 +612,23 @@ def _reading(run: int) -> crossings.Reading:
                              runs=[(c - run // 2, c + run // 2) for c in middles])
 
 
+def _bob(beat: float | None) -> dict:
+    """Leg signals whose body's top line rises and falls 3 rows either way every `beat` frames (None: held still), the
+    body 100 rows tall: every 7.5 frames it rises and falls twice an interval of `_reading`, every 15 once."""
+    t = np.arange(FRAMES)
+    top = 40 + (np.zeros(FRAMES) if beat is None else 3 * np.cos(2 * np.pi * (t - 8) / beat))
+    return {"top": list(top), "height": [100.0] * FRAMES}
+
+
 def _choose(found: dict, *, period: int, seam: float, run: int = 9, search_seam: float = 1.0, view: str | None = None,
-            cue: list[float] | None = None, cue_step: float | None = None) -> tuple[dict, dict]:
+            cue: list[float] | None = None, cue_step: float | None = None, bob: float | None = None) -> tuple[dict, dict]:
     """`by_steps` on a clip whose picture goes round every `period` frames and whose feet meet every 15 (`_reading`),
-    its crossings read as `read_cycles` reads them from `view` and its foot `cue` (drawn in steps of `cue_step`, where
-    given), with the search's cut `found`: every two-step cut's seam reads `seam` at the gate, its top calm and its flow
-    off 1.0 either side, and the search's own cut `search_seam`."""
+    its crossings read as `read_cycles` reads them from `view`, its foot `cue` (drawn in steps of `cue_step`, where
+    given) and its body's bob (`_bob`, every `bob` frames), with the search's cut `found`: every two-step cut's seam
+    reads `seam` at the gate, its top calm and its flow off 1.0 either side, and the search's own cut `search_seam`."""
     D = _distances(period=period, frames=FRAMES)
     reading = _reading(run)
-    local_cycle.read_cycles(reading, D, view=view, cue=cue, **({} if cue_step is None else {"cue_step": cue_step}))
+    local_cycle.read_cycles(reading, D, view=view, cue=cue, signals=_bob(bob), **({} if cue_step is None else {"cue_step": cue_step}))
     return local_cycle.by_steps(
         D, np.zeros(FRAMES), reading, found=dict(found), refused=None, min_len=12, max_len=FRAMES,
         seam_flow=lambda s, L: {"off": [1.0, 1.0], "turn": [0.0, 0.0], "window": [[0, 0, 1, 1], [0, 0, 1, 1]]},
@@ -544,101 +666,105 @@ def test_a_cut_the_count_refutes_gives_way_to_two_steps_closing_or_not():
     assert record["chosen_by"] == "two steps" and picked["steps"] == {"count": 2, "by": "crossings"} and abs(picked["length"] - 30) <= 1
 
 
-def test_where_a_pass_can_hide_and_the_picture_repeats_each_interval_the_crossings_mark_cycles():
+@pytest.mark.parametrize("bob", [7.5, 15, None])
+def test_where_a_pass_can_hide_and_the_picture_repeats_each_interval_the_body_says_whether_the_crossings_mark_cycles(bob):
     """The same meetings on a clip whose picture goes round every 15 frames, the feet together 9 frames at each: a pass
-    can hide there, and one interval on the clip is the same picture as two on — the same leg leads. The crossings mark
-    cycles, the step is half the interval, and the search's cut 10/15 is two steps joined at the walk's own point: it
-    stands, `steps` written."""
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0)
+    can hide there, and one interval on the clip is the same picture as two on. Where the body rises and falls twice an
+    interval, the crossings mark cycles: the step is half the interval, and the search's cut 10/15 is two steps joined at
+    the walk's own point — it stands, `steps` written. Where it rises and falls once an interval, or is held still, the
+    picture alone cannot tell a step on from a cycle on (legs drawn alike are the same picture a step on): the crossings
+    stay on steps, two steps of 15, `unwitnessed`, a warning naming it (the parent engine let the picture mark cycles)."""
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, bob=bob)
     said = record["cycles"]
-    assert said["cycles"] is True and said["asked"].startswith("the feet together") and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
-    assert record["step_range"][1] == 7.5
-    assert (picked["start"], picked["length"]) == (10, 15) and picked["steps"] == {"count": 2, "by": "crossings"}
-    assert record["chosen_by"] == "search" and record["cut"]["verdict"] == "two"
+    assert said["asked"].startswith("the feet together") and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK and "cue" not in said
+    if bob == 7.5:
+        assert said["cycles"] is True and said["bob"]["says"] == "cycles" and said["bob"]["half"] >= local_cycle.BOB_TWICE
+        assert record["step_range"][1] == 7.5 and "unwitnessed" not in said
+        assert (picked["start"], picked["length"]) == (10, 15) and picked["steps"] == {"count": 2, "by": "crossings"}
+        assert record["chosen_by"] == "search" and record["cut"]["verdict"] == "two"
+        assert local_cycle.step_verdict({**picked, "step_count": record}) == []
+    else:
+        assert said["cycles"] is False and said["unwitnessed"] is True and said["bob"]["says"] is None
+        assert ("does not rise and fall" if bob is None else "does not rise and fall twice an interval") in said["bob"]["why"]
+        assert ("half" not in said["bob"]) if bob is None else said["bob"]["half"] < -local_cycle.BOB_TWICE
+        assert record["chosen_by"] == "two steps" and abs(picked["length"] - 30) <= 1
+        warned = [w for w in local_cycle.step_verdict({**picked, "step_count": record}) if local_cycle.UNWITNESSED in w]
+        assert len(warned) == 1 and said["bob"]["why"] in warned[0]
 
 
 @pytest.mark.parametrize("view", [None, "side"])
 def test_where_the_feet_meet_briefly_the_count_stands_from_the_side_or_no_view(view):
     """The same clip, its feet seen together only at the moment they meet: no pass can hide, and from the side (or with
     no view given) a step on drawing as near as a cycle on is what legs drawn alike do. Not asked: two steps."""
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view=view)
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view=view, bob=7.5)
     assert "cycles" not in record
     assert record["search"]["verdict"] == "refuted" and record["chosen_by"] == "two steps" and abs(picked["length"] - 30) <= 1
 
 
-@pytest.mark.parametrize("turns, cycles", [(True, False), (False, True)])
-def test_from_a_diagonal_the_foot_cue_says_which_leg_leads_an_interval_on(turns, cycles):
-    """The same brief meetings from a front diagonal: asked. One interval on is the same picture; where the view's foot
-    cue turns over there (the near foot's shade leading one interval, the far one's the next) the other leg leads and
-    the count stands, two steps of 15; where it turns over half an interval on instead and holds one on, the other leg
-    leads a step on, the crossings mark cycles and the search's 15 frames are the cycle."""
+@pytest.mark.parametrize("cue, bob, cycles", [("one", 7.5, False), ("half", 15, False), ("half", 7.5, True)])
+def test_from_a_diagonal_the_foot_cue_only_refuses_cycles(cue, bob, cycles):
+    """The same brief meetings from a front diagonal: asked, and one interval on is the same picture. Where the view's
+    foot cue turns over one interval on (the near foot's shade leading one interval, the far one's the next) the other
+    leg leads there: the count stands, two steps of 15, whatever the body says. A cue that turns over half an interval
+    on and holds one on is no witness — a light fixed on the screen turns the shade of feet drawn apart so, whichever
+    leg leads: with the body rising and falling once an interval, the crossings stay on steps with a warning (the
+    parent engine read the turn as the other leg leading a step on and kept 15 frames as two steps); rising and falling
+    twice, they mark cycles and the search's 15 frames are the cycle."""
     t = np.arange(FRAMES)
-    cue = list(np.sin(2 * np.pi * (t - 8) / (30 if turns else 15)))
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view="front_diagonal", cue=cue,
-                             cue_step=legs.TONE)
+    values = list(np.sin(2 * np.pi * (t - 8) / (30 if cue == "one" else 15)))
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view="front_diagonal", cue=values,
+                             cue_step=legs.TONE, bob=bob)
     said = record["cycles"]
     assert said["asked"] == "the front_diagonal view, the legs side by side" and said["cycles"] is cycles
-    assert (said["cue"]["one"] <= local_cycle.CUE_SWAPPED) is turns and said["cue"]["says"] == ("steps" if turns else "cycles")
-    assert turns or said["cue"]["half"] <= local_cycle.CUE_SWAPPED
+    assert said["cue"]["says"] == ("steps" if cue == "one" else None) and "half" not in said["cue"]
+    assert (said["cue"]["one"] <= local_cycle.CUE_SWAPPED) is (cue == "one")
+    assert said.get("unwitnessed", False) is (cue == "half" and not cycles)
     assert abs(picked["length"] - (15 if cycles else 30)) <= (0 if cycles else 1)
+    warned = local_cycle.step_verdict({**picked, "step_count": record})
+    assert any(local_cycle.UNWITNESSED in w for w in warned) is (cue == "half" and not cycles)
 
 
+@pytest.mark.parametrize("view, run", [("front_diagonal", 3), ("back_diagonal", 9), (None, 9)])
 @pytest.mark.parametrize("cue", ["still", "own beat"])
-def test_from_a_diagonal_a_cue_that_does_not_tell_the_legs_apart_leaves_the_crossings_on_steps(cue):
-    """The same brief meetings from a front diagonal, the clip one interval on the same picture, but the view's foot cue
-    does not tell the legs apart. Legs drawn alike leave it still: a few float roundings, its range far under half a
-    tone (`legs.TONE`) — not read, however well the roundings, which repeat with the legs, correlate one interval on. Or
-    it flickers on a beat of its own (every 4 frames), turning over neither a step on nor an interval on. It says nothing,
-    the picture alone cannot tell a step on from a cycle on, and the count stands, two steps of 15, a warning naming it
-    (the parent engine read either as the same leg leading and kept the search's 15 frames, counted two steps)."""
+@pytest.mark.parametrize("bob", [7.5, None])
+def test_a_cue_that_does_not_tell_the_legs_apart_leaves_the_word_to_the_body(view, run, cue, bob):
+    """The same meetings, the clip one interval on the same picture, from a diagonal (passes brief or long) or with no
+    view where a pass can hide, and a foot cue that does not tell the legs apart: legs drawn alike leave it still — a
+    few float roundings, its range far under half a tone (`legs.TONE`), not read, however well the roundings, which
+    repeat with the legs, correlate — or it flickers on a beat of its own (every 4 frames) and does not turn over one
+    interval on. It refuses nothing; with no view it is not read at all. The body says: rising and falling twice an
+    interval, the crossings mark cycles, one cycle of 15 (the parent engine left a still cue on steps, two cycles);
+    held still, they stay on steps, two steps of 15, with a warning."""
     t = np.arange(FRAMES)
     values = 1e-8 * np.sin(2 * np.pi * (t - 8) / 15) if cue == "still" else 0.05 * np.cos(2 * np.pi * t / 4)
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=3, view="front_diagonal",
-                             cue=list(values), **({"cue_step": legs.TONE} if cue == "still" else {}))
+    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, run=run, view=view, cue=list(values),
+                             bob=bob, **({"cue_step": legs.TONE} if cue == "still" else {}))
     said = record["cycles"]
     assert said["one"] < said["half"] and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
-    assert said["cycles"] is False and "does not tell the legs apart" in said["why"]
-    assert said["cue"]["says"] == ("alike" if cue == "still" else None)
-    if cue == "still":
-        assert said["cue"]["range"] < said["cue"]["floor"] and "one" not in said["cue"]
+    if view is None:
+        assert "cue" not in said
     else:
-        assert said["cue"]["half"] > local_cycle.CUE_SWAPPED and said["cue"]["one"] > local_cycle.CUE_SWAPPED
-    assert record["chosen_by"] == "two steps" and abs(picked["length"] - 30) <= 1
-    warned = local_cycle.step_verdict({**picked, "step_count": record})
-    assert any("does not tell its legs apart" in w for w in warned)
+        assert said["cue"]["says"] == ("alike" if cue == "still" else None)
+        assert ("one" not in said["cue"]) if cue == "still" else said["cue"]["one"] > local_cycle.CUE_SWAPPED
+    assert said["cycles"] is (bob is not None) and said.get("unwitnessed", False) is (bob is None)
+    assert abs(picked["length"] - (15 if bob else 30)) <= (0 if bob else 1)
+    assert any(local_cycle.UNWITNESSED in w for w in local_cycle.step_verdict({**picked, "step_count": record})) is (bob is None)
 
 
-@pytest.mark.parametrize("view", ["back_diagonal", None])
-def test_where_a_pass_can_hide_a_still_cue_leaves_the_crossings_on_steps(view):
-    """Where a pass can hide (the feet together 9 frames at each meeting) the picture marks cycles unless the cue says
-    otherwise. A still cue — the view's, or with no view the shade of the feet's two halves — says the legs are drawn
-    alike to it: the picture a step on is then the picture a cycle on, and cannot tell. The crossings stay on steps, two
-    steps of 15, a warning naming it, whatever the still cue's roundings correlate (the parent engine let the picture
-    mark cycles and kept the search's 15 frames, counted two steps)."""
+@pytest.mark.parametrize("swing, beat, says", [(3, 7.5, "cycles"), (3, 15, None), (0.2, 7.5, None), (3, 30, None)])
+def test_the_body_witnesses_two_steps_an_interval_where_its_top_line_rises_and_falls_twice(swing, beat, says):
+    """`bob_word` on an interval of 15 frames, the body 100 rows tall: a top line rising and falling 3 rows either way
+    every 7.5 frames (twice an interval) witnesses two steps an interval; every 15 (once: a step an interval) or every
+    30 (once a cycle of two intervals: a quarter turn half an interval on) does not; 0.2 rows either way, its range
+    under BOB_FLOOR of the body's height, does not rise and fall, however it correlates."""
     t = np.arange(FRAMES)
-    cue = list(-1e-8 * np.cos(2 * np.pi * (t - 8) / 30))
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, view=view, cue=cue, cue_step=legs.TONE)
-    said = record["cycles"]
-    assert said["asked"].startswith("the feet together") and said["cycles"] is False
-    assert said["cue"]["says"] == "alike" and said["cue"]["range"] < said["cue"]["floor"] and "one" not in said["cue"]
-    assert ("the view's foot cue" if view else "the feet's shade") + " does not tell the legs apart" in said["why"]
-    assert record["chosen_by"] == "two steps" and abs(picked["length"] - 30) <= 1
-    assert any("does not tell its legs apart" in w for w in local_cycle.step_verdict({**picked, "step_count": record}))
-
-
-def test_where_a_pass_can_hide_with_no_view_a_moving_shade_leaves_the_picture_to_mark_cycles():
-    """With no view the shade of the feet's two halves is read only for whether it moves, not for which leg leads (its
-    halves are the picture's, the legs' only from a side or a diagonal): one that moves — here turning over one
-    interval on, as a view's cue whose other leg leads there would — leaves the picture to mark cycles, the search's 15
-    frames a cycle, counted two steps."""
-    t = np.arange(FRAMES)
-    cue = list(0.05 * np.sin(2 * np.pi * (t - 8) / 30))
-    picked, record = _choose({"start": 10, "length": 15}, period=15, seam=1.0, cue=cue, cue_step=legs.TONE)
-    said = record["cycles"]
-    assert said["asked"].startswith("the feet together") and said["cycles"] is True
-    assert said["cue"]["says"] is None and said["cue"]["range"] >= said["cue"]["floor"]
-    assert "one" not in said["cue"] and "swapped" not in said["cue"]
-    assert (picked["start"], picked["length"]) == (10, 15) and picked["steps"] == {"count": 2, "by": "crossings"}
+    word = local_cycle.bob_word(list(40 + swing * np.cos(2 * np.pi * t / beat)), 15, height=100)
+    assert word["says"] == says and word["floor"] == local_cycle.BOB_FLOOR and word["twice"] == local_cycle.BOB_TWICE
+    assert word["swing"] == pytest.approx(2 * swing / 100, abs=0.002)
+    if swing < 1:
+        assert "half" not in word and "does not rise and fall" in word["why"]
+    else:
+        assert (word["half"] >= local_cycle.BOB_TWICE) is (says == "cycles")
 
 
 @pytest.mark.parametrize("verdict, named", [("uncertain", True), ("two", False)])

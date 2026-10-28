@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from sprite_gen.video import align
+from sprite_gen.video import align, local_cycle
 from sprite_gen.video import loop as loop_mod
 
 W, H = 100, 120
@@ -336,25 +336,36 @@ def test_video_set_aligns_each_gait_filmed_in_two_or_more_directions(tmp_path):
 
 
 @pytest.mark.slow
-def test_video_set_leaves_a_take_to_film_again_for_a_start_or_stop_out_of_the_alignment(tmp_path):
+@pytest.mark.parametrize("named, reasons", [
+    ({"retake": {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}}, ["start-stop"]),
+    ({"cycle-unwitnessed": True}, ["cycle-unwitnessed"]),
+    ({"retake": {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}, "cycle-unwitnessed": True},
+     ["start-stop", "cycle-unwitnessed"]),
+])
+def test_video_set_leaves_a_take_to_film_again_or_an_unwitnessed_count_out_of_the_alignment(tmp_path, capsys, named, reasons):
     """A loop named a take to film again because the walk starts or stops in it (`retake` `start-stop`) loops no two
-    steps: it is left out, its loop as cut, and the rest are aligned without it. Left alone, the state is not aligned."""
+    steps; a loop whose crossings may mark cycles with nothing to witness whether (`cycle-unwitnessed`,
+    `local_cycle.read_cycles`) may loop two cycles where it counts two steps, and aligned it would play at twice its
+    speed. Either is left out, its loop as cut, its reasons named, and the rest are aligned without it. Left alone, the
+    state is not aligned."""
     from sprite_gen.video import batch
 
-    stand = {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}
     rows = []
-    for direction, length, retake in (("front", 20, None), ("side", 24, None), ("back", 19, stand)):
+    for direction, length, extra in (("front", 20, {}), ("side", 24, {}), ("back", 19, named)):
         item = tmp_path / f"{direction}-walk"
         item.mkdir()
         _cut(item, "loop", length)
         rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
-                     "loop": {"n_out": length, **({"retake": retake} if retake else {})}})
+                     "loop": {"n_out": length, **extra}})
     out = batch.align_gaits(rows, tmp_path, "auto", interpolate=Recorder())
-    assert out["walk"]["applied"] and out["walk"]["lengths"] == [20, 24] and out["walk"]["left_out"] == {"back-walk": ["start-stop"]}
+    assert out["walk"]["applied"] and out["walk"]["lengths"] == [20, 24] and out["walk"]["left_out"] == {"back-walk": reasons}
     assert [r["loop"]["n_out"] for r in rows] == [out["walk"]["length"]] * 2 + [19] and "cycle_align" not in rows[2]["loop"]
+    said = capsys.readouterr().err
+    assert ("a take to film again (start-stop)" in said) is ("start-stop" in reasons)
+    assert (f"nothing witnesses whether ({local_cycle.UNWITNESSED})" in said) is (local_cycle.UNWITNESSED in reasons)
     alone = batch.align_gaits(rows[1:], tmp_path, "auto", interpolate=Recorder())
     assert alone == {"walk": {"ok": True, "applied": False, "why": "fewer than two directions left to align",
-                              "left_out": {"back-walk": ["start-stop"]}}}
+                              "left_out": {"back-walk": reasons}}}
 
 
 def _no_rife(monkeypatch, tmp_path: Path) -> None:

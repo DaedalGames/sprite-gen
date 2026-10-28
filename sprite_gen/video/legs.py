@@ -11,16 +11,19 @@ Both read the same per-frame signals (`strike_signals`) and choose between them 
   fraction of that height. Seen from the side or a diagonal the feet open and close once a step.
 - `reach`: the lowest solid row. Seen from the front or back the foot nearer the viewer is drawn
   lower, once a step.
-- `top`: the body's top line, for a body with no legs to read.
+- `top`: the body's top line, for a body with no legs to read. It rises and falls once a step
+  whichever leg leads, so the step count reads it as the witness that a crossing interval holds
+  two steps (`local_cycle.bob_word`).
 - `gap`: the widest empty run between the foot band's two ends, of the frame's height — two feet
   seen apart.
 
 Which of the two feet is which is read on cues the view draws (`depth_cue`, `shade_cue`): from the front or back the
 foot nearer the viewer is drawn lower, from the side or a diagonal the far leg is drawn in shade. `video-cycle-align`
-names the foot that lands by them (`align.strike_foot`), and the step count asks whether the same leg leads again one
-crossing interval on (`local_cycle.read_cycles`). Legs drawn alike to a cue leave it still: its range over the clip
-under half the step it is drawn in (a TONE of luma, a pixel row of the body's height) is the arithmetic's, not the
-feet's (`local_cycle.cue_word`).
+names the foot that lands by them (`align.strike_foot`), and the step count asks whether the other leg leads one
+crossing interval on (`local_cycle.read_cycles`): a cue can only refuse cycles there, never witness them, since a light
+fixed on the screen turns it with how far apart the feet are drawn, whichever leg leads. Legs drawn alike to a cue
+leave it still: its range over the clip under half the step it is drawn in (a TONE of luma, a pixel row of the body's
+height) is the arithmetic's, not the feet's (`local_cycle.cue_word`).
 
 The swing of the stride or the lowest row says there is something to read, not that it is legs:
 a legless body that squashes as it bounces widens its foot band once a cycle, where a walker's

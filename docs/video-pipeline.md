@@ -210,8 +210,10 @@ stops the set before anything is rewritten instead (both are explained in
 [loop repair](loop-repair.md) section 4).
 
 `video-set`'s own alignment (`batch.align_gaits`) leaves out a loop named a take to film again for
-`start-stop`: its loop is kept as cut, the rest are aligned without it, and the state's record names
-it under `left_out`.
+`start-stop` or one whose crossings were left on steps unwitnessed (`cycle-unwitnessed`: its two
+steps may be two cycles, and aligned as one cycle it would play at twice its speed): its loop is kept
+as cut, the rest are aligned without it, and the state's record names it under `left_out` with its
+reasons.
 
 `video-prompt --json` also gives the duration (the state's own, as `video-set`), whether the clip
 ends on the canvas (`last_frame`), the loop cut (`cycle`) and the canvas, clip, frames and loop
