@@ -13,17 +13,21 @@ Each walker is drawn so the pixel search alone makes one of the faults a walk lo
 - a walk that stalls, its cut playing the stalled step.
 
 Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle, their
-body rising and falling twice an interval between crossings — the witness that reads no leg: a walk seen from behind
-whose far foot passes hidden behind the near one, on ones, twos or threes, a cycle a whole number of frames or not,
-its legs drawn apart or alike (the parent engine counted the cycle one step and cut two cycles, or kept the search's
-cut unwritten); and a walk on a front diagonal whose near foot steps out toward the camera and passes the far one
-apart, read so where its view is given. The guards: from the side, and where the view's foot cue says the other leg
-leads an interval on, the count stands however alike a step on draws; and where nothing that reads no leg witnesses
-two steps an interval — legs drawn alike from any view, alike and wide as a hidden pass is, alike and wide under a
-light fixed on the screen, the swing foot lifted under such a light, a far leg a few tones off with no view, and a
-walk whose feet do meet once a cycle but whose body does not bob — the crossings stay on steps, named in a warning.
-And one the count alone gets wrong, where the search's cut stands: a walk on threes whose tail closes on no cut of
-two steps.
+body rising and falling twice an interval between crossings on legs whose feet stay on the ground — the witness that
+reads no leg, read against the lowest row and the head's width: a walk seen from behind whose far foot passes hidden
+behind the near one, on ones, twos or threes, a cycle a whole number of frames or not, its legs drawn apart or alike
+(the parent engine counted the cycle one step and cut two cycles, or kept the search's cut unwritten); and a walk on a
+front diagonal whose near foot steps out toward the camera and passes the far one apart, read so where its view is
+given. The guards: from the side, and where the view's foot cue says the other leg leads an interval on, the count
+stands however alike a step on draws; and where nothing that reads no leg witnesses two steps an interval — legs drawn
+alike from any view, alike and wide as a hidden pass is, alike and wide under a light fixed on the screen, the swing
+foot lifted under such a light, a far leg a few tones off with no view, a walk whose feet do meet once a cycle but
+whose body does not bob, the same walk carried up and down whole, feet and all (the picture moved on its beat), a body
+held still on a picture shaken twice an interval, and feet that run off the frame — the crossings stay on steps,
+named in a warning. Read off drawn frames, no walk that does not rise and fall twice an interval on its legs is
+witnessed however the whole picture moves or zooms, on any beat, nor a run whose feet leave the ground, nor a planted
+foot sliding down the screen. And one the count alone gets wrong, where the search's cut stands: a walk on threes whose
+tail closes on no cut of two steps.
 
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
@@ -42,6 +46,7 @@ from conftest import feet_unseen
 from sprite_gen.video import crossings, legs, local_cycle, loop
 
 FRAMES = 73
+GROUND = 166  # the row the walkers' soles stand on: a body rising and falling on its legs leaves its feet there
 
 
 def _side(k: float, *, cycle: float, phase: float = 0, tail_cycle: float = 1, tail: int = 0, arms: bool = True) -> Image.Image:
@@ -90,43 +95,46 @@ def _front(k: float, *, cycle: float, phase: float = 0, tail_cycle: float = 1, t
     return im
 
 
-def _behind(k: int, *, cycle: float, hold: int, alike: bool = False, bob: int = 3) -> Image.Image:
+def _behind(k: int, *, cycle: float, hold: int, alike: bool = False, bob: int = 3, whole: bool = False) -> Image.Image:
     """A walker seen from behind on a diagonal, drawn on twos or threes (`hold`): the near leg swings ahead and back,
     and the far one is seen beside it only while it is behind — ahead, it stands hidden behind the near leg. The feet
     are seen apart once a cycle and together through the other step, its pass hidden among them: one crossing shows a
-    cycle. The body bobs `bob` px once a step; the far leg darker (`alike`: drawn as the near one); arms opposite, the
-    far one darker; each repeat of a drawing redrawn a little (a pixel aside, a few tones)."""
+    cycle. The body rises and falls `bob` px once a step on its legs, the feet on the ground (`whole`: carried up and
+    down with it, feet and all — the picture moved, not a walk); the far leg darker (`alike`: drawn as the near one);
+    arms opposite, the far one darker; each repeat of a drawing redrawn a little (a pixel aside, a few tones)."""
     redraw = k % hold
     ph = 2 * math.pi * (k - redraw) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     x, y = 90 + redraw, 40 + round(bob * math.cos(2 * ph))
+    sole = y + 126 if whole else GROUND
     sw = 16 * math.sin(ph)
     near = x + 14 + sw
     far = x + 14 - sw if sw > 0 else near
     d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
-    d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(70, 70, 80, 255) if alike else (50, 50, 60, 255))
-    d.rectangle((near - 5, y + 80, near + 5, y + 126), fill=(70, 70, 80, 255))
+    d.rectangle((far - 5, y + 80, far + 5, sole), fill=(70, 70, 80, 255) if alike else (50, 50, 60, 255))
+    d.rectangle((near - 5, y + 80, near + 5, sole), fill=(70, 70, 80, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200 + 12 * redraw, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
     d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
     return im
 
 
-def _outward(k: float, *, cycle: float, bob: int = 3) -> Image.Image:
+def _outward(k: float, *, cycle: float, bob: int = 3, whole: bool = False) -> Image.Image:
     """A walker on a front diagonal whose near foot steps out toward the camera: it swings wide ahead and back, and the
     far foot hardly moves, so the feet meet on the screen once a cycle, where the near foot passes the far one on its
-    way back; its pass on the way out is made apart. The body bobs `bob` px once a step; arms opposite, the far one
-    darker; the far leg a tone off the near."""
+    way back; its pass on the way out is made apart. The body rises and falls `bob` px once a step on its legs, the feet
+    on the ground (`whole`: carried with it); arms opposite, the far one darker; the far leg a tone off the near."""
     ph = 2 * math.pi * k / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     x, y = 90, 40 + round(bob * math.cos(2 * ph))
+    sole = y + 126 if whole else GROUND
     sw = 16 * math.sin(ph)
     near, far = x + 14 + sw, x + 34 - 4 * math.sin(ph)
     d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
-    d.rectangle((far - 5, y + 80, far + 5, y + 126), fill=(61, 61, 71, 255))
-    d.rectangle((near - 5, y + 80, near + 5, y + 126), fill=(60, 60, 70, 255))
+    d.rectangle((far - 5, y + 80, far + 5, sole), fill=(61, 61, 71, 255))
+    d.rectangle((near - 5, y + 80, near + 5, sole), fill=(60, 60, 70, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
     d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
@@ -134,13 +142,17 @@ def _outward(k: float, *, cycle: float, bob: int = 3) -> Image.Image:
 
 
 def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0, leg_tone: int | None = None,
-           leg_half: int = 5, lift: int = 0, light: tuple[str, int] | None = None, bob: int = 3) -> Image.Image:
+           leg_half: int = 5, lift: int = 0, light: tuple[str, int] | None = None, bob: int = 3, whole: bool = False,
+           air: int = 0, slide: int = 0) -> Image.Image:
     """A side walker whose two steps are the same silhouette: the far leg and arm `tone` tones lighter than the near
     ones (the far leg `leg_tone`, where given: 0 draws the legs alike), the arms swinging `lean` px further back than
     forward — nothing else tells a step from the next. Each leg is drawn `leg_half` px either side of its line: at 10
     the feet are seen together over half the interval at a pass, as where the far foot passes hidden. The leg swinging
     forward is lifted up to `lift` px, most at its pass; `light` lays a light fixed on the screen over the legs
-    (`_lit`). The body bobs `bob` px once a step."""
+    (`_lit`). The body rises and falls `bob` px once a step on its legs, the feet on the ground (`whole`: carried with
+    it). A run lifts both soles up to `air` px off the ground while the body is high; a view from behind or a diagonal
+    draws each sole up to `slide` px lower the further back its foot is (the planted foot sliding down the screen
+    through its step)."""
     ph = 2 * math.pi * (k + phase) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
@@ -152,7 +164,8 @@ def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: flo
     for sign, t in ((1, 0), (-1, tone if leg_tone is None else leg_tone)):
         lx = x + 14 + 14 * sign * math.sin(ph)
         up = round(lift * max(0.0, sign * math.cos(ph)))
-        box = (lx - leg_half, y + 80 - up, lx + leg_half, y + 126 - up)
+        ground = y + 126 if whole else GROUND - round(air * max(0.0, -math.cos(2 * ph)))
+        box = (lx - leg_half, y + 80 - up, lx + leg_half, ground + round(slide * (1 - sign * math.sin(ph)) / 2) - up)
         d.rectangle(box, fill=(60 + t, 60 + t, 70 + t, 255))
         ImageDraw.Draw(drawn).rectangle(box, fill=255)
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
@@ -177,14 +190,15 @@ def _lit(im: Image.Image, legs_drawn: Image.Image, light: tuple[str, int] | None
     return Image.fromarray(a)
 
 
-def _carried(draw, motion: str, room: int = 60):
+def _carried(draw, motion, room: int = 60):
     """`draw`'s walker carried up and down the screen with the whole picture (a motion of the picture, not the walk's)
     on a canvas `room` px taller either side: `"arc"` along a smooth arc, 24 px down at either end of the 73 frames
     and level in the middle; `"cubic"` from 48 px up at the start to 48 down at the end, still in the middle;
     `"sway"` 12 px down, level, 12 up and back every 92 frames; `"ramp"` 24 px down over the clip, a row every three
-    frames."""
-    move = {"arc": lambda k: round(24 * ((k - 36) / 36) ** 2), "cubic": lambda k: round(48 * ((k - 36) / 36) ** 3),
-            "sway": lambda k: round(12 * math.sin(2 * math.pi * k / 92)), "ramp": lambda k: round(24 * k / 72)}[motion]
+    frames; or `motion(k)` px down in frame k."""
+    move = motion if callable(motion) else {
+        "arc": lambda k: round(24 * ((k - 36) / 36) ** 2), "cubic": lambda k: round(48 * ((k - 36) / 36) ** 3),
+        "sway": lambda k: round(12 * math.sin(2 * math.pi * k / 92)), "ramp": lambda k: round(24 * k / 72)}[motion]
 
     def frame(k: int) -> Image.Image:
         im = draw(k)
@@ -352,7 +366,8 @@ def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
     assert said["asked"].startswith("the feet together") and said["overlap"] > crossings.HIDE_SHARE
     assert said["one"] < said["half"] and "cue" not in said and "unwitnessed" not in said
     assert said["bob"]["says"] == "cycles" and said["bob"]["half"] >= local_cycle.BOB_TWICE and said["bob"]["swing"] >= local_cycle.BOB_FLOOR
-    assert "rises and falls twice an interval" in said["why"]
+    assert said["bob"]["body"]["share"] >= local_cycle.BOB_OWN and said["bob"]["body"]["scale"] >= local_cycle.BOB_SCALE
+    assert said["bob"]["edge"] == 0 and "rises and falls twice an interval" in said["why"] and "the body's own" in said["why"]
 
 
 @pytest.mark.slow
@@ -564,6 +579,50 @@ def test_a_walk_whose_feet_meet_once_a_cycle_carried_up_and_down_is_cut_one_cycl
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("walker, view, interval", [("behind", None, 17.5), ("outward", "front_diagonal", 16)])
+def test_a_walk_carried_up_and_down_whole_feet_and_all_is_cut_two_intervals_with_a_warning(tmp_path, walker, view, interval):
+    """The two walkers whose feet meet once a cycle, their body rising and falling twice an interval with the feet
+    carried along (`whole`): the whole figure moved up and down on the walk's beat, pixel for pixel a picture shaken
+    twice an interval over a body held still. Its top line alone rises and falls twice an interval, and the lowest row
+    with it: nothing of it is the body's own, and nothing that reads no leg tells a step on from a cycle on. Two
+    intervals, a warning naming why (the parent engine read the top line alone and cut one cycle)."""
+    draw = ((lambda k: _behind(k, cycle=interval, hold=1, whole=True)) if walker == "behind" else
+            (lambda k: _outward(k, cycle=interval, whole=True)))
+    said = _unwitnessed(_cut(tmp_path / "out", _keyed(tmp_path, draw), *(("--view", view) if view else ())), interval)
+    assert said["bob"]["half"] >= local_cycle.BOB_TWICE and said["bob"]["quarter"] <= -local_cycle.BOB_TWICE
+    assert said["bob"]["body"]["share"] < local_cycle.BOB_OWN and "its lowest row rises and falls with it" in said["bob"]["why"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("bob", [0, 3])
+def test_a_walk_on_a_picture_shaken_twice_an_interval_is_cut_two_steps_with_a_warning(tmp_path, bob):
+    """The wide walker with its legs drawn alike, its crossings its steps every 23 frames, held still (or rising and
+    falling on its legs once a step), on a picture shaken 3 px up and down twice an interval — dy = round(3 sin(4 pi k /
+    23)), a camera's shake, not the walk. Its top line on the screen rises and falls twice an interval (the parent engine
+    read it so, as the body, and cut 23 frames, one step, counted two, and no warning said so), but its lowest row rises
+    and falls with it, and the body's own rise and fall twice an interval is nothing: two steps, 46 frames, a
+    warning."""
+    walker = lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, leg_half=10, bob=bob)  # noqa: E731
+    report = _cut(tmp_path / "out", _keyed(tmp_path, _carried(walker, lambda k: round(3 * math.sin(4 * math.pi * k / 23)))))
+    said = _unwitnessed(report, 23)
+    assert said["asked"].startswith("the feet together")
+    if not bob:
+        assert said["bob"]["half"] >= local_cycle.BOB_TWICE and said["bob"]["quarter"] <= -local_cycle.BOB_TWICE
+        assert "its lowest row rises and falls with it" in said["bob"]["why"]
+
+
+@pytest.mark.slow
+def test_a_walk_whose_feet_run_off_the_frame_is_cut_two_intervals_with_a_warning(tmp_path):
+    """The walker seen from behind whose feet meet once a cycle, rising and falling on its legs twice an interval, its
+    frames cut at the soles' row: the lowest row is each frame's last. The feet may run off the frame there, so the
+    lowest row is the frame's, not theirs, and the picture's moving cannot be read off it: nothing is witnessed, two
+    intervals, a warning naming why."""
+    walker = lambda k: _behind(k, cycle=17.5, hold=1).crop((0, 0, 300, GROUND + 1))  # noqa: E731
+    said = _unwitnessed(_cut(tmp_path / "out", _keyed(tmp_path, walker)), 17.5)
+    assert said["bob"]["edge"] > 0 and "the frame's last row" in said["bob"]["why"]
+
+
+@pytest.mark.slow
 def test_a_cut_of_two_steps_that_does_not_close_leaves_the_searchs_cut(tmp_path):
     """On threes, a big tail on its own beat: the search's cut is one the count does not refute (it plays feet held
     together past a pass: uncertain), and no cut of two steps joins the walk at its own point. The seam gate reads the
@@ -664,12 +723,22 @@ def _reading(run: int) -> crossings.Reading:
                              runs=[(c - run // 2, c + run // 2) for c in middles])
 
 
+def _body(top, *, lowest=None, crown=None, edge=None) -> dict:
+    """Leg signals (`legs.strike_signals`, `legs.body_signals`) of a body 100 rows tall whose top line is `top` (per
+    frame), its lowest row `lowest` (140 throughout: the feet on the ground) and its head `crown` wide (log; 20 px
+    throughout), no lowest row on the frame's last row unless `edge` says where."""
+    n = len(top)
+    return {"top": [float(v) for v in top], "reach": [140.0] * n if lowest is None else [float(v) for v in lowest],
+            "crown": [math.log(20)] * n if crown is None else [float(v) for v in crown],
+            "edge": [0.0] * n if edge is None else [float(v) for v in edge], "height": [100.0] * n}
+
+
 def _bob(beat: float | None) -> dict:
-    """Leg signals whose body's top line rises and falls 3 rows either way every `beat` frames (None: held still), the
-    body 100 rows tall: every 7.5 frames it rises and falls twice an interval of `_reading`, every 15 once."""
+    """Leg signals whose body's top line rises and falls 3 rows either way every `beat` frames on legs whose feet stay
+    on the ground (None: held still), the body 100 rows tall: every 7.5 frames it rises and falls twice an interval of
+    `_reading`, every 15 once."""
     t = np.arange(FRAMES)
-    top = 40 + (np.zeros(FRAMES) if beat is None else 3 * np.cos(2 * np.pi * (t - 8) / beat))
-    return {"top": list(top), "height": [100.0] * FRAMES}
+    return _body(40 + (np.zeros(FRAMES) if beat is None else 3 * np.cos(2 * np.pi * (t - 8) / beat)))
 
 
 def _choose(found: dict, *, period: int, seam: float, run: int = 9, search_seam: float = 1.0, view: str | None = None,
@@ -812,7 +881,7 @@ def test_the_body_witnesses_two_steps_an_interval_where_its_top_line_rises_and_f
     range under BOB_FLOOR of the body's height and under BOB_ROWS rows, does not rise and fall, however it correlates."""
     t = np.arange(FRAMES)
     line = list(40 + swing * np.cos(2 * np.pi * t / beat))
-    word = local_cycle.bob_word(line, 15, height=100)
+    word = local_cycle.bob_word(_body(line), 15)
     assert word["says"] == says and word["floor"] == local_cycle.BOB_FLOOR and word["twice"] == local_cycle.BOB_TWICE
     left = local_cycle.off_flow(line, 15)
     assert word["swing"] == pytest.approx(np.ptp(left) / 100, abs=1e-4)
@@ -828,16 +897,17 @@ def test_the_body_witnesses_two_steps_an_interval_where_its_top_line_rises_and_f
 @pytest.mark.parametrize("beat", [7.5, 15, None])
 def test_the_body_is_read_less_the_flow_of_the_picture(beat, flow):
     """`bob_word` on an interval of 15 frames, the body 100 rows tall, its top line read in whole rows: rising and
-    falling 3 rows either way twice an interval (every 7.5 frames), once (every 15) or not at all, on a picture held
-    still or carried up and down with the line: along an arc 24 rows deep, a cubic 48 rows either way, a sway 12 rows
-    either way four intervals long, a ramp of 6 rows over the clip. Less its flow the line is the body's own: twice an
-    interval witnesses two steps an interval wherever the picture goes, and once or not at all never does; a line that
-    does not rise and fall is left under BOB_ROWS by the picture drifting in whole rows."""
+    falling 3 rows either way twice an interval (every 7.5 frames), once (every 15) or not at all on legs whose feet
+    stay on the ground, on a picture held still or carried up and down with the body, feet and all: along an arc 24 rows
+    deep, a cubic 48 rows either way, a sway 12 rows either way four intervals long, a ramp of 6 rows over the clip.
+    Less its flow the line is the body's own: twice an interval witnesses two steps an interval wherever the picture
+    goes, and once or not at all never does; a line that does not rise and fall is left under BOB_ROWS by the picture
+    drifting in whole rows."""
     t = np.arange(FRAMES)
     flows = {"still": 0 * t, "arc": 24 * ((t - 36) / 36) ** 2, "cubic": 48 * ((t - 36) / 36) ** 3,
              "sway": 12 * np.sin(2 * np.pi * t / 60), "ramp": 6 * t / 72}
     top = np.round(40 + (0 if beat is None else 3 * np.cos(2 * np.pi * t / beat)) + flows[flow])
-    word = local_cycle.bob_word(list(top), 15, height=100)
+    word = local_cycle.bob_word(_body(top, lowest=np.round(140 + flows[flow])), 15)
     assert (word["says"] == "cycles") is (beat == 7.5)
     if beat is None and flow != "sway":
         assert word["rows"] < local_cycle.BOB_ROWS and "does not rise and fall" in word["why"]
@@ -858,6 +928,180 @@ def test_the_flow_taken_out_leaves_a_rise_and_fall_once_or_twice_an_interval_who
             whole = inner - np.polyval(np.polyfit(u, inner, 1), u)
             assert np.max(np.abs(left - whole)) < (1e-9 if interval == 15 else 0.05)
         assert np.max(np.abs(local_cycle.off_flow(list(flow), interval))) < 1e-9
+
+
+def test_the_rise_and_fall_twice_an_interval_reads_as_far_as_the_line_moves():
+    """`twice_an_interval` over an interval of 15 frames (and 17.5): a line rising and falling 3 rows either way twice an
+    interval, with a rise and fall once an interval and a cubic flow laid on it, reads 3 rows; two lines read over the
+    same frames subtract as they move — the same rise and fall on another flow leaves next to nothing. Under BEAT_FRAMES
+    frames left less the flow, nothing is read."""
+    t = np.arange(FRAMES)
+    for interval in (15, 17.5):
+        flow = 48 * ((t - 36) / 36) ** 3 + 2 * np.cos(2 * np.pi * t / interval)
+        rise = 3 * np.cos(4 * np.pi * t / interval + 1)
+        a = local_cycle.twice_an_interval(list(flow + rise), interval)
+        assert abs(a) == pytest.approx(3, abs=0.15)
+        b = local_cycle.twice_an_interval(list(5 + rise), interval)
+        assert abs(a - b) < 0.15
+    assert local_cycle.twice_an_interval(list(range(14)), 15) is None
+
+
+@pytest.mark.parametrize("motion", ["planted", "moved", "planted and shaken"])
+def test_a_rise_and_fall_the_lowest_row_shares_is_the_picture_moving(motion):
+    """`bob_word` on an interval of 15 frames, the body 100 rows tall, its lines read in whole rows. A top line rising
+    and falling 3 rows either way twice an interval on legs whose feet stay on the ground (`planted`) is the body's own,
+    all of it left against the lowest row: two steps an interval. The same rise and fall with the lowest row rising and
+    falling with it (`moved`) — the body carried up and down whole, feet and all, or a body held still on a picture
+    shaken twice an interval, the same lines either way — is the picture moving: the line alone rises and falls twice
+    an interval, and nothing of it is left against the lowest row. A body's own rise and fall of 3 rows on a picture
+    shaken 12 rows with it (`planted and shaken`) is a fifth of the line's, under BOB_OWN: not told from the picture.
+    Neither witnesses anything."""
+    t = np.arange(FRAMES)
+    rise = 3 * np.cos(2 * np.pi * t / 7.5)
+    own, moved = {"planted": (rise, 0 * t), "moved": (0 * t, rise), "planted and shaken": (rise, 4 * rise)}[motion]
+    word = local_cycle.bob_word(_body(np.round(40 + own + moved), lowest=np.round(140 + moved)), 15)
+    assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE and word["edge"] == 0
+    body = word["body"]
+    assert body["least"] == local_cycle.BOB_OWN and body["scale_least"] == local_cycle.BOB_SCALE
+    if motion == "planted":
+        assert word["says"] == "cycles" and body["share"] > 0.9 and body["scale"] == pytest.approx(1)
+    else:
+        assert word["says"] is None and body["share"] < local_cycle.BOB_OWN
+        assert "its lowest row rises and falls with it" in word["why"] and "the picture moves with the body" in word["why"]
+
+
+@pytest.mark.parametrize("about", ["feet", "middle"])
+def test_a_rise_and_fall_the_heads_width_shares_is_the_picture_zooming(about):
+    """`bob_word` on an interval of 15 frames: a body 100 rows tall, zoomed in and out with the picture twice an interval
+    about its feet (3 % either way: its top line rising and falling 3 rows, its lowest row still) or about its middle
+    (6 %: the top line and the lowest row 3 rows either way, turned over from each other). Against the lowest row the top
+    line rises and falls as a body on its legs would, but its head widens as the line lifts, as much as the body's
+    height grows: less the head's scale nothing is left. The picture zooms; nothing is witnessed."""
+    t = np.arange(FRAMES)
+    f = 1 + (0.03 if about == "feet" else 0.06) * np.sin(2 * np.pi * t / 7.5)
+    at = 140 if about == "feet" else 90
+    top, lowest = np.round(at - (at - 40) * f), np.round(at + (140 - at) * f)
+    word = local_cycle.bob_word({**_body(top, lowest=lowest, crown=np.log(20 * f)), "height": list(100 * f)}, 15)
+    assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
+    assert word["says"] is None and word["body"]["scale"] < local_cycle.BOB_SCALE
+    assert "its head's width changes with it" in word["why"] and "the picture zooms with the body" in word["why"]
+
+
+def test_a_lowest_row_on_the_frames_last_row_holds_the_word():
+    """A top line rising and falling twice an interval on legs whose feet stay on the ground witnesses two steps an
+    interval; the same with the lowest row on the frame's last row in one frame does not: the feet may run off the
+    frame there, and the lowest row is the frame's, not theirs. The word says why."""
+    t = np.arange(FRAMES)
+    top = np.round(40 + 3 * np.cos(2 * np.pi * t / 7.5))
+    assert local_cycle.bob_word(_body(top), 15)["says"] == "cycles"
+    word = local_cycle.bob_word(_body(top, edge=(t == 30)), 15)
+    assert word["says"] is None and word["edge"] == 1 and f"the frame's last row in 1 of {FRAMES} frames" in word["why"]
+
+
+# Walkers moved or zoomed with the whole picture, by their interval between crossings d: the side walker whose legs are
+# drawn alike and wide, its crossings its steps (23 frames), and the walker seen from behind whose feet meet once a cycle
+# (17.5); held still, carried up and down whole (feet and all, on the walk's beat), or rising and falling on its legs
+# once a step. None rises and falls twice an interval on its legs.
+_STEPS = {"cycle": 46, "phase": 13, "tone": 4, "lean": 1, "leg_tone": 0, "leg_half": 10}
+NOT_TWICE = {
+    "steps-still": (23, lambda k: _alike(k, **_STEPS, bob=0)),
+    "steps-whole": (23, lambda k: _alike(k, **_STEPS, whole=True)),
+    "steps-on-its-legs": (23, lambda k: _alike(k, **_STEPS)),
+    "hidden-still": (17.5, lambda k: _behind(k, cycle=17.5, hold=1, alike=True, bob=0)),
+    "hidden-whole": (17.5, lambda k: _behind(k, cycle=17.5, hold=1, alike=True, whole=True)),
+}
+
+
+def _zoomed(draw, scale, about: str):
+    """`draw`'s walker zoomed in and out with the whole picture, `scale(k)` in frame k about its feet, its middle or its
+    head (bilinear), on a canvas 60 px taller either side."""
+    ax, ay = 104, {"feet": GROUND, "middle": 103, "head": 40}[about]
+
+    def frame(k: int) -> Image.Image:
+        im, f = draw(k), scale(k)
+        big = im.resize((round(im.width * f), round(im.height * f)), Image.BILINEAR)
+        out = Image.new("RGBA", (im.width, im.height + 120))
+        out.paste(big, (round(ax - ax * f), round(60 + ay - ay * f)))
+        return out
+    return frame
+
+
+def _word_of(draw, interval: float) -> dict:
+    frames = [draw(k) for k in range(FRAMES)]
+    return local_cycle.bob_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, interval)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("period", [0.25, 0.5, 1, 2])
+@pytest.mark.parametrize("walker", list(NOT_TWICE))
+def test_a_walk_moved_up_and_down_with_the_whole_picture_on_any_beat_is_never_witnessed(walker, period):
+    """`bob_word` off the drawn frames (`legs.strike_signals`, `legs.body_signals`) at the walker's interval d, the
+    whole picture moved up and down 3, 6 or 12 px either way every d/4, d/2, d or 2d frames, at four phases
+    (`_carried`). The top line on the screen may rise and fall twice an interval with the picture (the parent engine
+    read it so, and witnessed a body held still on a picture shaken twice an interval), but the lowest row moves with
+    it, and what is left against it does not rise and fall twice an interval: none is witnessed."""
+    d, draw = NOT_TWICE[walker]
+    frames = [draw(k) for k in range(FRAMES)]
+    for rows in (3, 6, 12):
+        for phase in (0, math.pi / 2, math.pi, 3 * math.pi / 2):
+            shake = lambda k, m=rows, f=phase: round(m * math.sin(2 * math.pi * k / (period * d) + f))  # noqa: E731
+            word = _word_of(_carried(lambda k: frames[k], shake), d)
+            assert word["says"] is None, (walker, period, rows, phase, word)
+            if (walker, period, rows, phase) == ("steps-still", 0.5, 3, 0):
+                assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
+                assert "its lowest row rises and falls with it" in word["why"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("period", [0.25, 0.5, 1])
+@pytest.mark.parametrize("walker", ["steps-still", "steps-on-its-legs", "hidden-still"])
+def test_a_walk_zoomed_in_and_out_with_the_whole_picture_on_any_beat_is_never_witnessed(walker, period):
+    """The same walkers, held still or rising and falling on their legs once a step, zoomed in and out with the picture
+    0.5 to 4 % either way every d/4, d/2 or d frames about their feet, middle or head, at two phases (`_zoomed`): where
+    the top line rises and falls twice an interval against the lowest row, the head widens with it, and less its scale
+    nothing of the body's own is left. None is witnessed."""
+    d, draw = NOT_TWICE[walker]
+    frames = [draw(k) for k in range(FRAMES)]
+    for amount in (0.005, 0.01, 0.02, 0.04):
+        for about in ("feet", "middle", "head"):
+            for phase in (0, math.pi / 2):
+                scale = lambda k, a=amount, f=phase: 1 + a * math.sin(2 * math.pi * k / (period * d) + f)  # noqa: E731
+                word = _word_of(_zoomed(lambda k: frames[k], scale, about), d)
+                assert word["says"] is None, (walker, period, amount, about, phase, word)
+
+
+# The picture moved up and down (of the interval d, px either way, phase), or held still (None).
+SHAKES = [None, (0.5, 6, 0), (0.5, 6, math.pi / 2), (1, 6, 0)]
+SLIDE_SHAKES = [None, (0.5, 3, 0), *((0.5, 6, f) for f in (0, math.pi / 2, math.pi, 3 * math.pi / 2)), (0.5, 12, 0), (1, 6, 0)]
+
+
+def _shake(shake, d: float):
+    return (lambda k: 0) if shake is None else (lambda k: round(shake[1] * math.sin(2 * math.pi * k / (shake[0] * d) + shake[2])))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("air", [1, 2, 3, 6])
+def test_a_run_whose_feet_leave_the_ground_as_its_body_rises_is_never_witnessed_two_steps_an_interval_of_steps(air):
+    """The side walker rising and falling on its legs once a step, its crossings its steps (23 frames), running: both
+    soles lifted up to `air` px off the ground while the body is high, so the lowest row rises with the body for half of
+    each step. Still or on a picture moved 6 px either way every d/2 or d frames: what is left of the top line against
+    the lowest row rises and falls once an interval, never twice — not witnessed."""
+    frames = [_alike(k, **_STEPS, air=air) for k in range(FRAMES)]
+    for shake in SHAKES:
+        assert _word_of(_carried(lambda k: frames[k], _shake(shake, 23)), 23)["says"] is None, (air, shake)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("slide", [6, 12, 24])
+def test_a_walk_whose_planted_foot_slides_down_the_screen_is_never_witnessed_two_steps_an_interval_of_steps(slide):
+    """The side walker rising and falling on its legs once a step, its crossings its steps, drawn as a view from behind
+    or a diagonal draws feet: each sole up to `slide` px lower the further back its foot is, the foot moving forward
+    lifted 8 px — the lowest row is the planted foot, sliding down through its step and jumping up when the other lands.
+    Still or on a picture moved 3, 6 (at four phases) or 12 px either way every d/2 frames, or 6 every d: not
+    witnessed."""
+    frames = [_alike(k, **_STEPS, lift=8, slide=slide) for k in range(FRAMES)]
+    for shake in SLIDE_SHAKES:
+        assert _word_of(_carried(lambda k: frames[k], _shake(shake, 23)), 23)["says"] is None, (slide, shake)
 
 
 @pytest.mark.parametrize("verdict, named", [("uncertain", True), ("two", False)])

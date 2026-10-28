@@ -13,9 +13,18 @@ Both read the same per-frame signals (`strike_signals`) and choose between them 
   lower, once a step.
 - `top`: the body's top line, for a body with no legs to read. It rises and falls once a step
   whichever leg leads, so the step count reads it as the witness that a crossing interval holds
-  two steps (`local_cycle.bob_word`).
+  two steps (`local_cycle.bob_word`) — against the lowest row and the head's width, since the
+  picture moving or zoomed with the body moves the line as well.
 - `gap`: the widest empty run between the foot band's two ends, of the frame's height — two feet
   seen apart.
+
+The step count's witness reads two more (`body_signals`), recorded nowhere else:
+
+- `crown`: the head's width, the log of the mean width (in alpha) of the band CROWN of the clip's
+  median body height below the first solid row. A picture zoomed in and out widens and narrows
+  it as it lifts and lowers the top line; a body rising and falling on its legs leaves it.
+- `edge`: 1 where the lowest solid row is the frame's last row — the feet may run off the
+  frame, and the lowest row is the frame's, not theirs — else 0.
 
 Which of the two feet is which is read on cues the view draws (`depth_cue`, `shade_cue`): from the front or back the
 foot nearer the viewer is drawn lower, from the side or a diagonal the far leg is drawn in shade. `video-cycle-align`
@@ -32,6 +41,7 @@ widens once a step. Counting steps therefore also asks for two feet seen apart (
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from PIL import Image
@@ -41,6 +51,7 @@ from sprite_gen._deps import np
 FOOT_BAND = 0.08  # fraction of the frame's own height, measured up from its lowest opaque row
 LOW_ALPHA = 128  # the legs are read off solid pixels only
 BODY_RUN = 0.5  # the body's top line: the first row at least half as wide as the frame's widest
+CROWN = (0.02, 0.10)  # the head's top band: from 2 % to 10 % of the body's median height below its first solid row
 # A walk seen from the side or a diagonal opens its feet by a good part of its height each step;
 # from the front or back its foot band hardly changes width, but the foot nearer the viewer is
 # drawn lower by a few hundredths of it.
@@ -96,6 +107,27 @@ def strike_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
         out["gap"].append(_widest_gap(cols) / height)
         out["height"].append(float(height))
     return out
+
+
+def body_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
+    """Per frame, from the solid pixels, what the step count's witness reads besides `strike_signals`:
+    `crown` and `edge` (see the module). `crown` reads the same band of every frame, of the clip's
+    median body height."""
+    edge, firsts, heights, widths = [], [], [], []
+    for f in frames:
+        alpha = np.asarray(f.getchannel("A"))
+        rows = np.nonzero((alpha >= LOW_ALPHA).any(axis=1))[0]
+        if rows.size == 0:
+            raise ValueError("a loop frame has no solid body")
+        y0, y1 = int(rows[0]), int(rows[-1])
+        edge.append(float(y1 == alpha.shape[0] - 1))
+        firsts.append(y0)
+        heights.append(y1 - y0 + 1)
+        widths.append(alpha.sum(axis=1, dtype=np.float64) / 255.0)
+    median = float(np.median(heights)) if frames else 0.0
+    a0, a1 = max(1, math.ceil(CROWN[0] * median)), max(2, math.ceil(CROWN[1] * median))
+    crown = [float(np.log(max(1e-6, w[y0 + a0 : y0 + a1].sum() / (a1 - a0)))) for y0, w in zip(firsts, widths)]
+    return {"crown": crown, "edge": edge}
 
 
 def swings(sig: dict[str, list[float]]) -> dict[str, float]:

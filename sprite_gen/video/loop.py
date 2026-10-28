@@ -1542,10 +1542,11 @@ def wrap_on_cells(frames: list[Image.Image]) -> float:
 def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = None, facing: str = "right",
                signals: dict[str, list[float]] | None = None) -> crossings_mod.Reading:
     """The clip's crossings (`crossings.read`), and whether they mark its cycles (`local_cycle.read_cycles`, on `D`, the
-    clip's distances, the body's bob read off `signals` — the frames' leg signals, read here where not given — and the
-    `view`'s foot cue: `legs.shade_cue` from the side or a diagonal, drawn in tones of `legs.TONE`, `legs.depth_cue` from
-    the front or back, in pixel rows of the body's median height). Every count the clip's steps make is read on it: the
-    search's cut (`_by_steps`), a fixed cut (`fixed_count`) and, carried to the loop, the loop as it plays (`ring_steps`)."""
+    clip's distances, the body's bob read off `signals` — the frames' leg signals, read here where not given, with the
+    body's own (`legs.body_signals`) — and the `view`'s foot cue: `legs.shade_cue` from the side or a diagonal, drawn in
+    tones of `legs.TONE`, `legs.depth_cue` from the front or back, in pixel rows of the body's median height). Every
+    count the clip's steps make is read on it: the search's cut (`_by_steps`), a fixed cut (`fixed_count`) and, carried
+    to the loop, the loop as it plays (`ring_steps`)."""
     signals = leg_signals(frames) if signals is None else signals
     try:
         reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
@@ -1557,7 +1558,8 @@ def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = N
         cue = [legs_mod.shade_cue(f, facing) if lateral else legs_mod.depth_cue(f) for f in frames]
         heights = signals["height"] if signals else legs_mod.strike_signals(frames)["height"]
         step = legs_mod.TONE if lateral else 1.0 / float(np.median(heights))
-    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step, signals=signals)
+    body = {**signals, **legs_mod.body_signals(frames)} if signals else None
+    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step, signals=body)
     return reading
 
 
