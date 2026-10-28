@@ -2083,7 +2083,23 @@ def _cut_loop(
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())
             else:
                 report_base["size_hold"] = {"applied": False, "why": "--size-hold off"}
-            D, trajectory, analysis = auto_motion.analyse(source_frames, fps=fps)
+            try:
+                D, trajectory, analysis = auto_motion.analyse(source_frames, fps=fps)
+            except auto_motion.RegionsUnfound as unfound:
+                # No two regions track through the clip: the frames it opens on, fewer than the shortest cut, are left
+                # out as a lead-in is and the clip after them is searched (`auto_motion.analyse_after_opening`), said
+                # in the report's `untracked_opening` and, once a cut is found, a warning line; where no such opening
+                # leaves it tracked, the clip is refused as before, in the same words and what was tried.
+                opening, (D, trajectory, analysis) = auto_motion.analyse_after_opening(
+                    source_frames, fps=fps, shorter_than=lo, unfound=unfound)
+                report_base["untracked_opening"] = {"frames": opening, "first": skip, "shorter_than": lo,
+                                                    "refused": str(unfound)}
+                skip += opening
+                source_frames, files = source_frames[opening:], files[opening:]
+                window = CutWindow.of(prof, n - skip, fps, min_len, max_len)
+                lo, hi = window.lo, window.hi
+                report_base["window"] = [lo, hi]
+                report_base["lead_in"]["search_from"] = skip
             report_base["automatic_motion_analysis"] = analysis
             search = partial(_motion_auto, source_frames, files, D, trajectory, analysis, fps=fps, window=window, prof=prof,
                              steps=steps, seam_max=seam_max, seam_pop_max=seam_pop_max, scratch=scratch)
@@ -2140,6 +2156,13 @@ def _cut_loop(
                 else:
                     turning["verdict"] = "kept"
                     print(f"video-loop: warning: {body_turn_mod.kept(turning, cut=cut, held=holds)}", file=sys.stderr)
+            if opened := report_base.get("untracked_opening"):
+                # Not the refusal's words: a caller that reads the stderr for them reads a refusal, and this cut is found.
+                left = (f"frame {opened['first']}" if opened["frames"] == 1
+                        else f"frames {opened['first']}-{opened['first'] + opened['frames'] - 1}")
+                print(f"video-loop: warning: the automatic motion anchor found its two regions from frame {skip} on, not from "
+                      f"the clip's first frames: {left} left out of the search as a lead-in is (untracked_opening)",
+                      file=sys.stderr)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(
@@ -2286,7 +2309,9 @@ def _cut_loop(
                 frames, anchor_regions, coarse_dx=body_wrap_offset(frames, search=motion_anchor.COARSE_SEARCH),
             )
         except ValueError as exc:
-            error = f"video-loop: {exc}"
+            # The search found its regions on the clip; the cut's own frames, read again for the correction, may hold none.
+            on_cut = f" — on the cut the search took (frames {i}-{i + L - 1})" if isinstance(exc, auto_motion.RegionsUnfound) else ""
+            error = f"video-loop: {exc}{on_cut}"
             refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
