@@ -139,7 +139,22 @@ pixel at least 1 − RIM_SLOPE of its area and its read stays clear of the held 
 and the upper yield's. The ellipses still say each region's gain and where `--band-up`'s shape sits. A read whose four
 pixels take a held one is read from the others, and walked back only where they are half its weight, which the rim keeps
 from happening. The record holds the mask, its carry in every cell and a ledger per cell (`region_ledger`). Not with
-`--band`, a region's flat share, `--stretch-floor` nor `--hold-mask`.
+`--band`, a region's flat share, `--stretch-floor` nor `--hold-mask` (but under `--region-over`). The crease is the
+picture's own edge: `--region-shrink` wears the mask in everywhere else and leaves its lower edge on the crease
+(`crease_kept`).
+
+`--region-over` (with `--region-mask`; off by default, and off nothing of it is read or written) lays the region over the
+figure under it (`layer_sets`, `lay_over`): the held pixels under its lower edge, solid or not — in its columns and the
+air's reach past them — are no anchor of the rim, so the lower edge moves with the rest, and the band of them within the
+air's reach of it moves too and is drawn over: the region's own pixels (with its soft edge, which goes with it beside the
+figure too, and its outline against the air) read at the move and laid by their alpha over the band's own pixel, which
+keeps its bytes where they do not land, and over the air, which shows them and never the figure beside it; where the
+region lifts, its pixels read the figure under it. `--hold-mask` names the pixels it
+leaves out (an arm), carried as a band's are: never the region's, never drawn over, an anchor of the rim. `--region-shear
+S` (off by default) widens the rim so a move one way rises across it the other way by at most S px a px (`shear_floor`):
+the fold rule reads each way by the move along it alone, and a move down rose all at once across a rim sized for a small
+move across. With either the ledger reads the region's edges too: the steps the drawn move takes (`move_steps`), the
+strip a region drawn short of its side leaves standing (`still_strip`), and its tip's shape and move (`tip_shape`).
 """
 
 from __future__ import annotations
@@ -231,6 +246,14 @@ REGION_SOFT = 2  # px (4-neighbour steps) from the region a pixel not opaque mov
 REGION_AIR = 2  # px past the move's reach (8-neighbour steps) round the region of clear pixels it may move into
 CREASE_UP, CREASE_DOWN = 5, 3  # rows above and below a region's lowest pixel its lower edge is looked for (`--region-crease`)
 CREASE_SPAN = 2  # columns either way the crease's rows are taken the median over
+# A region laid over the figure under it (`--region-over`): what lies under its lower edge no anchor of the rim, the band of
+# it within the air's reach drawn over by the region's own pixels by their alpha and kept where they do not land.
+OVER_POLICY = "under-edge-free/band-and-air-laid-by-alpha/air-outline-with/1"
+TIP_COLS = 10  # the region's columns at its tip the ledger reads the tip's shape and move over (`tip_shape`)
+TIP_AIR = 8  # px of the air round the tip's columns and rows the tip's window takes
+TIP_RING = 3  # px round the source's outline against the air the tip's shape is read over
+TIP_OFF = 2  # px round the other solid pixels the tip's ring leaves out
+TIP_SEARCH = 6  # px either way the tip's outline is looked for once its move is taken away
 
 
 def parse_region(text: str) -> tuple[float, ...]:
@@ -1024,12 +1047,14 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
              gain_across: float | None = None, band: float | str | None = None, band_margin: float | str | None = None,
              band_up: tuple[float, float | str] | str | None = None, hold_mask: Path | None = None,
              region_mask: Path | None = None, region_rim: float | None = None, region_shrink: int | None = None,
-             region_crease: bool = False, verb: str = VERB) -> Ask:
+             region_crease: bool = False, region_over: bool = False, region_shear: float | None = None,
+             verb: str = VERB) -> Ask:
     """A sway's ask, read and checked. A number left out (None) is its default: the damped mass's gain, freq and zeta,
     or, on the breath (`breathe`), the breath's gain and lag. `band` (px or AUTO; None: off) moves each region as one
     mass, `band_margin` and `band_up` shaping it, and `hold_mask` (a PNG or a folder of them; None: off) holds pixels
     the band moves round. `region_mask` (a PNG or a folder of them; None: off) gives the region as a mask instead,
-    `region_rim`, `region_shrink`, `region_crease` and `band_up` shaping it."""
+    `region_rim`, `region_shrink`, `region_crease`, `region_over` (with `hold_mask` the pixels its layer leaves out),
+    `region_shear` and `band_up` shaping it."""
     # The numbers go into the record, which is JSON, and into the cells' arithmetic: a numpy number from a
     # caller (an int64 has no JSON form) is read as the float the command line gives, so every caller of the
     # same numbers writes the same strip and record.
@@ -1067,11 +1092,13 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
     breath = None if breathe is None else read_breath(breathe, lag, verb=verb)
     if region_mask is not None:
         masked = _read_region_mask(regions, region_mask, region_rim, region_shrink, region_crease, band, band_margin, band_up,
-                                   stretch_floor, hold_mask, verb)
+                                   stretch_floor, hold_mask, verb, over=region_over, shear=region_shear)
         return Ask(regions, gain, freq, zeta, on_fold, None if read_on is None else str(read_on), stretch_floor, gain_across,
                    breath, mask=masked)
     if region_rim is not None or region_shrink is not None or region_crease:
         raise SystemExit(f"{verb}: --region-rim, --region-shrink and --region-crease shape a region mask; they need --region-mask")
+    if region_over or region_shear is not None:
+        raise SystemExit(f"{verb}: --region-over and --region-shear shape a region mask; they need --region-mask")
     shaped = _read_band(regions, band, band_margin, band_up, stretch_floor, verb)
     if hold_mask is not None and shaped is None:
         raise SystemExit(f"{verb}: --hold-mask keeps pixels as they are while a band moves its regions round them; it needs --band")
@@ -1103,9 +1130,10 @@ def _read_band(regions: list[tuple[float, ...]], band: float | str | None, margi
 
 def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float | None, shrink: int | None, crease: bool,
                       band: float | str | None, margin: float | str | None, up: tuple[float, float | str] | str | None,
-                      stretch_floor: float | None, hold_mask: Path | None, verb: str) -> RegionMask:
-    """The region mask asked (`--region-mask`, `--region-rim`, `--region-shrink`, `--region-crease`, `--band-up`), checked
-    as the command line checks it, and its PNGs read."""
+                      stretch_floor: float | None, hold_mask: Path | None, verb: str, *, over: bool = False,
+                      shear: float | None = None) -> RegionMask:
+    """The region mask asked (`--region-mask`, `--region-rim`, `--region-shrink`, `--region-crease`, `--region-over` and,
+    with it, `--hold-mask`, `--region-shear`, `--band-up`), checked as the command line checks it, and its PNGs read."""
     if band is not None:
         raise SystemExit(f"{verb}: --region-mask moves the region's own pixels and holds every visible pixel round it, the weight "
                          "falling over a rim inside it; --band moves an ellipse over a band outside it: give one of them")
@@ -1119,8 +1147,17 @@ def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float |
     if stretch_floor is not None:
         raise SystemExit(f"{verb}: --stretch-floor reads the weight that falls from a region's centre; with --region-mask the rim "
                          "is widened with the move")
-    if hold_mask is not None:
-        raise SystemExit(f"{verb}: --region-mask holds every visible pixel outside the region already; --hold-mask is a band's")
+    if hold_mask is not None and not over:
+        raise SystemExit(f"{verb}: --region-mask holds every visible pixel outside the region already; --hold-mask is a band's, "
+                         "or with --region-over the pixels its layer leaves out")
+    if shear is not None:
+        try:
+            shear = float(shear)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{verb}: --region-shear is px a px, over 0; got {shear!r}") from exc
+        if not (shear > 0 and math.isfinite(shear)):  # a NaN is not
+            raise SystemExit(f"{verb}: --region-shear is the most a move one way may rise across the rim the other way, px a "
+                             f"px, over 0; got {shear:g}")
     rim = RIM_DEFAULT if rim is None else float(rim)
     if not rim >= 1 or not math.isfinite(rim):  # a NaN is not
         raise SystemExit(f"{verb}: --region-rim is how many times the fold rule's least band the rim starts at, 1 or more; got {rim:g}")
@@ -1136,7 +1173,8 @@ def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float |
     except argparse.ArgumentTypeError as exc:
         raise SystemExit(f"{verb}: {exc}") from exc
     masks, digests, per_cell = _read_masks(path, "--region-mask", verb)
-    return RegionMask(masks, digests, per_cell, rim, shrink, bool(crease), shaped)
+    return RegionMask(masks, digests, per_cell, rim, shrink, bool(crease), shaped, bool(over), shear,
+                      None if hold_mask is None else read_hold(hold_mask, verb))
 
 
 @dataclass(frozen=True, eq=False)
@@ -1165,7 +1203,8 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
                  lag: float | None = None, gain_across: float | None = None, band: float | str | None = None,
                  band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None,
                  hold_mask: Path | None = None, region_mask: Path | None = None, region_rim: float | None = None,
-                 region_shrink: int | None = None, region_crease: bool = False) -> Request:
+                 region_shrink: int | None = None, region_crease: bool = False, region_over: bool = False,
+                 region_shear: float | None = None) -> Request:
     loop_dir = loop_dir.expanduser().resolve()
     metas = sorted(loop_dir.glob("*.strip.json"))
     if len(metas) != 1:
@@ -1179,7 +1218,7 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
                    breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
                    hold_mask=hold_mask, region_mask=region_mask, region_rim=region_rim, region_shrink=region_shrink,
-                   region_crease=region_crease, verb=verb)
+                   region_crease=region_crease, region_over=region_over, region_shear=region_shear, verb=verb)
     return Request(loop_dir, name, meta_path, meta_bytes, meta, ask)
 
 
@@ -1278,14 +1317,24 @@ class Answer:
         and what it moves and holds there (`region_sets`: the region, its soft edge, the air it may move into, the held
         pixels). Over the region, its soft edge and the air the weight is the rim's, sin² of the distance to the nearest
         held pixel (`rim_distance`, over `Masked.rim`), and with `--band-up` the lesser of that and each region's upper
-        yield, the ellipse carried by its own pixels as a band carries it (`Masked.up`); 0 elsewhere."""
+        yield, the ellipse carried by its own pixels as a band carries it (`Masked.up`); 0 elsewhere. Laid over the figure
+        under it (`--region-over`, `layer_sets`), what lies under its lower edge is no anchor of the rim and the band of it
+        moves too, the pixels `--hold-mask` names left out of the region and of the band."""
         assert self.mask is not None
         masked = self.mask
         alpha = np.asarray(self.cells[k].getchannel("A"))
         region = masked.region_in(k, alpha >= ALPHA_SOLID)
-        soft, held, air = region_sets(region, alpha, masked.air)
+        if masked.asked.over:
+            left_out = masked.left_out_in(k)
+            sets = layer_sets(region & ~left_out, alpha, masked.air, left_out)
+            anchors, moving = sets["anchors"], sets["region"] | sets["soft"] | sets["air"] | sets["band"]
+            sets["left_out"] = region & left_out
+        else:
+            soft, held, air = region_sets(region, alpha, masked.air)
+            sets = {"region": region, "soft": soft, "air": air, "held": held}
+            anchors, moving = held, region | soft | air
         across, down = masked.rim[:2]
-        rim = np.where(region | soft | air, np.sin(0.5 * math.pi * rim_distance(held, across, down)) ** 2, 0.0)
+        rim = np.where(moving, np.sin(0.5 * math.pi * rim_distance(anchors, across, down)) ** 2, 0.0)
         # The groups as `solve_cells` makes them: one per gain a region moves by, in the order of `moves`.
         groups = [[i for i, (rg, hold) in enumerate(zip(self.gains, self.held)) if rg == g and not hold] for g in self.moves]
         if masked.up is None:
@@ -1296,11 +1345,13 @@ class Answer:
             group_weights = [np.minimum(rim, np.max([yields[i] for i in members], axis=0)) if members else np.zeros(rim.shape)
                              for members in groups]
         offsets = [(mx[k], my[k]) for mx, my in self.moves.values()]
-        return _largest_move(group_weights, offsets), {"region": region, "soft": soft, "air": air, "held": held}
+        return _largest_move(group_weights, offsets), sets
 
     def masked_cell(self, k: int) -> tuple[Image.Image, dict[str, Any]]:
         """Under a region mask, cell k drawn by its move (`mask_field`) as a hold draws it (`draw_held`), every read its
-        whole move and no held pixel read; what it moved and held, the move, and how each pixel was read. Kept in
+        whole move and no held pixel read; what it moved and held, the move, and how each pixel was read. Laid over the
+        figure under it (`--region-over`), the band, the air and what a lift uncovers are drawn as the layer lands on them
+        (`lay_over`), not read by `draw_held`: the held pixels are then those it keeps, the move 0 on them. Kept in
         `Masked.drawn`."""
         assert self.mask is not None
         cell = self.cells[k]
@@ -1312,6 +1363,25 @@ class Answer:
             field, drawn = None, cell.copy()
             read = {"share": np.ones((h, w)), "readers": still > 0, "renormalised": still > 0, "walked": still > 0,
                     "read_x": still, "read_y": still}
+            if self.mask.asked.over:
+                sets = {**sets, "over": still > 0, "laid": still > 0, "lifted": still > 0}
+        elif self.mask.asked.over:
+            band = sets["band"]
+            layered = band | sets["air"] | uncovered(sets, field[2])
+            # The band, the air and what a lift uncovers are the layer's to draw (`lay_over`, every pixel of them): no read
+            # of `draw_held`'s is taken there.
+            drawn, read = draw_held(cell, (field[0] & ~layered, field[1], field[2]), sets["held"] & ~band,
+                                    np.zeros((h, w), bool), short=False)
+            drawn, laid, over, lifted = lay_over(cell, drawn, field, sets)
+            kept = band & ~laid
+            field = (field[0], np.where(kept, 0.0, field[1]), np.where(kept, 0.0, field[2]))
+            # There the read is the layer's: its whole move, none where the band keeps its bytes.
+            read = {**read, "read_x": np.where(layered, field[1], read["read_x"]),
+                    "read_y": np.where(layered, field[2], read["read_y"])}
+            # What it keeps: the held pixels less the band the layer lands on and the outline that goes with it; what no read
+            # takes: the held pixels but the band, which the region reads where it lifts.
+            sets = {**sets, "held": sets["held"] & ~laid, "unread": sets["held"] & ~sets["band"], "over": over, "laid": laid,
+                    "lifted": lifted}
         else:
             drawn, read = draw_held(cell, field, sets["held"], np.zeros((h, w), bool), short=False)
         self.mask.drawn.setdefault(k, drawn)
@@ -1384,14 +1454,18 @@ class Answer:
         and the air reach, and the rim (`rim_bands`); the mask on the cell it was drawn on, worn in, with the solid pixels
         it was carried by, and the crease where asked (`crease_of`); where it is carried in every cell and from what, and
         the cells that kept the carry of the cell before and why (None and none where a mask is given for each cell); the
-        upper yield's bands and carry (`--band-up`; None without it); and the ledger (`region_ledger`)."""
+        upper yield's bands and carry (`--band-up`; None without it); and the ledger (`region_ledger`). The rim `--region-
+        shear` asks at least (`rim.shear_px`) and the layer (`over`: how deep its band reaches, and the pixels `--hold-mask`
+        leaves out, carried as a hold mask is) only where they are asked."""
         assert self.mask is not None
         masked = self.mask
         across, down, slope, least = masked.rim
         one = None if masked.asked.per_cell else masked.worn[0]
+        left_out = masked.left_out
         return {
             "policy": REGION_POLICY, "asked": masked.asked.asked(), "soft_px": REGION_SOFT, "air_px": masked.air,
-            "rim": {"across_px": across, "down_px": down, "least_px": list(least), "slope": slope, "slope_bound": RIM_SLOPE},
+            "rim": {"across_px": across, "down_px": down, "least_px": list(least), "slope": slope, "slope_bound": RIM_SLOPE}
+            | ({} if masked.sheared is None else {"shear_px": list(masked.sheared)}),
             "mask": None if one is None else {"px": int(one.sum()), "box": _box(one), "carried_by_px": masked.matched},
             "crease": masked.creases,
             "carry": None if masked.carried is None else {"search_px": CARRY_SEARCH,
@@ -1399,7 +1473,15 @@ class Answer:
             "kept": [{"cell": k, "why": entry["why"]} for k, entry in enumerate(masked.carried or []) if entry["from"] == "before"],
             "up": None if masked.up is None else _shaped_record(masked.up, self.gains),
             "ledger": masked.ledger,
-        }
+        } | ({} if not masked.asked.over else {"over": {
+            "policy": OVER_POLICY, "band_px": masked.air,
+            "left_out": None if left_out is None else {
+                "grow_px": None if left_out.asked.per_cell else HOLD_GROW,
+                "pieces": [{"px": int(piece.sum()), "box": _box(piece)} for piece in left_out.pieces],
+                "carry": None if left_out.asked.per_cell else {
+                    "search_px": CARRY_SEARCH, "cells": [[_carried_record(entry) for entry in cell] for cell in left_out.carried]},
+                "lay": [{"cell": k, "piece": i, "why": entry["why"]} for k, cell in enumerate(left_out.carried)
+                        for i, entry in enumerate(cell) if entry["from"] == "lay"]}}})
 
 
 def _shaped_record(band: Banded, gains: list[float]) -> dict[str, Any]:
@@ -2085,8 +2167,18 @@ def _held(answer: Answer, reference: Image.Image | None, verb: str) -> Answer:
     """`answer` round its hold mask (`--hold-mask`): one mask, drawn on the cell the regions were read on (`_band_base`),
     in its pieces, each carried into every cell by its own solid pixels there as a band carries a region (`carry_mask`),
     or a mask for each cell as given; and the ledger of every cell (`hold_ledger`)."""
-    hold, cells = answer.ask.hold, answer.cells
-    assert hold is not None
+    assert answer.ask.hold is not None
+    held = _hold_of(answer, answer.ask.hold, reference, math.ceil(answer.reach) + HOLD_EDGE, verb)
+    answer = dataclasses.replace(answer, hold=held)
+    return dataclasses.replace(answer, hold=dataclasses.replace(held, ledger=hold_ledger(answer)))
+
+
+def _hold_of(answer: Answer, hold: Hold, reference: Image.Image | None, edge: int, verb: str) -> Held:
+    """A hold mask on `answer`'s cells, `edge` px round it its soft edge and air (`Held`): one mask, drawn on the cell the
+    regions were read on (`_band_base`), in its pieces, each carried into every cell by its own solid pixels there
+    (`carry_mask`); or a mask for each cell as given. A band's (`--hold-mask`), or the pixels a region's layer leaves
+    out (`--region-over`)."""
+    cells = answer.cells
     w, h = cells[0].size
     for mask in hold.masks:
         if mask.shape != (h, w):
@@ -2095,23 +2187,19 @@ def _held(answer: Answer, reference: Image.Image | None, verb: str) -> Answer:
     if hold.per_cell and len(hold.masks) != len(cells):
         raise SystemExit(f"{verb}: --hold-mask holds {len(hold.masks)} masks and there are {len(cells)} cells: a folder gives "
                          "one mask per cell, in name order")
-    edge = math.ceil(answer.reach) + HOLD_EDGE
     if hold.per_cell:
-        held = Held(hold, [], (0.0, 0.0), [], edge)
-    else:
-        base, base_shift, base_index, lays = _band_base(answer, reference)
-        solid = np.asarray(base.getchannel("A")) >= ALPHA_SOLID
-        whole, cell_wholes = _whole_premultiplied(base), {}
-        pieces = _pieces(hold.masks[0])
-        carried: list[list[dict[str, Any]]] = [[] for _ in cells]
-        for piece in pieces:
-            entries = carry_mask(whole, cells, cell_wholes, piece & solid, base_shift, lays, base_index,
-                                 "no solid pixel of the cell it was drawn on is under it")
-            for k in range(len(cells)):
-                carried[k].append(entries[k])
-        held = Held(hold, pieces, (float(base_shift[0]), float(base_shift[1])), carried, edge)
-    answer = dataclasses.replace(answer, hold=held)
-    return dataclasses.replace(answer, hold=dataclasses.replace(held, ledger=hold_ledger(answer)))
+        return Held(hold, [], (0.0, 0.0), [], edge)
+    base, base_shift, base_index, lays = _band_base(answer, reference)
+    solid = np.asarray(base.getchannel("A")) >= ALPHA_SOLID
+    whole, cell_wholes = _whole_premultiplied(base), {}
+    pieces = _pieces(hold.masks[0])
+    carried: list[list[dict[str, Any]]] = [[] for _ in cells]
+    for piece in pieces:
+        entries = carry_mask(whole, cells, cell_wholes, piece & solid, base_shift, lays, base_index,
+                             "no solid pixel of the cell it was drawn on is under it")
+        for k in range(len(cells)):
+            carried[k].append(entries[k])
+    return Held(hold, pieces, (float(base_shift[0]), float(base_shift[1])), carried, edge)
 
 
 def hold_ledger(answer: Answer) -> dict[str, Any]:
@@ -2192,8 +2280,11 @@ class RegionMask:
     """A region given as a mask (`--region-mask`): one PNG drawn on the cell the regions were read on, or a folder of PNGs,
     one per cell in name order, read as a hold mask is (`_mask_of`), and the sha256 of each file's bytes; how many times
     the fold rule's least band the rim starts at (`--region-rim`), the px the mask is worn in by (`--region-shrink`),
-    whether its lower edge is moved to the crease under it (`--region-crease`), and the upper yield (`--band-up`'s flat
-    share and band; None: none)."""
+    whether its lower edge is moved to the crease under it (`--region-crease`), the upper yield (`--band-up`'s flat
+    share and band; None: none), whether it is laid over the figure under it (`--region-over`) and the pixels its layer
+    leaves out (`--hold-mask`; None: none), and the most a move one way may rise across the rim the other way
+    (`--region-shear`, px a px; None: the rim by the move along it alone). The record names the last three only where
+    they are asked."""
 
     masks: list[np.ndarray]
     sha256: list[str]
@@ -2202,11 +2293,21 @@ class RegionMask:
     shrink: int = SHRINK_DEFAULT
     crease: bool = False
     up: tuple[float, float | str] | None = None
+    over: bool = False
+    shear: float | None = None
+    hold: Hold | None = None
 
     def asked(self) -> dict[str, Any]:
         return {"per_cell": self.per_cell, "sha256": self.sha256 if self.per_cell else self.sha256[0], "rim": self.rim,
                 "shrink_px": self.shrink, "crease": self.crease,
-                "up": None if self.up is None else {"flat": self.up[0], "band": self.up[1]}}
+                "up": None if self.up is None else {"flat": self.up[0], "band": self.up[1]}} \
+            | ({} if not self.over else {"over": True, "hold": None if self.hold is None else self.hold.asked()}) \
+            | ({} if self.shear is None else {"shear": self.shear})
+
+    def edges(self) -> bool:
+        """Whether the ledger reads the region's edges (`still_strip`, `tip_shape`, `move_steps`): with `--region-over`
+        or `--region-shear`."""
+        return self.over or self.shear is not None
 
 
 @dataclass(frozen=True, eq=False)
@@ -2217,7 +2318,9 @@ class Masked:
     carry in every cell (`carried`, as `carry_region` carries it; None where a mask is given for each cell), how far round
     the region the air it may move into reaches (`air`, 8-neighbour steps), the rim (`rim_bands`: across and down, its
     slope at the steepest cell and the least bands it started at), the upper yield shaped and carried as a band's (`up`,
-    `--band-up`; None: none), and the ledger (`region_ledger`). Each cell is drawn once (`drawn`)."""
+    `--band-up`; None: none), the rim `--region-shear` asks at least, across and down (`sheared`; None: not asked), the
+    pixels a layer leaves out carried as a hold mask's (`left_out`, `--region-over` with `--hold-mask`; None: none), and
+    the ledger (`region_ledger`). Each cell is drawn once (`drawn`)."""
 
     asked: RegionMask
     worn: list[np.ndarray]
@@ -2230,6 +2333,8 @@ class Masked:
     up: Banded | None = None
     ledger: dict[str, Any] | None = None
     drawn: dict[int, Image.Image] = dataclasses.field(default_factory=dict)
+    sheared: tuple[int, int] | None = None
+    left_out: Held | None = None
 
     def region_in(self, k: int, solid: np.ndarray) -> np.ndarray:
         """The region's pixels in cell k (`solid`: the cell's solid pixels): the mask given for it, or the one mask carried
@@ -2238,6 +2343,12 @@ class Masked:
             return self.worn[k] & solid
         px = self.carried[k]["px"]
         return _carried(self.worn[0], (px[0] - self.base_shift[0], px[1] - self.base_shift[1])) & solid
+
+    def left_out_in(self, k: int) -> np.ndarray:
+        """The pixels a layer leaves out in cell k (`--region-over` with `--hold-mask`, `Held.mask_in`): none without one."""
+        if self.left_out is None:
+            return np.zeros(self.worn[0].shape, bool)
+        return self.left_out.mask_in(k)
 
 
 def _shrink4(mask: np.ndarray, steps: int) -> np.ndarray:
@@ -2288,6 +2399,19 @@ def crease_of(cell: Image.Image, mask: np.ndarray) -> tuple[np.ndarray, dict[str
     return out, {"rows": {str(x): y for x, y in sorted(rows.items())}, "free_columns": free}
 
 
+def crease_kept(trimmed: np.ndarray, worn: np.ndarray, crease: dict[str, Any]) -> np.ndarray:
+    """`worn` — the mask ended at its crease (`trimmed`, `crease_of`) and worn in (`--region-shrink`) — with its lower edge
+    back on the crease: in each column the crease ended (`crease`'s rows), where the worn mask holds a pixel, the trimmed
+    mask's pixels from its lowest one down to the crease's row. The crease is the picture's own edge, not one drawn a
+    little large, so the wear leaves it where it is; it still wears the mask in everywhere else."""
+    out = worn.copy()
+    for x, y in ((int(x), int(y)) for x, y in crease["rows"].items()):
+        if out[:, x].any():
+            lowest = int(np.nonzero(out[:, x])[0].max())
+            out[lowest + 1:y + 1, x] |= trimmed[lowest + 1:y + 1, x]
+    return out
+
+
 def carry_region(whole: np.ndarray, cells: list[Image.Image], mask: np.ndarray, base_shift: tuple[float, float],
                  lays: list[tuple[float, float]], base_index: int | None) -> list[dict[str, Any]]:
     """Per cell, where a region mask's pixels — those of `whole` (`_whole_premultiplied` of the cell it was drawn on, which
@@ -2324,13 +2448,15 @@ def carry_region(whole: np.ndarray, cells: list[Image.Image], mask: np.ndarray, 
     return [entries[k] for k in range(n)]
 
 
-def rim_bands(across: np.ndarray, down: np.ndarray, scale: float) -> tuple[int, int, float, tuple[int, int]]:
+def rim_bands(across: np.ndarray, down: np.ndarray, scale: float,
+              floor: tuple[int, int] | None = None) -> tuple[int, int, float, tuple[int, int]]:
     """A region mask's rim for a move (`across`, `down`: px per cell): it starts at the fold rule's least band for the
     largest move each way, ceil(most × π / 2) + 1, times `scale` and rounded up, and both are widened a px at a time until
     (π/2)·hypot(dx/Lx, dy/Ly) is at most RIM_SLOPE in every cell. sin²(π/2·d) rises at most π/2 a unit of d, and d (the
     distance in rim units, `rim_distance`) at most 1/Lx a px across and 1/Ly down, so a move takes at most that much of a
-    pixel's area along its way and goes less far than the held pixels lie. The rim across and down, that slope at its
-    steepest cell, and the least bands it started at."""
+    pixel's area along its way and goes less far than the held pixels lie. Then each is at least `floor`'s (`shear_floor`;
+    None: as it is), which only lowers the slope. The rim across and down, that slope at its steepest cell, and the least
+    bands it started at."""
 
     def least(most: float) -> int:
         return math.ceil((math.ceil(most * math.pi / 2) + 1) * scale)
@@ -2343,7 +2469,18 @@ def rim_bands(across: np.ndarray, down: np.ndarray, scale: float) -> tuple[int, 
 
     while steepest() > RIM_SLOPE:
         lx, ly = lx + 1, ly + 1
+    if floor is not None:
+        lx, ly = max(lx, floor[0]), max(ly, floor[1])
     return lx, ly, round(steepest(), 4), started
+
+
+def shear_floor(across: np.ndarray, down: np.ndarray, shear: float) -> tuple[int, int]:
+    """The rim `--region-shear` asks at least for a move (`across`, `down`: px per cell): across, ceil(π/2 × the most move
+    down / `shear`); down, ceil(π/2 × the most move across / `shear`). The fold rule reads each way by the move along it
+    alone, so a move down rises all at once across a rim sized for a small move across: sin²(π/2·d) rises at most π/2 a
+    rim's width, so with these a move down rises across the rim by at most `shear` px a px, and a move across down it."""
+    return (math.ceil(0.5 * math.pi * float(np.max(np.abs(down))) / shear),
+            math.ceil(0.5 * math.pi * float(np.max(np.abs(across))) / shear))
 
 
 def rim_distance(held: np.ndarray, across: int, down: int) -> np.ndarray:
@@ -2372,6 +2509,209 @@ def region_sets(region: np.ndarray, alpha: np.ndarray, air: int) -> tuple[np.nda
     return soft, (alpha > 0) & ~region & ~soft, (alpha == 0) & _grow8(region, air)
 
 
+def layer_sets(region: np.ndarray, alpha: np.ndarray, air: int, left_out: np.ndarray) -> dict[str, np.ndarray]:
+    """What a region laid over the figure under it moves, draws over and holds in a cell (`--region-over`; `alpha`: the
+    cell's alpha, `air`: the move's reach and REGION_AIR px, `left_out`: the pixels `--hold-mask` names there, none of
+    them the region's):
+    - `soft`: its soft edge, the pixels not opaque within REGION_SOFT 4-neighbour steps of it, beside another solid pixel
+      or not (left beside the figure under it, it would stay behind as a ghost of its outline), none left out; under its
+      lower edge (`floor`) only those touching no solid pixel outside it (8-neighbour): one that does is the figure's own
+      soft side, which stays where it is;
+    - `held`: every other pixel not clear; `air`: the clear pixels within `air` 8-neighbour steps of it (`region_sets`);
+    - `under`: the held pixels under its lower edge, solid or not — in its columns and `air` px past them, under the lowest
+      pixel of the region's nearest column (the leftmost on a tie) — none left out; no anchor of the rim, so the lower edge
+      moves with the rest, beside the figure's soft side under it too (an anchor there would hold the outline over the air
+      beside it short of a px, and part of it would stay where it was);
+    - `band`: those of them within `air` 8-neighbour steps of it and its soft edge, which move too, and which the layer is
+      drawn over (`lay_over`);
+    - `edge`: the band's solid pixels that are its own outline against the air — beside a pixel neither solid nor left out
+      (4-neighbour), within 2 px of it, touching no other solid pixel outside it (4-neighbour) — which go with the layer and
+      leave the air behind; an outline pixel that touches the figure under it or a pixel left out is the figure's, kept;
+    - `anchors`: the held pixels the rim falls to: all but those under its lower edge;
+    - `floor`: per column, the first row under its lower edge (that of its nearest column), the cell's height where none."""
+    solid = alpha >= ALPHA_SOLID
+    h, w = region.shape
+    under = np.zeros((h, w), bool)
+    floor = np.full(w, h)
+    xs = np.nonzero(region.any(axis=0))[0]
+    if len(xs):
+        lowest = {int(x): int(np.nonzero(region[:, x])[0].max()) for x in xs}
+        for x in range(max(0, int(xs.min()) - air), min(w, int(xs.max()) + air + 1)):
+            floor[x] = lowest[min(lowest, key=lambda q: abs(q - x))] + 1
+            under[floor[x]:, x] = True
+    soft = (alpha > 0) & ~solid & _grow4(region, REGION_SOFT) & ~region & ~left_out
+    soft &= ~(under & _grow8(solid & ~region, 1))
+    held = (alpha > 0) & ~region & ~soft
+    under &= held & ~left_out
+    band = under & _grow8(region | soft, air)
+    beside = band & solid & _grow4(~solid & ~left_out, 1) & _grow8(region | soft, 2)
+    edge = beside & ~_grow4(solid & ~region & ~beside, 1)
+    return {"region": region, "soft": soft, "air": (alpha == 0) & _grow8(region, air), "held": held, "under": under,
+            "band": band, "edge": edge, "anchors": held & ~under, "floor": floor}
+
+
+def uncovered(sets: dict[str, np.ndarray], move_y: np.ndarray) -> np.ndarray:
+    """The pixels of a region laid over the figure under it, and of its soft edge, that its lift may uncover (`layer_sets`):
+    where it moves up, those whose own column, read as far under them as the move, reaches past its last row (into the
+    rows under its lower edge, `floor`). There the layer is laid over that figure as it lies in the pixel's own column
+    (`lay_over`)."""
+    yy = np.mgrid[0:move_y.shape[0], 0:move_y.shape[1]][0]
+    return (sets["region"] | sets["soft"]) & (move_y < 0) & (yy - move_y > sets["floor"][None, :] - 1)
+
+
+def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.ndarray, np.ndarray],
+             sets: dict[str, np.ndarray]) -> tuple[Image.Image, np.ndarray, np.ndarray, np.ndarray]:
+    """`drawn` — the region and its soft edge moved by `field` round the held pixels but the band (`draw_held`) — with the
+    region laid over the band and the air (`--region-over`, `layer_sets`): the region's own pixels (it, its soft edge and
+    its outline against the air, premultiplied) read at the move, over what they leave of the band's own pixel (the air,
+    under the outline). Where the layer lands on a band pixel (alpha over 0), and on its outline, that pixel is the layer;
+    where it does not, the band pixel keeps its bytes. Where it lands on the air (a drawn alpha of 1 or more), that pixel
+    is the layer alone, and the air keeps its bytes where it does not: the air shows the region moved into it, never the
+    figure beside it. Where the region lifts off the figure under it (`uncovered`), the layer is laid over that figure read
+    in the pixel's own column as far under it as the move (its rows under the lower edge drawn up, never moved sideways:
+    the figure's side under the region stays where it is). Also the pixels of the band the layer lands on (`laid`), the
+    band's it covers half or more (`over`, its outline not counted) and the region's pixels under which the figure shows
+    half or more where its layer does not (`lifted`)."""
+    as_cut = np.asarray(cell.convert("RGBA"))
+    src = as_cut.astype(np.float64)
+    out = np.asarray(drawn.convert("RGBA")).astype(np.float64)
+    h, w = src.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    _, move_x, move_y = field
+    sx, sy = xx - move_x, yy - move_y
+    region, soft, band, edge, air = sets["region"], sets["soft"], sets["band"], sets["edge"], sets["air"]
+    pm = src.copy()
+    pm[..., :3] *= pm[..., 3:4] / 255
+    layer = pm * (region | soft | edge)[..., None]
+    read = np.stack([_bilinear(layer[..., i], sx, sy) for i in range(4)], axis=-1)
+    laid = (band & (read[..., 3] > 0)) | edge
+    over = band & ~edge & (read[..., 3] / 255 >= 0.5)
+    both = read + (1 - read[..., 3:4] / 255) * pm * (~edge)[..., None]
+    alpha = np.clip(both[..., 3:4], 0, 255)
+    both[..., :3] = np.where(alpha > 0, both[..., :3] * 255 / np.maximum(alpha, 1e-3), 0)
+    landed = air & (np.round(read[..., 3]) > 0)
+    out[laid | landed] = both[laid | landed]
+    # Uncovered by a lift, the figure under the region in the pixel's own column, read down as far as the move.
+    shown = uncovered(sets, move_y)
+    share = np.zeros((h, w))
+    if shown.any():
+        under = sets["under"]
+        ys, xs = np.nonzero(shown)
+        depth = ys - move_y[ys, xs].astype(np.float64)
+        row = np.clip(np.floor(depth).astype(int), 0, h - 2)
+        fy = np.clip(depth - row, 0, 1)
+        figure = pm * under[..., None]
+        below = (1 - fy)[:, None] * figure[row, xs] + fy[:, None] * figure[row + 1, xs]
+        on = read[ys, xs] + (1 - read[ys, xs, 3:4] / 255) * below
+        a = np.clip(on[:, 3:4], 0, 255)
+        on[:, :3] = np.where(a > 0, on[:, :3] * 255 / np.maximum(a, 1e-3), 0)
+        out[ys, xs] = on
+        share[ys, xs] = (1 - fy) * under[row, xs] + fy * under[row + 1, xs]
+    out = np.clip(np.round(out), 0, 255).astype(np.uint8)
+    out[(laid | landed | shown) & (out[..., 3] == 0)] = 0  # clear, no colour: as `draw_held` writes a pixel it clears
+    kept = (band & ~laid) | (air & ~landed)
+    out[kept] = as_cut[kept]
+    ours = np.clip(_bilinear((region | soft).astype(np.float64), sx, sy), 0, 1)
+    lifted = region & shown & (ours < 0.5) & (share >= 0.5)
+    return Image.fromarray(out, "RGBA"), laid, over, lifted
+
+
+def cover_depth(over: np.ndarray, mine: np.ndarray) -> float:
+    """How far past the region's own pixels (`mine`: it and its soft edge as cut) the farthest pixel its layer covers
+    (`over`) lies, straight-line px: how deep the layer goes over the figure under it, not how many rows of a column (a
+    steep lower edge moved sideways covers many rows of one column but little depth). 0 where it covers none."""
+    if not over.any() or not mine.any():
+        return 0.0
+    oy, ox = np.nonzero(over)
+    ry, rx = np.nonzero(mine)
+    return round(float(np.sqrt((oy[:, None] - ry[None, :]) ** 2 + (ox[:, None] - rx[None, :]) ** 2).min(axis=1).max()), 3)
+
+
+def still_strip(region: np.ndarray, alpha: np.ndarray, left_out: np.ndarray) -> list[int]:
+    """Per row of the region, at each end of each run of it, how many solid pixels lie outward before the figure's side
+    there — the air (a pixel not solid) or a pixel `--hold-mask` names (an arm) — none of them the region's: the strip a
+    region drawn short of its side leaves standing beside it (0: it reaches its side). An end whose way out meets the
+    region again (between two parts of it) or the cell's edge has no side and is not read."""
+    solid = alpha >= ALPHA_SOLID
+    w = region.shape[1]
+    widths = []
+    for y in np.nonzero(region.any(axis=1))[0]:
+        row = region[y]
+        for x in np.nonzero(row)[0]:
+            for way in (-1, 1):
+                if 0 <= x + way < w and row[x + way]:
+                    continue
+                q = x + way
+                while 0 <= q < w and solid[y, q] and not left_out[y, q] and not row[q]:
+                    q += way
+                if 0 <= q < w and not row[q]:
+                    widths.append(int(abs(q - x)) - 1)
+    return widths
+
+
+def tip_shape(source: np.ndarray, drawn: np.ndarray, mine: np.ndarray, move: tuple[np.ndarray, np.ndarray]) -> dict[str, Any] | None:
+    """The region's tip in a cell as the ledger reads it (`source`, `drawn`: the cell as cut and as drawn, RGBA; `mine`: the
+    region and its soft edge; `move`: the field, across and down): the side — the TIP_COLS outermost columns of `mine`,
+    right or left — more of whose pixels touch the air (the right on a tie), and the window of those columns and their
+    rows with TIP_AIR px of the air round them. On the ring of pixels within TIP_RING px of the source's outline against
+    the air in the window, none within TIP_OFF px of a solid pixel not `mine`, how far the drawn outline is from the
+    source's moved by the shift that fits it best: Σ|α_drawn(x) − α_source(x − t)| over the ring at its least over t
+    (whole px within TIP_SEARCH, then a quarter and a twentieth of a px round the best), over Σ|∇α_source| on it — the mean
+    px the tip's outline is off its own shape once its move is taken away (`shape_px`; 0: the tip moved whole); that t
+    (`shift`); and the mean move of the tip's own solid pixels in the window (`move_mean`, the field's: a shift fits a
+    straight outline anywhere along it, so it is no measure of the move). None where `mine` holds no pixel."""
+    xs = np.nonzero(mine.any(axis=0))[0]
+    if not len(xs):
+        return None
+    h, w = mine.shape
+    a_src, a_out = source[..., 3] / 255.0, drawn[..., 3] / 255.0
+    touching = mine & _grow8(source[..., 3] == 0, 1)
+    cols = {"right": np.arange(w) >= xs.max() - TIP_COLS + 1, "left": np.arange(w) <= xs.min() + TIP_COLS - 1}
+    side = max(("right", "left"), key=lambda s: int((touching & cols[s][None, :]).sum()))  # the right on a tie
+    rows = np.nonzero((mine & cols[side][None, :]).any(axis=1))[0]
+    x0, x1 = ((int(xs.max()) - TIP_COLS + 1, int(xs.max()) + 1 + TIP_AIR) if side == "right"
+              else (int(xs.min()) - TIP_AIR, int(xs.min()) + TIP_COLS))
+    box = [x0, int(rows.min()) - TIP_AIR, x1, int(rows.max()) + 1 + TIP_AIR]
+    window = np.zeros((h, w), bool)
+    window[max(0, box[1]):min(h, box[3]), max(0, box[0]):min(w, box[2])] = True
+    solid = a_src >= 0.5
+    ring = _grow8(solid & _grow8(~solid, 1), TIP_RING) & window & ~_grow8(solid & ~mine, TIP_OFF)
+    own = window & mine & (source[..., 3] >= ALPHA_SOLID)
+    record = {"side": side, "box": box, "ring_px": int(ring.sum()), "shape_px": None, "shift": None,
+              "move_mean": round(float(np.hypot(*move)[own].mean()), 4) if own.any() else 0.0}
+    ys, xs_ = np.nonzero(ring)
+    if not len(ys):
+        return record
+    gy, gx = np.gradient(a_src)
+    length = float(np.hypot(gx, gy)[ys, xs_].sum())
+    best: tuple[float, float, float] | None = None
+    for step, span, centre in ((1.0, TIP_SEARCH, (0.0, 0.0)), (0.25, 1.0, None), (0.05, 0.25, None)):
+        cu, cv = centre if centre is not None else best[:2]
+        for u in np.arange(cu - span, cu + span + 1e-9, step):
+            for v in np.arange(cv - span, cv + span + 1e-9, step):
+                e = float(np.abs(a_out[ys, xs_] - _bilinear(a_src, xs_ - u, ys - v)).sum())
+                if best is None or e < best[2]:
+                    best = (float(u), float(v), e)
+    return {**record, "shape_px": round(best[2] / max(length, 1e-6), 4), "shift": [round(best[0], 2), round(best[1], 2)]}
+
+
+def move_steps(move_x: np.ndarray, move_y: np.ndarray, shown: np.ndarray) -> tuple[list[Any] | None, list[Any] | None]:
+    """The most the drawn move (`move_x`, `move_y`: the move each pixel's read took, 0 on what is kept) steps between two
+    pixels side by side, and between two one over the other, both shown in the cell as cut (`shown`): |m(p) − m(q)| px a
+    px, and where (the left, the upper of the two); None where no two are. What `--region-shear` bounds, read off what is
+    drawn."""
+    found: list[list[Any] | None] = []
+    for axis in (1, 0):
+        step = np.hypot(np.diff(move_x, axis=axis), np.diff(move_y, axis=axis))
+        both = (shown[:, 1:] & shown[:, :-1]) if axis == 1 else (shown[1:] & shown[:-1])
+        if not both.any():
+            found.append(None)
+            continue
+        y, x = np.unravel_index(int(np.argmax(np.where(both, step, -1.0))), step.shape)
+        found.append([round(float(step[y, x]), 4), int(x), int(y)])
+    return found[0], found[1]
+
+
 def _masked(answer: Answer, up: Banded | None, whole: tuple[np.ndarray, np.ndarray], reference: Image.Image | None,
             verb: str) -> Answer:
     """`answer` with its region given as a mask (`--region-mask`): one mask, drawn on the cell the regions were read on
@@ -2393,7 +2733,8 @@ def _masked(answer: Answer, up: Banded | None, whole: tuple[np.ndarray, np.ndarr
 
     def shaped(given: np.ndarray, cell: Image.Image) -> tuple[np.ndarray, np.ndarray, dict[str, Any] | None]:
         trimmed, crease = crease_of(cell, given) if mask.crease else (given, None)
-        return trimmed, _shrink4(trimmed, mask.shrink), crease
+        worn = _shrink4(trimmed, mask.shrink)
+        return trimmed, worn if crease is None else crease_kept(trimmed, worn, crease), crease
 
     if mask.per_cell:
         made = [shaped(given, cell) for given, cell in zip(mask.masks, cells)]
@@ -2410,9 +2751,13 @@ def _masked(answer: Answer, up: Banded | None, whole: tuple[np.ndarray, np.ndarr
     worn = [one for _, one, _ in made]
     if not any(one.any() for one in worn):
         raise SystemExit(f"{verb}: --region-shrink {mask.shrink} wears the region mask away: no pixel of it is left to move")
-    rim = rim_bands(answer.gain * whole[0], answer.gain * whole[1], mask.rim)
+    move = (answer.gain * whole[0], answer.gain * whole[1])
+    sheared = None if mask.shear is None else shear_floor(*move, mask.shear)
+    rim = rim_bands(*move, mask.rim, sheared)
+    left_out = None if not mask.over or mask.hold is None else _hold_of(answer, mask.hold, reference, 0, verb)
     masked = Masked(mask, worn, None if not mask.crease else [crease for _, _, crease in made],
-                    (float(base_shift[0]), float(base_shift[1])), matched, carried, math.ceil(answer.reach) + REGION_AIR, rim, up)
+                    (float(base_shift[0]), float(base_shift[1])), matched, carried, math.ceil(answer.reach) + REGION_AIR, rim, up,
+                    sheared=sheared, left_out=left_out)
     answer = dataclasses.replace(answer, mask=masked)
     ledger = region_ledger(answer)
     if min(ledger["jacobian_min"]) <= 0:
@@ -2434,18 +2779,38 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
       `area_most`), as `band_ledger` counts them; `folded_px`: those whose move takes 0 or less of the source's area
       (`jacobian`: the picture folds), and `jacobian_min`, the least area any of them takes — every read takes its whole
       move, so the move and the read are one field;
-    - `read_held_weight`: the most weight a read's four pixels put on held pixels, and where (weight, x, y; None where no
-      read takes one), and `read_held_half_px`: reads that put half or more on them;
+    - `read_held_weight`: the most weight a read's four pixels put on held pixels (laid over the figure under it, held
+      pixels but the band), and where (weight, x, y; None where no read takes one), and `read_held_half_px`: reads that put
+      half or more on them;
     - `renormalised_px`, `walked_px`: reads that took a held pixel and were read from the others, and those walked back
-      (`draw_held`), which the rim keeps at 0."""
+      (`draw_held`), which the rim keeps at 0.
+    Laid over the figure under it (`--region-over`, `layer_sets`, `lay_over`), also:
+    - `band_px`, `over_px`, `edge_px`, `lifted_px`, `left_out_px`: the band under its lower edge, the band's pixels the
+      layer covers half or more, the outline that goes with the layer, the region's pixels that show the figure under it
+      where it lifts, and the mask's pixels `--hold-mask` leaves out; `cover_depth_px`: how deep the layer covers the band
+      (`cover_depth`); the held pixels are those the drawn cell keeps, the band the layer does not land on among them;
+    - `edge_folded_px`: folds within a px (4-neighbour) of a held pixel, where the layer stops and the band keeps its
+      bytes — the layer's edge, not the move's, so they are counted apart and the rest is read as ever.
+    With `--region-over` or `--region-shear` (`RegionMask.edges`), the region's edges:
+    - `step_across_most`, `step_down_most`: the most the drawn move steps between two pixels side by side and one over the
+      other, px a px, and where (`move_steps`; laid over the figure under it, the band not read: the layer slides over it),
+      and their largest (`step_across_max`, `step_down_max`);
+    - `still_strip`: the strip a region short of its side leaves standing (`still_strip`): the median and the most of its
+      widths over the rows' ends, how many ends are read and how many of them are no wider than the rim across
+      (`covered`); None where no end is read;
+    - `tip`: its tip's side, window, shape and move (`tip_shape`), and `tip_shape_max` (px, cell) and `tip_move_max`
+      (px, cell): the most of each over the cells."""
     assert answer.mask is not None
     w, h = answer.cells[0].size
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     inner = np.zeros((h, w), bool)
     inner[1:-1, 1:-1] = True
+    over, edges = answer.mask.asked.over, answer.mask.asked.edges()
     keys = ("region_px", "soft_px", "air_px", "held_px", "held_changed_px", "move_most", "pressed_px", "pressed_box",
             "area_least", "stretched_px", "stretched_box", "area_most", "folded_px", "jacobian_min", "read_held_weight",
-            "read_held_half_px", "renormalised_px", "walked_px")
+            "read_held_half_px", "renormalised_px", "walked_px") \
+        + (("band_px", "over_px", "edge_px", "lifted_px", "left_out_px", "cover_depth_px", "edge_folded_px") if over else ()) \
+        + (("step_across_most", "step_down_most", "still_strip", "tip") if edges else ())
     ledger: dict[str, list[Any]] = {key: [] for key in keys}
     for k, cell in enumerate(answer.cells):
         drawn, read = answer.masked_cell(k)
@@ -2456,7 +2821,27 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
         ledger["held_changed_px"].append(int((held & np.any(source != out, axis=-1)).sum()))
         ledger["renormalised_px"].append(int(read["renormalised"].sum()))
         ledger["walked_px"].append(int(read["walked"].sum()))
+        if over:
+            for key, where in (("band", read["band"]), ("over", read["over"]), ("edge", read["edge"]),
+                               ("lifted", read["lifted"]), ("left_out", read["left_out"])):
+                ledger[f"{key}_px"].append(int(where.sum()))
+            ledger["cover_depth_px"].append(cover_depth(read["over"], region | read["soft"]))
+        if edges:
+            # Laid over the figure under it, the layer slides over the band: what steps there is where it covers it, not
+            # a shear, so the band's pixels are not read.
+            shown, mine = (source[..., 3] > 0) & ~(read["band"] if over else np.zeros((h, w), bool)), region | read["soft"]
+            across, down = move_steps(read["read_x"], read["read_y"], shown)
+            ledger["step_across_most"].append(across)
+            ledger["step_down_most"].append(down)
+            widths = still_strip(region, source[..., 3], answer.mask.left_out_in(k))
+            ledger["still_strip"].append(None if not widths else {
+                "median": float(np.median(widths)), "most": max(widths), "ends": len(widths),
+                "covered": sum(width <= answer.mask.rim[0] for width in widths)})
+            moving = (np.zeros((h, w)), np.zeros((h, w))) if field is None else field[1:]
+            ledger["tip"].append(tip_shape(source, out, mine, moving))
         if field is None:
+            if over:
+                ledger["edge_folded_px"].append(0)
             for key, empty in (("move_most", None), ("pressed_px", 0), ("pressed_box", None), ("area_least", None),
                                ("stretched_px", 0), ("stretched_box", None), ("area_most", None), ("folded_px", 0),
                                ("jacobian_min", 1.0), ("read_held_weight", None), ("read_held_half_px", 0)):
@@ -2472,6 +2857,12 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
         taken = np.ones((h, w))
         taken[1:-1, 1:-1] = jacobian(move_x, move_y)
         moved = inner & inside & ~held & (out[..., 3] >= ALPHA_SOLID)
+        if over:
+            # Where the layer stops and the band keeps its bytes the move is 0 beside a pixel it moves: the layer's
+            # edge, not the move's.
+            at_edge = moved & _grow4(held, 1)
+            ledger["edge_folded_px"].append(int((at_edge & (taken <= 0)).sum()))
+            moved &= ~at_edge
         counted = moved & (taken > 0)
         area = 1 / np.where(taken > 0, taken, 1.0)  # each pixel's area: 1 over the source's it takes
         pressed, stretched = counted & (area < PRESSED), counted & (area > STRETCHED)
@@ -2486,8 +2877,10 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
                 ledger[key].append(None)
         ledger["folded_px"].append(int((moved & (taken <= 0)).sum()))
         ledger["jacobian_min"].append(round(float(taken[moved].min()), 4) if moved.any() else 1.0)
-        # The weight a read puts on held pixels, as `_sample` reads them: the rim keeps it under a half.
-        on_held = np.where(read["readers"], _bilinear(held.astype(np.float64), xx - move_x, yy - move_y), 0.0)
+        # The weight a read puts on held pixels, as `_sample` reads them: the rim keeps it under a half. Laid over the
+        # figure under it, the region reads the band where it lifts: the held pixels but the band.
+        unread = read.get("unread", held)
+        on_held = np.where(read["readers"], _bilinear(unread.astype(np.float64), xx - move_x, yy - move_y), 0.0)
         if (on_held > 0).any():
             y, x = divmod(int(np.argmax(on_held)), w)
             ledger["read_held_weight"].append([round(float(on_held[y, x]), 4), x, y])
@@ -2500,12 +2893,19 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
         if key.endswith("_px"):
             out[f"{key}_max"] = max(ledger[key], default=0)
     out["move_most_max"] = max((most[0] for most in ledger["move_most"] if most is not None), default=0.0)
+    if edges:
+        for way in ("across", "down"):
+            out[f"step_{way}_max"] = max((most[0] for most in ledger[f"step_{way}_most"] if most is not None), default=0.0)
+        for key, of in (("tip_shape_max", "shape_px"), ("tip_move_max", "move_mean")):
+            found = [(tip[of], k) for k, tip in enumerate(ledger["tip"]) if tip is not None and tip[of] is not None]
+            out[key] = None if not found else list(max(found, key=lambda t: t[0]))  # the first cell on a tie
     return out
 
 
 def region_notes(record: dict[str, Any], verb: str = VERB, at: str = f"{loop_mod.SWAY_RECORD}.region_mask") -> list[str]:
     """What to say of a region mask's record (`--region-mask`), a line each, as warnings: the cells it kept the carry of
-    the cell before in and why, the cells `--band-up` carried a region's ellipse by the lay in and why, and every count of
+    the cell before in and why, the cells `--band-up` carried a region's ellipse by the lay in and why (and, laid over the
+    figure under it, the pixels `--hold-mask` leaves out of it, `--region-over`), and every count of
     the ledger that is not 0 in some cell — in how many cells, up to how many pixels and in which cell, and where in the
     record (`at`)."""
     masked, notes = record["region_mask"], []
@@ -2527,6 +2927,13 @@ def region_notes(record: dict[str, Any], verb: str = VERB, at: str = f"{loop_mod
             "read_held_half_px": "reads put half their weight or more on held pixels",
             "renormalised_px": "reads took a held pixel and were read from the others",
             "walked_px": "reads took a held pixel and were walked back"}
+    if "over" in masked:
+        left_out = masked["over"]["left_out"]
+        if left_out is not None and left_out["lay"]:
+            whys = "; ".join(f"cell {e['cell']}, piece {e['piece']}: {e['why']}" for e in left_out["lay"])
+            notes.append(f"{verb}: warning: --hold-mask (what --region-over leaves out) is carried by the body's lay in "
+                         f"{len({e['cell'] for e in left_out['lay']})} cells, its own pixels not found surely ({whys}) — "
+                         f"{at}.over.left_out.lay")
     return notes + _ledger_notes(masked["ledger"], said, "--region-mask", verb, at)
 
 
@@ -2567,11 +2974,13 @@ def sway_loop(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float |
               band: float | str | None = None, band_margin: float | str | None = None,
               band_up: tuple[float, float | str] | str | None = None, hold_mask: Path | None = None,
               region_mask: Path | None = None, region_rim: float | None = None, region_shrink: int | None = None,
-              region_crease: bool = False, verb: str = VERB) -> dict[str, Any]:
+              region_crease: bool = False, region_over: bool = False, region_shear: float | None = None,
+              verb: str = VERB) -> dict[str, Any]:
     request = read_request(loop_dir, regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on,
                            stretch_floor=stretch_floor, breathe=breathe, lag=lag, gain_across=gain_across, band=band,
                            band_margin=band_margin, band_up=band_up, hold_mask=hold_mask, region_mask=region_mask,
-                           region_rim=region_rim, region_shrink=region_shrink, region_crease=region_crease, verb=verb)
+                           region_rim=region_rim, region_shrink=region_shrink, region_crease=region_crease,
+                           region_over=region_over, region_shear=region_shear, verb=verb)
     loop_dir, name, meta_path, meta = request.loop_dir, request.name, request.meta_path, request.meta
     strip_path = request.strip_path
     source = request.source_path
@@ -2625,7 +3034,8 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                 gain_across: float | None = None, reference: Path | None = None, band: float | str | None = None,
                 band_margin: float | str | None = None, band_up: tuple[float, float | str] | str | None = None,
                 hold_mask: Path | None = None, region_mask: Path | None = None, region_rim: float | None = None,
-                region_shrink: int | None = None, region_crease: bool = False, verb: str = VERB) -> dict[str, Any]:
+                region_shrink: int | None = None, region_crease: bool = False, region_over: bool = False,
+                region_shear: float | None = None, verb: str = VERB) -> dict[str, Any]:
     """The sway of a folder of a cycle's frames — a loop's `cycle/`, or what `sprite-gen breathe` wrote from it — at their
     own size and count, past the strip's caps on cells and width: the same frames under the same names, the regions
     (in frame pixels) moved, and `sway.json` beside them, written whole into a new folder (`frames.folder`); the frames
@@ -2639,7 +3049,7 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
     ask = read_ask(regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on, stretch_floor=stretch_floor,
                    breathe=breathe, lag=lag, gain_across=gain_across, band=band, band_margin=band_margin, band_up=band_up,
                    hold_mask=hold_mask, region_mask=region_mask, region_rim=region_rim, region_shrink=region_shrink,
-                   region_crease=region_crease, verb=verb)
+                   region_crease=region_crease, region_over=region_over, region_shear=region_shear, verb=verb)
     if ask.read_on is not None:
         raise SystemExit(f"{verb}: --read-on names the strip as cut that the regions were read on; frames are read as they are")
     if ask.breath is not None and fps is not None:
@@ -2761,7 +3171,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              f"{ALPHA_SOLID} or more holds), each piece carried into every cell by its own pixels and grown by "
                              f"{HOLD_GROW} px; or a folder of one PNG per cell in name order, held as given. The pixels not opaque round "
                              "it and the air beside it are kept too, and a read headed into them stops short, its share of the move "
-                             f"rising by {HOLD_SLOPE:g} a px from them. Off by default")
+                             f"rising by {HOLD_SLOPE:g} a px from them. With --region-mask --region-over: the pixels the region's "
+                             "layer leaves out, carried alike. Off by default")
     parser.add_argument("--region-mask", type=Path, default=None, metavar="MASK.png|DIR",
                         help="the region as a mask instead of the ellipse's weight: a PNG drawn on the cell the regions were read on "
                              f"(alpha, or light where it has none, {ALPHA_SOLID} or more), carried into every cell by its own pixels "
@@ -2771,7 +3182,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              f"and {REGION_AIR} px; the weight falls to 0 toward the held pixels over a rim (sin², the fold rule's least "
                              f"band across and down widened until a move takes at most {RIM_SLOPE:g} of a pixel's area), and with "
                              "--band-up the lesser of that and its upper yield. The ellipses still say each region's gain. Off by "
-                             "default. Not with --band, a region's flat share, --stretch-floor nor --hold-mask")
+                             "default. Not with --band, a region's flat share, --stretch-floor, nor --hold-mask but with "
+                             "--region-over")
     parser.add_argument("--region-rim", type=float, default=None, metavar="SCALE",
                         help=f"with --region-mask: the rim starts at SCALE (1 or more) times the fold rule's least band (default "
                              f"{RIM_DEFAULT:g}; 1.5 a wider, gentler rim, a smaller part moving whole)")
@@ -2781,8 +3193,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--region-crease", action="store_true",
                         help=f"with --region-mask: before it is worn in, end the mask at the crease under it — in each column whose "
                              f"lowest pixel lies on more of the figure, the darkest solid pixel {CREASE_UP} px above to {CREASE_DOWN} "
-                             f"below it, the median over {2 * CREASE_SPAN + 1} columns; a column over the air is left as it is. Off by "
-                             "default")
+                             f"below it, the median over {2 * CREASE_SPAN + 1} columns; a column over the air is left as it is. "
+                             "--region-shrink then leaves that edge on the crease. Off by default")
+    parser.add_argument("--region-over", action="store_true",
+                        help="with --region-mask: lay the region over the figure under it — what lies under its lower edge (in its "
+                             f"columns and the move's reach and {REGION_AIR} px past them) is no anchor of the rim, so the lower "
+                             "edge moves with the rest, and the band of it within as far is drawn over by the region's own pixels "
+                             "by their alpha and keeps its bytes where they do not land; where the region lifts, its pixels show the "
+                             "figure under it. Its soft edge goes with it beside the figure too, and its outline against the air "
+                             "with the layer. --hold-mask names pixels it leaves out (an arm): never the region's, never drawn "
+                             "over, an anchor of the rim. Off by default")
+    parser.add_argument("--region-shear", type=float, default=None, metavar="S",
+                        help="with --region-mask: the most a move one way may rise across the rim the other way, px a px (over 0): "
+                             "the rim across at least ceil(π/2 x the most move down / S) and down at least ceil(π/2 x the most "
+                             "move across / S). Without it the rim reads each way by the move along it alone. The ledger reads the "
+                             "steps the drawn move takes. No default")
     parser.add_argument("--board", type=Path, help="write a before/after picture at the frames where the part sits lowest and highest")
 
 
@@ -2824,7 +3249,8 @@ def run(**kwargs: object) -> int:
              "gain_across": kwargs.get("gain_across"), "band": kwargs.get("band"), "band_margin": kwargs.get("band_margin"),
              "band_up": kwargs.get("band_up"), "hold_mask": kwargs.get("hold_mask"), "region_mask": kwargs.get("region_mask"),
              "region_rim": kwargs.get("region_rim"), "region_shrink": kwargs.get("region_shrink"),
-             "region_crease": bool(kwargs.get("region_crease"))}
+             "region_crease": bool(kwargs.get("region_crease")), "region_over": bool(kwargs.get("region_over")),
+             "region_shear": kwargs.get("region_shear")}
     if kwargs.get("frames") is not None:
         if kwargs.get("out") is None:
             raise SystemExit(f"{verb}: --frames needs --out, a new folder for the swayed frames")

@@ -455,9 +455,10 @@ def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
     followed, inspected = vars(parsers[0].parse_args(asked)), vars(parsers[1].parse_args([*asked, '--out-dir', str(out)]))
     # video-sway's own: its board, the frames path beside the loop directory, the band (`--band`), whose carry by the
     # region's own pixels the inspection does not read, the pixels a band leaves as they are (`--hold-mask`), and the
-    # region given as a mask (`--region-mask`)
+    # region given as a mask (`--region-mask`), laid over the figure under it (`--region-over`) and its rim widened to the
+    # shear (`--region-shear`)
     own = {'board', 'frames', 'out', 'fps', 'reference', 'band', 'band_margin', 'band_up', 'hold_mask', 'region_mask',
-           'region_rim', 'region_shrink', 'region_crease'}
+           'region_rim', 'region_shrink', 'region_crease', 'region_over', 'region_shear'}
     assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == own
     assert {key: inspected[key] for key in followed if key not in own} == {key: value for key, value in followed.items() if key not in own}
     capsys.readouterr()
