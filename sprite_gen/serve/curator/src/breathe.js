@@ -280,6 +280,12 @@ function breatheComposite(base, cfg, phase) {
     throw new BreatheRefused(
       "smooth 줄은 큐레이터가 따라 그리지 않는다 — 결과는 compose(GIF·아틀라스)나 `sprite-gen breathe` 로 본다.");
   }
+  // 둥근 가슴 pixel 줄(chest_round·arms_x)도 미러가 없다 — 봉투 워프로 그리면 굽기와 다른 숨이다.
+  if (cfg && ["chest_round", "arms_x"].some((k) => Number(cfg[k]) > 0)) {
+    throw new BreatheRefused(
+      "둥근 가슴 줄(chest_round·arms_x)은 큐레이터가 따라 그리지 않는다 — 결과는 compose(GIF·아틀라스)나 "
+      + "`sprite-gen breathe` 로 본다.");
+  }
   const anat = cfg && cfg.anatomy;
   // `rigid_row` 는 사람의 의도(입력)이고 `anatomy` 는 거기서 파생된 캐시다. 굽기는 둘이
   // 어긋나면 재검출해 의도를 따르는데(`resolve_anatomy` 의 stale_override), 미러는 검출을

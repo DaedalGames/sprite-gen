@@ -92,7 +92,7 @@ def _held(measured):
     return {'skipped': measured['skipped']} if 'skipped' in measured else {'seam': measured['seam'], 'closes': measured['closes']}
 
 
-def _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap=None, double=True):
+def _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap=None, double=True, turn=None):
     """Below the top band (`held_edge`, repair.held_edge on the side the popping first choice holds its
     part): among the calm candidates, those whose held side closes, the same score tolerance, then the
     smallest held seam. When no candidate closes it, windows twice a candidate's length: the candidate
@@ -101,7 +101,7 @@ def _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap=None, d
     step). Such a window is two lengths of a repeat the search confirmed, not itself seen repeating; it
     is taken when its held side closes and its top does not pop, the smallest held seam first. A window longer than `length_cap`
     (an explicit --max-len) is not one, and none is read without `double` (the steps were counted,
-    `video-loop --steps`). Returns (picked or None, record)."""
+    `video-loop --steps`), nor one `turn` refuses (`detect`). Returns (picked or None, record)."""
     side = held_edge.side(chosen['start'], chosen['length'])
     if 'skipped' in side:
         return None, {'method': 'held-side-edge-v1', 'skipped': side['skipped']}
@@ -139,6 +139,8 @@ def _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap=None, d
     counts = {'measured': 0, 'unread': 0, 'top_pops': 0}
     for length in lengths:
         for start in range(held_edge.frames-length+1):
+            if turn is not None and turn(start, length) is not None:
+                continue
             measured = held_edge.seam(start, length, side)
             if 'skipped' in measured:
                 counts['unread'] += 1
@@ -163,7 +165,7 @@ def _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap=None, d
     return None, record
 
 
-def _shape_rank(candidates, chosen, wrap_pop, held_edge=None, length_cap=None, double=True):
+def _shape_rank(candidates, chosen, wrap_pop, held_edge=None, length_cap=None, double=True, turn=None):
     """Choose again when the chosen cut's top pops at the wrap (`wrap_pop`, repair.seam_pop on the
     analysed frames): among the candidates whose top was read and does not pop, the same score
     tolerance, then the smallest pop. Nothing is measured past the first choice when it does not pop,
@@ -193,7 +195,7 @@ def _shape_rank(candidates, chosen, wrap_pop, held_edge=None, length_cap=None, d
     record.update(measured=len(candidates)-unread, unread=unread)
     held = None
     if held_edge is not None:
-        picked, held = _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap, double)
+        picked, held = _held_rank(candidates, calm, chosen, wrap_pop, held_edge, length_cap, double, turn)
         record['held_edge'] = held
         if picked is not None:
             record.update(applied=True, chosen={'start': picked['start'], 'length': picked['length'], 'pop': picked['seam_pop'],
@@ -248,17 +250,20 @@ def _pop_gate(chosen, rest, pop_gate):
     return picked, record
 
 
-def counted(distances, trajectory, *, min_len, max_len, periodicity_min, signals=None, pop_gate=None):
+def counted(distances, trajectory, *, min_len, max_len, periodicity_min, signals=None, pop_gate=None, turn=None):
     """A cut of a length someone counted (`video-loop --steps`) where the clip is too short to see a
     window that long repeat (`detect` found none): the counted length stands for the repeat. Every
     window [min_len, max_len] long with two clip frames before it is read, and the one whose wrap is
     nearest the clip's own way on there is taken (`_closure`, the earliest on a tie); whether it closes
     is the seam gate's word. With `pop_gate`, a window the seam pop gate would refuse gives way to the next nearest
-    (`_pop_gate`, `seam_pop_gate`). Raises ValueError where no window has room."""
+    (`_pop_gate`, `seam_pop_gate`), and none `turn` refuses is read (`detect`). Raises ValueError where no window has
+    room."""
     n = len(distances)
     rows = []
     for length in range(min_len, max_len+1):
         for start in range(2, n-length+1):
+            if turn is not None and turn(start, length) is not None:
+                continue
             measured = _closure(distances, start, length)
             if measured is None:
                 continue
@@ -307,7 +312,7 @@ def judged(rows, judge):
 
 def detect(distances, trajectory, *, min_len, max_len, gait_floor,
            periodicity_min, double_tolerance, double_search, max_fraction=.5, signals=None, wrap_pop=None,
-           held_edge=None, length_cap=None, double=True, closure=False, judge=None, pop_gate=None):
+           held_edge=None, length_cap=None, double=True, closure=False, judge=None, pop_gate=None, turn=None):
     """`wrap_pop(start, length)`, when given, is the top band's jump at that cut's wrap
     (repair.seam_pop): a chosen cut that pops is chosen again (`_shape_rank`), and a search that finds
     nothing raises with the windows it refused, popping ones last (`ValueError.diagnostics`).
@@ -332,7 +337,11 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
 
     `judge(start, length)` (crossings.Reading.judge), when given, refuses a window whose steps the clip's
     crossings count as other than two ('one step', 'three steps': `refuted`), and a search that finds
-    nothing names each refused window's count (`step_count`), those the crossings refute last."""
+    nothing names each refused window's count (`step_count`), those the crossings refute last.
+
+    `turn(start, length)` (body_turn.Turn), when given, refuses a window whose cut holds a frame of a body turn, where
+    the judge would read it, with its words ('the body turns (clip frames a-b)'), and so does the held side's window
+    two lengths long (`_held_rank`); every candidate holds none."""
     n = len(distances)
     # A cycle has to be seen repeating: half the clip by default, more for the gait fallback, and as
     # long as the caller's own ceiling allows.
@@ -389,6 +398,11 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
             if min(first_motion, second_motion) < .25*step:
                 refuse('a still segment')
                 continue
+            if turn is not None:
+                why = turn(start, length)
+                if why is not None:
+                    refuse(why)
+                    continue
             if judge is not None:
                 counted = judge(start, length)
                 if counted['verdict'] == 'refuted':
@@ -445,7 +459,7 @@ def detect(distances, trajectory, *, min_len, max_len, gait_floor,
         chosen = min(equivalent, key=lambda row: (row['start'], row['score'], row['length']))
     shape = None
     if wrap_pop is not None:
-        chosen, shape = _shape_rank(candidates, chosen, wrap_pop, held_edge, length_cap, double)
+        chosen, shape = _shape_rank(candidates, chosen, wrap_pop, held_edge, length_cap, double, turn)
     gate = None
     if pop_gate is not None:
         rest = sorted((row for row in candidates if (row['start'], row['length']) != (chosen['start'], chosen['length'])),
@@ -536,7 +550,7 @@ def _gates(tried, seam_max):
 
 
 def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len, seam_flow, wrap_pop, seam_gate, flow_limit,
-             seam_max, gait_floor, periodicity_min, signals, pop_gate=None):
+             seam_max, gait_floor, periodicity_min, signals, pop_gate=None, turn=None):
     """The cut the clip's own steps choose (`reading`, crossings.Reading), after the pixel search: `found`, its cut,
     or `refused`, why it found none. Returns (the cut, or None where the search's word stands and it found none;
     `step_count`, the record).
@@ -571,7 +585,10 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
 
     A cut taken on two steps records `steps` (count 2, by crossings): `video-cycle-align` reads a return half way
     as its step, and the step screen's pixel suspicion of one step (`step_screen`) is settled, kept as
-    `pixel_suspect`."""
+    `pixel_suspect`.
+
+    With `turn` (body_turn.Turn), a two-step cut that holds a frame of a body turn is not one of them (`turned_out`
+    counts those left out), as the search refused such a window."""
     record = reading.record()
     record['search'] = ({'cut': [found['start'], found['length']]} if found is not None else {'refused': str(refused)})
     if not reading.readable:
@@ -593,6 +610,10 @@ def by_steps(distances, trajectory, reading, *, found, refused, min_len, max_len
                 record.update(chosen_by='search', cut=counted)
                 return found, record
     twos = reading.twos(min_len, max_len)
+    if turn is not None:
+        kept = [counted for counted in twos if turn(*counted['cut']) is None]
+        record['turned_out'] = len(twos)-len(kept)
+        twos = kept
     record['two_cuts'] = len(twos)
     if not twos:
         record['chosen_by'] = 'search'
@@ -695,6 +716,7 @@ def step_verdict(cycle):
                    f"seam {declined['seam']:g}): the search's cut {s}/{L} stands, {counted['cut']['verdict']} by the count "
                    f"({counted['cut']['why']})")
     elif 'two_cuts' in counted and counted['two_cuts'] == 0:
-        out.append(f"the clip shows its steps (crossings {counted['crossings']}) but no cut of two: the cut {s}/{L} is "
+        turned = f" that leaves the body's turn out ({counted['turned_out']} hold it)" if counted.get('turned_out') else ''
+        out.append(f"the clip shows its steps (crossings {counted['crossings']}) but no cut of two{turned}: the cut {s}/{L} is "
                    f"{counted['cut']['verdict']} ({counted['cut']['why']}) — count its steps")
     return out
