@@ -1269,7 +1269,7 @@ crossings, joined at the wrap where the walk itself goes on, is one cycle (`cros
 | `step_range` | the clip's own step (the median between crossings) and the range a step must lie in, a factor of √2 either way |
 | `readable`, `why`, `alternation` | whether the clip shows its steps: three crossings or more, and in sign mode a lean that turns over a step on (correlation one step on at most **−0.7**, `crossings.ALTERNATION_MAX`) |
 | `cut`, `search` | the cut taken and the pixel search's own cut (or why it found none), each with its `verdict`, `code`, `k` (steps covered), `phase` and `ring` |
-| `cycles` | whether crossings mark cycles: `asked`, `interval`, `overlap`, `half`, `one`, `two`, `slack`, `cue` (`range`, `floor`, `swapped`, `one`, `says`, `why`; only with a view; `one` absent where `"alike"`; `says` is `"steps"`, `"alike"` or null), `bob` (`swing`, `floor`, `twice`, `half`, `says`, `why`; `says` is `"cycles"` or null), `cycles` (`true` or `false`), `unwitnessed` (`true` only where nothing witnessed), and `why`; absent where not asked |
+| `cycles` | whether crossings mark cycles: `asked`, `interval`, `overlap`, `half`, `one`, `two`, `slack`, `cue` (`range`, `floor`, `swapped`, `one`, `says`, `why`; only with a view; `one` absent where `"alike"`; `says` is `"steps"`, `"alike"` or null), `bob` (`swing`, `rows`, `floor`, `twice`, `half`, `quarter`, `says`, `why`; `says` is `"cycles"` or null), `cycles` (`true` or `false`), `unwitnessed` (`true` only where nothing witnessed), and `why`; absent where not asked |
 | `stands`, `run_limit` | gap mode, the runs of the feet together longer than any pass (over `run_limit`, √2 times the median run the clip shows whole: whole, or cut by the first or last frame), recorded as pairs of frames; only where there is one |
 | `chosen_by` | `search` (kept), `two steps` (chosen on the count), and the search again where the count refutes its cut (`searched_again`) |
 | `declined` | the best two-step cut, where none closed and the search's cut stood: its `cut`, `phase`, whether it passed the gates (`gated`) and its `seam` |
@@ -1309,51 +1309,73 @@ The picture passes where `one < half` (one interval on is nearer than the pose a
 `one <= two + CYCLE_SLACK` (`CYCLE_SLACK` = 0.5 of the mean step: one interval on is as near as two on).
 But the picture is the same a step on as a cycle on wherever the legs are drawn alike, so the picture
 cannot witness that an interval holds two steps. Neither can a foot cue's turn half an interval on: a
-light fixed on the screen shades the feet by how far apart they are drawn, whichever leg leads, so a
-walk whose crossings are its steps, its legs drawn alike, turns its cue over half an interval on just as
-a walk whose other leg leads a step on does; and a cue that merely moves (the no-view shade) says nothing
+light fixed on the screen shades the feet by how far apart they are drawn, whichever leg leads, so a walk
+whose crossings are its steps, its legs drawn alike, turns its cue over half an interval on just as a
+walk whose other leg leads a step on does; and a cue that merely moves (the no-view shade) says nothing
 about which leg leads. Read that way, a walk whose crossings are its steps was cut one step long and
 counted two steps: a half-cycle loop, with no warning. The crossings mark cycles only where a witness
 that reads no leg says the interval holds two steps: the body's top line (`legs.strike_signals` `top`,
 one row per frame) rising and falling twice an interval. The body rises and falls once a step whichever
-leg leads, so two rises an interval are two steps an interval. `local_cycle.bob_word(top, interval, height)`
-reads it: the line's range over the clip over the body's median height (`swing`); where that is under
-`BOB_FLOOR` (`0.005`, 0.5 % of the body's median height) the line does not rise and fall and witnesses
-nothing (`says` null, `why` says its range is under the floor: it does not rise and fall; `half` not
-read); otherwise its correlation half an interval on (`crossings.correlation_on`, trend removed) is read
-(`half`), and the bob says `"cycles"` where `half` is `BOB_TWICE` (`0.28`) or more, null otherwise (`why`:
-its top line does not rise and fall twice an interval). The view's foot cue can only refuse cycles
-(`local_cycle.cue_word(cue, interval, step=None)`): `legs.shade_cue` from the side or a diagonal,
-`legs.depth_cue` from the front or back, per frame. A cue whose range over the clip is under `CUE_FLOOR`
-(0.5) of the step it is drawn in (`legs.TONE` of luma, or one pixel row of the body's median height) does
-not move: it says `"alike"`, its correlation is not read (`one` absent), and `why` gives its range and
-the step. Otherwise its correlation one interval on (`one`) is read with `crossings.correlation_on`
-(trend removed): the cue says `"steps"` where it turns over one interval on (correlation at
-`CUE_SWAPPED`, `-0.2`, or under: the other leg leads there, so the interval is a step); and null otherwise
-(`why`: it does not turn over one interval on). It no longer reads its correlation half an interval on
-and never says `"cycles"`. With no view given, no cue is read at all: the shade of the feet's two halves
-is no longer read. Where the picture passes, the view's cue is checked first: where it says `"steps"`,
-`cycles` is false, the count stands (two steps), `why` says the view's foot cue turns over there: the
-other leg leads, a step, and no warning is given. Else where the bob says `"cycles"`, `cycles` is true,
-and `why` says the body's top line rises and falls twice an interval (its `half`, at least `BOB_TWICE`):
-two steps an interval, the feet meet once a cycle. Else `cycles` is false and `unwitnessed` is true: the
-crossings stay on steps, as from the side; `why` says nothing that reads no leg witnesses two steps an
-interval (the bob's own `why` in parentheses, or "no top line read"): a step on draws as a cycle on, as
-from the side, and the crossings mark steps; and the loop's warnings (`jolt.warnings`, from
-`local_cycle.step_verdict`) gain this line (`s/L` being the cut): "the clip one interval on is the same
-picture, as a walk whose feet meet once a cycle draws it, but nothing that reads no leg witnesses it
-(<the bob's why>): its crossings are counted as steps, as from the side", where its feet do meet once a
-cycle, each step counted in the cut `s/L` is a cycle (`cycle-unwitnessed`). Where the picture fails,
-`cycles` is false and `why` says the crossings mark steps, and neither `cue` nor `bob` is recorded.
-Where they mark cycles the reading holds two steps an interval (`Reading.mark_cycles`: `per` 2, `step`
-half the interval, `step_range` halved): a cut one interval long is two steps (one cycle) and is taken
-as such (`steps: {count: 2, by: crossings}` written). Recorded in `cycle.step_count.cycles`:
+leg leads, so two rises an interval are two steps an interval.
+`local_cycle.bob_word(top, interval, height)` reads the body's top line less its flow
+(`off_flow(top, interval)`), not the raw line. `local_cycle.off_flow(values, interval)` returns `values`
+(per frame) less their flow: each frame minus the mean of the interval about it (a moving average one
+interval long, its two end frames weighted by the part of a frame the interval covers), kept only over
+the frames the interval fits about (the first and last `ceil(interval/2 - 0.5)` frames drop out), and
+what is left minus its least-squares straight line. A rise and fall once or twice an interval averages to
+nothing over one interval and is left whole. A flow slower than the interval is taken out: wholly where
+it bends no more than a cubic (a constant, a straight drift, an arc, a cubic), in part where it is a slow
+sway a few intervals long. Its record: `swing` is the range of the line left over the body's median
+height; `rows` is that range in pixel rows. Where the clip is under an interval long so nothing is left:
+`says` null, `why` says its top line less its flow is not read. Where `swing` is under `BOB_FLOOR`
+(`0.005`) or `rows` is under `BOB_ROWS` (`2`): `says` null, `why` says the line's range less its flow is
+under 0.5 % of the body's height or 2 rows, so it does not rise and fall; `half` and `quarter` are not
+read. The top line is read in whole pixel rows, so a picture drifting up or down makes the line step a
+row up and down as it rounds, and that rounding, less its own mean over an interval, stays under 2 rows.
+Otherwise it reads the line left's correlation half an interval on (`half`) and a quarter of an interval
+on (`quarter`), both with `crossings.correlation_on` (each the larger of the two whole lags about the
+span). It says `"cycles"` only where `half` is `BOB_TWICE` (`0.28`) or more and `quarter` is `-BOB_TWICE`
+(`-0.28`) or less: the line is as it was half an interval on and turned over a quarter on, which is a
+rise and fall twice an interval. Otherwise null, and `why` gives both values. A rise and fall twice an
+interval is as it was half an interval on and turned over a quarter on; a step's bob (once an interval)
+is turned over half an interval on; any flow left over (slower than the interval) is as it was at both
+half and a quarter of an interval on, so it cannot pass the quarter test. The whole picture shaking up
+and down at twice the interval's beat is the same signal as the bob and is read as one; a sway of the
+whole picture as large as the bob or larger, between about one and three intervals long, can hide a true
+bob, and then the crossings stay on steps with the warning (two intervals, named), not one cycle. The
+view's foot cue can only refuse cycles (`local_cycle.cue_word(cue, interval, step=None)`):
+`legs.shade_cue` from the side or a diagonal, `legs.depth_cue` from the front or back, per frame. A cue
+whose range over the clip is under `CUE_FLOOR` (0.5) of the step it is drawn in (`legs.TONE` of luma, or
+one pixel row of the body's median height) does not move: it says `"alike"`, its correlation is not read
+(`one` absent), and `why` gives its range and the step. Otherwise its correlation one interval on (`one`)
+is read with `crossings.correlation_on` (trend removed): the cue says `"steps"` where it turns over one
+interval on (correlation at `CUE_SWAPPED`, `-0.2`, or under: the other leg leads there, so the interval
+is a step); and null otherwise (`why`: it does not turn over one interval on). It no longer reads its
+correlation half an interval on and never says `"cycles"`. With no view given, no cue is read at all: the
+shade of the feet's two halves is no longer read. Where the picture passes, the view's cue is checked
+first: where it says `"steps"`, `cycles` is false, the count stands (two steps), `why` says the view's
+foot cue turns over there: the other leg leads, a step, and no warning is given. Else where the bob says
+`"cycles"`, `cycles` is true, and `why` says the body's top line less its flow rises and falls twice an
+interval (its `half`, at least `BOB_TWICE`; its `quarter`, at most `-BOB_TWICE`): two steps an interval,
+the feet meet once a cycle. Else `cycles` is false and `unwitnessed` is true: the crossings stay on
+steps, as from the side; `why` says nothing that reads no leg witnesses two steps an interval (the bob's
+own `why` in parentheses, or "no top line read"): a step on draws as a cycle on, as from the side, and
+the crossings mark steps; and the loop's warnings (`jolt.warnings`, from `local_cycle.step_verdict`) gain
+this line (`s/L` being the cut): "the clip one interval on is the same picture, as a walk whose feet meet
+once a cycle draws it, but nothing that reads no leg witnesses it (<the bob's why>): its crossings are
+counted as steps, as from the side", where its feet do meet once a cycle, each step counted in the cut
+`s/L` is a cycle (`cycle-unwitnessed`). Where the picture fails, `cycles` is false and `why` says the
+crossings mark steps, and neither `cue` nor `bob` is recorded. Where they mark cycles the reading holds
+two steps an interval (`Reading.mark_cycles`: `per` 2, `step` half the interval, `step_range` halved): a
+cut one interval long is two steps (one cycle) and is taken as such (`steps: {count: 2, by: crossings}`
+written). Recorded in `cycle.step_count.cycles`:
 `{asked, interval, overlap, half, one, two, slack, cue, bob, cycles, unwitnessed, why}`;
 `cue: {range, floor, swapped, one, says, why}` (only with a view; `one` absent where `says` is `"alike"`;
-`says` is `"steps"`, `"alike"` or null); `bob: {swing, floor, twice, half, says, why}` (`half` absent
-under `floor`; `why` absent where it says `"cycles"`; `says` is `"cycles"` or null); `unwitnessed` true
-only where nothing witnessed; absent where not asked. `cue` and `bob` are recorded only where the picture
-passes. The same reading is used for the search's cut (`--anchor motion-auto`), a fixed cut
+`says` is `"steps"`, `"alike"` or null); `bob: {swing, rows, floor, twice, half, quarter, says, why}`
+(`half` and `quarter` absent under the floors; `why` absent where it says `"cycles"`; `says` is
+`"cycles"` or null); `unwitnessed` true only where nothing witnessed; absent where not asked. `cue` and
+`bob` are recorded only where the picture passes. The same reading is used for the search's cut
+(`--anchor motion-auto`), a fixed cut
 (`--cycle fixed`, `fixed_count`), and the loop as it plays round (`ring_steps`, told the clip's `cycles`
 since a loop alone is too short to read two intervals on). `video-set` passes each item's view. On the
 synthetic walkers of `tests/video/test_walk_steps.py` (bodies rising and falling 3 px either way once a
@@ -1368,9 +1390,10 @@ frames: with `--view front_diagonal` cut one cycle (16, 18 frames); its foot cue
 does not turn over one interval on (`says` null), and its top line rises and falls twice an interval;
 without a view it is not asked and is cut as before (32, 36 frames: two cycles). The walker seen from
 behind (17.5 on ones; no view and `--view back_diagonal`) and the front-diagonal walker (16,
-`--view front_diagonal`) with their bodies held still have their top line not rising and falling (`swing`
-under `BOB_FLOOR`): two intervals (two cycles), `cycles` false, `unwitnessed` true, and the warning naming
-the cut. A side walker whose two steps are one silhouette (46-frame cycle, near and far a tone or four
+`--view front_diagonal`) with their bodies held still have their top line not rising and falling (the
+line left (less its flow) ranges under `BOB_FLOOR` of the body's height and under `BOB_ROWS` rows): two
+intervals (two cycles), `cycles` false, `unwitnessed` true, and the warning naming the cut. A side walker
+whose two steps are one silhouette (46-frame cycle, near and far a tone or four
 apart), passes brief, is not asked with no view or with `--view side`, and is cut two steps (46 frames) as
 before. The same 46-frame walker filmed as a front diagonal, its far leg four tones off the near one, is
 asked with `--view front_diagonal`: the picture passes, but the foot cue turns over one interval on
@@ -1391,7 +1414,16 @@ pass and a light fixed on the screen varying top to bottom (12 tones), asked wit
 over half an interval on; nothing witnesses: 46 frames, warning. The wide walker with its far leg four tones
 off the near one (a pass can hide): with `--view side` or `front_diagonal` the cue turns over one interval
 on (`"steps"`): two steps, 46 frames, no warning; with no view no cue is read and nothing witnesses: 46
-frames, `unwitnessed`, warning.
+frames, `unwitnessed`, warning. The wide legs-alike side walker (46-frame cycle, crossings every 23
+frames, a pass can hide), carried up and down with the whole picture along a smooth arc 24 px deep, and,
+with its body held still, along the same arc, along a sway 12 px either way, four intervals long (92
+frames), and down a ramp 24 px over the clip, a row every three frames: each is cut two steps, 46 frames,
+with `unwitnessed` and the warning. For the bobbing walker its `half` is `-0.28` or less (less its flow
+its line rises and falls once an interval); for the still one its `rows` is under `BOB_ROWS`. Before this
+change every one of the four was cut one step, counted two, and no warning said so. The walker seen from
+behind whose far foot hides behind the near one (cycle 17.5 frames on ones, legs drawn alike), carried
+along the arc and the cubic: cut one cycle; the bob says `"cycles"` with its `quarter` at `-0.28` or
+less.
 
 **Choosing the cut.**
 

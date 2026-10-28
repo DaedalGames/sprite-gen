@@ -40,11 +40,17 @@ CUE_SWAPPED = -0.2
 # body's height) rounds to one value: the legs are drawn alike to it, and its correlation is the arithmetic's (not read).
 CUE_FLOOR = 0.5
 # The body's bob witnesses that the crossings mark cycles (`bob_word`), read without telling the legs apart: the body's
-# top line (`legs.strike_signals` `top`) rises and falls once a step, so where the interval holds two steps it is
-# correlated BOB_TWICE or over half an interval on (where it holds one, it is turned over there). A top line whose range
-# over the clip is under BOB_FLOOR of the body's median height does not rise and fall, and witnesses nothing.
+# top line (`legs.strike_signals` `top`) rises and falls once a step. It is read less its flow (`off_flow`): the
+# picture drifting, swaying or zooming up and down slower than the interval, or a lean changing, moves the line where
+# it pleases, while a rise and fall once or twice an interval comes to nothing over one and is left whole. Where the
+# interval holds two steps the line left is as it was half an interval on and turned over a quarter on, each by
+# BOB_TWICE (correlated BOB_TWICE or over there, -BOB_TWICE or under here); where it holds one it is turned over half an
+# interval on, and a flow left over is as it was at both. A line left whose range is under BOB_FLOOR of the body's
+# median height, or under BOB_ROWS pixel rows (a line read in whole rows rounds a row up and down as the picture
+# drifts), does not rise and fall, and witnesses nothing.
 BOB_TWICE = 0.28
 BOB_FLOOR = 0.005
+BOB_ROWS = 2
 SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as near as a cycle on: asked only where a pass hides
 # A loop whose clip one interval on is the same picture, as a walk whose feet meet once a cycle draws it, with nothing
 # to witness whether they do (`read_cycles`): its crossings stay on steps, so its two steps may be two cycles. Named on
@@ -531,24 +537,46 @@ def cue_word(cue, interval, *, step=None):
                                          f"over {CUE_SWAPPED:+g})"}
 
 
+def off_flow(values, interval):
+    """`values` (per frame) less their flow: each frame less the mean of the `interval` about it (a moving average one
+    interval long, its two end frames weighted by the part of a frame the interval covers), over the frames the interval
+    fits about, and what is left less its straight line. A rise and fall once or twice an interval comes to nothing over
+    one and is left whole; a flow slower than the interval is taken out, wholly where it bends no more than a cubic."""
+    x = np.asarray(values, dtype=float)
+    reach = math.ceil(interval/2 - 0.5)
+    if x.size < 2*reach + 3:
+        return x[:0]
+    weights = np.clip(interval/2 + 0.5 - np.abs(np.arange(-reach, reach+1)), 0.0, 1.0)
+    left = x[reach:x.size-reach] - np.convolve(x, weights/weights.sum(), mode='valid')
+    t = np.arange(left.size)
+    return left - np.polyval(np.polyfit(t, left, 1), t)
+
+
 def bob_word(top, interval, *, height):
     """Whether the body rises and falls twice an interval `interval` frames long (`read_cycles`), read off its top line
-    (`top`, per frame, in pixel rows: `legs.strike_signals`) without telling the legs apart: `says` `cycles` where the
-    line's range over the clip is BOB_FLOOR of the body's median `height` or more and it correlates BOB_TWICE or over half
-    an interval on (`crossings.correlation_on`) — a step each rise, two steps an interval; None otherwise, with why.
-    Returns the record: `swing` (the range of the body's height), `floor`, `twice`, `half` (where read), `says`."""
-    values = np.asarray(top, dtype=float)
-    swing = float(values.max()-values.min())/height if values.size and height > 0 else 0.0
-    word = {'swing': round(swing, 4), 'floor': BOB_FLOOR, 'twice': BOB_TWICE}
-    if swing < BOB_FLOOR:
-        return {**word, 'says': None, 'why': f"its top line's range over the clip ({swing:.2%} of the body's height) is under "
-                                             f"{BOB_FLOOR:.1%}: it does not rise and fall"}
-    half = crossings_mod.correlation_on(values, interval/2)
-    word['half'] = None if half is None else round(half, 3)
-    if half is not None and half >= BOB_TWICE:
+    (`top`, per frame, in pixel rows: `legs.strike_signals`) without telling the legs apart, less its flow (`off_flow`):
+    `says` `cycles` where the line left ranges BOB_FLOOR of the body's median `height` or more and BOB_ROWS rows or
+    more, and it is as it was half an interval on and turned over a quarter on (`crossings.correlation_on`, BOB_TWICE or
+    over there and -BOB_TWICE or under here) — a step each rise, two steps an interval; None otherwise, with why.
+    Returns the record: `swing` (the line left's range, of the body's height), `rows` (in rows), `floor`, `twice`,
+    `half` and `quarter` (where read), `says`."""
+    values = off_flow(top, interval)
+    rows = float(values.max()-values.min()) if values.size else 0.0
+    swing = rows/height if height > 0 else 0.0
+    word = {'swing': round(swing, 4), 'rows': round(rows, 2), 'floor': BOB_FLOOR, 'twice': BOB_TWICE}
+    if not values.size:
+        return {**word, 'says': None, 'why': "its top line less its flow is not read: the clip is under an interval long"}
+    if swing < BOB_FLOOR or rows < BOB_ROWS:
+        return {**word, 'says': None, 'why': f"its top line's range less its flow ({swing:.2%} of the body's height, {rows:.1f} "
+                                             f"rows) is under {BOB_FLOOR:.1%} or {BOB_ROWS} rows: it does not rise and fall"}
+    half, quarter = (crossings_mod.correlation_on(values, interval/k) for k in (2, 4))
+    word.update(half=None if half is None else round(half, 3), quarter=None if quarter is None else round(quarter, 3))
+    if half is not None and quarter is not None and half >= BOB_TWICE and quarter <= -BOB_TWICE:
         return {**word, 'says': 'cycles'}
-    return {**word, 'says': None, 'why': f"its top line does not rise and fall twice an interval "
-                                         f"({'not read' if half is None else f'{half:+.2f}'} half an interval on, under {BOB_TWICE:+g})"}
+    return {**word, 'says': None, 'why': f"its top line less its flow does not rise and fall twice an interval "
+                                         f"({'not read' if half is None else f'{half:+.2f}'} half an interval on, "
+                                         f"{'not read' if quarter is None else f'{quarter:+.2f}'} a quarter on: not at least "
+                                         f"{BOB_TWICE:+g} and at most {-BOB_TWICE:+g})"}
 
 
 def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signals=None):
@@ -563,10 +591,11 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
     The picture is the same a step on as a cycle on where the legs are drawn alike, and so is everything else that does
     not tell the legs apart (a foot cue under a light fixed on the screen, how far apart the feet are drawn): it marks
     cycles only where a witness that reads no leg says the interval holds two steps — the body's top line (`signals`,
-    `legs.strike_signals`: `top`, and `height`) rising and falling twice an interval (`bob_word`). The view's foot cue
-    (`cue`, per frame, drawn in steps of `cue_step`; `cue_word`) only refuses: where it turns over one interval on, the
-    other leg leads there, a step. With no witness the crossings stay on steps, as from the side, and the record names
-    it (`unwitnessed`): where the feet do meet once a cycle, each step counted is a cycle. Returns what was read, None
+    `legs.strike_signals`: `top`, and `height`) rising and falling twice an interval, less its flow (`bob_word`: the
+    picture drifting or swaying up and down as it pleases witnesses nothing). The view's foot cue (`cue`, per frame,
+    drawn in steps of `cue_step`; `cue_word`) only refuses: where it turns over one interval on, the other leg leads
+    there, a step. With no witness the crossings stay on steps, as from the side, and the record names it
+    (`unwitnessed`): where the feet do meet once a cycle, each step counted is a cycle. Returns what was read, None
     where it is not asked."""
     if reading.mode != 'gap' or not reading.readable:
         return None
@@ -595,9 +624,9 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
             said.update(cycles=False, why=f"{picture}, but the view's foot cue turns over there ({word['one']:+.2f}, at most "
                                           f"{CUE_SWAPPED:+g}): the other leg leads, a step")
         elif bob is not None and bob['says'] == 'cycles':
-            said.update(cycles=True, why=f"{picture}, and the body's top line rises and falls twice an interval ({bob['half']:+.2f} "
-                                         f"half an interval on, at least {BOB_TWICE:+g}): two steps an interval, the feet meet once "
-                                         "a cycle")
+            said.update(cycles=True, why=f"{picture}, and the body's top line less its flow rises and falls twice an interval "
+                                         f"({bob['half']:+.2f} half an interval on, at least {BOB_TWICE:+g}; {bob['quarter']:+.2f} a "
+                                         f"quarter on, at most {-BOB_TWICE:+g}): two steps an interval, the feet meet once a cycle")
         else:
             said.update(cycles=False, unwitnessed=True,
                         why=f"{picture}, but nothing that reads no leg witnesses two steps an interval "

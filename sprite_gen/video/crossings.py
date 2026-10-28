@@ -41,10 +41,10 @@ Crossings that mark cycles (`Reading.mark_cycles`, read by `local_cycle.read_cyc
 where the feet meet on the screen, and they need not meet at every pass. The far foot can pass behind the near one
 inside a run of the feet together (a pass hidden), or a foot can step toward or away from the camera and pass the
 other apart on the screen. The feet then meet once a cycle, and the interval between two crossings holds two steps —
-marked so only where the body's top line witnesses it, rising and falling twice an interval (the picture a step on is
-a cycle on's where the legs are drawn alike). Every count then reads two steps an interval (`per`): the step is half
-the interval, a cut's advance is twice the crossings it covers, and the loop as played shows two steps a crossing. The
-step range is still read on the intervals.
+marked so only where the body's top line witnesses it, rising and falling twice an interval less its flow (the picture
+a step on is a cycle on's where the legs are drawn alike, and the picture drifting up and down moves the line too).
+Every count then reads two steps an interval (`per`): the step is half the interval, a cut's advance is twice the
+crossings it covers, and the loop as played shows two steps a crossing. The step range is still read on the intervals.
 
 What crossings cannot see: a hold the step range absorbs (a 13-frame step held to 17), a still run of the feet
 together as long as a pass, a wobble that reaches the reading's sides at a step's beat. They read as steps.
@@ -451,8 +451,8 @@ def read(sig: dict[str, list[float]]) -> Reading:
 
 def correlation_on(values: list[float], span: float) -> float | None:
     """A per-frame signal's correlation `span` frames on (its trend taken out), the larger at the two whole lags about
-    `span`: the lean's one step on (`read`), a foot cue's one interval on and the body's top line half an interval on
-    (`local_cycle.read_cycles`)."""
+    `span`: the lean's one step on (`read`), a foot cue's one interval on, and the body's top line less its flow half
+    and a quarter of an interval on (`local_cycle.read_cycles`)."""
     x = np.asarray(values, dtype=float)
     t = np.arange(len(x))
     x = x - np.polyval(np.polyfit(t, x, 1), t)
