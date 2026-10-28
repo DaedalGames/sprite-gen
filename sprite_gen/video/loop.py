@@ -1785,6 +1785,37 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
     return found
 
 
+def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image]) -> dict[str, Any]:
+    """The cut a walk's search and step count chose (`_by_steps`), held to one word before it is cut whichever way it
+    was chosen — the search's, two steps by the clip's crossings, crossings read or not: the body's
+    (`local_cycle.cut_word`), recorded `cut_witness`. Legs drawn alike loop as well on one step as on two, and
+    crossings read off feet that slide, or off a shadow under them on a picture that moves, count half steps.
+
+    - Its own rise and fall twice the cut, or four times: the cut is a cycle, or two, and stands. Cut two cycles, its
+      strip still counts two steps where the crossings counted them, and `video-set` leaves it out of its state's cycle
+      alignment (local_cycle.FOUR_STEPS, `local_cycle.four_steps`).
+    - Else nothing witnesses the cut handed out whole cycles, and it is held (`held: unwitnessed`): kept — two of the
+      clip's crossing intervals where it counted them, else as the search chose it — and named
+      (local_cycle.UNWITNESSED, `held_verdict`); `video-set` leaves it out of its state's cycle alignment
+      (`local_cycle.unwitnessed`). So is a cut the body rises and falls once in (`says` one step): one step of a walk,
+      or a whole cycle of a body that rises and falls once a cycle — a limp, a body with no legs that bounces as it
+      goes — which nothing that reads no leg tells apart. It is never cut again two long: that would loop two of such
+      a body's cycles.
+
+    A cut whose crossings the step count left on steps, nothing witnessing two steps an interval (`cycles.unwitnessed`),
+    is held so already, and named on its step count (`held: step count`). Only a walk or a run comes here
+    (motion-auto, its cycle searched, no count given)."""
+    first = [cycle["start"], cycle["length"]]
+    if ((cycle.get("step_count") or {}).get("cycles") or {}).get("unwitnessed"):
+        cycle["cut_witness"] = {"cut": first, "held": "step count"}
+        return cycle
+    strike = leg_signals(frames)
+    said = {"cut": first, **local_cycle.cut_word({**strike, **legs_mod.body_signals(frames)} if strike else None,
+                                                 cycle["length"])}
+    cycle["cut_witness"] = said if said["says"] in ("two steps", "four steps") else {**said, "held": "unwitnessed"}
+    return cycle
+
+
 def _from_lead_in(record: Any, lead: int) -> Any:
     """A search's record (a cut, or the windows a refusal measured) in the clip's own frame numbers: the
     search read the clip after its first `lead` frames, so every `start` and `context_pair_range` it wrote
@@ -2124,6 +2155,7 @@ def _cut_loop(
                 cycle = _by_steps(cycle, refused, frames=source_frames, analysis=analysis, D=D, trajectory=trajectory,
                                   window=window, searched=searched, detect=detect, seam_max=seam_max, cells=cells,
                                   view=view, facing=facing)
+                cycle = _witnessed(cycle, frames=source_frames)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(
@@ -2840,6 +2872,9 @@ def run(**kwargs: object) -> int:
     if "step_count" in payload["cycle"]:
         counted = payload["cycle"]["step_count"]
         summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
+    if "cut_witness" in payload["cycle"]:
+        summary["cycle"]["cut_witness"] = {k: payload["cycle"]["cut_witness"][k] for k in ("cut", "says", "held")
+                                           if k in payload["cycle"]["cut_witness"]}
     if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:
         summary["ghost_screen"] = payload["ghost_screen"]
     for key in ("ghost_given_way", "ghost_kept"):
