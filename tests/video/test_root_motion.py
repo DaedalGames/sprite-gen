@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from sprite_gen.video import evidence
 from sprite_gen.video import held_fill
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
@@ -219,14 +220,16 @@ def test_gravity_or_speed_without_metres_per_pixel_is_refused(tmp_path):
 
 
 # The base engine's sidecars of the six inputs the held-cell tests pin (559d498, v3.8.0), every key: without the handle
-# the cut keeps every one of them, value for value, and a cut played once grows `root_motion`.
+# the cut keeps every one of them, value for value, and a cut played once grows `root_motion`. The keyed clip's
+# identity (`source_cut.source.sha256`) is the sha of the input PNG files, other bytes on Linux than on macOS (its
+# zlib): it is read against this run's own files, and pinned without.
 SIDECARS = {
-    "hop-one-shot": "59ef079606d627a0a4e3d25a4ea6ef3ef7b0aa72dd6a9111a566a4c4a0f56def",
-    "swing-once-return": "558a1a1142b0b0a033d88f021c0c6085c0c14cb7cce66c70480e5fa9e535df6b",
-    "swing-pinned": "286345f6dc30681c50dbd646e27fa3779b46ed0d6d2d3e29d5aa273b323400ef",
-    "topple-once": "0a1f5ad5f0d851af989d9561006cd78af0021ce1a996bc4cf479c6377ede3f0e",
-    "walk-auto": "996af533ae949cc8fd2fba2acbab14db23d3fe741aff922889dbe312214fefea",
-    "walk-fixed": "0327ba19b76b6294dd42edb1e30489d1c607cbe6f14174cebd90e043d2802835",
+    "hop-one-shot": "b546c1762af5aee76faa7ff83752a50b2accbc2de4b5daf3fd610a8d3eef914e",
+    "swing-once-return": "991343cce794a6f90c30b606f461ed6eeaf8d804e0ecadac3f51ab631b0fb813",
+    "swing-pinned": "88ecedeca1ff148799ac226b946c5c7d60d4a73dee347e2c6b4c33ca98eeeec3",
+    "topple-once": "78f0c731c7f6c72ea27fa15890652899d45ad8efd1e55ba8a66907b2d447f84e",
+    "walk-auto": "edf29b6fde312a55e0e4813ca1571511d855b603a78c12b75a9d5121f9e9448d",
+    "walk-fixed": "b9d991735bd05268e04ffae9c2660a21271075f5c0a0c281b2d0e7fbbe4c84de",
 }
 
 
@@ -240,6 +243,8 @@ def test_without_the_handle_the_cut_is_byte_for_byte_as_before_and_its_sidecar_o
     assert _bytes(Path(rep["out_dir"]), case) == pinned
     meta = _meta(rep)
     grown = meta.pop("root_motion", None)
+    source = meta["source_cut"]["source"]
+    assert source.pop("sha256") == evidence.source_identity(sorted(keyed.glob("*.png")), 24.0)["sha256"]
     assert hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest() == SIDECARS[case]
     assert (grown is not None) == (meta["kind"] in rm.KINDS)
     if grown is not None:
