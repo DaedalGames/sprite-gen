@@ -3,7 +3,7 @@
 where its body is in each cell (the mass centre), what each cell touches and its air, in the strip sidecar; with
 `--air-retime` the air is given a length, a gravity and a speed of its own, its cells made between the clip's frames
 (held_fill.at_times), the take-off and the landing as filmed and the contacts where they were. Without the handle the
-cut is delivered byte for byte as before and its sidecar only grows a key.
+cut is the same pictures as before (tests/picture_digest.py) and its sidecar only grows a key.
 
 The jump is synthetic (tests/video/jump_inputs.py), its mass centre on a parabola under a known gravity; the
 interpolator is the stand-in that draws it again at the time asked for (`Between`)."""
@@ -24,7 +24,7 @@ from sprite_gen.video import nonloop
 from sprite_gen.video import root_motion as rm
 from tests.video import jump_inputs as J
 from tests.video.held_fill_inputs import Between
-from tests.video.test_held_fill import UNHELD, _bytes, _no_rife
+from tests.video.test_held_fill import UNHELD, _no_rife, _pictures
 
 
 def _run(tmp_path: Path, frames: list[Image.Image], name: str = "j", **kw) -> dict:
@@ -234,13 +234,13 @@ SIDECARS = {
 
 
 @pytest.mark.parametrize("case", sorted(UNHELD))
-def test_without_the_handle_the_cut_is_byte_for_byte_as_before_and_its_sidecar_only_grows(case, tmp_path, monkeypatch):
+def test_without_the_handle_the_cut_is_the_same_pictures_as_before_and_its_sidecar_only_grows(case, tmp_path, monkeypatch):
     _no_rife(monkeypatch, tmp_path)
     frames, kw, pinned = UNHELD[case]
     keyed = J.save(frames(), tmp_path / f"{case}-keyed")
     rep = loop_mod.run_loop(keyed, tmp_path / f"{case}-out", fps=24.0, min_len=None, max_len=None, n_out=None,
                             seam_max=loop_mod.SEAM_RATIO_MAX, name=case, report_path=None, **kw)
-    assert _bytes(Path(rep["out_dir"]), case) == pinned
+    assert _pictures(Path(rep["out_dir"]), case) == pinned
     meta = _meta(rep)
     grown = meta.pop("root_motion", None)
     source = meta["source_cut"]["source"]
