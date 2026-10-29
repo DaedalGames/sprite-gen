@@ -1129,12 +1129,15 @@ def test_a_cut_is_witnessed_by_how_often_the_body_rises_and_falls_in_it(beat, sa
     """`cut_word` on a cut 16 frames long, the body 100 rows tall on feet that stay on the ground, its top line rising
     and falling 3 rows either way every `beat` frames: twice the cut is two steps, a cycle; four times, two cycles;
     once, one step — or a whole cycle of a body that rises and falls once a cycle, which the word cannot tell from it;
-    held still, nothing witnesses the cut whole cycles."""
+    held still, nothing witnesses the cut whole cycles. The feet on the ground, the top line reads alike on the screen
+    and over the feet: both lines say the word, and where neither says one, each says why."""
     word = local_cycle.cut_word(_bob(beat), 16)
-    assert word["says"] == says
+    assert word["says"] == says and [line["says"] for line in word["lines"].values()] == [says, says]
     if says is None:
-        assert word["bob"]["says"] is None and word["why"] == word["bob"]["why"]
-    elif says != "two steps":
+        assert "by" not in word and all(line["why"] in word["why"] for line in word["lines"].values())
+    else:
+        assert word["by"] == list(local_cycle.CUT_LINES)
+    if says in ("four steps", "one step"):
         assert word["on"]["says"] == "cycles" and word["on"]["interval"] == {"four steps": 8, "one step": 32}[says]
 
 
@@ -1283,17 +1286,20 @@ def test_a_walk_on_a_picture_moved_every_two_thirds_of_a_step_is_never_cut_a_thi
 def test_a_still_walk_over_a_shadow_on_the_screen_on_a_picture_shaken_twice_a_step_is_never_witnessed(tmp_path):
     """The wide walker held still on its legs (crossings its steps, 23 frames), over a shadow drawn on the screen
     touching its soles, on a picture shaken 6 px up and down twice a step: the step count reads no feet, and the search
-    cuts 23 frames — one step. The top line rises and falls twice the cut with the picture, and the lowest solid row is
-    the shadow, holding still: read over it alone, the picture's moving is the body's own and witnesses two steps.
-    Over the lowest opaque row, the feet's, the top line holds still: held, named."""
+    cuts 23 frames — one step. On the screen the top line rises and falls twice the cut with the picture, and the
+    lowest opaque row, the feet's, with it: the picture's moving, not the body's own. The lowest solid row is the
+    shadow, holding still: read over it alone, the picture's moving is the body's own and witnesses two steps. Over the
+    lowest opaque row the top line holds still. Neither line witnesses the cut: held, named."""
     shaken = _shadowed(lambda k: _alike(k, **_STEPS, bob=0), _shake((0.5, 6, math.pi / 2), 23), shadow="touch", screen=True)
     report = _cut(tmp_path / "out", _keyed(tmp_path, shaken))
     _not_silent(report, 46)
     assert report["cycle"]["step_count"]["readable"] is False
     said = _held(report)
-    bob = said["bob"]
+    screen, feet = (said["lines"][line]["bob"] for line in ("screen", "feet"))
     assert abs(said["cut"][1] - 23) <= 1 and said["says"] is None
-    assert bob["over"] == "sole" and bob["rows"] < local_cycle.BOB_ROWS and "does not rise and fall" in said["why"]
+    assert screen["half"] >= local_cycle.BOB_TWICE and screen["quarter"] <= -local_cycle.BOB_TWICE
+    assert screen["body"]["sole"] > screen["body"]["lowest"] and "its lowest row rises and falls with it" in said["why"]
+    assert feet["over"] == "sole" and feet["rows"] < local_cycle.BOB_ROWS and "does not rise and fall" in said["why"]
     frames = [shaken(k) for k in range(FRAMES)]
     signals = {**legs.strike_signals(frames), **legs.body_signals(frames)}
     assert local_cycle.cut_word({**signals, "sole": signals["reach"]}, said["cut"][1])["says"] == "two steps"
@@ -1307,16 +1313,47 @@ def test_a_walk_rising_on_its_legs_on_a_picture_swaying_once_a_cycle_or_slower_i
     a cycle or slower — 12 px either way every 46 frames or 24 px every 69 (the wide walker with its legs drawn alike,
     its crossings its steps every 23 frames), 24 px every 40 (the walker whose far foot passes hidden, 20 frames a cycle
     on twos): a slow motion of the whole picture, not the walk's. The cut is a cycle. Taken out at the cut's length,
-    the flow leaves the sway whole, and the top line on the screen rises and falls with it once the cut: read so, the
-    body's rise and fall twice the cut is hidden and the cycle held. Over its feet, which move with the picture, the
-    top line rises and falls twice the cut: two steps, witnessed, nothing named."""
+    the flow leaves the sway whole, and the top line on the screen rises and falls with it once the cut: read there
+    alone, the body's rise and fall twice the cut is hidden and the cycle held. Over its feet, which move with the
+    picture, the top line rises and falls twice the cut: two steps, witnessed, nothing named."""
     draw, d = {"steps": (lambda k: _alike(k, **_STEPS), 23), "behind": (lambda k: _behind(k, cycle=20, hold=2), 20)}[walker]
     report = _cut(tmp_path / "out", _keyed(tmp_path, _carried(draw, _shake(sway, d))))
     _not_silent(report, cycle)
     c = report["cycle"]
     said = c["cut_witness"]
     assert report["status"] == "passed" and abs(c["length"] - cycle) <= 1.5 and said["cut"] == [c["start"], c["length"]]
-    assert said["says"] == "two steps" and said["bob"]["over"] in ("reach", "sole") and "held" not in said
+    assert said["says"] == "two steps" and "feet" in said["by"] and "held" not in said
+    assert said["lines"]["feet"]["bob"]["over"] in ("reach", "sole")
+    assert not local_cycle.unwitnessed(c) and not any(local_cycle.UNWITNESSED in w for w in report["jolt"]["warnings"])
+
+
+def _leaning(draw, degrees: float):
+    """`draw`'s walker turned about its feet `degrees` over the clip, k/72 of it in frame k (bilinear): a lean
+    changing slowly on its feet, on a canvas 60 px taller either side."""
+
+    def frame(k: int) -> Image.Image:
+        im = draw(k)
+        out = Image.new("RGBA", (im.width, im.height + 120))
+        out.paste(im.rotate(degrees * k / (FRAMES - 1), resample=Image.BILINEAR, center=(104, GROUND + 3)), (0, 60))
+        return out
+    return frame
+
+
+@pytest.mark.slow
+def test_a_walk_leaning_further_on_its_feet_as_it_goes_is_witnessed_one_cycle(tmp_path):
+    """The walker whose far foot passes hidden behind the near one, its legs drawn alike, its feet meeting once a cycle
+    (17.5 frames), rising and falling on its legs once a step, turned 15 degrees about its feet over the clip: a lean
+    changing slowly, on its feet. The search cuts a cycle. The lean tilts the ground under the feet, and the line over
+    them takes in the two feet's heights by turns: it does not rise and fall twice the cut, nor four times, nor once —
+    read there alone the cycle is held. On the screen the top line, less its flow, rises and falls of its own twice the
+    cut: two steps, witnessed, nothing named."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, _leaning(lambda k: _behind(k, cycle=17.5, hold=1, alike=True), -15)))
+    _not_silent(report, 17.5)
+    c = report["cycle"]
+    said = c["cut_witness"]
+    assert report["status"] == "passed" and abs(c["length"] - 17.5) <= 1 and said["cut"] == [c["start"], c["length"]]
+    assert said["says"] == "two steps" and said["by"] == ["screen"] and "held" not in said
+    assert said["lines"]["feet"]["says"] is None and "does not rise and fall twice an interval" in said["lines"]["feet"]["why"]
     assert not local_cycle.unwitnessed(c) and not any(local_cycle.UNWITNESSED in w for w in report["jolt"]["warnings"])
 
 

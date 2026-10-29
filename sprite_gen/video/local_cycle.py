@@ -48,8 +48,11 @@ CUE_FLOOR = 0.5
 # interval on, and a flow left over is as it was at both. A line left whose range is under BOB_FLOOR of the body's
 # median height, or under BOB_ROWS pixel rows (a line read in whole rows rounds a row up and down as the picture
 # drifts), does not rise and fall, and witnesses nothing. A walk's cut, read whole as it is cut (`cut_word`), is read so
-# on the top line over its feet (`over_feet`): at the cut's length a picture swaying once a cut is left whole, and on
-# the screen it would hide the body's rise and fall twice the cut; the feet move with it.
+# on two lines (CUT_LINES), and its word is the first either says: the top line on the screen, and the top line over its
+# feet (`over_feet`). At the cut's length a picture swaying once a cut is left whole, and on the screen it hides the
+# body's rise and fall twice the cut, where the feet move with it; a walk leaning further on its feet as it goes tilts
+# the ground under them, and the line over its feet takes in the two feet's heights by turns, where the screen line
+# has none of them.
 # The picture moving up and down moves the line as the body does, on any beat — shaken twice an interval it is pixel for
 # pixel a body carried up and down whole, feet and all — and the picture zoomed in and out lifts and lowers it too. So the
 # line's rise and fall twice an interval (`twice_an_interval`) is read against the body's own lowest row and head
@@ -67,6 +70,10 @@ BOB_ROWS = 2
 BOB_OWN = 0.3
 BOB_SCALE = 0.6
 BEAT_FRAMES = 8  # a rise and fall twice an interval is fitted (`twice_an_interval`) to no fewer frames
+# The lines a walk's cut is read on (`cut_word`), and where each reads the body's top line: on the screen, and over its
+# feet (`over_feet`). Each says its own word; the cut's is the first either says, in CUT_WORDS' order.
+CUT_LINES = {'screen': 'on the screen', 'feet': 'over its feet'}
+CUT_WORDS = ('two steps', 'four steps', 'one step', None)
 SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as near as a cycle on: asked only where a pass hides
 # A loop whose clip one interval on is the same picture, as a walk whose feet meet once a cycle draws it, with nothing
 # to witness whether they do (`read_cycles`): its crossings stay on steps, so its two steps may be two cycles. Named on
@@ -751,35 +758,71 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
     return said
 
 
+def _cut_line(signals, length, *, feet):
+    """One line's word on a walk's cut `length` frames long (`cut_word`): the body's top line on the screen, or over
+    its feet (`feet`), read by `bob_word` on the cut, on half of it and on twice it — the first it rises and falls
+    twice on says two steps, four steps or one step; None where it does on none, with why (the reading on the cut).
+    Returns {'says', 'bob': the reading on the cut, 'on': the reading that said four steps or one step, with its
+    `interval`, 'why' where None}."""
+    bob = bob_word(signals, length, feet=feet)
+    if bob['says'] == 'cycles':
+        return {'says': 'two steps', 'bob': bob}
+    for says, span in (('four steps', length/2), ('one step', 2*length)):
+        word = bob_word(signals, span, feet=feet)
+        if word['says'] == 'cycles':
+            return {'says': says, 'bob': bob, 'on': {'interval': round(span, 2), **word}}
+    return {'says': None, 'bob': bob, 'why': bob['why']}
+
+
+def _feet_mark(signals, length, over):
+    """Whether a walk's cut `length` frames long that stands (`cut_word`) is marked: its lowest row — the one its line
+    over the feet is read over (`over`) — rises and falls twice the cut more than its top line does on the screen
+    (`own_beat`). The line over the feet is then the feet's as much as the body's: a foot hidden behind the other
+    shakes it so once a cycle, and stood a cut of two cycles on it as one. A mark, not a hold. Returns {'over', 'feet',
+    'beat'}, in rows up and down to two places (as `bob_word`'s `body`), where it is so; None where not, or not read."""
+    beat = own_beat(signals, length)
+    if beat is None:
+        return None
+    feet, top = round(beat['sole' if over == 'sole' else 'lowest'], 2), round(beat['beat'], 2)
+    return {'over': over, 'feet': feet, 'beat': top} if feet > top else None
+
+
 def cut_word(signals, length):
     """The body's word on a walk's cut `length` frames long as it is about to be cut, whichever way it was chosen — the
     pixel search's, the step count's crossings read or not read (loop `_witnessed`). Legs drawn alike loop as well on
     one step as on two, and crossings read off feet that slide, or off a shadow under them on a picture that moves, can
     count half steps: the legs cannot say the cut is a cycle, and the body's own rise and fall, once a step, is read
-    instead (`bob_word`, off `signals`: `legs.strike_signals` with `legs.body_signals`), its top line read over its
-    feet (`feet`): a picture moving once a cut, as a slow sway or drift whose turn is a cycle long does, is left whole
-    by the flow taken out at the cut's length and would hide the rise and fall twice it, and the feet move with it.
-    It `says`:
+    instead (`bob_word`, off `signals`: `legs.strike_signals` with `legs.body_signals`), its top line read on two lines
+    (CUT_LINES, `_cut_line`): on the screen, and over its feet (`feet`). A picture moving once a cut, as a slow sway or
+    drift whose turn is a cycle long does, is left whole by the flow taken out at the cut's length and hides the rise
+    and fall twice it on the screen, where the feet move with it; a walk leaning further on its feet as it goes tilts
+    the ground under them, and the line over its feet takes in the two feet's heights by turns, where the screen line
+    has none of them. Each line says its own word; the cut's is the first either says (CUT_WORDS):
 
     - `two steps` where it rises and falls twice the cut (`bob_word` on the cut says cycles): the cut is a cycle;
     - `four steps` where it does so twice half the cut: the cut is two cycles;
     - `one step` where it does so twice two cuts — once the cut: the cut is one step of a walk, or a whole cycle of a
       body that rises and falls once a cycle (a limp, a body with no legs that bounces as it goes); the body cannot
       tell which, and it witnesses no cycle;
-    - None where none of these is read: nothing witnesses the cut whole cycles (`why`, the reading on the cut).
+    - None where neither line reads any of these: nothing witnesses the cut whole cycles (`why`, each line's reading
+      on the cut).
 
-    Returns {'says', 'bob': the reading on the cut, 'on': the reading that said four steps or one step, with its
-    `interval`, 'why' where None}."""
+    Where the cut stands (two steps or four) and its lowest row rises and falls twice it more than its top line does on
+    the screen, the word carries a mark (`mark`, `_feet_mark`), and nothing more. Returns {'says', 'by': the lines that
+    said it (where it says), 'lines': each line's own word (`_cut_line`), 'on': the first such line's reading that said
+    four steps or one step, with its `line` and `interval`, 'why' where None, 'mark' where marked}."""
     if not signals:
         return {'says': None, 'why': 'no top line read: a frame has no solid body'}
-    bob = bob_word(signals, length, feet=True)
-    if bob['says'] == 'cycles':
-        return {'says': 'two steps', 'bob': bob}
-    for says, span in (('four steps', length/2), ('one step', 2*length)):
-        word = bob_word(signals, span, feet=True)
-        if word['says'] == 'cycles':
-            return {'says': says, 'bob': bob, 'on': {'interval': round(span, 2), **word}}
-    return {'says': None, 'bob': bob, 'why': bob['why']}
+    lines = {line: _cut_line(signals, length, feet=line == 'feet') for line in CUT_LINES}
+    says = min((word['says'] for word in lines.values()), key=CUT_WORDS.index)
+    if says is None:
+        return {'says': None, 'lines': lines, 'why': '; '.join(dict.fromkeys(word['why'] for word in lines.values()))}
+    by = [line for line, word in lines.items() if word['says'] == says]
+    said = {'says': says, 'by': by, 'lines': lines}
+    if says != 'two steps':
+        said['on'] = {'line': by[0], **lines[by[0]]['on']}
+    mark = None if says == 'one step' else _feet_mark(signals, length, lines['feet']['bob']['over'])
+    return {**said, **({'mark': mark} if mark else {})}
 
 
 def unwitnessed(cycle):
@@ -984,7 +1027,7 @@ def step_verdict(cycle):
 def held_verdict(cycle):
     """The body's word on the cut, where it holds it (`cut_witness`, loop `_witnessed`), in words: a cut nothing
     witnesses whole cycles, or one the body rises and falls once in — one step of a walk, or a whole cycle of a body
-    that does so once a cycle — kept as it was chosen. Each names UNWITNESSED."""
+    that does so once a cycle — kept as it was chosen, each line's reading named (CUT_LINES). Each names UNWITNESSED."""
     said = cycle.get('cut_witness') or {}
     if said.get('held') != 'unwitnessed':
         return []
@@ -998,8 +1041,11 @@ def held_verdict(cycle):
                 f"walk's legs are drawn alike, a step loops as a cycle does, and the loop may be half its cycle "
                 f"({UNWITNESSED})"]
     on = said['on']
-    return [f"nothing that reads no leg witnesses the cut {s}/{L} whole cycles: the body's top line rises and falls of its "
-            f"own once in it ({on['half']:+.2f} a cut on, {on['quarter']:+.2f} half a cut on) — one step of a walk whose "
-            f"legs are drawn alike, half its cycle, or a whole cycle of a body that rises and falls once a cycle (a limp, "
-            f"a body with no legs that bounces as it goes) — and {basis}. The cut is kept as chosen: cut again two long, "
-            f"it would loop two of such a body's cycles ({UNWITNESSED})"]
+    where = ' and '.join(CUT_LINES[line] for line in said['by'])
+    rest = ''.join(f", and {CUT_LINES[line]} it says nothing ({word['why']})" for line, word in said['lines'].items()
+                   if line not in said['by'])
+    return [f"nothing that reads no leg witnesses the cut {s}/{L} whole cycles: the body's top line {where} rises and falls "
+            f"of its own once in it ({on['half']:+.2f} a cut on, {on['quarter']:+.2f} half a cut on){rest} — one step of a "
+            f"walk whose legs are drawn alike, half its cycle, or a whole cycle of a body that rises and falls once a cycle "
+            f"(a limp, a body with no legs that bounces as it goes) — and {basis}. The cut is kept as chosen: cut again two "
+            f"long, it would loop two of such a body's cycles ({UNWITNESSED})"]

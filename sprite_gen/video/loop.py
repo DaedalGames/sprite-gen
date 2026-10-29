@@ -1788,12 +1788,14 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
 def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image]) -> dict[str, Any]:
     """The cut a walk's search and step count chose (`_by_steps`), held to one word before it is cut whichever way it
     was chosen — the search's, two steps by the clip's crossings, crossings read or not: the body's
-    (`local_cycle.cut_word`), recorded `cut_witness`. Legs drawn alike loop as well on one step as on two, and
-    crossings read off feet that slide, or off a shadow under them on a picture that moves, count half steps.
+    (`local_cycle.cut_word`: its top line on the screen and over its feet, the first word either says), recorded
+    `cut_witness`. Legs drawn alike loop as well on one step as on two, and crossings read off feet that slide, or off
+    a shadow under them on a picture that moves, count half steps.
 
     - Its own rise and fall twice the cut, or four times: the cut is a cycle, or two, and stands. Cut two cycles, its
       strip still counts two steps where the crossings counted them, and `video-set` leaves it out of its state's cycle
-      alignment (local_cycle.FOUR_STEPS, `local_cycle.four_steps`).
+      alignment (local_cycle.FOUR_STEPS, `local_cycle.four_steps`). Where its lowest row rises and falls twice the cut
+      more than its top line on the screen, the record carries a mark (`mark`), and nothing is held on it.
     - Else nothing witnesses the cut handed out whole cycles, and it is held (`held: unwitnessed`): kept — two of the
       clip's crossing intervals where it counted them, else as the search chose it — and named
       (local_cycle.UNWITNESSED, `held_verdict`); `video-set` leaves it out of its state's cycle alignment
@@ -2873,7 +2875,7 @@ def run(**kwargs: object) -> int:
         counted = payload["cycle"]["step_count"]
         summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
     if "cut_witness" in payload["cycle"]:
-        summary["cycle"]["cut_witness"] = {k: payload["cycle"]["cut_witness"][k] for k in ("cut", "says", "held")
+        summary["cycle"]["cut_witness"] = {k: payload["cycle"]["cut_witness"][k] for k in ("cut", "says", "by", "held", "mark")
                                            if k in payload["cycle"]["cut_witness"]}
     if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:
         summary["ghost_screen"] = payload["ghost_screen"]

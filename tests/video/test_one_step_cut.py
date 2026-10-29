@@ -112,8 +112,9 @@ def test_a_walk_cut_one_step_long_is_named_by_the_step_screen(slow):
     assert screen["depth"] >= loop.PERIODICITY_MIN and screen["pairs"] == FRAMES - screen["lag"]
     assert screen["coverage"] == round((FRAMES - screen["lag"]) / screen["lag"], 4)
     # Nothing is cut on it, and nothing else claims steps: no `steps`. The one other word is the cut witness's: the walker
-    # is carried whole on its legs, so nothing over its feet rises and falls to witness the cut whole cycles, and the cut
-    # is held as the search chose it, named (`cycle-unwitnessed`); `video-set` leaves it out of its cycle alignment.
+    # is carried whole on its legs, so nothing over its feet rises and falls, and on the screen its top line rises and
+    # falls with its feet: nothing witnesses the cut whole cycles, and the cut is held as the search chose it, named
+    # (`cycle-unwitnessed`); `video-set` leaves it out of its cycle alignment.
     witness, said = cycle["cut_witness"], [line for line in report["jolt"]["warnings"] if "step" in line]
     assert "steps" not in cycle and witness["held"] == "unwitnessed" and local_cycle.unwitnessed(cycle), witness
     assert said == local_cycle.held_verdict(cycle) and said[0].endswith(f"({local_cycle.UNWITNESSED})"), said
