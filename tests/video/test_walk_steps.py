@@ -1141,6 +1141,23 @@ def test_a_cut_is_witnessed_by_how_often_the_body_rises_and_falls_in_it(beat, sa
         assert word["on"]["says"] == "cycles" and word["on"]["interval"] == {"four steps": 8, "one step": 32}[says]
 
 
+@pytest.mark.parametrize("verdict", ["held_verdict", "step_verdict"])
+def test_a_cut_held_on_one_step_whose_record_names_no_line_is_refused_by_name(verdict):
+    """`held_verdict` (a public caller; `step_verdict` says it) names the line a cut held on one step rose and fell
+    once on (`by`, `lines`). A record held on one step that names no line it was read on, its reading over the feet
+    kept at its top (`bob`, `on`), is refused by name (ValueError); one held with nothing read names its own why as
+    before."""
+    once, still = local_cycle.cut_word(_bob(16), 16), local_cycle.cut_word(_bob(None), 16)
+    feet = once["lines"]["feet"]
+    one_step = {"cut": [0, 16], "says": "one step", "bob": feet["bob"], "on": feet["on"], "held": "unwitnessed"}
+    with pytest.raises(ValueError, match="names no line it was read on"):
+        getattr(local_cycle, verdict)({"start": 0, "length": 16, "cut_witness": one_step})
+    why = still["lines"]["feet"]["why"]
+    nothing = {"cut": [0, 16], "says": None, "bob": still["lines"]["feet"]["bob"], "why": why, "held": "unwitnessed"}
+    said = getattr(local_cycle, verdict)({"start": 0, "length": 16, "cut_witness": nothing})
+    assert len(said) == 1 and why in said[0] and local_cycle.UNWITNESSED in said[0]
+
+
 def test_a_shadow_on_the_screen_under_the_feet_does_not_hold_a_shaken_picture_still_for_the_witness():
     """`bob_word` on an interval of 15 frames, the body 100 rows tall on a picture moved 3 rows up and down twice an
     interval: its top line and its feet move with the picture, but a shadow drawn translucent under the feet and fixed

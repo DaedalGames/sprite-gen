@@ -1027,7 +1027,9 @@ def step_verdict(cycle):
 def held_verdict(cycle):
     """The body's word on the cut, where it holds it (`cut_witness`, loop `_witnessed`), in words: a cut nothing
     witnesses whole cycles, or one the body rises and falls once in — one step of a walk, or a whole cycle of a body
-    that does so once a cycle — kept as it was chosen, each line's reading named (CUT_LINES). Each names UNWITNESSED."""
+    that does so once a cycle — kept as it was chosen, each line's reading named (CUT_LINES). Each names UNWITNESSED.
+    A cut held on one step whose record names no line it was read on (no `by` or `lines`) is refused by name
+    (ValueError): the line it rose and fell once on cannot be named."""
     said = cycle.get('cut_witness') or {}
     if said.get('held') != 'unwitnessed':
         return []
@@ -1040,6 +1042,10 @@ def held_verdict(cycle):
         return [f"nothing that reads no leg witnesses the cut {s}/{L} whole cycles ({said['why']}): {basis} — where the "
                 f"walk's legs are drawn alike, a step loops as a cycle does, and the loop may be half its cycle "
                 f"({UNWITNESSED})"]
+    if 'by' not in said or 'lines' not in said:
+        raise ValueError(f"the cut witness of {s}/{L} says one step and names no line it was read on (no `by` or "
+                         "`lines`): held_verdict names the line a cut held on one step rose and fell once on, as "
+                         "cut_word records it (CUT_LINES); cut the loop again to have its witness so recorded")
     on = said['on']
     where = ' and '.join(CUT_LINES[line] for line in said['by'])
     rest = ''.join(f", and {CUT_LINES[line]} it says nothing ({word['why']})" for line, word in said['lines'].items()
