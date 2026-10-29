@@ -5,8 +5,8 @@ and, by default, made again as the frames between the pose before them and the p
 cells, its length, its beat and its wrap stay as they were, and a part standing still in both stays where it stood.
 A clip asked for at a higher rate than it was filmed (`--out-fps`) is given frames between, not frames shown again.
 With no RIFE the cut is delivered as filmed with a warning naming the motion and the install line; `--fill-held off`
-cuts it as before. A cut with no held cell comes out byte for byte as before (the six inputs below, pinned on the
-engine before the fill).
+cuts it as before. A cut with no held cell comes out byte for byte as before (the six inputs below, their pictures
+pinned on the engine before the fill).
 
 The interpolator is a stand-in that draws the synthetic clip again at the time asked for (`Between`), so the tests
 need no binary and say which frame comes back."""
@@ -24,6 +24,7 @@ from PIL import Image
 
 from sprite_gen.video import held_fill
 from sprite_gen.video import loop as loop_mod
+from tests.picture_digest import picture_digest
 from tests.video.held_fill_inputs import (N, Between, hop, planter, save, shown_again, slid, swing, topple, walk,
                                           walk_at)
 
@@ -53,6 +54,12 @@ def _bytes(out: Path, name: str) -> dict[str, str]:
             "cycle": cycle}
 
 
+def _pictures(out: Path, name: str) -> dict[str, str]:
+    return {"strip": picture_digest([out / f"{name}.strip.png"]), "gif": picture_digest([out / f"{name}.gif"]),
+            "webp": picture_digest([out / f"{name}.webp"]),
+            "cycle": picture_digest(sorted((out / "cycle").glob("frame-*.png")))}
+
+
 def _meta(rep: dict) -> dict:
     return json.loads(Path(rep["strip"]["path"]).with_suffix("").with_suffix(".strip.json").read_text())
 
@@ -61,38 +68,40 @@ def _cycle(rep: dict) -> list[Image.Image]:
     return [Image.open(p).convert("RGBA") for p in sorted((Path(rep["out_dir"]) / "cycle").glob("frame-*.png"))]
 
 
-# Pinned on the engine before the fill (886936e): a cut with no held cell is delivered as it was, byte for byte.
+# Pinned on the engine before the fill (886936e): a cut with no held cell is delivered as it was. The pins are the
+# pictures (`_pictures`, tests/picture_digest.py), not the files: the same pixels are other PNG bytes on Linux than on
+# macOS, while the engine before the fill and this one write the same files on each.
 UNHELD = {
     "walk-fixed": (lambda: walk(), dict(state="walk", cycle_mode="fixed", start=0, length=N, anchor="none", repair="off"), {
-        "strip": "2335f3f5da57e08074113d6d30b89a672a3ff1f969ff645c667e07f3d08eaba1",
-        "gif": "27f05c499a83e66621c9853efdb61fb591bfa386fbceb159c0a09822f79989c9",
-        "webp": "4c9922b16ff73385a87f363d7aac567b5f1885df667fafce91702935fb8451b7",
-        "cycle": "26be9c07e34ad0976013e7f5ce5b40af10c071ef78fb6b749ac389deb01e4a8d"}),
+        "strip": "1467e5923f24c4830ef24e6525e9e537d73504a0d95badf1ba4cd0ed3288572b",
+        "gif": "bf77ed39daaaecfbbd403243696dcf9e2bb6d99addc01a889a8dc00772468b8d",
+        "webp": "bf77ed39daaaecfbbd403243696dcf9e2bb6d99addc01a889a8dc00772468b8d",
+        "cycle": "319c0f8aee34fb537b1702eecc018afc4a03b10dcda1b84c5cb204a14d4ac3fa"}),
     "walk-auto": (lambda: walk(N * 3 + 4), dict(state="walk", repair="off"), {
-        "strip": "d9c2143deb3cb3f90d932a4cd47132dcc196a2c83227eea85588c58b3cbc2ca3",
-        "gif": "1b53603c32cd6bcca445374eb9403a68d9e1914c6bdf126c49b5312fadd9d62e",
-        "webp": "6ae3c4465ef484691deb63883cee6439f8e401ae6d9fc121fd4233a9d8c2215a",
-        "cycle": "73de53310593c2792d4ef3b957e4f303befaeb2db5dc79c2e39649a66c0d108a"}),
+        "strip": "1c3945eadb5095d3b1c929bd2009bd510ebf7760a4f0f92c8e618b04d882b6ca",
+        "gif": "6e9348b6d9ac27dc1868bf8a2b9aae7daee44847274eb65c1b6ce4431c686f06",
+        "webp": "6e9348b6d9ac27dc1868bf8a2b9aae7daee44847274eb65c1b6ce4431c686f06",
+        "cycle": "185053b6a035a9d0b672a1d93d7e378f819189cd3cf144540e9f95a111a0b2b2"}),
     "hop-one-shot": (lambda: hop(), dict(state="jump", cycle_mode="one-shot"), {
-        "strip": "4c2317151d8ac0f78b2cf05fd00f90d77ec6a84adb418e076693675b92155032",
-        "gif": "084867009d141d032adea38edaec5e7277f9f7cc03d59e1498b926c5e4146546",
-        "webp": "5d6b8b67c7e515096c002da2f715088b12e1b1f2174de865bda35dd4d2ab8a6f",
-        "cycle": "9ccfbada05cf1b964bebea30c67cb92170713f6950dfa348a9d54afb20ddf43a"}),
+        "strip": "6442073e3ada3b03e2f7df6c52348fc001fcbdce6c51c8e91ce157e91c313ac7",
+        "gif": "ab58ee8b25599331b7958701d81526b155a05b1cddfa8b9ed823134f9f2e93fb",
+        "webp": "ab58ee8b25599331b7958701d81526b155a05b1cddfa8b9ed823134f9f2e93fb",
+        "cycle": "189484dd441486fe6241534fae7a03ea7afac71ec204b8871e9da938e6e69793"}),
     "swing-pinned": (lambda: swing(), dict(state="attack", cycle_mode="pinned", anchor="none"), {
-        "strip": "74ea7ee259b254744c76ab3d2b5ca3a2a0ee8baa04d7f7beafd1ecf39966d76d",
-        "gif": "3944bc371f1b167707a06c069411960d7043f40d784108cb4c231adcfee77fcd",
-        "webp": "feea1f26d5dcb5eceb49706440db1c0037b5a95c692ca4ddfa58072c28e3ec70",
-        "cycle": "fee8b88afd0ccbbde09c6e14411514bedf030a47dde290a9218fe9c00bbe7457"}),
+        "strip": "9dd4896eef213ae44b487f92d33ffa1d7e6aea66ac32e9c97773f6c0ed27e3d1",
+        "gif": "75df72100becbdd3b823ae282b2dd28815f6271198dd8562d8d91ee9363d6358",
+        "webp": "75df72100becbdd3b823ae282b2dd28815f6271198dd8562d8d91ee9363d6358",
+        "cycle": "b2a255d5f0018a71225501a86dcfa54915fa9ed4c4d936319fb83c31ab57bf1e"}),
     "topple-once": (lambda: topple(), dict(state="death", cycle_mode="once"), {
-        "strip": "59629dc0b1ba7796e5a7650fc99696e22d84b958012e9d898bb321860118ed0e",
-        "gif": "0f71d5df9da9ca3645193481c042dde32cfe6d9d344018835ee09715a08a7809",
-        "webp": "6adb35ceaa211abb535e46998df6b513bfd58fa57340d47af652fd28f784a24d",
-        "cycle": "6d15da447a24801ec6f4618328e18c7e75dc15a871649d47dd1889db301a8570"}),
+        "strip": "c9b7900ec1d4523bb34c07eb8077f72352bbc8251fc5caab31647317e0634957",
+        "gif": "285a7352ba6345648cfc48185f9121ce75f37cc63b3b5875dce5b4bed738fc8a",
+        "webp": "285a7352ba6345648cfc48185f9121ce75f37cc63b3b5875dce5b4bed738fc8a",
+        "cycle": "67a1691bc7cb2eabf5a885dd9b993eb8596ea20090594958b7a02afc09948c63"}),
     "swing-once-return": (lambda: swing(), dict(state="leap", cycle_mode="once-return", anchor="none"), {
-        "strip": "67c113649569ee63f704ba0f4fc9c70a9c26ec50e0e5f25937ebb8c8db3d4638",
-        "gif": "af0b2a32648ee4316edbabd5392ea652519a51939e67407c80650859c5fa21da",
-        "webp": "ba0ad2de4a5b264ebfc61cd0657f22864340629e842abd2e1ec3929c39362ada",
-        "cycle": "c0a3d63b81c139f83566e658959214f965efd136b85e810c86d78bb57551375e"}),
+        "strip": "883f7e44cc1f54ec5a1442ed12fe8f608070e12b9795c73d2f871425d76e977f",
+        "gif": "70de98ed5a45f2e9840c6946057a868260cae3588bff9969205e453ef1b024f3",
+        "webp": "70de98ed5a45f2e9840c6946057a868260cae3588bff9969205e453ef1b024f3",
+        "cycle": "4dfe6899ab09db62987b27d0a35ba754a22ca78e02945e731b1025dfe3af90e3"}),
 }
 
 
@@ -101,7 +110,7 @@ def test_a_cut_with_no_held_cell_is_delivered_byte_for_byte_as_before(case, tmp_
     _no_rife(monkeypatch, tmp_path)  # nothing is made, so nothing looks for RIFE
     frames, kw, pinned = UNHELD[case]
     rep = _run(tmp_path, frames(), case, **kw)
-    assert _bytes(Path(rep["out_dir"]), case) == pinned
+    assert _pictures(Path(rep["out_dir"]), case) == pinned
     record = _meta(rep)["held_fill"]
     assert record == held_fill.public(rep["held_fill"])
     assert record["mode"] == "auto" and record["made"] == [] and "unmade" not in record
@@ -118,10 +127,10 @@ def test_a_cut_with_no_held_cell_is_delivered_byte_for_byte_as_before(case, tmp_
 
 STALLED = {5: 2, 13: 3}  # the walk's frame 5 shown twice, frame 13 three times
 STALLED_OFF = {  # the stalled walk cut on the engine before the fill (886936e)
-    "strip": "f208b850b2265fd6ce10ce4993998895f70a065f5cea118ef71230581f02ad15",
-    "gif": "c25a5d96b123e0237045774d689b9d2205ca51f16e67745e8ea9d290b285e3fb",
-    "webp": "117d7b8b18b2e2ff42434890ca58efd0f0855c1db2f9b55515174ac481c749c7",
-    "cycle": "5753f68c10942635e9518220423301f04805cbb845abaea7300ba01fb4e1c8cb",
+    "strip": "32f2c1b7f4f3aedfa3eba4d49b849fd8efea9e011aaf2e035407a97ac6e9430d",
+    "gif": "bf77ed39daaaecfbbd403243696dcf9e2bb6d99addc01a889a8dc00772468b8d",
+    "webp": "bf77ed39daaaecfbbd403243696dcf9e2bb6d99addc01a889a8dc00772468b8d",
+    "cycle": "2d74651f64831c9c512f0486e1b03ca3827c4b9d3840bf11f8c67fad221bbfe9",
 }
 STALLED_CUT = dict(state="walk", cycle_mode="fixed", start=0, length=N + 3, anchor="none", repair="off")
 
@@ -149,7 +158,7 @@ def test_a_stalled_walk_has_its_held_cells_made_between_the_poses_beside_them(tm
 
 def test_fill_held_off_cuts_the_stalled_walk_as_before_and_still_names_its_runs(tmp_path):
     rep = _run(tmp_path, shown_again(walk(), STALLED), fill_held="off", **STALLED_CUT)
-    assert _bytes(Path(rep["out_dir"]), "m") == STALLED_OFF
+    assert _pictures(Path(rep["out_dir"]), "m") == STALLED_OFF
     record = rep["held_fill"]
     assert record["mode"] == "off" and record["made"] == []
     assert [(r["start"], r["length"], r["filled"], r["why"]) for r in record["before"]["held_runs"]] == [
