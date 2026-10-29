@@ -457,11 +457,12 @@ def test_the_command_takes_what_video_follow_takes(tmp_path, capsys):
     # region's own pixels the inspection does not read, the pixels a band leaves as they are (`--hold-mask`), and the
     # region given as a mask (`--region-mask`), laid over the figure under it (`--region-over`, its solid pixels alone
     # with `--region-over-solid`, its rim round beside it with `--region-rim-round`) with a membrane under it
-    # (`--region-membrane`) and its rim widened to the shear (`--region-shear`), and the record of another cut of the clip
-    # the regions were read on (`--read-on-cut`)
+    # (`--region-membrane`, with its four keys) and its rim widened to the shear (`--region-shear`), and the record of
+    # another cut of the clip the regions were read on (`--read-on-cut`)
     own = {'board', 'frames', 'out', 'fps', 'reference', 'band', 'band_margin', 'band_up', 'hold_mask', 'region_mask',
            'region_rim', 'region_shrink', 'region_crease', 'region_over', 'region_over_solid', 'region_rim_round',
-           'region_shear', 'region_membrane', 'read_on_cut'}
+           'region_shear', 'region_membrane', 'region_membrane_unpin', 'region_clear_alpha', 'region_floor_beside',
+           'region_own_outline', 'read_on_cut'}
     assert set(inspected)-set(followed) == {'out_dir', 'scale', 'columns'} and set(followed)-set(inspected) == own
     assert {key: inspected[key] for key in followed if key not in own} == {key: value for key, value in followed.items() if key not in own}
     capsys.readouterr()

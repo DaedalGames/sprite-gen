@@ -1,21 +1,29 @@
-"""`video-sway --region-mask` with `--region-over`, `--region-over-solid`, `--region-rim-round`, `--region-membrane`,
-`--region-shear`, and the crease the wear leaves where it is.
+"""`video-sway --region-mask` with `--region-over`, `--region-over-solid`, `--region-rim-round`, `--region-membrane` and
+its four keys, `--region-shear`, and the crease the wear wears in and the layer reaches down to again.
 
 `--region-over` lays the region over the figure under it: what lies under its lower edge is no anchor of the rim, so the
 lower edge moves with the rest; the band of it within the air's reach is drawn over by the region's own pixels by their
-alpha and keeps its bytes where they do not land; where the region lifts, its pixels show the figure under it; its
-outline against the air goes with it and leaves the air behind, its outline against the figure stays; `--hold-mask` names
-the pixels it leaves out (an arm), never the region's, never drawn over. `--region-over-solid` lays it over the solid
-pixels under its lower edge alone: the rest there stays and holds the rim, and its soft edge goes with it beside the figure
-under it too. `--region-rim-round` holds the rim round beside it, so below the corner where the figure beside it stops over
-what lies under its lower edge the move rises down as gently as across. `--region-membrane N` moves what lies under its
-lower edge within N + 1 px of it, none of what it leaves out, as a membrane between the region's move and none on the rest
-of the figure, drawn by that move instead of laid over. `--region-shear S` widens the rim so a move one way rises across it
-the other way by at most S px a px. With either, the ledger reads the steps the drawn move takes, the strip a region drawn
-short of its side leaves standing, and its tip. `--region-crease` with `--region-shrink`: the wear
-leaves the lower edge on the crease. Synthetic figures only: the region test's body and its striped part over the torso's
-right side and past it over the air, a dark crease under it on the torso; an arm block beside the part's lower left; a dark
-outline under the part over the air; a piece of the arm's colour right under the part's lower edge.
+alpha and keeps its bytes where they do not land; the air and where the region lifts are drawn by the move, the figure
+under it read up there; its outline against the air goes with it and leaves the air behind, its outline against the
+figure stays; `--hold-mask` names the pixels it leaves out (an arm): those the region mask covers stay the region's and
+move with it, the rest are never moved and never drawn over (on a band, every one of them is held). `--region-over-solid`
+lays it over the solid pixels under its lower edge alone: the rest there stays and holds the rim, and its soft edge goes
+with it beside the figure under it too. `--region-rim-round` holds the rim round beside it, so below the corner where the
+figure beside it stops over what lies under its lower edge the move rises down as gently as across. `--region-membrane N`
+moves what lies under its lower edge within N + 1 px of it, none of what it leaves out, as a membrane between the
+region's move and none on the rest of the figure (each pixel the mean of its figure neighbours' to within a pass's
+MEMBRANE_STEP), drawn by that move instead of laid over; with it, `--region-membrane-unpin` makes what the membrane moves
+no anchor of the rim, `--region-clear-alpha A` reads a pixel under alpha A as clear, `--region-floor-beside N` sets the
+lower edge beside the region by its lowest pixel within N columns of each side, and `--region-own-outline G` grows the
+region G px over the outline its mask leaves out; without it they shape nothing. `--region-shear S` widens the rim so a
+move one way rises across it the other way by at most S px a px. With either, the ledger reads the steps the drawn move
+takes, the strip a region drawn short of its side leaves standing, and its tip. `--region-crease` with `--region-shrink`:
+the wear wears the crease in with the rest of the mask, and laid over the figure the region reaches down to the crease
+again in every cell. Synthetic figures only: the region test's body and its striped part over the torso's right side and
+past it over the air, a dark crease under it on the torso; an arm block beside the part's lower left; a dark outline
+under the part over the air; a piece of the arm's colour right under the part's lower edge, or inside the part; a few
+pixels not opaque and a near-clear speck under the part's lower edge over the air; a pixel or two of the part's outline
+over the air past its mask, in a row that changes from cell to cell.
 
 Each case first reads what a sway writes with the new keys (its cells, its record), so on a release without them the
 same input fails on what comes out.
@@ -111,6 +119,20 @@ def share_of(answer, k, where):
     return float(np.hypot(field[1], field[2])[where].mean()/offset)
 
 
+def reads_wholly_on(field, where, any_tap=False):
+    """The pixels whose read at the move (`field`: covered, across, down) takes its four taps on `where` (with `any_tap`,
+    one at least of those it weighs)."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    rx, ry = xx-field[1], yy-field[2]
+    x0, y0 = np.clip(np.floor(rx).astype(int), 0, W-2), np.clip(np.floor(ry).astype(int), 0, H-2)
+    fx, fy = rx-np.floor(rx), ry-np.floor(ry)
+    taps = [(where[y0+oy, x0+ox], weight > 0) for oy, ox, weight in
+            ((0, 0, (1-fx)*(1-fy)), (0, 1, fx*(1-fy)), (1, 0, (1-fx)*fy), (1, 1, fx*fy))]
+    if any_tap:
+        return np.logical_or.reduce([on & weighed for on, weighed in taps])
+    return np.logical_and.reduce([on for on, _ in taps])
+
+
 RISE = 8  # rows over the lower rows the part's own move is read for them to be set against
 
 
@@ -138,7 +160,7 @@ def test_without_the_new_keys_nothing_of_them_is_read_or_written(tmp_path):
 
 # ---------------------------------------------------------------- the crease the wear leaves where it is
 
-def test_the_wear_leaves_the_lower_edge_on_the_crease_and_wears_in_the_rest(tmp_path):
+def test_the_wear_wears_the_crease_in_and_laid_over_the_region_reaches_down_to_it(tmp_path):
     mask = mask_png(tmp_path/'mask.png', part_at(0))
     loop_dir = strip_dir(tmp_path/'loop', part_figure)
     record = sway.sway_loop(loop_dir, [PART], region_mask=mask, region_crease=True)
@@ -148,11 +170,11 @@ def test_the_wear_leaves_the_lower_edge_on_the_crease_and_wears_in_the_rest(tmp_
     over_air = [x for x in range(W) if part[:, x].any() and x > 85]
     lowest = {x: int(np.nonzero(worn[:, x])[0].max()) for x in range(W) if worn[:, x].any()}
     kept = [x for x in on_torso if x in lowest]
-    assert kept and all(lowest[x] == BOTTOM+1 for x in kept)  # on the crease, as crease_of ended it
+    assert kept and all(lowest[x] == BOTTOM+1-2 for x in kept)  # the crease crease_of ended it on, worn in by 2
     assert all(lowest[x] == BOTTOM-2 for x in over_air if x in lowest)  # over the air worn in by 2 as ever
     xs = sorted(lowest)
     assert xs[0] == min(on_torso)+2 and xs[-1] == max(over_air)-2  # the sides worn in by 2 as ever
-    assert record['region_mask']['mask']['box'][3] == BOTTOM+1 and record['region_mask']['crease'][0]['rows'] == \
+    assert record['region_mask']['mask']['box'][3] == BOTTOM+1-2 and record['region_mask']['crease'][0]['rows'] == \
         {str(x): BOTTOM+1 for x in on_torso}
     # Nothing under the crease moves: the torso keeps its bytes there in every cell.
     source, moved = cells_of(strip_dir(tmp_path/'source', part_figure)), cells_of(loop_dir)
@@ -160,6 +182,14 @@ def test_the_wear_leaves_the_lower_edge_on_the_crease_and_wears_in_the_rest(tmp_
     for k in range(N):
         under = (source[k][..., 3] > 0) & (yy > BOTTOM+1+body_sway(k)[1]) & ~part_at(k)
         assert np.array_equal(moved[k][under], source[k][under]), k
+    # Laid over the figure, the region reaches down to the crease carried into each cell again: in every column of the
+    # crease the worn region keeps, its lowest pixel is the crease's row.
+    over = answer_of(strip_dir(tmp_path/'over', part_figure), [PART], region_mask=mask, region_crease=True, region_over=True)
+    for k in range(N):
+        sx, sy = body_sway(k)
+        region = over.mask_field(k, *np.mgrid[0:H, 0:W][::-1].astype(np.float32))[1]['region']
+        assert all(int(np.nonzero(region[:, x+sx])[0].max()) == BOTTOM+1+sy for x in kept), k
+        assert all(int(np.nonzero(region[:, x+sx])[0].max()) == BOTTOM-2+sy for x in over_air if x in lowest), k
 
 
 # ---------------------------------------------------------------- the layer
@@ -200,13 +230,19 @@ def test_the_band_is_drawn_over_where_the_layer_lands_and_keeps_its_bytes_elsewh
     answer = answer_of(strip_dir(tmp_path/'again', part_figure), [PART], **kw)
     source, moved = cells_of(strip_dir(tmp_path/'source', part_figure)), cells_of(loop_dir)
     air = math.ceil(answer.reach)+2
-    covered = 0
+    covered = aired = 0
+    walked = []
     for k in range(N):
         drawn, read = answer.masked_cell(k)
         assert np.array_equal(np.asarray(drawn), moved[k]), k
         band, laid = read['band'], read['laid']
-        # the layer draws the band and the air; no read of the move's is taken there
-        assert not (read['readers'] & (band | read['air'])).any(), k
+        # the layer draws the band, no read of the move's taken there; the move draws the air
+        assert not (read['readers'] & band).any(), k
+        aired += int((read['readers'] & read['air']).sum())
+        # a read of the air's that takes the held figure beside it (the torso's soft side past the band) is walked back,
+        # as `draw_held` walks any: in the air alone, never on the band
+        assert not (read['walked'] & ~read['air']).any() and not ((read['walked'] | read['renormalised']) & band).any(), k
+        walked.append(int(read['walked'].sum()))
         changed = np.any(moved[k] != source[k], axis=-1)
         visible = source[k][..., 3] > 0
         # Outside the region, its soft edge, the air and the band nothing changes; in the band only where the layer lands.
@@ -220,10 +256,11 @@ def test_the_band_is_drawn_over_where_the_layer_lands_and_keeps_its_bytes_elsewh
         assert len(ys) and not (band & ~visible).any(), k
         assert np.nonzero(band & (source[k][..., 3] >= 128))[0].min() >= BOTTOM+2+body_sway(k)[1], k
         assert ys.min() >= BOTTOM+1+body_sway(k)[1] and ys.max() <= BOTTOM+1+body_sway(k)[1]+sway.REGION_SOFT+air, k
-    assert covered > 0
+    assert covered > 0 and aired > 0
     ledger = record['region_mask']['ledger']
     assert ledger['cover_depth_px_max'] <= air and ledger['over_px_max'] > 0 and ledger['held_changed_px_max'] == 0
-    assert ledger['folded_px_max'] == 0 and min(ledger['jacobian_min']) > 0 and ledger['walked_px_max'] == 0
+    assert ledger['folded_px_max'] == 0 and min(ledger['jacobian_min']) > 0
+    assert ledger['walked_px'] == walked == [0]*9 + [4, 9, 6] + [0]*12
 
 
 def test_where_the_part_lifts_it_shows_the_figure_under_it(tmp_path):
@@ -233,36 +270,45 @@ def test_where_the_part_lifts_it_shows_the_figure_under_it(tmp_path):
     record = sway.sway_loop(loop_dir, [PART], **kw)
     answer = answer_of(strip_dir(tmp_path/'again', part_figure), [PART], **kw)
     source, moved = cells_of(strip_dir(tmp_path/'source', part_figure)), cells_of(loop_dir)
+    yy, xx = np.mgrid[0:H, 0:W]
     cells = lifting(answer)
     assert cells
-    shown = 0
+    shown, thin, notched = 0, {}, []
     for k in cells:
         _, read = answer.masked_cell(k)
         lifted = read['lifted']
         assert lifted.any(), k
         sx, sy = body_sway(k)
-        side = np.mgrid[0:H, 0:W][1] == 86+sx  # the torso's soft side
-        # what the lift uncovers over an opaque figure stays opaque, the row read between the part's last row and the
-        # figure's first too: the figure is drawn up from its first row under the lower edge, never from the part's
-        floor = read['floor']
-        under_opaque = source[k][np.minimum(floor, H-1), np.arange(W), 3] == 255
-        opaque = sway.uncovered(read, read['field'][2]) & under_opaque[None, :] & (source[k][..., 3] == 255)
+        side = xx == 86+sx  # the torso's soft side
+        # what the lift uncovers is read at its whole move as any read (`draw_held`), none of it short: its alpha is the
+        # source's read there
+        alpha = np.clip(np.round(sway._bilinear(source[k][..., 3].astype(np.float64), xx-read['read_x'], yy-read['read_y'])),
+                        0, 255)
+        assert not (lifted & (read['renormalised'] | read['walked'])).any(), k
+        assert np.array_equal(moved[k][lifted][:, 3], alpha[lifted]), k
+        # where that read lies wholly on opaque pixels, it stays opaque; the torso's and the crease's red, none of the
+        # stripes' (200 or more)
+        opaque = lifted & reads_wholly_on(read['field'], source[k][..., 3] == 255)
         assert opaque.any(), k
         assert (moved[k][opaque][:, 3] == 255).all(), (k, sorted(set(moved[k][opaque][:, 3].tolist())))
-        # the torso and the crease read up into the part's lower rows, each in its own column: no hole (the torso's soft
-        # side shows as soft as it is), the torso's and the crease's red, none of the stripes' (200 or more)
-        assert (moved[k][lifted & ~side][:, 3] >= 128).all(), k
-        assert (moved[k][lifted & side][:, 3] >= SOFT-1).all(), k
         assert float(moved[k][lifted][:, 0].mean()) < 100, k
-        # the torso's soft side under the part stays where it is as the part lifts off it, no notch: in the rows the part
-        # leaves, it is as soft as it was under them
+        # beside the torso's soft side the read takes that side and the air past it: one column of the part's, within
+        # 2 px of that side, as soft as that read
+        under = lifted & ~side & (moved[k][..., 3] < 128)
+        assert len(set(xx[under].tolist())) <= 1 and (abs(xx[under]-(86+sx)) <= 2).all(), k
+        thin[k] = int(under.sum())
+        # in the rows the part leaves, its column over the torso's soft side reads at the move too: where the part moves
+        # toward the torso that read takes the air past the side, and the side shows thinner than it was
         rows = slice(BOTTOM+1+sy+math.floor(answer.dy[k]), BOTTOM+1+sy)
-        assert (moved[k][rows, 86+sx, 3] >= SOFT-1).all(), k
+        if not (moved[k][rows, 86+sx, 3] >= SOFT-1).all():
+            notched.append(k)
         shown += int(lifted.sum())
+    assert thin == {0: 7, 1: 0, 2: 0, 9: 2, 10: 4, 11: 6, 12: 0, 13: 0, 14: 0, 21: 3, 22: 5, 23: 7}
+    assert notched == [k for k in cells if answer.dx[k] < 0] == [0, 1, 13, 14, 21, 22, 23]
     assert shown > 0 and record['region_mask']['ledger']['lifted_px_max'] > 0
 
 
-def test_where_the_part_lifts_off_a_piece_left_out_it_shows_that_piece(tmp_path):
+def test_where_the_part_lifts_off_a_piece_left_out_no_hole_opens_and_the_piece_keeps_its_bytes(tmp_path):
     mask = mask_png(tmp_path/'mask.png', part_at(0))
     kw = dict(region_mask=mask, region_shrink=0, region_over=True, hold_mask=arm_masks(tmp_path/'piece', under_at))
     loop_dir = strip_dir(tmp_path/'loop', under_figure)
@@ -271,16 +317,18 @@ def test_where_the_part_lifts_off_a_piece_left_out_it_shows_that_piece(tmp_path)
     source, moved = cells_of(strip_dir(tmp_path/'source', under_figure)), cells_of(loop_dir)
     cells = lifting(answer)
     assert cells
+    took_px = 0
     for k in cells:
         _, read = answer.masked_cell(k)
         piece = under_at(k)
-        # the piece left out under the lower edge is the figure under it there: what the lift uncovers over it stays
-        # opaque, the piece drawn up, and the piece keeps its bytes
-        over_piece = piece[np.minimum(read['floor'], H-1), np.arange(W)]
-        opaque = sway.uncovered(read, read['field'][2]) & over_piece[None, :] & (source[k][..., 3] == 255)
-        assert opaque.any(), k
-        assert (moved[k][opaque][:, 3] == 255).all(), (k, sorted(set(moved[k][opaque][:, 3].tolist())))
+        # the piece left out under the lower edge is held: a read of the part's that would take it is read from its other
+        # pixels (`draw_held`), none of them where the part lifts, so no hole opens; the piece keeps its bytes
+        took = read['field'][0] & reads_wholly_on(read['field'], piece, any_tap=True) & ~piece
+        assert not (took & read['lifted']).any() and not (took & ~read['renormalised']).any(), k
+        assert (moved[k][took][:, 3] == 255).all(), (k, sorted(set(moved[k][took][:, 3].tolist())))
         assert np.array_equal(moved[k][piece], source[k][piece]), k
+        took_px += int(took.sum())
+    assert took_px == 10*len(cells)
 
 
 def test_its_outline_against_the_air_goes_with_it_and_against_the_figure_stays(tmp_path):
@@ -315,16 +363,50 @@ def test_its_outline_against_the_air_goes_with_it_and_against_the_figure_stays(t
         assert np.array_equal(moved[k][crease], source[k][crease]), k
 
 
-def test_the_hold_mask_leaves_the_arm_out_of_the_region_and_the_band(tmp_path):
-    over_arm = part_at(0) | (arm_at(0) & (np.mgrid[0:H, 0:W][0] >= 86))  # the mask runs onto the arm's lower rows
-    mask = mask_png(tmp_path/'mask.png', over_arm)
-    source = cells_of(strip_dir(tmp_path/'source', arm_figure))
-    for name, hold in (('folder', arm_masks(tmp_path/'arms')), ('one', mask_png(tmp_path/'arm.png', arm_at(0)))):
-        loop_dir = strip_dir(tmp_path/name, arm_figure)
-        record = sway.sway_loop(loop_dir, [PART], region_mask=mask, region_shrink=0, region_over=True, hold_mask=hold)
+INSIDE_BOX = (58, 82, 66, 90)  # x0, y0, x1, y1 in cell 0, last included: a piece of the arm's colour inside the part
+
+
+def inside_at(k):
+    """A piece of the arm's colour inside the part's lower half in cell k, carried with the body."""
+    sx, sy = body_sway(k)
+    yy, xx = np.mgrid[0:H, 0:W]
+    x0, y0, x1, y1 = INSIDE_BOX
+    return (xx >= x0+sx) & (xx <= x1+sx) & (yy >= y0+sy) & (yy <= y1+sy)
+
+
+def inside_figure(k, n=N):
+    """The arm figure with a piece of the arm's colour inside the part too."""
+    a = np.asarray(arm_figure(k, n)).copy()
+    a[inside_at(k)] = ARM
+    return Image.fromarray(a, 'RGBA')
+
+
+def test_laid_over_the_figure_the_pixels_the_hold_mask_names_under_the_region_mask_move_with_it(tmp_path):
+    mask = mask_png(tmp_path/'mask.png', part_at(0))
+    source = cells_of(strip_dir(tmp_path/'source', inside_figure))
+    both = arm_masks(tmp_path/'both', lambda k: inside_at(k) | arm_at(k))
+    for name, hold in (('folder', both), ('one', mask_png(tmp_path/'both.png', inside_at(0) | arm_at(0)))):
+        kw = dict(region_mask=mask, region_shrink=0, region_over=True, hold_mask=hold)
+        loop_dir = strip_dir(tmp_path/name, inside_figure)
+        record = sway.sway_loop(loop_dir, [PART], **kw)
+        answer = answer_of(strip_dir(tmp_path/f'{name}-again', inside_figure), [PART], **kw)
         moved = cells_of(loop_dir)
-        for k in range(N):  # the arm keeps its bytes in every cell
-            assert np.array_equal(moved[k][arm_at(k)], source[k][arm_at(k)]), (name, k)
+        carried = 0
+        for k in range(N):
+            drawn, read = answer.masked_cell(k)
+            assert np.array_equal(np.asarray(drawn), moved[k]), (name, k)
+            piece = inside_at(k)
+            # The piece the region mask covers is the region's: no anchor of the rim, never left out of it.
+            assert np.array_equal(read['region'] & piece, piece) and np.array_equal(read['left_out'] & piece, piece), (name, k)
+            assert not (read['anchors'] & piece).any(), (name, k)
+            if read['field'] is None:
+                continue
+            # It moves with the part: each pixel of the part whose read takes the piece wholly is the piece's colour, and
+            # some of them lie where it was not.
+            on_piece = read['region'] & reads_wholly_on(read['field'], piece)
+            assert (moved[k][on_piece] == ARM).all(), (name, k)
+            carried += int((on_piece & ~piece).sum())
+        assert carried > 0, name
         masked = record['region_mask']
         assert masked['ledger']['left_out_px_max'] > 0 and masked['asked']['hold']['per_cell'] == (name == 'folder')
         left_out = masked['over']['left_out']
@@ -332,12 +414,30 @@ def test_the_hold_mask_leaves_the_arm_out_of_the_region_and_the_band(tmp_path):
             assert left_out['carry'] is None and left_out['grow_px'] is None
         else:
             assert left_out['grow_px'] == 3 and len(left_out['carry']['cells']) == N and left_out['lay'] == []
-            assert left_out['pieces'] == [{'px': int(arm_at(0).sum()), 'box': [42, 78, 49, 104]}]
-    # Without it the arm's lower rows are the region's, and under its lower edge the band: they move.
-    loop_dir = strip_dir(tmp_path/'no-hold', arm_figure)
-    sway.sway_loop(loop_dir, [PART], region_mask=mask, region_shrink=0, region_over=True)
+            assert sorted(p['px'] for p in left_out['pieces']) == sorted([int(inside_at(0).sum()), int(arm_at(0).sum())])
+
+
+def test_the_pixels_the_hold_mask_names_outside_the_region_mask_and_on_a_band_keep_their_bytes(tmp_path):
+    over_arm = part_at(0) | (arm_at(0) & (np.mgrid[0:H, 0:W][0] >= 86))  # the mask runs onto the arm's lower rows
+    mask = mask_png(tmp_path/'mask.png', over_arm)
+    source = cells_of(strip_dir(tmp_path/'source', inside_figure))
+    yy = np.mgrid[0:H, 0:W][0]
+    loop_dir = strip_dir(tmp_path/'over', inside_figure)
+    sway.sway_loop(loop_dir, [PART], region_mask=mask, region_shrink=0, region_over=True, hold_mask=arm_masks(tmp_path/'arms'))
     moved = cells_of(loop_dir)
-    assert any(not np.array_equal(moved[k][arm_at(k)], source[k][arm_at(k)]) for k in range(N))
+    for k in range(N):  # laid over the figure: the arm's rows the mask does not cover keep their bytes in every cell
+        out = arm_at(k) & (yy < 86+body_sway(k)[1])
+        assert np.array_equal(moved[k][out], source[k][out]), k
+    # On a band (no region mask, so none laid over) every pixel the hold mask names keeps its bytes, the piece inside the
+    # part too, while the part moves round them.
+    both = arm_masks(tmp_path/'both', lambda k: inside_at(k) | arm_at(k))
+    band_dir = strip_dir(tmp_path/'band', inside_figure)
+    sway.sway_loop(band_dir, [PART], band='auto', hold_mask=both)
+    banded = cells_of(band_dir)
+    for k in range(N):
+        held = inside_at(k) | arm_at(k)
+        assert np.array_equal(banded[k][held], source[k][held]), k
+    assert any(np.any(banded[k][part_at(k) & ~inside_at(k)] != source[k][part_at(k) & ~inside_at(k)]) for k in range(N))
 
 
 # ---------------------------------------------------------------- the shear
@@ -413,9 +513,10 @@ def test_laid_over_the_solid_pixels_alone_the_rest_under_it_stays_and_its_soft_e
 GENTLE = 0.9  # the gain of a move of about 2.2 px, the size a membrane a few px long is for: the default's 6.2 px folds it
 
 
-def figure_mean_gap(read, alpha):
-    """How far each membrane pixel's move is from the mean of its figure 4-neighbours' (the region's own move on it, its
-    soft edge and its outline over the band; none on the rest of the figure), the most of it, across and down."""
+def membrane_pass(read, alpha):
+    """How far one more of the membrane's passes would move its pixels, the most of it, across and down: each pixel's
+    move set against the mean of its figure 4-neighbours' (the region's own move on it, its soft edge and its outline over
+    the band; none on the rest of the figure)."""
     free, field = read['membrane'], read['field']
     own = read['region'] | read['soft'] | read['edge']
     figure = alpha > 0
@@ -425,7 +526,7 @@ def figure_mean_gap(read, alpha):
         pu, pf = np.pad(u, 1), np.pad(figure, 1)
         total = sum(pf[1+oy:1+oy+H, 1+ox:1+ox+W]*pu[1+oy:1+oy+H, 1+ox:1+ox+W] for oy, ox in ((-1, 0), (1, 0), (0, -1), (0, 1)))
         count = sum(pf[1+oy:1+oy+H, 1+ox:1+ox+W].astype(float) for oy, ox in ((-1, 0), (1, 0), (0, -1), (0, 1)))
-        gaps.append(float(np.abs(count*u-total)[free].max()))
+        gaps.append(float(np.abs(u-total/np.maximum(count, 1))[free].max()))
     return max(gaps)
 
 
@@ -466,8 +567,9 @@ def test_the_membrane_under_the_lower_edge_hangs_between_the_part_and_the_rest(t
         assert free.any() and not (free & (yy <= BOTTOM+sy)).any() and not (free & read['edge']).any(), k
         assert not (free & (sway.rim_distance(read['region'] | read['soft'], reach+1, reach+1) >= 1)).any(), k
         assert (free & (source[k][..., 3] > 0)).sum() == free.sum(), k
-        # Each pixel's move the mean of its figure 4-neighbours', the part's own and none on the rest of the figure.
-        assert figure_mean_gap(read, source[k][..., 3]) <= 1e-6, k
+        # Each pixel's move the mean of its figure 4-neighbours', the part's own and none on the rest of the figure, to
+        # within what one more pass would move it: less than the step the passes stop at.
+        assert membrane_pass(read, source[k][..., 3]) < sway.MEMBRANE_STEP, k
         if math.hypot(answer.dx[k], answer.dy[k]) < 0.5:
             continue
         # The figure under the part stretches with it: the move steps down from the part's last row to the row under it
@@ -482,7 +584,8 @@ def test_the_membrane_under_the_lower_edge_hangs_between_the_part_and_the_rest(t
     assert read_cells > 0
     masked = record['region_mask']
     assert masked['asked']['membrane_px'] == reach
-    assert masked['over']['membrane'] == {'policy': sway.MEMBRANE_POLICY, 'reach_px': reach+1, 'tol_px': sway.MEMBRANE_TOL}
+    assert masked['over']['membrane'] == {'policy': sway.MEMBRANE_POLICY, 'reach_px': reach+1, 'step_px': sway.MEMBRANE_STEP,
+                                          'passes_most': sway.MEMBRANE_PASSES}
     ledger = masked['ledger']
     assert len(ledger['membrane_px']) == N and max(ledger['membrane_px']) > 0
     most = [entry for entry in ledger['membrane_most'] if entry is not None]
@@ -515,8 +618,15 @@ def test_the_layer_without_the_membrane_is_as_it_was(tmp_path):
     off = sway.sway_loop(asked_off, [PART], region_membrane=None, **kw)
     assert (as_ever/'walk.strip.png').read_bytes() == (asked_off/'walk.strip.png').read_bytes()
     assert off['region_mask'] == record['region_mask']
+    # The membrane's four keys shape nothing without it: the same bytes and the same record, none of them named.
+    keyed_dir = strip_dir(tmp_path/'keyed', arm_figure)
+    keyed = sway.sway_loop(keyed_dir, [PART], region_membrane_unpin=True, region_clear_alpha=8, region_floor_beside=12,
+                           region_own_outline=2, **kw)
+    assert (as_ever/'walk.strip.png').read_bytes() == (keyed_dir/'walk.strip.png').read_bytes()
+    assert keyed['region_mask'] == record['region_mask']
     masked = record['region_mask']
     assert 'membrane_px' not in masked['asked'] and 'membrane' not in masked['over'] and 'solid' not in masked['over']
+    assert not {'membrane_unpin', 'clear_alpha', 'floor_beside_px', 'own_outline_px'} & set(masked['asked'])
     assert not {'membrane_px', 'membrane_most', 'membrane_folded_px'} & set(masked['ledger'])
     _, read = answer_of(strip_dir(tmp_path/'again', arm_figure), [PART], **kw).masked_cell(0)
     assert 'membrane' not in read
@@ -534,6 +644,157 @@ def test_a_membrane_too_short_for_the_move_is_refused_by_its_name(tmp_path):
     ledger = answer_of(strip_dir(tmp_path/'gentle', part_figure), [PART], gain=GENTLE, region_mask=mask, region_shrink=0,
                        region_over=True, region_membrane=6).mask.ledger
     assert ledger['membrane_folded_px'] == [0]*N and ledger['membrane_folded_px_max'] == 0
+
+
+# ---------------------------------------------------------------- the membrane's keys
+
+HAZE_COLUMNS = range(88, 92)  # in cell 0: under the part's lower edge where it hangs over the air
+SPECK = (90, BOTTOM+6)  # x, y in cell 0: a near-clear speck under it
+
+
+def hem_figure(k, n=N):
+    """The part over the air with a few pixels not opaque right under its lower edge there, and a near-clear speck."""
+    sx, sy = body_sway(k)
+    a = np.asarray(part_figure(k, n)).copy()
+    for x in HAZE_COLUMNS:  # past the part's soft edge (REGION_SOFT px), within the membrane's reach
+        a[BOTTOM+3+sy, x+sx] = (*OUTLINE[:3], 60)
+        a[BOTTOM+4+sy, x+sx] = (*OUTLINE[:3], 30)
+    a[SPECK[1]+sy, SPECK[0]+sx] = (*OUTLINE[:3], 3)
+    return Image.fromarray(a, 'RGBA')
+
+
+BUMP_ROWS = (79, 83, 87, 81, 85, 89)  # in cell 0: the row a pixel of the part's outline over the air stands past its mask
+
+
+def bump_at(k):
+    """The outline's pixels past the part's mask in cell k: one beside its side over the air, two in the odd cells, in a
+    row that changes from cell to cell."""
+    sx, sy = body_sway(k)
+    row = BUMP_ROWS[k % len(BUMP_ROWS)]
+    out = np.zeros((H, W), bool)
+    out[row+sy:row+sy+1+k % 2, 93+sx] = True
+    return out
+
+
+def bump_figure(k, n=N):
+    a = np.asarray(part_figure(k, n)).copy()
+    a[bump_at(k)] = OUTLINE
+    return Image.fromarray(a, 'RGBA')
+
+
+def last_crossing(alpha):
+    """Where `alpha` (0 to 1 along a line) last falls through 0.5, subpixel; None where it never does."""
+    falls = np.nonzero((alpha[:-1] >= 0.5) & (alpha[1:] < 0.5))[0]
+    if not len(falls):
+        return None
+    i = int(falls[-1])
+    return i+float((alpha[i]-0.5)/(alpha[i]-alpha[i+1]))
+
+
+def edge_lags(drawn, cut, move, columns):
+    """Per column, the lower edge's row drawn (where its alpha last falls through 0.5 going down) less the same row of the
+    cut moved whole by `move` (its alpha read bilinear at x - dx, y - dy)."""
+    alpha, rows = cut[..., 3]/255, np.arange(H, dtype=float)
+    return [last_crossing(drawn[:, x, 3]/255)-last_crossing(sway._bilinear(alpha, np.full(H, x-move[0]), rows-move[1]))
+            for x in columns]
+
+
+def side_lags(drawn, cut, moves):
+    """Per row, the side's column drawn (where its alpha last falls through 0.5 going right) less the same row's of the cut
+    moved whole by the move that row is meant to take (`moves`: row -> (dx, dy))."""
+    alpha, columns = cut[..., 3]/255, np.arange(W, dtype=float)
+    return {y: last_crossing(drawn[y, :, 3]/255)-last_crossing(sway._bilinear(alpha, columns-mx, np.full(W, y-my)))
+            for y, (mx, my) in moves.items()}
+
+
+def hem_lags(tmp_path, name, **kw):
+    """The most |lag| of the lower edge over the air (`edge_lags`, the part's own move) per cell that moves 0.5 px or more
+    down or up, a hem figure swayed as asked."""
+    loop_dir = strip_dir(tmp_path/name, hem_figure)
+    record = sway.sway_loop(loop_dir, [PART], **kw)
+    source, moved = cells_of(strip_dir(tmp_path/f'{name}-source', hem_figure)), cells_of(loop_dir)
+    lags = {k: max(abs(v) for v in edge_lags(moved[k], source[k], (record['dx_px'][k], record['dy_px'][k]),
+                                              [x+body_sway(k)[0] for x in HAZE_COLUMNS]))
+            for k in range(N) if abs(record['dy_px'][k]) >= 0.5}
+    return lags, record
+
+
+def bump_lags(tmp_path, name, **kw):
+    """Per cell that moves 0.5 px or more across, the most |lag| of the part's side over the air (`side_lags`, each row
+    meant to take the move the part without the outline past its mask takes at its side's last pixel there) and its row,
+    a bump figure swayed as asked; and the answer."""
+    loop_dir = strip_dir(tmp_path/name, bump_figure)
+    sway.sway_loop(loop_dir, [PART], **kw)
+    answer = answer_of(strip_dir(tmp_path/f'{name}-again', bump_figure), [PART], **kw)
+    clean = answer_of(strip_dir(tmp_path/f'{name}-clean', part_figure), [PART], **kw)
+    source, moved = cells_of(strip_dir(tmp_path/f'{name}-source', bump_figure)), cells_of(loop_dir)
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    out = {}
+    for k in range(N):
+        if abs(answer.dx[k]) < 0.5:
+            continue
+        sx, sy = body_sway(k)
+        field, _ = clean.mask_field(k, xx, yy)
+        lags = side_lags(moved[k], source[k], {y+sy: (float(field[1][y+sy, 92+sx]), float(field[2][y+sy, 92+sx]))
+                                               for y in range(78, BOTTOM-1)})
+        row = max(lags, key=lambda y: abs(lags[y]))
+        out[k] = (abs(lags[row]), row-sy)
+    return out, answer
+
+
+def test_with_the_membrane_unpinned_the_lower_edge_over_the_air_moves_with_the_part_over_what_is_not_opaque(tmp_path):
+    mask = mask_png(tmp_path/'mask.png', part_at(0))
+    kw = dict(gain=GENTLE, region_mask=mask, region_shrink=0, region_over=True, region_over_solid=True, region_membrane=6,
+              region_shear=0.35)
+    keyed, record = hem_lags(tmp_path, 'keyed', region_membrane_unpin=True, region_clear_alpha=8, **kw)
+    pinned, _ = hem_lags(tmp_path, 'pinned', **kw)
+    # Laid over the solid pixels alone, the pixels not opaque under the lower edge are the membrane's and, but for the key,
+    # anchors of the rim too: the lower edge over them stays short of the part's move. Unpinned, it moves with it.
+    assert keyed and max(keyed.values()) <= 0.25, keyed
+    assert max(pinned.values()) >= 0.5, pinned
+    asked = record['region_mask']['asked']
+    assert asked['membrane_unpin'] is True and asked['clear_alpha'] == 8 and 'floor_beside_px' not in asked
+    # Under the clear alpha the speck is clear: neither held nor the membrane's.
+    answer = answer_of(strip_dir(tmp_path/'again', hem_figure), [PART], region_membrane_unpin=True, region_clear_alpha=8, **kw)
+    plain = answer_of(strip_dir(tmp_path/'plain', hem_figure), [PART], **kw)
+    for k in range(N):
+        sx, sy = body_sway(k)
+        speck = (SPECK[1]+sy, SPECK[0]+sx)
+        _, read = answer.masked_cell(k)
+        assert not read['held'][speck] and not read['membrane'][speck], k
+        _, as_cut = plain.masked_cell(k)
+        assert as_cut['membrane'][speck], k
+
+
+def test_grown_over_its_own_outline_the_side_over_the_air_moves_by_its_rows_share(tmp_path):
+    mask = mask_png(tmp_path/'mask.png', part_at(0))
+    kw = dict(gain=GENTLE, band_up=(0.4, 'auto'), region_mask=mask, region_shrink=0, region_over=True, region_membrane=6)
+    grown, answer = bump_lags(tmp_path, 'grown', region_own_outline=2, **kw)
+    held, as_cut = bump_lags(tmp_path, 'held', **kw)
+    # Held, the outline's pixel past the mask stands where it is and pins the rim: the side bends at its row, a row that
+    # changes from cell to cell. Grown over, it is the part's and the side moves by each row's share of the move.
+    assert grown and max(lag for lag, _ in grown.values()) <= 0.25, grown
+    assert max(lag for lag, _ in held.values()) >= 0.5 and len({row for lag, row in held.values() if lag >= 0.25}) > 1, held
+    for k in range(N):
+        _, read = answer.masked_cell(k)
+        _, kept = as_cut.masked_cell(k)
+        assert np.array_equal(read['region'] & bump_at(k), bump_at(k)) and not (read['anchors'] & bump_at(k)).any(), k
+        assert np.array_equal(kept['anchors'] & bump_at(k), bump_at(k)), k
+    assert answer.mask.asked.own_outline == 2
+
+
+def test_the_floor_beside_the_region_is_its_lowest_pixel_within_n_columns_of_that_side():
+    region = np.zeros((40, 30), bool)
+    for x in range(10, 20):
+        region[5:20+(x-10), x] = True  # the lower edge falls 1 px a column to the right
+    alpha = np.full((40, 30), 255, np.uint8)
+    none = np.zeros((40, 30), bool)
+    nearest = sway.layer_sets(region, alpha, 3, none)['floor']
+    beside = sway.layer_sets(region, alpha, 3, none, beside=4)['floor']
+    lowest = {x: 20+(x-10) for x in range(10, 20)}  # one under each column's lowest pixel
+    assert [int(v) for v in nearest[7:10]] == [lowest[10]]*3 and [int(v) for v in nearest[20:23]] == [lowest[19]]*3
+    assert [int(v) for v in beside[7:10]] == [lowest[14]]*3 and [int(v) for v in beside[20:23]] == [lowest[19]]*3
+    assert np.array_equal(beside[10:20], nearest[10:20]) and (beside[:7] == 40).all() and (beside[23:] == 40).all()
 
 
 # ---------------------------------------------------------------- the rim held round beside it
@@ -682,6 +943,17 @@ def test_what_the_new_keys_are_refused_for_leaves_the_loop_as_it_was(tmp_path):
             (['--region-membrane', '6'], r'they need --region-mask$'),
             (['--region-mask', str(mask), '--region-membrane', '6'], r'--region-membrane moves the figure under a region laid over it; it needs --region-over$'),
             (['--region-mask', str(mask), '--region-over', '--region-membrane', '-1'], r'0 or more; got -1$'),
+            (['--region-membrane-unpin'], r"--region-membrane-unpin, --region-clear-alpha, --region-floor-beside and "
+                                          r"--region-own-outline shape a region mask's membrane; they need --region-mask$"),
+            (['--region-clear-alpha', '8'], r"membrane; they need --region-mask$"),
+            (['--region-floor-beside', '12'], r"membrane; they need --region-mask$"),
+            (['--region-own-outline', '2'], r"membrane; they need --region-mask$"),
+            (['--region-mask', str(mask), '--region-over', '--region-membrane', '6', '--region-clear-alpha', '0'],
+             r"--region-clear-alpha is the alpha under which a pixel is read as clear, a whole number from 1 to 127 \(under a "
+             r"solid pixel's\); got 0$"),
+            (['--region-mask', str(mask), '--region-clear-alpha', '128'], r'from 1 to 127 \(under a solid pixel\'s\); got 128$'),
+            (['--region-mask', str(mask), '--region-floor-beside', '-1'], r'--region-floor-beside is px, a whole number, 0 or more; got -1$'),
+            (['--region-mask', str(mask), '--region-own-outline', '-2'], r'--region-own-outline is px, a whole number, 0 or more; got -2$'),
             (['--region-mask', str(mask), '--region-shear', '0'], r'--region-shear is the most a move one way may rise across'),
             (['--region-mask', str(mask), '--region-shear', '-1'], r'over 0; got -1$'),
             (['--region-mask', str(mask), '--region-shear', 'nan'], r'over 0; got nan$'),

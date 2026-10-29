@@ -150,17 +150,19 @@ and the upper yield's. The ellipses still say each region's gain and where `--ba
 pixels take a held one is read from the others, and walked back only where they are half its weight, which the rim keeps
 from happening. The record holds the mask, its carry in every cell and a ledger per cell (`region_ledger`). Not with
 `--band`, a region's flat share, `--stretch-floor` nor `--hold-mask` (but under `--region-over`). The crease is the
-picture's own edge: `--region-shrink` wears the mask in everywhere else and leaves its lower edge on the crease
-(`crease_kept`).
+picture's own edge: under `--region-over` the region reaches down to it again in every cell where the wear lifted it
+(`crease_reach`).
 
 `--region-over` (with `--region-mask`; off by default, and off nothing of it is read or written) lays the region over the
 figure under it (`layer_sets`, `lay_over`): the held pixels under its lower edge, solid or not — in its columns and the
 air's reach past them — are no anchor of the rim, so the lower edge moves with the rest, and the band of them within the
 air's reach of it moves too and is drawn over: the region's own pixels (with its soft edge, which goes with it beside the
 figure too, and its outline against the air) read at the move and laid by their alpha over the band's own pixel, which
-keeps its bytes where they do not land, and over the air, which shows them and never the figure beside it; where the
-region lifts, its pixels read the figure under it. `--hold-mask` names the pixels it
-leaves out (an arm), carried as a band's are: never the region's, never drawn over, an anchor of the rim. `--region-shear
+keeps its bytes where they do not land; the air and where the region lifts are drawn by the move, the figure under it
+showing there. With `--region-membrane` what lies under the lower edge within its reach moves as a membrane between
+the region's move and none (`membrane_move`), drawn by that move. `--hold-mask` names the pixels it
+leaves out (an arm), carried as a band's are: where the mask does not cover them never the region's, never drawn over, an
+anchor of the rim; where it does, the region keeps them and they move with it. `--region-shear
 S` (off by default) widens the rim so a move one way rises across it the other way by at most S px a px (`shear_floor`):
 the fold rule reads each way by the move along it alone, and a move down rose all at once across a rim sized for a small
 move across. With either the ledger reads the region's edges too: the steps the drawn move takes (`move_steps`), the
@@ -264,8 +266,9 @@ REGION_AIR = 2  # px past the move's reach (8-neighbour steps) round the region 
 CREASE_UP, CREASE_DOWN = 5, 3  # rows above and below a region's lowest pixel its lower edge is looked for (`--region-crease`)
 CREASE_SPAN = 2  # columns either way the crease's rows are taken the median over
 # A region laid over the figure under it (`--region-over`): what lies under its lower edge no anchor of the rim, the band of
-# it within the air's reach drawn over by the region's own pixels by their alpha and kept where they do not land.
-OVER_POLICY = "under-edge-free/band-and-air-laid-by-alpha/air-outline-with/1"
+# it within the air's reach drawn over by the region's own pixels by their alpha and kept where they do not land; the air
+# and where it lifts drawn by the move; with `--region-crease` its lower edge reaching down to the crease in every cell.
+OVER_POLICY = "under-edge-free/band-laid-by-alpha/air-and-lift-by-move/crease-reach/2"
 # Laid over with `--region-over-solid`: of what lies under its lower edge only the solid pixels are free of the rim and laid
 # over, the rest stays and holds the rim, and its soft edge goes with it even where it touches the figure under it.
 OVER_SOLID_POLICY = "under-edge-solid-free/soft-edge-with/1"
@@ -273,9 +276,11 @@ OVER_SOLID_POLICY = "under-edge-solid-free/soft-edge-with/1"
 # edge) hold the rim round, the wider of its two widths each way; the rest of the anchors hold it as ever.
 RIM_ROUND_POLICY = "beside-above-floor/round-wider-width/1"
 # Laid over the figure under it, a membrane (`--region-membrane N`): what lies under its lower edge within N + 1 px of it
-# moves, each pixel's move the mean of its figure 4-neighbours', between the region's own and none on the rest of the figure.
-MEMBRANE_POLICY = "under-edge-within-n/figure-4-mean/conjugate-gradients/1"
-MEMBRANE_TOL = 1e-9  # px: the membrane is solved until the 4-neighbour means are met to within this
+# moves, starting at the region's nearest move falling as cos² over N + 1 px, then each pixel's move the mean of its figure
+# 4-neighbours', between the region's own and none on the rest of the figure, pass after pass.
+MEMBRANE_POLICY = "under-edge-within-n/spread-cos2-start/figure-4-mean-passes/2"
+MEMBRANE_STEP = 1e-4  # px: the membrane's passes stop at the first that moves no pixel this far
+MEMBRANE_PASSES = 1200  # the most passes the membrane takes
 TIP_COLS = 10  # the region's columns at its tip the ledger reads the tip's shape and move over (`tip_shape`)
 TIP_AIR = 8  # px of the air round the tip's columns and rows the tip's window takes
 TIP_RING = 3  # px round the source's outline against the air the tip's shape is read over
@@ -1307,15 +1312,16 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
              region_mask: Path | None = None, region_rim: float | None = None, region_shrink: int | None = None,
              region_crease: bool = False, region_over: bool = False, region_shear: float | None = None,
              region_membrane: int | None = None, region_over_solid: bool = False, region_rim_round: bool = False,
-             verb: str = VERB) -> Ask:
+             region_membrane_unpin: bool = False, region_clear_alpha: int | None = None,
+             region_floor_beside: int | None = None, region_own_outline: int | None = None, verb: str = VERB) -> Ask:
     """A sway's ask, read and checked. A number left out (None) is its default: the damped mass's gain, freq and zeta,
     or, on the breath (`breathe`), the breath's gain and lag. `band` (px or AUTO; None: off) moves each region as one
     mass, `band_margin` and `band_up` shaping it, and `hold_mask` (a PNG or a folder of them; None: off) holds pixels
     the band moves round. `region_mask` (a PNG or a folder of them; None: off) gives the region as a mask instead,
     `region_rim`, `region_shrink`, `region_crease`, `region_over` (with `hold_mask` the pixels its layer leaves out,
-    `region_over_solid` which pixels under it it lays over, `region_membrane` the figure under it a membrane moves and
-    `region_rim_round` the rim held round beside it),
-    `region_shear` and `band_up` shaping it."""
+    `region_over_solid` which pixels under it it lays over, `region_membrane` the figure under it a membrane moves and,
+    with it, `region_membrane_unpin`, `region_clear_alpha`, `region_floor_beside` and `region_own_outline`, and
+    `region_rim_round` the rim held round beside it), `region_shear` and `band_up` shaping it."""
     # The numbers go into the record, which is JSON, and into the cells' arithmetic: a numpy number from a
     # caller (an int64 has no JSON form) is read as the float the command line gives, so every caller of the
     # same numbers writes the same strip and record.
@@ -1354,7 +1360,9 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
     if region_mask is not None:
         masked = _read_region_mask(regions, region_mask, region_rim, region_shrink, region_crease, band, band_margin, band_up,
                                    stretch_floor, hold_mask, verb, over=region_over, shear=region_shear,
-                                   membrane=region_membrane, over_solid=region_over_solid, rim_round=region_rim_round)
+                                   membrane=region_membrane, over_solid=region_over_solid, rim_round=region_rim_round,
+                                   unpin=region_membrane_unpin, clear_alpha=region_clear_alpha,
+                                   floor_beside=region_floor_beside, own_outline=region_own_outline)
         return Ask(regions, gain, freq, zeta, on_fold, None if read_on is None else str(read_on), stretch_floor, gain_across,
                    breath, mask=masked)
     if region_rim is not None or region_shrink is not None or region_crease:
@@ -1362,6 +1370,9 @@ def read_ask(regions: list[tuple[float, ...]], *, gain: float | None = None, fre
     if region_over or region_shear is not None or region_membrane is not None or region_over_solid or region_rim_round:
         raise SystemExit(f"{verb}: --region-over, --region-over-solid, --region-rim-round, --region-shear and --region-membrane "
                          "shape a region mask; they need --region-mask")
+    if region_membrane_unpin or region_clear_alpha is not None or region_floor_beside is not None or region_own_outline is not None:
+        raise SystemExit(f"{verb}: --region-membrane-unpin, --region-clear-alpha, --region-floor-beside and --region-own-outline "
+                         "shape a region mask's membrane; they need --region-mask")
     shaped = _read_band(regions, band, band_margin, band_up, stretch_floor, verb)
     if hold_mask is not None and shaped is None:
         raise SystemExit(f"{verb}: --hold-mask keeps pixels as they are while a band moves its regions round them; it needs --band")
@@ -1395,10 +1406,19 @@ def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float |
                       band: float | str | None, margin: float | str | None, up: tuple[float, float | str] | str | None,
                       stretch_floor: float | None, hold_mask: Path | None, verb: str, *, over: bool = False,
                       shear: float | None = None, membrane: int | None = None, over_solid: bool = False,
-                      rim_round: bool = False) -> RegionMask:
+                      rim_round: bool = False, unpin: bool = False, clear_alpha: int | None = None,
+                      floor_beside: int | None = None, own_outline: int | None = None) -> RegionMask:
     """The region mask asked (`--region-mask`, `--region-rim`, `--region-shrink`, `--region-crease`, `--region-over` and,
     with it, `--hold-mask`, `--region-over-solid`, `--region-rim-round` and `--region-membrane`, `--region-shear`,
-    `--band-up`), checked as the command line checks it, and its PNGs read."""
+    `--band-up`; the membrane's `--region-membrane-unpin`, `--region-clear-alpha`, `--region-floor-beside` and
+    `--region-own-outline`, which shape nothing without one), checked as the command line checks it, and its PNGs read."""
+
+    def whole(given: object) -> int:  # a whole number as given; -1 where it is none (a NaN, an infinity, not a number)
+        try:
+            return int(given) if not isinstance(given, bool) and float(given) == int(given) else -1
+        except (TypeError, ValueError, OverflowError):
+            return -1
+
     if band is not None:
         raise SystemExit(f"{verb}: --region-mask moves the region's own pixels and holds every visible pixel round it, the weight "
                          "falling over a rim inside it; --band moves an ellipse over a band outside it: give one of them")
@@ -1432,11 +1452,7 @@ def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float |
     if membrane is not None:
         if not over:
             raise SystemExit(f"{verb}: --region-membrane moves the figure under a region laid over it; it needs --region-over")
-        given = membrane
-        try:
-            membrane = int(given) if not isinstance(given, bool) and float(given) == int(given) else -1
-        except (TypeError, ValueError, OverflowError):  # a NaN, an infinity, not a number
-            membrane = -1
+        given, membrane = membrane, whole(membrane)
         if membrane < 0:
             raise SystemExit(f"{verb}: --region-membrane is how far under the region's lower edge the membrane reaches, a "
                              f"whole number of px past the first, 0 or more; got {given!r}")
@@ -1444,19 +1460,27 @@ def _read_region_mask(regions: list[tuple[float, ...]], path: Path, rim: float |
     if not rim >= 1 or not math.isfinite(rim):  # a NaN is not
         raise SystemExit(f"{verb}: --region-rim is how many times the fold rule's least band the rim starts at, 1 or more; got {rim:g}")
     asked = SHRINK_DEFAULT if shrink is None else shrink
-    try:
-        shrink = int(asked) if not isinstance(asked, bool) and float(asked) == int(asked) else -1
-    except (TypeError, ValueError, OverflowError):  # a NaN, an infinity, not a number
-        shrink = -1
+    shrink = whole(asked)
     if shrink < 0:
         raise SystemExit(f"{verb}: --region-shrink is the px the mask is worn in by, a whole number, 0 or more; got {asked!r}")
+    if clear_alpha is not None:
+        given, clear_alpha = clear_alpha, whole(clear_alpha)
+        if not 1 <= clear_alpha < ALPHA_SOLID:
+            raise SystemExit(f"{verb}: --region-clear-alpha is the alpha under which a pixel is read as clear, a whole number "
+                             f"from 1 to {ALPHA_SOLID - 1} (under a solid pixel's); got {given!r}")
+    for flag, given in (("--region-floor-beside", floor_beside), ("--region-own-outline", own_outline)):
+        if given is not None and whole(given) < 0:
+            raise SystemExit(f"{verb}: {flag} is px, a whole number, 0 or more; got {given!r}")
+    floor_beside = None if floor_beside is None else whole(floor_beside)
+    own_outline = None if own_outline is None else whole(own_outline)
     try:
         shaped = None if up is None else parse_band_up(up if isinstance(up, str) else ",".join(str(v) for v in up))
     except argparse.ArgumentTypeError as exc:
         raise SystemExit(f"{verb}: {exc}") from exc
     masks, digests, per_cell = _read_masks(path, "--region-mask", verb)
     return RegionMask(masks, digests, per_cell, rim, shrink, bool(crease), shaped, bool(over), shear,
-                      None if hold_mask is None else read_hold(hold_mask, verb), membrane, bool(over_solid), bool(rim_round))
+                      None if hold_mask is None else read_hold(hold_mask, verb), membrane, bool(over_solid), bool(rim_round),
+                      bool(unpin), clear_alpha, floor_beside or 0, own_outline or 0)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1489,7 +1513,9 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
                  hold_mask: Path | None = None, region_mask: Path | None = None, region_rim: float | None = None,
                  region_shrink: int | None = None, region_crease: bool = False, region_over: bool = False,
                  region_shear: float | None = None, region_membrane: int | None = None,
-                 region_over_solid: bool = False, region_rim_round: bool = False, read_on_cut: Path | None = None) -> Request:
+                 region_over_solid: bool = False, region_rim_round: bool = False, region_membrane_unpin: bool = False,
+                 region_clear_alpha: int | None = None, region_floor_beside: int | None = None,
+                 region_own_outline: int | None = None, read_on_cut: Path | None = None) -> Request:
     loop_dir = loop_dir.expanduser().resolve()
     metas = sorted(loop_dir.glob("*.strip.json"))
     if len(metas) != 1:
@@ -1505,7 +1531,8 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
                    hold_mask=hold_mask, region_mask=region_mask, region_rim=region_rim, region_shrink=region_shrink,
                    region_crease=region_crease, region_over=region_over, region_shear=region_shear,
                    region_membrane=region_membrane, region_over_solid=region_over_solid, region_rim_round=region_rim_round,
-                   verb=verb)
+                   region_membrane_unpin=region_membrane_unpin, region_clear_alpha=region_clear_alpha,
+                   region_floor_beside=region_floor_beside, region_own_outline=region_own_outline, verb=verb)
     if read_on_cut is None:
         return Request(loop_dir, name, meta_path, meta_bytes, meta, ask)
     return Request(loop_dir, name, meta_path, meta_bytes, meta, ask, read_cut(read_on_cut, ask.read_on, verb),
@@ -1638,14 +1665,31 @@ class Answer:
         way, from the held pixels beside the region), and with `--band-up` the lesser of that and each region's upper
         yield, the ellipse carried by its own pixels as a band carries it (`Masked.up`); 0 elsewhere. Laid over the figure
         under it (`--region-over`, `layer_sets`), what lies under its lower edge is no anchor of the rim and the band of it
-        moves too, the pixels `--hold-mask` names left out of the region and of the band."""
+        moves too, the pixels `--hold-mask` names left out of its soft edge and of the band (the region keeps its own); with
+        `--region-crease` the region reaches down to the crease carried into the cell (`crease_reach`). With a membrane
+        (`--region-membrane`) the region grows over the outline its mask leaves out (`--region-own-outline`, `own_outline`),
+        the lower edge beside it is set by the lowest pixel near each side (`--region-floor-beside`), what the membrane
+        moves is no anchor of the rim (`--region-membrane-unpin`), and a pixel under `--region-clear-alpha` is read as
+        clear (`RegionMask.alpha_of`)."""
         assert self.mask is not None
         masked = self.mask
-        alpha = np.asarray(self.cells[k].getchannel("A"))
-        region = masked.region_in(k, alpha >= ALPHA_SOLID)
+        cell = self.cells[k]
+        solid = np.asarray(cell.getchannel("A")) >= ALPHA_SOLID
+        alpha = masked.asked.alpha_of(cell)
+        region = masked.region_in(k, solid)
         if masked.asked.over:
             left_out = masked.left_out_in(k)
-            sets = layer_sets(region & ~left_out, alpha, masked.air, left_out, masked.asked.over_solid)
+            if masked.creases and masked.creases[0] and masked.carried is not None:
+                px = masked.carried[k]["px"]
+                region = crease_reach(region, solid, masked.creases[0]["rows"],
+                                      (px[0] - masked.base_shift[0], px[1] - masked.base_shift[1]))
+            membrane = masked.asked.membrane is not None
+            if membrane and masked.asked.own_outline:
+                region = own_outline(region, solid, alpha == 0, left_out, masked.asked.own_outline)
+            sets = layer_sets(region, alpha, masked.air, left_out, masked.asked.over_solid,
+                              masked.asked.floor_beside if membrane else 0)
+            if membrane and masked.asked.unpin:
+                sets["anchors"] = sets["anchors"] & ~membrane_sets(sets, masked.asked.membrane)
             anchors, moving = sets["anchors"], sets["region"] | sets["soft"] | sets["air"] | sets["band"]
             sets["left_out"] = region & left_out
         else:
@@ -1677,10 +1721,10 @@ class Answer:
     def masked_cell(self, k: int) -> tuple[Image.Image, dict[str, Any]]:
         """Under a region mask, cell k drawn by its move (`mask_field`) as a hold draws it (`draw_held`), every read its
         whole move and no held pixel read; what it moved and held, the move, and how each pixel was read. Laid over the
-        figure under it (`--region-over`), the band, the air and what a lift uncovers are drawn as the layer lands on them
-        (`lay_over`), not read by `draw_held`: the held pixels are then those it keeps, the move 0 on them; with a membrane
-        (`--region-membrane`), what lies under its lower edge within its reach moves by it (`membrane_sets`,
-        `membrane_move`) and is drawn by `draw_held`, never laid over. Kept in `Masked.drawn`."""
+        figure under it (`--region-over`), the band is drawn as the layer lands on it (`lay_over`), not read by
+        `draw_held`, which draws the air and where the region lifts by the move: the held pixels are then those it keeps,
+        the move 0 on them; with a membrane (`--region-membrane`), what lies under its lower edge within its reach moves by
+        it (`membrane_sets`, `membrane_move`) and is drawn by `draw_held`, never laid over. Kept in `Masked.drawn`."""
         assert self.mask is not None
         cell = self.cells[k]
         w, h = cell.size
@@ -1696,26 +1740,23 @@ class Answer:
                     | ({} if self.mask.asked.membrane is None else {"membrane": still > 0})
         elif self.mask.asked.over:
             band, free = sets["band"], np.zeros((h, w), bool)
-            if self.mask.asked.membrane is not None:
+            reach = self.mask.asked.membrane
+            if reach is not None:
                 # The membrane under the lower edge: its move hangs between the region's own (its soft edge and its outline
                 # over the band too) and none on the rest of the figure, and it is drawn by that move, never laid over.
-                free = membrane_sets(sets, self.mask.asked.membrane)
-                own = sets["region"] | sets["soft"] | sets["edge"]
-                free, free_x, free_y = membrane_move(free, np.asarray(cell.getchannel("A")) > 0,
-                                                     (np.where(own, field[1], 0.0), np.where(own, field[2], 0.0)))
-                field = (field[0] | free, np.where(free, free_x, field[1]), np.where(free, free_y, field[2]))
+                free = membrane_sets(sets, reach)
+                field = (field[0] | free, *membrane_move(free, self.mask.asked.alpha_of(cell) > 0, sets["region"] | sets["soft"],
+                                                         sets["edge"], (field[1], field[2]), reach))
                 band = band & ~free
-            layered = band | sets["air"] | uncovered(sets, field[2])
-            # The band, the air and what a lift uncovers are the layer's to draw (`lay_over`, every pixel of them): no read
-            # of `draw_held`'s is taken there.
-            drawn, read = draw_held(cell, (field[0] & ~layered, field[1], field[2]), sets["held"] & ~sets["band"] & ~free,
+            # The air and where the region lifts are drawn by the move (`draw_held`, the band under it read there), the band
+            # by the layer (`lay_over`, every pixel of it): no read of `draw_held`'s is taken on the band.
+            drawn, read = draw_held(cell, (field[0] & ~band, field[1], field[2]), sets["held"] & ~sets["band"] & ~free,
                                     np.zeros((h, w), bool), short=False)
             drawn, laid, over, lifted = lay_over(cell, drawn, field, {**sets, "band": band})
             kept = band & ~laid
             field = (field[0], np.where(kept, 0.0, field[1]), np.where(kept, 0.0, field[2]))
-            # There the read is the layer's: its whole move, none where the band keeps its bytes.
-            read = {**read, "read_x": np.where(layered, field[1], read["read_x"]),
-                    "read_y": np.where(layered, field[2], read["read_y"])}
+            # On the band the read is the layer's: its whole move, none where the band keeps its bytes.
+            read = {**read, "read_x": np.where(band, field[1], read["read_x"]), "read_y": np.where(band, field[2], read["read_y"])}
             # What it keeps: the held pixels less the band the layer lands on, the outline that goes with it and what the
             # membrane moves; what no read takes: the held pixels but the band, which the region reads where it lifts.
             sets = {**sets, "held": sets["held"] & ~laid & ~free, "unread": sets["held"] & ~sets["band"] & ~free, "over": over,
@@ -1794,8 +1835,8 @@ class Answer:
         the cells that kept the carry of the cell before and why (None and none where a mask is given for each cell); the
         upper yield's bands and carry (`--band-up`; None without it); and the ledger (`region_ledger`). The rim `--region-
         shear` asks at least (`rim.shear_px`) and the layer (`over`: how deep its band reaches, the membrane under it
-        (`--region-membrane`: how far it reaches and how it is solved), and the pixels `--hold-mask` leaves out, carried as a
-        hold mask is) only where they are asked."""
+        (`--region-membrane`: how far it reaches and how its passes stop), and the pixels `--hold-mask` leaves out, carried
+        as a hold mask is) only where they are asked."""
         assert self.mask is not None
         masked = self.mask
         across, down, slope, least = masked.rim
@@ -1816,7 +1857,8 @@ class Answer:
         } | ({} if not masked.asked.over else {"over": {"policy": OVER_POLICY, "band_px": masked.air} | (
             {} if not masked.asked.over_solid else {"solid": OVER_SOLID_POLICY}) | (
             {} if masked.asked.membrane is None else
-            {"membrane": {"policy": MEMBRANE_POLICY, "reach_px": masked.asked.membrane + 1, "tol_px": MEMBRANE_TOL}}) | {
+            {"membrane": {"policy": MEMBRANE_POLICY, "reach_px": masked.asked.membrane + 1, "step_px": MEMBRANE_STEP,
+                          "passes_most": MEMBRANE_PASSES}}) | {
             "left_out": None if left_out is None else {
                 "grow_px": None if left_out.asked.per_cell else HOLD_GROW,
                 "pieces": [{"px": int(piece.sum()), "box": _box(piece)} for piece in left_out.pieces],
@@ -2654,7 +2696,11 @@ class RegionMask:
     (`--region-shear`, px a px; None: the rim by the move along it alone), how far under its lower edge a membrane
     moves the figure under it (`--region-membrane`, px; None: none, the layer slides over it), whether only the solid
     pixels under it are laid over (`--region-over-solid`), and whether the held pixels beside it hold the rim round
-    (`--region-rim-round`). The record names the last six only where they are asked."""
+    (`--region-rim-round`); with a membrane, whether what it moves is no anchor of the rim (`--region-membrane-unpin`),
+    the alpha under which a pixel is read as clear (`--region-clear-alpha`; None: 0's alone), how far into the region's
+    columns from each side the lowest pixel sets the lower edge beside it (`--region-floor-beside`, px; 0: the nearest
+    column's), and how far the region grows over the outline its mask leaves out (`--region-own-outline`, px; 0: none).
+    The record names the last ten only where they are asked, the membrane's four only with one."""
 
     masks: list[np.ndarray]
     sha256: list[str]
@@ -2669,6 +2715,10 @@ class RegionMask:
     membrane: int | None = None
     over_solid: bool = False
     rim_round: bool = False
+    unpin: bool = False
+    clear_alpha: int | None = None
+    floor_beside: int = 0
+    own_outline: int = 0
 
     def asked(self) -> dict[str, Any]:
         return {"per_cell": self.per_cell, "sha256": self.sha256 if self.per_cell else self.sha256[0], "rim": self.rim,
@@ -2678,7 +2728,22 @@ class RegionMask:
             | ({} if not self.over_solid else {"over_solid": True}) \
             | ({} if not self.rim_round else {"rim_round": True}) \
             | ({} if self.shear is None else {"shear": self.shear}) \
-            | ({} if self.membrane is None else {"membrane_px": self.membrane})
+            | ({} if self.membrane is None else {"membrane_px": self.membrane} | self.membrane_asked())
+
+    def alpha_of(self, cell: Image.Image) -> np.ndarray:
+        """The cell's alpha as the sets and a membrane read it: under `--region-clear-alpha` (with a membrane) 0, clear;
+        the cell's bytes are its own."""
+        alpha = np.asarray(cell.getchannel("A"))
+        return alpha if self.membrane is None or self.clear_alpha is None else np.where(alpha < self.clear_alpha, 0, alpha)
+
+    def membrane_asked(self) -> dict[str, Any]:
+        """The membrane's own keys as the record names them: those asked, with a membrane; none without one."""
+        if self.membrane is None:
+            return {}
+        return ({} if not self.unpin else {"membrane_unpin": True}) \
+            | ({} if self.clear_alpha is None else {"clear_alpha": self.clear_alpha}) \
+            | ({} if not self.floor_beside else {"floor_beside_px": self.floor_beside}) \
+            | ({} if not self.own_outline else {"own_outline_px": self.own_outline})
 
     def edges(self) -> bool:
         """Whether the ledger reads the region's edges (`still_strip`, `tip_shape`, `move_steps`): with `--region-over`
@@ -2775,16 +2840,27 @@ def crease_of(cell: Image.Image, mask: np.ndarray) -> tuple[np.ndarray, dict[str
     return out, {"rows": {str(x): y for x, y in sorted(rows.items())}, "free_columns": free}
 
 
-def crease_kept(trimmed: np.ndarray, worn: np.ndarray, crease: dict[str, Any]) -> np.ndarray:
-    """`worn` — the mask ended at its crease (`trimmed`, `crease_of`) and worn in (`--region-shrink`) — with its lower edge
-    back on the crease: in each column the crease ended (`crease`'s rows), where the worn mask holds a pixel, the trimmed
-    mask's pixels from its lowest one down to the crease's row. The crease is the picture's own edge, not one drawn a
-    little large, so the wear leaves it where it is; it still wears the mask in everywhere else."""
-    out = worn.copy()
-    for x, y in ((int(x), int(y)) for x, y in crease["rows"].items()):
+def crease_reach(region: np.ndarray, solid: np.ndarray, rows: dict[str, int], shift: tuple[float, float]) -> np.ndarray:
+    """`region` — a cell's, its mask carried `shift` from the cell it was drawn on — reaching down to its crease again
+    where the wear lifted it (`--region-over` with `--region-crease`): the crease's rows (`crease_of`, columns and rows on
+    that cell; a column between two of them takes the nearer's row, the left one's on a tie) carried by `shift` (the column
+    rounded to the nearest, half to even), and in each column the crease reaches, where the region holds a pixel, the cell's
+    solid pixels from its lowest one down to the crease's row. The crease is the picture's own edge, not one drawn a little
+    large, so the wear leaves it where it is; it still wears the mask in everywhere else."""
+    h, w = region.shape
+    columns = sorted(int(x) for x in rows)
+    if not columns:
+        return region.copy()
+    line: dict[int, float] = {}
+    for x in range(max(0, columns[0]), min(w, columns[-1] + 1)):
+        at = int(round(x + shift[0]))
+        if 0 <= at < w:
+            line[at] = rows[str(min(columns, key=lambda q: abs(q - x)))] + shift[1]
+    out = region.copy()
+    for x, y in line.items():
         if out[:, x].any():
-            lowest = int(np.nonzero(out[:, x])[0].max())
-            out[lowest + 1:y + 1, x] |= trimmed[lowest + 1:y + 1, x]
+            lowest, crease = int(np.nonzero(out[:, x])[0].max()), int(math.floor(y))
+            out[lowest + 1:crease + 1, x] |= solid[lowest + 1:crease + 1, x]
     return out
 
 
@@ -2886,10 +2962,11 @@ def region_sets(region: np.ndarray, alpha: np.ndarray, air: int) -> tuple[np.nda
 
 
 def layer_sets(region: np.ndarray, alpha: np.ndarray, air: int, left_out: np.ndarray,
-               solid_only: bool = False) -> dict[str, np.ndarray]:
+               solid_only: bool = False, beside: int = 0) -> dict[str, np.ndarray]:
     """What a region laid over the figure under it moves, draws over and holds in a cell (`--region-over`; `alpha`: the
-    cell's alpha, `air`: the move's reach and REGION_AIR px, `left_out`: the pixels `--hold-mask` names there, none of
-    them the region's; `solid_only`: `--region-over-solid`, the changes it makes said where they fall):
+    cell's alpha, `air`: the move's reach and REGION_AIR px, `left_out`: the pixels `--hold-mask` names there, which the
+    region keeps where it holds them and which are left out of all else; `solid_only`: `--region-over-solid`, the changes
+    it makes said where they fall; `beside`: `--region-floor-beside`, the lower edge beside its columns):
     - `soft`: its soft edge, the pixels not opaque within REGION_SOFT 4-neighbour steps of it, beside another solid pixel
       or not (left beside the figure under it, it would stay behind as a ghost of its outline), none left out; under its
       lower edge (`floor`) only those touching no solid pixel outside it (8-neighbour): one that does is the figure's own
@@ -2908,7 +2985,8 @@ def layer_sets(region: np.ndarray, alpha: np.ndarray, air: int, left_out: np.nda
       (4-neighbour), within 2 px of it, touching no other solid pixel outside it (4-neighbour) — which go with the layer and
       leave the air behind; an outline pixel that touches the figure under it or a pixel left out is the figure's, kept;
     - `anchors`: the held pixels the rim falls to: all but those under its lower edge;
-    - `floor`: per column, the first row under its lower edge (that of its nearest column), the cell's height where none."""
+    - `floor`: per column, the first row under its lower edge (that of its nearest column; with `beside` N, past its
+      columns that of the lowest pixel of its columns within N of that side), the cell's height where none."""
     solid = alpha >= ALPHA_SOLID
     h, w = region.shape
     under = np.zeros((h, w), bool)
@@ -2916,8 +2994,11 @@ def layer_sets(region: np.ndarray, alpha: np.ndarray, air: int, left_out: np.nda
     xs = np.nonzero(region.any(axis=0))[0]
     if len(xs):
         lowest = {int(x): int(np.nonzero(region[:, x])[0].max()) for x in xs}
-        for x in range(max(0, int(xs.min()) - air), min(w, int(xs.max()) + air + 1)):
-            floor[x] = lowest[min(lowest, key=lambda q: abs(q - x))] + 1
+        left, right = int(xs.min()), int(xs.max())
+        sides = (max(lowest[q] for q in lowest if q <= left + beside), max(lowest[q] for q in lowest if q >= right - beside))
+        for x in range(max(0, left - air), min(w, right + air + 1)):
+            floor[x] = (sides[0] if beside and x < left else sides[1] if beside and x > right
+                        else lowest[min(lowest, key=lambda q: abs(q - x))]) + 1
             under[floor[x]:, x] = True
     soft = (alpha > 0) & ~solid & _grow4(region, REGION_SOFT) & ~region & ~left_out
     if not solid_only:
@@ -2943,84 +3024,98 @@ def membrane_sets(sets: dict[str, np.ndarray], reach: int) -> np.ndarray:
     return sets["below"] & ~sets["edge"] & (rim_distance(sets["region"] | sets["soft"], reach + 1, reach + 1) < 1)
 
 
-def membrane_move(free: np.ndarray, figure: np.ndarray, fixed: tuple[np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The move of the pixels `free` as a membrane stretched between the moves `fixed` gives every other pixel of the figure
-    (`figure`: the pixels not clear; `fixed` across and down, read off them alone): each free pixel's move the mean of its
-    4 neighbours' that are the figure, the air none of them — the point the 4-neighbour mean comes to when it is taken over
-    and over, solved straight (conjugate gradients, to MEMBRANE_TOL px). A piece of them (4-neighbour) that no figure pixel
-    outside it touches has nothing to hang between and is left out. The free pixels kept, and the move across and down on
-    them (0 elsewhere)."""
+def own_outline(region: np.ndarray, solid: np.ndarray, clear: np.ndarray, left_out: np.ndarray, steps: int) -> np.ndarray:
+    """`region` grown over the outline its mask leaves out (`--region-own-outline G`, with a membrane): G 4-neighbour steps
+    through the cell's solid pixels within G 4-neighbour steps of a clear one (`clear`), never under its lower edge's line
+    (in every column, under the lowest pixel of the region's nearest column as it stands before), never a pixel
+    `--hold-mask` leaves out (`left_out`)."""
+    h, w = region.shape
+    xs = np.nonzero(region.any(axis=0))[0]
+    if not len(xs):
+        return region.copy()
+    lowest = {int(x): int(np.nonzero(region[:, x])[0].max()) for x in xs}
+    under = np.arange(h)[:, None] > np.array([lowest[min(lowest, key=lambda q: abs(q - x))] for x in range(w)])[None, :]
+    zone = solid & ~left_out & ~under & ~region & _grow4(clear, steps)
+    grown = region.copy()
+    for _ in range(steps):
+        grown = grown | (_grow4(grown, 1) & zone)
+    return grown
+
+
+def membrane_move(free: np.ndarray, figure: np.ndarray, own: np.ndarray, outline: np.ndarray,
+                  move: tuple[np.ndarray, np.ndarray], reach: int) -> tuple[np.ndarray, np.ndarray]:
+    """The move of the pixels `free` as a membrane stretched between the region's own move (`move`, across and down, on
+    `own` — the region and its soft edge — and on its outline over the band, `outline`) and none on the rest of the figure
+    (`figure`: the pixels not clear), the air none of them. Each free pixel starts at the move of the nearest pixels of
+    `own` (`_spread`, over reach + 1 steps; its own move where none reaches it), falling as cos² of its distance to them
+    over reach + 1 px (`rim_distance`), and is then the mean of its 4 neighbours' that are the figure, all of them at
+    once, pass after pass, until a pass moves none of them MEMBRANE_STEP px or more (MEMBRANE_PASSES at most). The move
+    across and down: the membrane's on the free pixels, `move`'s elsewhere."""
     h, w = free.shape
-    four = ((-1, 0), (1, 0), (0, -1), (0, 1))
-
-    def toward(a: np.ndarray, oy: int, ox: int) -> np.ndarray:  # each pixel's neighbour (oy, ox) away; past the edge, 0
-        p = np.pad(a, 1)
-        return p[1 + oy:1 + oy + h, 1 + ox:1 + ox + w]
-
-    holding = figure & ~free
-    kept = free & np.logical_or.reduce([toward(holding, oy, ox) for oy, ox in four])
-    while True:  # every free pixel joined to one that touches the rest of the figure
-        grown = kept | (_grow4(kept, 1) & free)
-        if (grown == kept).all():
-            break
-        kept = grown
-    moves = (np.zeros((h, w)), np.zeros((h, w)))
-    if not kept.any():
-        return kept, *moves
-    ys, xs = np.nonzero(kept)
+    falls = np.cos(0.5 * math.pi * rim_distance(own, reach + 1, reach + 1)) ** 2
+    start = [np.where(free, _spread(way, own, free, reach + 1) * falls, way) for way in move]
+    if not free.any():
+        return start[0], start[1]
+    fixed = own | outline
+    ux, uy = (np.where(free, way, np.where(fixed, way, 0.0)) for way in start)
+    # The passes read only the free pixels and their neighbours: the box round them, a px past it.
+    ys, xs = np.nonzero(free)
     y0, y1, x0, x1 = max(int(ys.min()) - 1, 0), min(int(ys.max()) + 2, h), max(int(xs.min()) - 1, 0), min(int(xs.max()) + 2, w)
-    box, inside = (slice(y0, y1), slice(x0, x1)), kept[y0:y1, x0:x1]
+    box = (slice(y0, y1), slice(x0, x1))
+    inside, bx, by = free[box], ux[box], uy[box]
     bh, bw = inside.shape
-    # The figure's 4 neighbours of each pixel of the box, the cell's own past it.
-    fig = np.pad(figure, 1)[y0:y1 + 2, x0:x1 + 2]
-    near = [fig[1 + oy:1 + oy + bh, 1 + ox:1 + ox + bw] for oy, ox in four]
-    count = np.sum(near, axis=0).astype(np.float64)
+    four = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    near = np.pad(figure, 1)[y0:y1 + 2, x0:x1 + 2]
+    near = [near[1 + oy:1 + oy + bh, 1 + ox:1 + ox + bw] for oy, ox in four]
+    count = np.maximum(sum(n.astype(float) for n in near), 1.0)
 
-    def apply(u: np.ndarray) -> np.ndarray:  # count·u less the free neighbours' u, on the free pixels
+    def mean(u: np.ndarray) -> np.ndarray:  # each pixel's figure 4-neighbours' mean
         p = np.pad(u, 1)
-        return np.where(inside, count * u - sum(n * p[1 + oy:1 + oy + bh, 1 + ox:1 + ox + bw] for n, (oy, ox) in zip(near, four)), 0.0)
+        return sum(np.where(n, p[1 + oy:1 + oy + bh, 1 + ox:1 + ox + bw], 0.0) for n, (oy, ox) in zip(near, four)) / count
 
-    for way, given in enumerate(fixed):
-        held_at = np.pad(np.where(holding, given, 0.0), 1)[y0:y1 + 2, x0:x1 + 2]
-        b = np.where(inside, sum(n * held_at[1 + oy:1 + oy + bh, 1 + ox:1 + ox + bw] for n, (oy, ox) in zip(near, four)), 0.0)
-        u, r = np.zeros((bh, bw)), b.copy()
-        p, rr = r.copy(), float((r * r).sum())
-        for _ in range(2 * int(inside.sum()) + 8):
-            if math.sqrt(rr) <= MEMBRANE_TOL:
-                break
-            ap = apply(p)
-            step = rr / float((p * ap).sum())
-            u += step * p
-            r -= step * ap
-            rr, before = float((r * r).sum()), rr
-            p = r + (rr / before) * p
-        moves[way][box] = np.where(inside, u, 0.0)
-    return kept, *moves
+    for _ in range(MEMBRANE_PASSES):
+        nx, ny = np.where(inside, mean(bx), bx), np.where(inside, mean(by), by)
+        done = max(float(np.abs(nx - bx).max()), float(np.abs(ny - by).max())) < MEMBRANE_STEP
+        bx, by = nx, ny
+        if done:
+            break
+    ux, uy = ux.copy(), uy.copy()
+    ux[box], uy[box] = bx, by
+    return np.where(free, ux, start[0]), np.where(free, uy, start[1])
 
 
-def uncovered(sets: dict[str, np.ndarray], move_y: np.ndarray) -> np.ndarray:
-    """The pixels of a region laid over the figure under it, and of its soft edge, that its lift may uncover (`layer_sets`):
-    where it moves up, those whose own column, read as far under them as the move, reaches past its last row (into the
-    rows under its lower edge, `floor`). There the layer is laid over that figure as it lies in the pixel's own column
-    (`lay_over`)."""
-    yy = np.mgrid[0:move_y.shape[0], 0:move_y.shape[1]][0]
-    return (sets["region"] | sets["soft"]) & (move_y < 0) & (yy - move_y > sets["floor"][None, :] - 1)
+def _spread(value: np.ndarray, start: np.ndarray, into: np.ndarray, steps: int) -> np.ndarray:
+    """`value` carried from the pixels `start` into those of `into`, nearest first: `steps` + 1 times over, each pixel of
+    `into` not yet reached beside one that is (8-neighbour) takes the mean of their values; one never reached keeps its
+    own."""
+    h, w = value.shape
+    out, got = value.copy(), start.copy()
+    for _ in range(steps + 1):
+        total, count = np.zeros((h, w)), np.zeros((h, w))
+        pv, pg = np.pad(out, 1), np.pad(got, 1)
+        for oy in (-1, 0, 1):
+            for ox in (-1, 0, 1):
+                if oy or ox:
+                    near = pg[1 + oy:1 + oy + h, 1 + ox:1 + ox + w]
+                    total += np.where(near, pv[1 + oy:1 + oy + h, 1 + ox:1 + ox + w], 0.0)
+                    count += near
+        new = into & ~got & (count > 0)
+        if not new.any():
+            break
+        out, got = np.where(new, total / np.maximum(count, 1), out), got | new
+    return out
 
 
 def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.ndarray, np.ndarray],
              sets: dict[str, np.ndarray]) -> tuple[Image.Image, np.ndarray, np.ndarray, np.ndarray]:
-    """`drawn` — the region and its soft edge moved by `field` round the held pixels but the band (`draw_held`) — with the
-    region laid over the band and the air (`--region-over`, `layer_sets`): the region's own pixels (it, its soft edge and
-    its outline against the air, premultiplied) read at the move, over what they leave of the band's own pixel (the air,
-    under the outline). Where the layer lands on a band pixel (alpha over 0), and on its outline, that pixel is the layer;
-    where it does not, the band pixel keeps its bytes. Where it lands on the air (a drawn alpha of 1 or more), that pixel
-    is the layer alone, and the air keeps its bytes where it does not: the air shows the region moved into it, never the
-    figure beside it. Where the region lifts off the figure under it (`uncovered`), the layer is laid over that figure read
-    in the pixel's own column as far under it as the move, never above its first row under the lower edge (the cell as cut
-    under the lower edge, a piece `--hold-mask` leaves out too, drawn up, never moved sideways: the figure's side under the
-    region stays where it is, and what the lift uncovers over it is as opaque as it is). Also the pixels of the band the
-    layer lands on (`laid`), the band's it covers half or more (`over`, its outline not counted) and the region's pixels
-    under which the figure shows half or more, by its alpha, where its layer does not (`lifted`)."""
+    """`drawn` — the cell moved by `field` round the held pixels but the band (`draw_held`: the air and where the region
+    lifts off the figure under it are read as the move reads them, the band under it showing there) — with the region laid
+    over the band (`--region-over`, `layer_sets`): the region's own pixels (it, its soft edge and its outline against the
+    air, premultiplied) read at the move, over what they leave of the band's own pixel (the air, under the outline). Where
+    the layer lands on a band pixel (alpha over 0), and on its outline, that pixel is the layer; where it does not, the
+    band pixel keeps its bytes. Also the pixels of the band the layer lands on (`laid`), the band's it covers half or more
+    (`over`, its outline not counted) and the region's pixels whose read falls under half on it and its soft edge and half
+    or more on the figure under its lower edge (`lifted`)."""
     as_cut = np.asarray(cell.convert("RGBA"))
     src = as_cut.astype(np.float64)
     out = np.asarray(drawn.convert("RGBA")).astype(np.float64)
@@ -3028,7 +3123,7 @@ def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     _, move_x, move_y = field
     sx, sy = xx - move_x, yy - move_y
-    region, soft, band, edge, air = sets["region"], sets["soft"], sets["band"], sets["edge"], sets["air"]
+    region, soft, band, edge = sets["region"], sets["soft"], sets["band"], sets["edge"]
     pm = src.copy()
     pm[..., :3] *= pm[..., 3:4] / 255
     layer = pm * (region | soft | edge)[..., None]
@@ -3038,29 +3133,12 @@ def lay_over(cell: Image.Image, drawn: Image.Image, field: tuple[np.ndarray, np.
     both = read + (1 - read[..., 3:4] / 255) * pm * (~edge)[..., None]
     alpha = np.clip(both[..., 3:4], 0, 255)
     both[..., :3] = np.where(alpha > 0, both[..., :3] * 255 / np.maximum(alpha, 1e-3), 0)
-    landed = air & (np.round(read[..., 3]) > 0)
-    out[laid | landed] = both[laid | landed]
-    # Uncovered by a lift, the figure under the region in the pixel's own column, read down as far as the move.
-    shown = uncovered(sets, move_y)
-    share = np.zeros((h, w))
-    if shown.any():
-        ys, xs = np.nonzero(shown)
-        depth = np.maximum(ys - move_y[ys, xs].astype(np.float64), sets["floor"][xs])  # never above its first row
-        row = np.clip(np.floor(depth).astype(int), 0, h - 2)
-        fy = np.clip(depth - row, 0, 1)
-        figure = pm * (~(region | soft))[..., None]  # the cell as cut under the lower edge, a piece left out too
-        below = (1 - fy)[:, None] * figure[row, xs] + fy[:, None] * figure[row + 1, xs]
-        on = read[ys, xs] + (1 - read[ys, xs, 3:4] / 255) * below
-        a = np.clip(on[:, 3:4], 0, 255)
-        on[:, :3] = np.where(a > 0, on[:, :3] * 255 / np.maximum(a, 1e-3), 0)
-        out[ys, xs] = on
-        share[ys, xs] = below[:, 3] / 255
+    out[laid] = both[laid]
     out = np.clip(np.round(out), 0, 255).astype(np.uint8)
-    out[(laid | landed | shown) & (out[..., 3] == 0)] = 0  # clear, no colour: as `draw_held` writes a pixel it clears
-    kept = (band & ~laid) | (air & ~landed)
+    kept = band & ~laid
     out[kept] = as_cut[kept]
     ours = np.clip(_bilinear((region | soft).astype(np.float64), sx, sy), 0, 1)
-    lifted = region & shown & (ours < 0.5) & (share >= 0.5)
+    lifted = region & (ours < 0.5) & (_bilinear(sets["under"].astype(np.float64), sx, sy) >= 0.5)
     return Image.fromarray(out, "RGBA"), laid, over, lifted
 
 
@@ -3181,8 +3259,7 @@ def _masked(answer: Answer, up: Banded | None, whole: tuple[np.ndarray, np.ndarr
 
     def shaped(given: np.ndarray, cell: Image.Image) -> tuple[np.ndarray, np.ndarray, dict[str, Any] | None]:
         trimmed, crease = crease_of(cell, given) if mask.crease else (given, None)
-        worn = _shrink4(trimmed, mask.shrink)
-        return trimmed, worn if crease is None else crease_kept(trimmed, worn, crease), crease
+        return trimmed, _shrink4(trimmed, mask.shrink), crease
 
     if mask.per_cell:
         made = [shaped(given, cell) for given, cell in zip(mask.masks, cells)]
@@ -3236,11 +3313,13 @@ def region_ledger(answer: Answer) -> dict[str, Any]:
       pixels but the band), and where (weight, x, y; None where no read takes one), and `read_held_half_px`: reads that put
       half or more on them;
     - `renormalised_px`, `walked_px`: reads that took a held pixel and were read from the others, and those walked back
-      (`draw_held`), which the rim keeps at 0.
+      (`draw_held`), which the rim keeps at 0 — laid over the figure under it, but in the air, which is read too: a read
+      there may take the held figure beside it past the band.
     Laid over the figure under it (`--region-over`, `layer_sets`, `lay_over`), also:
     - `band_px`, `over_px`, `edge_px`, `lifted_px`, `left_out_px`: the band under its lower edge, the band's pixels the
-      layer covers half or more, the outline that goes with the layer, the region's pixels that show the figure under it
-      where it lifts, and the mask's pixels `--hold-mask` leaves out; `cover_depth_px`: how deep the layer covers the band
+      layer covers half or more, the outline that goes with the layer, the region's pixels whose read falls on the figure
+      under it where it lifts (`lay_over`), and the mask's pixels `--hold-mask` names, which the region keeps;
+      `cover_depth_px`: how deep the layer covers the band
       (`cover_depth`); the held pixels are those the drawn cell keeps, the band the layer does not land on among them;
     - `edge_folded_px`: folds within a px (4-neighbour) of a held pixel, where the layer stops and the band keeps its
       bytes — the layer's edge, not the move's, so they are counted apart and the rest is read as ever.
@@ -3446,14 +3525,18 @@ def sway_loop(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: float |
               region_mask: Path | None = None, region_rim: float | None = None, region_shrink: int | None = None,
               region_crease: bool = False, region_over: bool = False, region_shear: float | None = None,
               region_membrane: int | None = None, region_over_solid: bool = False, region_rim_round: bool = False,
+              region_membrane_unpin: bool = False, region_clear_alpha: int | None = None,
+              region_floor_beside: int | None = None, region_own_outline: int | None = None,
               read_on_cut: Path | None = None, verb: str = VERB) -> dict[str, Any]:
     request = read_request(loop_dir, regions, gain=gain, freq=freq, zeta=zeta, on_fold=on_fold, read_on=read_on,
                            stretch_floor=stretch_floor, breathe=breathe, lag=lag, gain_across=gain_across, band=band,
                            band_margin=band_margin, band_up=band_up, hold_mask=hold_mask, region_mask=region_mask,
                            region_rim=region_rim, region_shrink=region_shrink, region_crease=region_crease,
                            region_over=region_over, region_shear=region_shear, region_membrane=region_membrane,
-                           region_over_solid=region_over_solid, region_rim_round=region_rim_round, read_on_cut=read_on_cut,
-                           verb=verb)
+                           region_over_solid=region_over_solid, region_rim_round=region_rim_round,
+                           region_membrane_unpin=region_membrane_unpin, region_clear_alpha=region_clear_alpha,
+                           region_floor_beside=region_floor_beside, region_own_outline=region_own_outline,
+                           read_on_cut=read_on_cut, verb=verb)
     loop_dir, name, meta_path, meta = request.loop_dir, request.name, request.meta_path, request.meta
     strip_path = request.strip_path
     source = request.source_path
@@ -3509,7 +3592,9 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                 hold_mask: Path | None = None, region_mask: Path | None = None, region_rim: float | None = None,
                 region_shrink: int | None = None, region_crease: bool = False, region_over: bool = False,
                 region_shear: float | None = None, region_membrane: int | None = None, region_over_solid: bool = False,
-                region_rim_round: bool = False, read_on_cut: Path | None = None, verb: str = VERB) -> dict[str, Any]:
+                region_rim_round: bool = False, region_membrane_unpin: bool = False, region_clear_alpha: int | None = None,
+                region_floor_beside: int | None = None, region_own_outline: int | None = None,
+                read_on_cut: Path | None = None, verb: str = VERB) -> dict[str, Any]:
     """The sway of a folder of a cycle's frames — a loop's `cycle/`, or what `sprite-gen breathe` wrote from it — at their
     own size and count, past the strip's caps on cells and width: the same frames under the same names, the regions
     (in frame pixels) moved, and `sway.json` beside them, written whole into a new folder (`frames.folder`); the frames
@@ -3525,7 +3610,8 @@ def sway_frames(frames: Path, out: Path, regions: list[tuple[float, ...]], *, fp
                    hold_mask=hold_mask, region_mask=region_mask, region_rim=region_rim, region_shrink=region_shrink,
                    region_crease=region_crease, region_over=region_over, region_shear=region_shear,
                    region_membrane=region_membrane, region_over_solid=region_over_solid, region_rim_round=region_rim_round,
-                   verb=verb)
+                   region_membrane_unpin=region_membrane_unpin, region_clear_alpha=region_clear_alpha,
+                   region_floor_beside=region_floor_beside, region_own_outline=region_own_outline, verb=verb)
     if ask.read_on is not None or read_on_cut is not None:
         raise SystemExit(f"{verb}: --read-on names the strip as cut that the regions were read on; frames are read as they are")
     if ask.breath is not None and fps is not None:
@@ -3683,15 +3769,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help=f"with --region-mask: before it is worn in, end the mask at the crease under it — in each column whose "
                              f"lowest pixel lies on more of the figure, the darkest solid pixel {CREASE_UP} px above to {CREASE_DOWN} "
                              f"below it, the median over {2 * CREASE_SPAN + 1} columns; a column over the air is left as it is. "
-                             "--region-shrink then leaves that edge on the crease. Off by default")
+                             "--region-shrink then wears it in; with --region-over the region reaches down to the crease again in "
+                             "every cell. Off by default")
     parser.add_argument("--region-over", action="store_true",
                         help="with --region-mask: lay the region over the figure under it — what lies under its lower edge (in its "
                              f"columns and the move's reach and {REGION_AIR} px past them) is no anchor of the rim, so the lower "
                              "edge moves with the rest, and the band of it within as far is drawn over by the region's own pixels "
-                             "by their alpha and keeps its bytes where they do not land; where the region lifts, its pixels show the "
-                             "figure under it. Its soft edge goes with it beside the figure too, and its outline against the air "
-                             "with the layer. --hold-mask names pixels it leaves out (an arm): never the region's, never drawn "
-                             "over, an anchor of the rim. Off by default")
+                             "by their alpha and keeps its bytes where they do not land; the air and where the region lifts are "
+                             "drawn by the move, the figure under it showing there. Its soft edge goes with it beside the figure "
+                             "too, and its outline against the air with the layer; with --region-crease it reaches down to the "
+                             "crease in every cell. --hold-mask names pixels it leaves out (an arm): where the mask does not cover "
+                             "them never the region's, never drawn over, an anchor of the rim; where it does, they move with the "
+                             "region. Off by default")
     parser.add_argument("--region-over-solid", action="store_true",
                         help="with --region-over: of what lies under the region's lower edge only the solid pixels (alpha "
                              f"{ALPHA_SOLID} or more) are no anchor of the rim and drawn over; the rest of the figure there, not "
@@ -3713,6 +3802,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "moves as a membrane, each pixel's move the mean of its 4 neighbours' that are the figure, between the "
                              "region's own and none on the rest of the figure, and is drawn by that move instead of laid over: the "
                              "figure under the region stretches with it instead of the region sliding over it. Off by default")
+    parser.add_argument("--region-membrane-unpin", action="store_true",
+                        help="with --region-membrane: what the membrane moves is no anchor of the rim either, so the region's "
+                             "move does not fall to none at its first rows under the lower edge. Nothing without a membrane. "
+                             "Off by default")
+    parser.add_argument("--region-clear-alpha", type=int, default=None, metavar="A",
+                        help=f"with --region-membrane: a pixel under alpha A (1 to {ALPHA_SOLID - 1}) is read as clear by what "
+                             "the region moves and holds and by the membrane, its bytes kept: a speck of dust beside the figure "
+                             "holds nothing. Nothing without a membrane. No default")
+    parser.add_argument("--region-floor-beside", type=int, default=None, metavar="N",
+                        help="with --region-membrane: beside the region's columns its lower edge is the lowest pixel of its "
+                             "columns within N px of that side, not that of its nearest column alone. Nothing without a membrane. "
+                             "No default")
+    parser.add_argument("--region-own-outline", type=int, default=None, metavar="G",
+                        help="with --region-membrane: the region grows G 4-neighbour steps over the cell's solid pixels within G "
+                             "px of a clear one, above its lower edge's line and never what --hold-mask leaves out: the outline its "
+                             "mask, carried into the cell, leaves out moves with it. Nothing without a membrane. No default")
     parser.add_argument("--board", type=Path, help="write a before/after picture at the frames where the part sits lowest and highest")
 
 
@@ -3757,7 +3862,9 @@ def run(**kwargs: object) -> int:
              "region_crease": bool(kwargs.get("region_crease")), "region_over": bool(kwargs.get("region_over")),
              "region_shear": kwargs.get("region_shear"), "region_membrane": kwargs.get("region_membrane"),
              "region_over_solid": bool(kwargs.get("region_over_solid")), "region_rim_round": bool(kwargs.get("region_rim_round")),
-             "read_on_cut": kwargs.get("read_on_cut")}
+             "region_membrane_unpin": bool(kwargs.get("region_membrane_unpin")),
+             "region_clear_alpha": kwargs.get("region_clear_alpha"), "region_floor_beside": kwargs.get("region_floor_beside"),
+             "region_own_outline": kwargs.get("region_own_outline"), "read_on_cut": kwargs.get("read_on_cut")}
     if kwargs.get("frames") is not None:
         if kwargs.get("out") is None:
             raise SystemExit(f"{verb}: --frames needs --out, a new folder for the swayed frames")

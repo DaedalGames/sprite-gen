@@ -437,7 +437,7 @@ def test_the_crease_ends_the_mask_on_the_darkest_row_under_it_before_it_is_worn_
     over_air = [x for x in range(W) if part0[:, x].any() and x > 85]
     assert record['region_mask']['crease'] == [{'rows': {str(x): BOTTOM+1 for x in over_torso}, 'free_columns': len(over_air)}]
     worn = sway.sway_loop(strip_dir(tmp_path/'worn', part_figure), [PART], region_mask=mask, region_crease=True)
-    assert worn['region_mask']['mask']['box'][3] == BOTTOM + 1  # the crease: the wear leaves it where it is
+    assert worn['region_mask']['mask']['box'][3] == BOTTOM + 1 - 2  # the crease, then worn in by 2
     assert worn['region_mask']['mask']['carried_by_px'] == int(part0.sum()) + len(over_torso)
 
 
