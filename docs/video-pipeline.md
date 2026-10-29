@@ -682,15 +682,28 @@ lowercase hexadecimal digits; anything else is refused before anything is read):
 
 - **`recut`**: the regions were read on another cut of this loop's own source clip, given by
   `--read-on-cut STRIP`. It pairs the cuts when both records name the same source in `source_cut`
-  and this loop's cut holds cut cell 0's source frame at cell j. The regions' centres, a
-  `--region-mask` PNG, and a single `--hold-mask` PNG are moved pixel for pixel onto cell j by the
-  whole pixel shift derived from their crops and cell sizes taken on the frame as filmed, provided
-  every pixel lands within `RECUT_DRIFT` (1.0 px) of that shift. Each cut's crop is its
-  `source_rect` less where its anchor moved that frame before the crop. The anchor moves nothing at
-  `--anchor none`, moves frame k of a cut L frames long across by round(`wrap_dx_px` x k / L) px at
-  `--anchor body`, and lays frame k at the left and top of `padding_ltrb` plus that frame's entry of
-  `shifts_xy` at `--anchor motion` and `--anchor motion-auto`. On an unaligned loop the regions are
-  read on cell j and carried from there, while on an aligned loop they sit on the aligned cell
+  and this loop's cut holds cut cell 0's source frame at cell j. When the run starts, it finds the
+  report `video-loop` wrote for both cuts (the cut `--read-on-cut` names, and this loop's cut in
+  `--loop-dir`): a passed `sprite-gen-video-loop-report` in or above the strip's folder, matching
+  that strip's file name and cut (start and length in `cycle`) named in the strip record
+  (`cycle_drawings`). A cut whose report was written elsewhere with `--report` needs that report put
+  beside its strip. The paired frame must be in each cut as filmed, but for where its anchor moved
+  it. Before crops are read, the run is refused no-match and the loop left as it was if no report is
+  beside a cut's strip, or it belongs to another cut (the report strip's `source_cut` is not the
+  record's). Refusal also occurs if the size hold (`size_hold.applied`) or gait fallback
+  (`gait_fallback.scale_undone`) held cut frames to one size before cutting, which refuses the whole
+  cut whatever frame is paired. It also occurs if `jump_repair` omits what jump repair made, if the
+  paired frame is in `jump_repair.replaced`, `wrap_overlap.frames`, or `wrap_blend.cells`, or if one
+  of those three lists does not name its frames as whole frames. The refusal names whose records do
+  not give that frame as filmed (the cut's, given by `--read-on-cut`, or this loop's), and why. The
+  regions' centres, a `--region-mask` PNG, and a single `--hold-mask` PNG are moved pixel for pixel
+  onto cell j by the whole pixel shift derived from their crops and cell sizes taken on the frame as
+  filmed, provided every pixel lands within `RECUT_DRIFT` (1.0 px) of that shift. Each cut's crop is
+  its `source_rect` less where its anchor moved that frame before the crop. The anchor moves nothing
+  at `--anchor none`, moves frame k of a cut L frames long across by round(`wrap_dx_px` x k / L) px
+  at `--anchor body`, and lays frame k at the left and top of `padding_ltrb` plus that frame's entry
+  of `shifts_xy` at `--anchor motion` and `--anchor motion-auto`. On an unaligned loop the regions
+  are read on cell j and carried from there, while on an aligned loop they sit on the aligned cell
   matching cut cell j and are carried as `transported` carries them. A run is refused no-match if
   the clips differ, if either cut lacks recorded source frames, if this loop does not hold that
   source frame, if a record does not give where its anchor moved the frame, or if the strip
