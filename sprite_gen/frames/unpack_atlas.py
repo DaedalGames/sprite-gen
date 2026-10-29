@@ -273,6 +273,24 @@ def import_pngs(out_dir: Path, png_paths: list[Path], state_name: str, labels: l
     return import_png_groups(out_dir, [{"name": state_name, "paths": png_paths, "labels": labels}], iso)
 
 
+def loop_marks(folder: Path, count: int) -> dict[int, str]:
+    """The cells of a video-loop `cycle/` folder (one `*.strip.json` beside it, holding `count` cycle frames) that the
+    held fill made between their neighbours (`made`) and that still show the picture before them (`held`), from the
+    strip metadata's `held_fill` (docs/loop-repair.md section 7); nothing for any other folder. A cut given at
+    `--out-fps` has every cell made at its own time: its held cells alone are marked."""
+    metas = sorted(folder.parent.glob("*.strip.json")) if folder.name == "cycle" else []
+    if len(metas) != 1:
+        return {}
+    meta = json.loads(metas[0].read_text(encoding="utf-8"))
+    held = meta.get("held_fill")
+    if not isinstance(held, dict) or meta.get("cycle_frames") != count:
+        return {}
+    marks = {} if "out_fps" in meta else {int(c): "made" for c in held.get("made", [])}
+    for run in held.get("held_runs", []):
+        marks.update({c: "held" for c in range(int(run["start"]) + 1, int(run["start"]) + int(run["length"]))})
+    return marks
+
+
 def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str, Any] | None = None,
                       base_src: Path | None = None, run_dir: Path | None = None) -> dict[str, Any]:
     """Import separate PNGs as one or more curator rows (states).
@@ -562,6 +580,10 @@ def _run(args: argparse.Namespace):
                                "refs": _group_refs(sub)})
         if not groups:
             raise SystemExit(f"no PNGs in {src}")
+        for group in groups:
+            # a video-loop cut's cells: each made between its neighbours, or still the picture before it, says so on its card
+            marks = loop_marks(group["paths"][0].parent, len(group["paths"]))
+            group["labels"] = [f"{label} ({marks[k]})" if k in marks else label for k, label in enumerate(group["labels"])]
         # imported ref roles are validated fail-loud (run-contract §4). A _refs file whose
         # prefix isn't a known role (anchor/basis/guide) is malformed input — reject it
         # loudly instead of silently relabeling it as guide (No Silent Fallback).
