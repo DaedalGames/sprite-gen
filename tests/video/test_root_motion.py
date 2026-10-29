@@ -182,6 +182,24 @@ def test_video_loop_carries_the_root_motion_of_a_jump_and_retimes_its_air(tmp_pa
     assert record["poses"] == meta["held_fill"]["poses"] and record["cells"] == meta["frames"]
 
 
+@pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 10 calls of the binary at about 210 x 250, each judged: seconds on a GPU, minutes on a CPU's Vulkan driver
+def test_real_rife_makes_the_air_twice_as_long_with_no_frame_shown_again(tmp_path):
+    """The same jump through rife-ncnn-vulkan located as a cut locates it: every between made and judged, none shown
+    again, the air on its parabola."""
+    rep = _run(tmp_path, J.jump(), "real", state="jump", cycle_mode="once", air_retime=f"air={2 * J.AIR}",
+               meters_per_px=J.METERS_PER_PX)
+    meta = _meta(rep)
+    record = meta["air_retime"]
+    assert record["applied"] and record["made"] == 10 and record["shown_again"] == []
+    (air,) = meta["root_motion"]["air"]
+    T = 2 * J.AIR
+    assert air["seconds"] == pytest.approx(T, abs=1e-3)
+    assert air["apex_m"] == pytest.approx(9.81 * T * T / 8, rel=0.03)
+    first, last = air["cells"]
+    assert all(r["start"] > last or r["start"] + r["length"] <= first for r in meta["held_fill"]["held_runs"])
+
+
 def test_no_rife_leaves_the_air_as_filmed_and_says_which_motion(tmp_path, monkeypatch, capsys):
     _no_rife(monkeypatch, tmp_path)
     rep = _run(tmp_path, J.jump(), "leap", state="jump", cycle_mode="once", air_retime=f"air={2 * J.AIR}")
