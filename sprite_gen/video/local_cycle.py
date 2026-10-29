@@ -12,7 +12,9 @@ long that the window could not hold (`step_screen`), never cut longer on it:
 only a count of the steps cuts again — given (`video-loop --steps`), or read off
 the clip's own crossings (`by_steps`, sprite_gen/video/crossings.py): where the
 clip shows its steps, the cut is two of them, joined at the walk's own point,
-the smoothest seam first.
+the smoothest seam first. A cut under the gait floor is the exception: the
+clip as filmed is read two lengths on about the doubled cut's wrap
+(`loop._two_lengths`).
 """
 from __future__ import annotations
 import math

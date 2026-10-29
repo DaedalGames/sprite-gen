@@ -401,6 +401,19 @@ them fails rather than being written.
 See [loop review](loop-review.md)
 for the visual review contract and manual overrides.
 
+**Held cells: found, filled, read again: the default step of every cut.** A cut whose neighbour cells show the same
+picture (a frame shown twice or three times: a model that stalls, a rate carried to another by repeating frames)
+stops on it as it plays. `video-loop` reads each cut it makes for them (loop, one-shot, once, once-return, so every
+cut of `video-set` and of a clip from `video`) and by default makes each run of them again with RIFE's frames between
+the pose before and the pose after (`--fill-held auto`), the cut's length, beat, first and last cells and wrap kept,
+a part standing still in both kept still; a run longer than three cells, the ends of a cut played once, a loop's
+last cells and a cut drawn on twos or threes (limited animation, `held_fill.drawn`) stay as filmed. Then it reads the
+cut again. The report and the strip metadata record the held runs (first cell, how many) and the poses over the
+cells (`held_fill`); tell the person that one line: `poses/cells`, e.g. `24/27` before and `27/27` after. With no
+RIFE the cells are delivered as filmed and a warning names the motion and the install line; `--fill-held off` cuts
+as before. A cut asked for above its clip's rate (`--out-fps 60` on a 24 fps clip) is made of frames between, never
+frames shown again ([loop repair](loop-repair.md) section 7).
+
 **The fundamental period: recorded, never cut on the pixels' word.** A motion that repeats every
 P frames repeats every 2P as well, and 2P can be the better repeat: a clip drawn on twos (a new
 drawing every other frame) whose cycle is an odd number of frames shows each cycle half a drawing
@@ -413,6 +426,38 @@ far swapped; where the two legs are drawn alike (one colour of trousers, white f
 and a true cycle half a drawing late are **the same picture**. So
 `video-loop` cuts the period it always cut, and only **records** what a half or a third of it shows
 (`cycle.fundamental`, `sprite_gen/video/period.py`).
+
+**A cut under the gait floor is one step: the clip is asked for two, and the cut is named a half step
+where it gives none.** A walk or run loops on an even number of steps — two, one cycle; a loop of one
+step plays the same leg leading every time round. The gait floor (`LoopProfile.min_seconds`: walk 0.6 s,
+run 0.35 s) is the duration under which a period is one step, and the half-period guard reads it in
+whole frames, rounded, to choose among candidates: a run cut 8 frames long at 24 fps (0.33 s) is taken.
+Such a periodic cut (`--cycle auto` or `periodic`) whose steps nothing counted — no `cycle.steps`: not
+the clip's crossings, `--steps` or the held side's two lengths — is one step.
+
+Under `--anchor motion-auto` it is cut two lengths long where the clip says it holds two
+(`loop._two_lengths`). One step on, the legs are back in place with near and far swapped, and where the
+two are drawn alike (one colour of trousers) the silhouette repeats; the body's turn, the shading across
+the torso and the folds of the clothes come back only two steps on. So each length of [2L − 1, 2L + 1]
+(inside an explicit `--min-len`/`--max-len`) is cut as `--steps 1` cuts it, and about each cut's wrap
+(two frames either side of its first, `TWO_LENGTHS_AROUND`) the frames as filmed are read two lengths on
+over one length on, the same frames (`two_lengths_on`). The nearest at most **0.85**
+(`period.STEP_RATIO_MAX`, the step screen's bound for the same ratio, which the screen reads over the
+whole clip, where a run that changes its pace does not repeat) is taken where the seam gate and the seam
+pop gate pass it as they will the loop; `cycle.steps` is `{"count": 2, "by": "two-lengths", "first_cut",
+"window"}` and `cycle.two_lengths` records `first_cut`, `tried` (each length's cut: `near`, `one`,
+`ratio`, or why it was not read), `cut` and `taken`. The frames are read as filmed, not on the search's
+distances: the analysis canvas moves every frame by the drift it reads, one vertical slope over the clip,
+and a slope tilted by frames that open higher moves frames two steps apart further than one step apart
+where the body runs in place, so two lengths on read no nearer there. A drift the clip does walk only
+makes two lengths on read farther: it keeps a cut one step, never doubles one.
+
+A cut the clip gives no two — two lengths on no nearer, one length on the same picture, no window to
+cut, a gate that would not pass it — and a cut under any other anchor are kept as cut, recorded in
+`cycle.half_step` (`rule`, `state`, `seconds`, `gait_floor` in seconds and frames, `why` the steps were
+not counted, `two_steps`: twice the cut and whether the clip holds it, `two_lengths`: why the clip gave
+none) and named in a warning line (`loop.half_step`, `HALF_STEP_RULE`). `--steps 1` cuts it two lengths
+long.
 
 **The size is held before the search or cut** (`--size-hold auto`, the default). A walk or run clip filmed from its first frame only often grows or shrinks as it plays, so the frame one cycle after the first is not the first's size and the loop pops at the wrap. Under `--size-hold auto`, a walk or run cut automatically with `--anchor motion-auto` (before the cycle search) or cut by hand with `--cycle fixed` under any anchor (before the cut is read, over the whole clip) is held at its first frame's size. When a clip's height changes by 1 % or more over the clip, read one cycle on, frames are scaled back to the first frame's size about their feet. Where the size is held and the feet climb or sink by 1 % of the first frame's height or more over the clip, frames are also shifted so their feet stand on the first frame's row. This stops a receding walk's jump at the wrap from moving into place: the motion anchor's fine search corrects a climb within 28 rows over the cut but leaves the cut uncorrected when feet climb further than that, and the body anchor moves frames sideways only.
 
@@ -701,7 +746,14 @@ lowercase hexadecimal digits; anything else is refused before anything is read):
   its pixels anchored, before any repair (the receipt `video-loop` writes in its report,
   `source_projection.before_repair_pixels_sha256`), and no step held the clip's frames to one size.
   A cell the jump repair, the seam bridge, the overlapped wrap or the wrap blend made again, gave
-  way or redrew is not as filmed by its pixels; no list of those steps is read. `video-loop` now
+  way or redrew is not as filmed by its pixels; no list of those steps is read. In a cut at
+  `--out-fps` (cells each made at a time of their own, more cells than the cut has frames),
+  `cell_record` still holds one entry per cell, and each cell's `source_frame` is the frame the
+  cell is, and for a cell made between two frames the cut's frame at or before its time (the frame
+  the seam reads it as), with that frame's `anchor_move_px` and `scale`. `as_filmed` is true only
+  where the cell's pixels are that frame's pixels anchored before any repair, so a cell that
+  repeats a frame unchanged is as filmed, and a cell made between two frames is not, and
+  `video-sway --read-on-cut` does not pair it. `video-loop` now
   writes that receipt (`source_projection`) in the report of every cut but `--anchor feet` and a
   lifetime cut, so also at `--anchor motion` and `motion-auto` (`recipe`
   `motion-anchor-correction-v1` there). On a loop aligned from its cut (`cycle_align`), the aligned

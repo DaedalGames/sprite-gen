@@ -680,7 +680,7 @@ def test_video_set_hands_its_decontam_to_video_frames_and_lists_the_warning(tmp_
     monkeypatch.setattr(batch.frames_mod, "run_frames", frames_stub)
     monkeypatch.setattr(batch.loop_mod, "run_loop", lambda *a, **kw: {
         "cycle": {"length": 10, "period_global": 10, "ratio": 0.2},
-        "resampled_seam_ratio": 0.2, "n_out": 10, "gif": {"file": "loop.gif"},
+        "resampled_seam_ratio": 0.2, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 10, "gif": {"file": "loop.gif"},
         "webp": {"file": "loop.webp"}, "strip": {"path": "strip.png"}})
     monkeypatch.setattr(batch, "_staggered_start", lambda gap: None)
     still = Path(__file__).parents[1] / "fixtures" / "facing" / "left.png"

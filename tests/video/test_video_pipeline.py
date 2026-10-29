@@ -443,7 +443,7 @@ def test_run_set_runs_each_clip_once_and_tables_failures(tmp_path: Path, monkeyp
     monkeypatch.setattr(batch_mod.time, "sleep", lambda s: None)  # no real stagger waits
     monkeypatch.setattr(frames_mod, "run_frames", lambda clip, out_dir, **kw: {"fps": 24.0, "frames": 10, "alpha_zero_pct_min": 60.0, "alpha_zero_pct_max": 70.0, "keyed_dir": str(out_dir / "keyed")})
     monkeypatch.setattr(batch_mod.frames_mod, "run_frames", frames_mod.run_frames)
-    monkeypatch.setattr(batch_mod.loop_mod, "run_loop", lambda frames_dir, out_dir, **kw: {"cycle": {"length": 12, "period_global": 12, "ratio": 0.3, "review_recommended": kw["state"] == "run"}, "resampled_seam_ratio": 0.5, "n_out": 12, "gif": {"file": "x.gif"}, "webp": {"file": "x.webp"}, "strip": {"path": "x.png"}})
+    monkeypatch.setattr(batch_mod.loop_mod, "run_loop", lambda frames_dir, out_dir, **kw: {"cycle": {"length": 12, "period_global": 12, "ratio": 0.3, "review_recommended": kw["state"] == "run"}, "resampled_seam_ratio": 0.5, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 12, "gif": {"file": "x.gif"}, "webp": {"file": "x.webp"}, "strip": {"path": "x.png"}})
 
     payload = batch_mod.run_set(bases={"side": base}, states=["walk", "run", "jump"], root=tmp_path / "set", character=None, duration=6, resolution="720p", key="green", concurrency=3, force=False, gap=0.0, video_runner=fake_video)
 

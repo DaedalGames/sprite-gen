@@ -33,7 +33,8 @@ node = pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 
 HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const P = process.argv[2] + "/";
-const SOURCES = ["util.js", "store.js", "persistence.js"].map((f) => fs.readFileSync(P + f, "utf8"));
+// breathe.js 는 store.js 가 읽기 검사에 쓰는 최소·최대 키 목록·상한을 정의한다 (브라우저에서도 같이 실린다).
+const SOURCES = ["util.js", "store.js", "persistence.js", "breathe.js"].map((f) => fs.readFileSync(P + f, "utf8"));
 
 // 왕복 하나 = 새 vm 컨텍스트 하나. 여러 왕복을 node 한 프로세스에 묶어도
 // `run`·`entries`·상태 알림이 다음 왕복으로 새지 않는다.
@@ -65,7 +66,6 @@ if (input.mode === "roundtrip") {
   fs.writeFileSync(input.out, JSON.stringify(out));
 } else {
   const sb = boot();
-  vm.runInContext(fs.readFileSync(P + "breathe.js", "utf8"), sb);
   const out = input.cases.map((c) => sb.breathePattern({ breaths: c.breaths }, c.seq));
   fs.writeFileSync(input.out, JSON.stringify(out));
 }
@@ -178,6 +178,9 @@ _VALUE_SHAPES = {
 # 보므로 `0`/`""`/`[]` 가 서로 **동치**이고, 그 칸들은 통과해도 아무것도 보증하지 못한다.
 # 대신 의미 있는 계약(유효한 해부가 왕복에서 그대로 살아남는가)을 아래 전용 테스트로 건다.
 MATRIX_KEYS = ["depth", "breaths", "lag", "rigid_row"]
+# 세기 대신 가로·세로 최소·최대로 적은 줄 (2026-10-29) — 같은 값 모양 매트릭스를 네 키에 돌린다.
+RANGE_KEYS = ["width_min", "width_max", "height_min", "height_max"]
+RANGE_ROW = {"width_min": 0.0, "width_max": 0.06, "height_min": -0.05, "height_max": 0.0}
 
 
 def _sidecar_for(key, shape):
@@ -190,12 +193,15 @@ def _sidecar_for(key, shape):
                         "rigid_source": "neck", "basis_row": 12, "torso_half": 9.0,
                         "max_half": 11.0, "face": None, "warnings": [],
                         "fingerprint": "pixel:0:deadbeef"}}
+    if key in RANGE_KEYS:
+        del base["depth"]
+        base.update(RANGE_ROW)
     if shape == "omitted":
         base.pop(key)
     elif shape == "null":
         base[key] = None
     elif shape == "string":
-        base[key] = "0.08" if key in ("depth", "lag") else "3"
+        base[key] = "0.08" if key in ("depth", "lag") else "0.03" if key in RANGE_KEYS else "3"
     elif shape in ("empty-string", "empty-list"):
         base[key] = "" if shape == "empty-string" else []
     else:
@@ -256,7 +262,7 @@ def test_the_curator_agrees_with_the_bake_on_every_value_shape(tmp_path):
     상태가 안 샌다. 칸은 하나도 줄이지 않고, 갈린 칸은 제 이름(`key-shape`)으로
     전부 보고한다."""
     cells = [(key, shape, _sidecar_for(key, shape))
-             for key in MATRIX_KEYS for shape in sorted(_VALUE_SHAPES)]
+             for key in MATRIX_KEYS + RANGE_KEYS for shape in sorted(_VALUE_SHAPES)]
     results = _roundtrips([_matrix_run(sidecar) for _, _, sidecar in cells], tmp_path)
     assert len(results) == len(cells)
 
@@ -292,3 +298,32 @@ def test_a_valid_anatomy_survives_the_round_trip_verbatim(tmp_path):
     assert saved.get("anatomy") == anatomy, (
         f"왕복이 해부를 바꿨다 — 신선도 판정의 근거가 사라진다\n"
         f"  전={anatomy}\n  후={saved.get('anatomy')}")
+
+
+# 최소·최대 줄과 세기 줄의 나머지 칸 — 값 모양 매트릭스가 못 만드는 조합. 앞 셋은 굽기가 받는 줄이라 왕복 뒤에도
+# 굽기가 쓰는 값이 같아야 하고(세기 줄의 depth_x·영역 손잡이도 되써야 한다), 뒤는 굽기가 거부하는 줄이라 원본 그대로 두고 알린다.
+_RANGE_CELLS = {
+    "depth-x-and-band": {"depth": 0.06, "depth_x": 0.12, "breaths": 2, "lag": 0.1, "rigid_row": 12,
+                         "axis_x": 20, "torso_half": 6},
+    "smooth-range": {"mode": "smooth", "breaths": 2, **RANGE_ROW},
+    "range-partial": {"width_max": 0.05, "breaths": 2, "lag": 0.0},
+    "range-bool": {**RANGE_ROW, "width_max": True, "breaths": 2},
+    "range-flipped": {**RANGE_ROW, "width_min": 0.07, "breaths": 2},
+    "range-with-depth": {**RANGE_ROW, "depth": 0.06, "breaths": 2},
+    "range-with-depth-x": {**RANGE_ROW, "depth_x": 0.0, "breaths": 2},
+    "range-on-round-chest": {"chest_round": 0.05, "breaths": 2, "width_max": 0.05},
+}
+
+
+@node
+def test_the_curator_agrees_with_the_bake_on_min_max_rows(tmp_path):
+    results = _roundtrips([_matrix_run(sidecar) for sidecar in _RANGE_CELLS.values()], tmp_path)
+    failures = []
+    for (name, sidecar), got in zip(_RANGE_CELLS.items(), results):
+        try:
+            _check_matrix_cell(name, "cell", sidecar, got)
+        except Exception as exc:
+            failures.append(f"[{name}] {type(exc).__name__}: {exc}")
+    assert not failures, "\n\n".join(failures)
+    accepted = [name for name, sidecar in _RANGE_CELLS.items() if _bake_verdict(sidecar)[0]]
+    assert accepted == ["depth-x-and-band", "smooth-range", "range-partial"], accepted

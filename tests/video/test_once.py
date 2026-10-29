@@ -176,7 +176,7 @@ def test_batch_sends_terminal_pin_and_does_not_reuse_a_changed_pin(tmp_path, mon
     def loop_stub(frames, out, **kw):
         assert kw["cycle_mode"] == "once" and kw["anchor"] == "none"
         return {"cycle": {"kind": "once", "length": 24, "period_global": None, "ratio": 0},
-                "resampled_seam_ratio": None, "n_out": 24, "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s"}}
+                "resampled_seam_ratio": None, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 24, "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s"}}
 
     monkeypatch.setattr(batch.canvas_mod, "run_canvas", canvas_stub)
     monkeypatch.setattr(batch.frames_mod, "run_frames", frames_stub)

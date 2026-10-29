@@ -569,13 +569,19 @@ def test_the_mirrored_limits_are_the_same_numbers():
     from sprite_gen.curate import curation as C
 
     js = (SRC / "breathe.js").read_text(encoding="utf-8")
+    from sprite_gen.effects.breathe import WAVE_PEAK
     for name, want in (("BREATHE_DEPTH_MAX", C.BREATHE_DEPTH_MAX),
                        ("BREATHE_BREATHS_MAX", C.BREATHE_BREATHS_MAX),
-                       ("BREATHE_LAG_MAX", C.BREATHE_LAG_MAX)):
+                       ("BREATHE_LAG_MAX", C.BREATHE_LAG_MAX),
+                       ("BREATHE_RANGE_MAX", C.BREATHE_RANGE_MAX),
+                       ("BREATHE_WAVE_PEAK", WAVE_PEAK)):
         m = re.search(rf"const {name} = ([\d.]+);", js)
         assert m, f"{name} 이 미러에 없다"
         assert float(m.group(1)) == float(want), \
             f"{name}: py={want} js={m.group(1)} — 갈리면 저장은 되는데 안 구워진다"
+    keys = re.search(r"const BREATHE_RANGE_KEYS = \[(.*?)\];", js)
+    assert keys, "최소·최대 키 목록이 미러에 없다"
+    assert [k.strip().strip('"') for k in keys.group(1).split(",")] == list(C.BREATHE_RANGE_KEYS)
 
     retired = re.search(r"const RETIRED_BREATHE_KEYS = \[(.*?)\];",
                         (SRC / "store.js").read_text(encoding="utf-8"))
