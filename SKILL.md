@@ -133,6 +133,8 @@ For attack repeat coverage, observed one-shot returns and structured loop failur
 
 Every cut is read for held cells (neighbour cells showing the same picture), and by default they are filled with RIFE's frames between and the cut read again (`video-loop --fill-held auto`; `off` cuts as filmed). Tell the user each motion's poses over cells in one line from `held_fill` (`poses/cells`, before and after, e.g. `24/27` to `27/27`). A cut wanted above its clip's rate is given with `--out-fps`, frames between, never repeats. Details in [loop repair](docs/loop-repair.md#7-held-cells-a-picture-shown-again-and-a-cut-at-a-higher-rate).
 
+A move played once (a jump, a vault: `once`, `once-return`, `one-shot`) carries its root motion in the strip sidecar by default, the cells unchanged: `root_motion` gives each cell's root (the body's mass centre, cell px), what it stands on, and each air's take-off, landing, seconds and apex; a game reads `root` to place each cell and moves the body on its own physics. A move cut out of a longer motion is named with `video-loop --cycle once --start S --length L`, a hand on something the clip does not draw with `--contact hand=A:B`, metres with `--meters-per-px`. To give the air its own length, gravity and speed, `--air-retime gravity=G,air=T,speed=V` redraws it on that parabola with RIFE's frames between; contacts and the take-off and landing stay as filmed. Tell the user each air in one line, its seconds and its apex (the summary's `air`, e.g. `air 0.42 s, apex 0.21 m`). Details in [video-pipeline](docs/video-pipeline.md#root-motion--a-cut-played-once-where-the-body-is-what-it-stands-on-its-air).
+
 A pinned idle or attack whose last frame the video model drew again has its wrap blended by default (`video-loop --wrap-blend auto`, a redraw only; `off` cuts as filmed), with details in [loop repair](docs/loop-repair.md#6-the-redrawn-wrap-a-pinned-clip-whose-last-frame-the-model-drew-again).
 
 Scene creation consumes finished assets and remains optional. Asset metadata owns frames, native durations and anchors; scene specs own placement, scale, playback rate, planes, camera and light. Measure stride only with declared same-foot contact and an isolated foot ROI; unknown contact stays unverified. Apply only a verified report for the exact selected asset with an explicit scene direction. Never infer walking direction from the bottommost silhouette, reverse frames or change source assets to make a scene work.
@@ -143,7 +145,7 @@ Scene creation consumes finished assets and remains optional. Asset metadata own
 
 ## RIFE for walk and run loops
 
-Without RIFE, tell the user which loops went unrepaired and which motions' held cells were not filled (`held_fill.unmade`, or `--out-fps` not met), and offer the install; after it, cut those loops again and run `video-cycle-align`. [loop-repair](docs/loop-repair.md).
+Without RIFE, tell the user which loops went unrepaired, which motions' held cells were not filled (`held_fill.unmade`, or `--out-fps` not met) and which airs were not retimed (`air_retime.why`), and offer the install; after it, cut those loops again and run `video-cycle-align`. [loop-repair](docs/loop-repair.md).
 
 ## Contracts and advanced tools
 
