@@ -401,6 +401,19 @@ them fails rather than being written.
 See [loop review](loop-review.md)
 for the visual review contract and manual overrides.
 
+**Held cells: found, filled, read again: the default step of every cut.** A cut whose neighbour cells show the same
+picture (a frame shown twice or three times: a model that stalls, a rate carried to another by repeating frames)
+stops on it as it plays. `video-loop` reads each cut it makes for them (loop, one-shot, once, once-return, so every
+cut of `video-set` and of a clip from `video`) and by default makes each run of them again with RIFE's frames between
+the pose before and the pose after (`--fill-held auto`), the cut's length, beat, first and last cells and wrap kept,
+a part standing still in both kept still; a run longer than three cells, the ends of a cut played once, a loop's
+last cells and a cut drawn on twos or threes (limited animation, `held_fill.drawn`) stay as filmed. Then it reads the
+cut again. The report and the strip metadata record the held runs (first cell, how many) and the poses over the
+cells (`held_fill`); tell the person that one line: `poses/cells`, e.g. `24/27` before and `27/27` after. With no
+RIFE the cells are delivered as filmed and a warning names the motion and the install line; `--fill-held off` cuts
+as before. A cut asked for above its clip's rate (`--out-fps 60` on a 24 fps clip) is made of frames between, never
+frames shown again ([loop repair](loop-repair.md) section 7).
+
 **The fundamental period: recorded, never cut on the pixels' word.** A motion that repeats every
 P frames repeats every 2P as well, and 2P can be the better repeat: a clip drawn on twos (a new
 drawing every other frame) whose cycle is an odd number of frames shows each cycle half a drawing
