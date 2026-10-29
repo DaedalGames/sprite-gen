@@ -37,7 +37,11 @@ shows its two sides of feet are its legs — no foot planted on the ground slide
 upper body does not rock over them — so the crossings mark cycles and the cut stands on the same word; labelled the
 side view, the order is not read. A side walk lifting its swing foot draws one foot lower and then the other too, but
 its planted foot passes under the body: never read so, whatever its label; nor a picture rocked on its feet, nor feet
-drawn level. Nor does the order stand a cut the search kept where none of the clip's two-step cuts closes.
+drawn level. Nor does the order stand a cut the search kept where none of the clip's two-step cuts closes. A tail whose
+tip dips into the foot band beside the feet is never read as a foot: drawn over no column anything stands on, the
+frames whose one side it is are left out, and the order says what the walker drawn without it says — two steps a cycle
+of the walker whose feet meet once a cycle, one step an interval of one whose feet meet once a step (never cut one step
+unnamed), nothing of a side walk.
 
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
@@ -158,7 +162,7 @@ def _outward(k: float, *, cycle: float, bob: int = 3, whole: bool = False, arm: 
     return im
 
 
-def _apart(k: float, *, cycle: float, rock: float = 0, slide: bool = False) -> Image.Image:
+def _apart(k: float, *, cycle: float, rock: float = 0, slide: bool = False, each_step: bool = False) -> Image.Image:
     """A walker seen from the front whose feet stay apart: the foot stepping toward the camera is drawn lower, up to 3 px
     under the ground and the other as far over it, so the foot drawn nearer changes sides once a step; the right foot,
     drawn higher, swings in to meet the left over it and back, so the feet meet on the screen once a cycle, briefly, and
@@ -167,21 +171,36 @@ def _apart(k: float, *, cycle: float, rock: float = 0, slide: bool = False) -> I
     `rock`: its feet drawn level and still, the whole picture rocked that many degrees either way about its feet once a
     cycle, one foot drawn lower and then the other with no step. `slide`: the right foot swings in to meet the left as
     both stand level on the ground and back as it is drawn lower, planted, sliding along the ground as only a foot seen
-    from the side does."""
+    from the side does. `each_step`: the left foot too swings in to meet the right while it is drawn higher, so the
+    feet meet once a step."""
     ph = 2 * math.pi * k / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     x, y = 90, 40
     drop = 0 if rock else round(3 * math.sin(ph))
     inward = 0 if rock else 10 * max(0.0, -math.cos(ph)) ** 4 if slide else 10 * max(0.0, math.sin(ph)) ** 2
+    outward = 10 * max(0.0, -math.sin(ph)) ** 2 if each_step else 0
     swing = ARMS_IN * math.sin(ph)
     d.rectangle((x + 14 - swing - 4, y + 34, x + 14 - swing + 4, y + 72), fill=(150, 150, 150, 255))
-    for lx, sole, t in ((x + 6, GROUND + drop, 0), (x + 22 - inward, GROUND - drop, 1)):
+    for lx, sole, t in ((x + 6 + outward, GROUND + drop, 0), (x + 22 - inward, GROUND - drop, 1)):
         d.rectangle((lx - 5, y + 80, lx + 5, sole), fill=(60 + t, 60 + t, 70 + t, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
     d.rectangle((x + 14 + swing - 4, y + 34, x + 14 + swing + 4, y + 72), fill=(225, 225, 225, 255))
     return im.rotate(rock * math.sin(ph), resample=Image.Resampling.NEAREST, center=(x + 14, GROUND)) if rock else im
+
+
+
+def _dipping_tail(draw, *, hip: tuple[int, int], reach: int, beat: float = 17):
+    """`draw` with a tail from `hip`, on the body, to a tip `reach` px left of it, rising and falling 8 px either way on
+    a beat of its own (`beat` frames): the tip dips into the foot band a third of the time or so, never as low as the
+    feet nor over a column they stand on."""
+    def drawn(k: float) -> Image.Image:
+        im = draw(k)
+        tip = (hip[0] - reach, GROUND - 12 + round(8 * math.sin(2 * math.pi * k / beat)))
+        ImageDraw.Draw(im).line((hip, tip), fill=(180, 120, 40, 255), width=6)
+        return im
+    return drawn
 
 
 def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0, leg_tone: int | None = None,
@@ -571,6 +590,21 @@ def test_a_side_walk_whose_swing_foot_lifts_is_never_cut_on_the_order_its_feet_a
     if said is not None:
         assert said["cycles"] is False and said["order"]["says"] is None and "under the body" in said["order"]["why"]
     assert report["cycle"]["cut_witness"].get("by") != ["order"]
+
+
+@pytest.mark.slow
+def test_a_front_walk_whose_feet_meet_once_a_step_its_tail_dipping_into_the_foot_band_is_never_cut_one_step_unnamed(tmp_path):
+    """Seen from the front, the feet apart, each swinging in to meet the other while it is drawn higher: the feet meet
+    on the screen once a step, every 15 frames of a 30-frame cycle, and the foot drawn nearer changes sides once an
+    interval. A tail's tip dips into the foot band beside the feet on a beat of its own. Labelled the front view, its
+    crossings are never read as cycles, the order never stands a cut shorter than the cycle, and no cut under a cycle is
+    handed out unnamed."""
+    walker = _dipping_tail(lambda k: _apart(k, cycle=30, each_step=True), hip=(92, 100), reach=28)
+    report = _cut(tmp_path / "out", _keyed(tmp_path, walker), "--view", "front")
+    _not_silent(report, 30)
+    c = report["cycle"]
+    assert (c["step_count"].get("cycles") or {}).get("cycles") is not True
+    assert c["cut_witness"].get("by") != ["order"] or abs(c["length"] - 30) <= 1.5, c["cut_witness"]
 
 
 @pytest.mark.slow
@@ -1238,6 +1272,18 @@ def test_a_lowest_row_on_the_frames_last_row_holds_the_word():
     assert word["says"] is None and word["edge"] == 1 and f"the frame's last row in 1 of {FRAMES} frames" in word["why"]
 
 
+def test_a_cut_of_a_body_whose_top_line_holds_still_says_why_whatever_its_length():
+    """The walker whose feet stay apart, its body still, a cycle 30 frames: its top line holds on the screen, and its
+    lowest row (the foot drawn nearer, lower) rises and falls once a step. Read over its feet on cuts of 10 to 46
+    frames, the line rises and falls as the lowest row does, and none of it is the top line's own: each cut says why
+    (the parent engine stopped there, dividing by that none, on cuts of 13, 17, 25, 26, 34 and 35 frames)."""
+    frames = [_apart(k, cycle=30) for k in range(FRAMES)]
+    signals = {**legs.strike_signals(frames), **legs.body_signals(frames)}
+    words = {length: local_cycle.cut_word(signals, length) for length in range(10, 47)}
+    still = [length for length, word in words.items() if "its top line holding still" in (word.get("why") or "")]
+    assert still == [25, 26, 34, 35] and all(words[length]["says"] is None for length in still)
+
+
 # Walkers moved or zoomed with the whole picture, by their interval between crossings d: the side walker whose legs are
 # drawn alike and wide, its crossings its steps (23 frames), and the walker seen from behind whose feet meet once a cycle
 # (17.5); held still, carried up and down whole (feet and all, on the walk's beat), or rising and falling on its legs
@@ -1526,6 +1572,38 @@ def test_the_order_the_feet_are_drawn_in_witnesses_nothing_where_the_clip_does_n
     passing under the body; feet drawn level say no order. None says a word, each says why."""
     word = local_cycle.order_word([legs.feet_order(frames(k)) for k in range(FRAMES)], 23)
     assert word["says"] is None and why in word["why"], word
+
+
+@pytest.mark.parametrize("each_step, span, says", [(False, 30, "two steps"), (False, 15, "one step"),
+                                                    (True, 15, "one step")])
+def test_a_tail_whose_tip_dips_into_the_foot_band_is_never_read_as_a_foot(each_step, span, says):
+    """The walker whose feet stay apart, a cycle 30 frames, its feet meeting once a cycle or once a step (`each_step`),
+    with a tail whose tip dips into the foot band beside them: there the band's widest gap parts the tail from both
+    feet, and the tail read as a foot puts the foot drawn lower on the side it is not, then back (the parent engine
+    read it so, and the order said nothing of the walker whose feet meet once a cycle). The tail is drawn over no column
+    anything stands on: the frames whose one side it is are not read apart (`off_ground`), no change is counted on
+    them, and the order says what the walker drawn without it says — two steps in a cycle, one step in an interval of
+    the walker whose feet meet once a step, never two."""
+    walker = lambda k: _apart(k, cycle=30, each_step=each_step)  # noqa: E731
+    order = [legs.feet_order(_dipping_tail(walker, hip=(92, 100), reach=28)(k)) for k in range(FRAMES)]
+    tail = [k for k, o in enumerate(order) if o["apart"] and o["left"][1] < 80]
+    word = local_cycle.order_word(order, span)
+    assert (word["says"] == "two steps") == (says == "two steps"), word
+    assert tail and word["off_ground"] == tail and not {k for change in word["changes"] for k in change} & set(tail)
+    plain = local_cycle.order_word([legs.feet_order(walker(k)) for k in range(FRAMES)], span)
+    assert word["says"] == plain["says"] == says and "off_ground" not in plain, (word, plain)
+
+
+def test_a_side_walk_whose_tail_dips_into_the_foot_band_is_never_read_on_its_tail():
+    """The side walk lifting its swing foot, its planted foot passing under the body, with a tail whose tip dips into
+    the foot band behind it: the tail read as a foot moves the band's parting and the feet's distance apart with it
+    (the parent engine said nothing of it all the same). Its frames are not read apart (`off_ground`), and the order
+    says nothing on the planted foot passing under the body, as of the walk drawn without the tail."""
+    walker = lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, lift=6)  # noqa: E731
+    order = [legs.feet_order(_dipping_tail(walker, hip=(92, 90), reach=40)(k)) for k in range(FRAMES)]
+    tail = [k for k, o in enumerate(order) if o["apart"] and o["left"][1] < 70]
+    word = local_cycle.order_word(order, 23)
+    assert tail and word["off_ground"] == tail and word["says"] is None and "under the body" in word["why"], word
 
 
 @pytest.mark.parametrize("verdict", ["held_verdict", "step_verdict"])

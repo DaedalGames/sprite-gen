@@ -1389,7 +1389,12 @@ own". Where `less_bands` is under the largest of `BOB_OWN` (0.3) times `beat`, t
 less as much of the zoom as its band {a}% to {b}% of its height below its top reads, its top line's
 rise and fall twice an interval is {x} rows of {beat} ({percent}), {ratio} of the {less_lowest} left
 against the lowest row (at least 30%, {floor} rows and 0.6): the picture may zoom with the body, and the
-body's own is not told from it". Since every band's `less` is `less_lowest` times (1 - `reads`), this
+body's own is not told from it". Where `beat` is zero, as for a body whose top line holds still on the
+screen while only its lowest row rises and falls (a body that does not rise and fall whose foot drawn
+nearer is drawn lower each step), `{percent}` now reads "its top line holding still"
+(`local_cycle._share`). What the witness says is unchanged; before, `video-loop` stopped there on a
+division by zero.
+Since every band's `less` is `less_lowest` times (1 - `reads`), this
 hold catches every band seen that moves on the beat (its `reads` over 0.4): the body's own is witnessed
 only where every band seen holds still on the beat and what is left is still at least 30% of `beat` and
 over the floor. Otherwise `says` `"cycles"`. A body rising and falling on its legs leaves its planted
@@ -1588,7 +1593,16 @@ empty run the mean column of the upper half of the body lies. From the front, th
 nearer the viewer is drawn lower, and the nearer foot changes sides once a step, twice a cycle. Counted over a
 crossing interval or a cut, those changes say how many steps it holds. The view's label is not taken for it,
 because a generated walk's label may be wrong: the clip must show that its two sides of feet are its two legs, or
-nothing is witnessed. `local_cycle.order_word(order, span)` tests the frames across a span through a sequence of
+nothing is witnessed. Before its gates, `local_cycle.order_word(order, span)` leaves out
+(`local_cycle._off_ground(order)`) every frame whose feet are read apart but either of whose two sides (its `left` or
+`right` contact columns) shares or touches no column of anything standing on the lowest row (`ground`, the runs on
+the lowest rows) in any frame of the clip, treating those frames as not seen apart. A foot is drawn over the ground
+the walk stands on; a tail whose tip dips into the foot band beside the feet parts the band at its widest gap from
+both feet and, read as a foot, puts the foot drawn lower on the side it is not and back again, changes of side that
+no foot makes and that could count half a cycle as a whole where previously only subsequent gates held it by chance.
+A foot lifted over columns where nothing ever stands is left out with those frames; the order then reads fewer
+frames, never more.
+`local_cycle.order_word(order, span)` tests the frames across a span through a sequence of
 gates in order: the feet must be seen apart in at least `legs.FEET_APART_SHARE` (20 %) of the frames; the depth's
 swing (10th to 90th percentile) must reach at least `ORDER_ROWS` (2) rows and `legs.REACH_MIN` (0.015) of the
 height, or the feet are drawn level; each frame's lower side is read where one foot is at least an eighth of the
@@ -1602,8 +1616,10 @@ swing times `ORDER_REACH`, 0.75, of the height, over the feet's distance apart),
 feet draws one foot lower and then the other. Then at least three changes are required, and their rate over the
 span (the span over the mean distance between changes) must fall within `ORDER_SLACK` (0.2) of two, four, or one,
 with no two changes more than twice their mean apart (`ORDER_WORDS`), giving `"two steps"`, `"four steps"`, or
-`"one step"`, or null with `why`. The record keeps `apart`, `swing`, `floor`, `changes`, `slides`, `spacing`,
-`travel`, `sway`, `tilt`, `per`, `says`, and `why`. It is not read from the side (`--view side`,
+`"one step"`, or null with `why`. The record keeps `apart` (the share of frames seen apart after leaving those frames
+out), `swing`, `floor`, `changes`, `slides`, `spacing`, `travel`, `sway`, `tilt`, `per`, `says`, `why`, and
+`off_ground` (the list of frames left out, present only where any frame is left out).
+It is not read from the side (`--view side`,
 `local_cycle.SIDE_VIEW`), where the two sides of the feet are the front foot and the back foot rather than two
 legs. In `local_cycle.read_cycles(..., order=None)`, `video-loop` passes `order=[legs.feet_order(f) for f in
 frames]`. After the foot cue's refusal and the body's word, where the body does not witness two steps an interval
@@ -1616,6 +1632,8 @@ from the side). A diagonal walk whose feet pass each other on the screen, one fo
 other passing it on either side, shows the same changes a side walk does (a planted foot sliding under the body
 past the other), and the order does not witness it: its crossings stay on steps or its cut is held, named. A side
 walk is never read on the order, and reading which foot passes in front of which on the screen is not done here.
+As a named limit, a tail hanging over the columns the feet stand on is still read as a foot; the gates after the
+reading (the sliding check, the ground travelled, the upper body's sway) are what hold it.
 
 **Choosing the cut.**
 

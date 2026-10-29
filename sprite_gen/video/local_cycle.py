@@ -111,7 +111,11 @@ SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as ne
 # to p90, against the swing over the feet's distance apart, at ORDER_REACH of the body's height over them): a picture
 # rocking on its feet draws one foot lower and then the other. Then the changes' rate over the span, within
 # ORDER_SLACK of two, four or one, no two changes further apart than two of their mean, says two steps, four or one;
-# from the side (SIDE_VIEW) it is not read.
+# from the side (SIDE_VIEW) it is not read. Before all of it, a foot is drawn over the ground the walk stands on: a
+# frame either of whose two sides is drawn over no column anything stands on the lowest row of in any frame of the clip
+# (`ground`) is not read apart (`_off_ground`) — a tail's tip dipping into the foot band, read as a foot, would change
+# the side drawn lower as no foot does; a foot lifted where none ever stands is left out with it. A tail hanging over
+# the columns the feet stand on is still read as a foot: the gates above are what hold it.
 ORDER_ROWS = 2
 ORDER_TRAVEL = 0.8
 ORDER_SWAY = 0.5
@@ -695,6 +699,11 @@ def over_feet(signals, interval):
     return lines[over], over
 
 
+def _share(rows, beat):
+    """`rows` as a share of the top line's rise and fall twice an interval (`beat`, `own_beat`), for a why: or, where
+    that is none, the top line holding still on the screen."""
+    return f"{rows/beat:.0%}" if beat else "its top line holding still"
+
 def bob_word(signals, interval, *, feet=False):
     """Whether the body rises and falls twice an interval `interval` frames long (`read_cycles`), read off `signals`
     (`legs.strike_signals` with `legs.body_signals`) without telling the legs apart. Its top line (`top`, in pixel rows)
@@ -758,7 +767,7 @@ def bob_word(signals, interval, *, feet=False):
     if beat['less_lowest'] < max(BOB_OWN*beat['beat'], floor):
         return {**word, 'says': None, 'why': f"its lowest row rises and falls with it: less the lowest row's, its top line's rise "
                                              f"and fall twice an interval is {beat['less_lowest']:.1f} rows of {beat['beat']:.1f} "
-                                             f"({beat['less_lowest']/beat['beat']:.0%}; at least {BOB_OWN:.0%} and {floor:.1f} "
+                                             f"({_share(beat['less_lowest'], beat['beat'])}; at least {BOB_OWN:.0%} and {floor:.1f} "
                                              "rows): the picture moves with the body, and the body's own is not told from it"}
     if beat['less_bands'] is None:
         return {**word, 'says': None, 'why': f"no band of its upper body would show the picture zooming: zoomed in as far as "
@@ -771,7 +780,7 @@ def bob_word(signals, interval, *, feet=False):
         return {**word, 'says': None, 'why': f"its upper body's width changes with it: less as much of the zoom as its band "
                                              f"{a:.0%} to {b:.0%} of its height below its top reads, its top line's rise and fall "
                                              f"twice an interval is {beat['less_bands']:.1f} rows of {beat['beat']:.1f} "
-                                             f"({beat['less_bands']/beat['beat']:.0%}), {beat['less_bands']/beat['less_lowest']:.2f} "
+                                             f"({_share(beat['less_bands'], beat['beat'])}), {beat['less_bands']/beat['less_lowest']:.2f} "
                                              f"of the {beat['less_lowest']:.1f} left against the lowest row (at least "
                                              f"{BOB_OWN:.0%}, {floor:.1f} rows and {BOB_SCALE:g}): the picture may zoom with the "
                                              "body, and the body's own is not told from it"}
@@ -802,17 +811,28 @@ def _travel(order):
     return widest
 
 
+def _off_ground(order):
+    """The frames whose feet are read apart but either of whose two sides is drawn over no column anything stands on
+    the lowest row of (`ground`) in any frame of the clip: a tail's tip dipping into the foot band, say."""
+    ground = [part for o in order for part in o['ground']]
+    return [k for k, o in enumerate(order)
+            if o['apart'] and not all(any(_touch(o[side], part) for part in ground) for side in ('left', 'right'))]
+
+
 def order_word(order, span):
     """What the order the feet are drawn in (`order`, per frame: `legs.feet_order`) says of `span` frames — a crossing
     interval (`read_cycles`) or a cut (`cut_word`): `says` `two steps`, `four steps` or `one step` where the clip shows
     its two sides of feet are two legs and the side drawn lower changes at that rate (ORDER_WORDS, within ORDER_SLACK),
     else None with why (module notes before ORDER_ROWS). Returns the record: `apart` (the share of frames whose feet are
-    seen apart), `swing` (the depth's p10 to p90, in rows), `floor`, and where read `changes` (frames between which the
-    lower side changes), `slides` (those whose contacts touch), `spacing` (the feet's median distance apart) and
-    `travel` (`_travel`), in px, `sway` and `tilt` (the sway a tilt would need), `per` (changes per span)."""
+    seen apart, less `off_ground`: where any are, the frames read apart with a side drawn over no ground the clip stands
+    on, `_off_ground`), `swing` (the depth's p10 to p90, in rows), `floor`, and where read `changes` (frames between
+    which the lower side changes), `slides` (those whose contacts touch), `spacing` (the feet's median distance apart)
+    and `travel` (`_travel`), in px, `sway` and `tilt` (the sway a tilt would need), `per` (changes per span)."""
+    off = _off_ground(order)
+    order = [{**o, 'apart': False} if k in off else o for k, o in enumerate(order)]
     seen = [o for o in order if o['apart']]
     apart = len(seen)/len(order) if order else 0.0
-    word = {'apart': round(apart, 3)}
+    word = {'apart': round(apart, 3), **({'off_ground': off} if off else {})}
     if apart < legs_mod.FEET_APART_SHARE or len(seen) < 3:
         return {**word, 'says': None, 'why': f'the feet are seen apart in {apart:.0%} of the frames (from '
                                               f'{legs_mod.FEET_APART_SHARE:.0%}): the order they are drawn in is not read'}
