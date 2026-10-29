@@ -706,14 +706,19 @@ def body_wrap_offset(frames: list[Image.Image], *, band: float = BODY_ANCHOR_BAN
     return min(range(-search, search + 1), key=cost)
 
 
+def ramp_offset(wrap_dx: int, k: int, length: int) -> int:
+    """How far across the ramp of a cycle `length` frames long moves its frame k (`ramp_frames`): round(wrap_dx * k / L)."""
+    return int(round(wrap_dx * k / length))
+
+
 def ramp_frames(frames: list[Image.Image], wrap_dx: int) -> list[Image.Image]:
-    """Shift frame k by round(wrap_dx * k / L) so the cycle's end returns to its start."""
+    """Shift frame k by round(wrap_dx * k / L) (`ramp_offset`) so the cycle's end returns to its start."""
     L = len(frames)
     if wrap_dx == 0 or L < 2:
         return frames
     out = []
     for k, im in enumerate(frames):
-        dx = int(round(wrap_dx * k / L))
+        dx = ramp_offset(wrap_dx, k, L)
         if dx == 0:
             out.append(im)
             continue
