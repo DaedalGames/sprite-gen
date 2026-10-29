@@ -33,8 +33,9 @@ is judged as the frames the alignment makes are (`align.measure_made`, `faults`)
 sides of it (`still_kept`: a foot planted, a hand on a ledge), which must stand where it stood, and for a picture of its
 own (`same_picture`, `held`): one that shows the picture of either frame it is made between, or of the cell before it,
 is no frame between but a held cell again. A frame refused is made again at another fraction of RETIME_T within half a
-cell of its own time, else the run is kept as filmed and says why. A run is made whole or kept whole: half made it would
-step back.
+cell of its own time, else the run is kept as filmed and says why. One refused as `held` is made again only on the side
+away from the picture it showed, and not again where it showed both: the frames between run from one pose to the next,
+so one nearer that picture shows it too. A run is made whole or kept whole: half made it would step back.
 
 `upsample` gives a cut at a rate above its own (`--out-fps`) its frames between, at their own times, judged as the
 fill's are, never a frame shown again; a cell where both frames beside its time show one picture (a hold kept) is that
@@ -164,16 +165,17 @@ def judge(frame: Image.Image, a: Image.Image, b: Image.Image, t: float, *, reads
           before: Image.Image | None = None) -> tuple[dict[str, Any], list[str]]:
     """A frame made between `a` and `b` at `t`: the alignment's measure and faults (`align.measure_made`, `faults`),
     `contact` where a part standing still on both sides does not stand where it stood (`still_kept`), and `held` where
-    it shows the same picture as `a`, `b` or the cell delivered `before` it (`same_picture`): no frame between, but a
-    held cell again."""
+    it shows the same picture as `a`, `b` or the cell delivered `before` it (`same_picture`; which of them, `shows`): no
+    frame between, but a held cell again."""
     from sprite_gen.video.align import measure_made  # align imports loop, which imports this module
 
     measure = measure_made(frame, a, b, t, reads=reads)
     contact = still_kept(frame, a, b)
-    held = same_picture(frame, (a, b) if before is None else (a, b, before))
+    shows = [name for name, other in (("a", a), ("b", b), ("before", before))
+             if other is not None and same_picture(frame, (other,))]
     wrong = (faults(measure) + (["contact"] if contact["reads"] and contact["kept"] < STILL_KEPT_MIN else [])
-             + (["held"] if held else []))
-    return {**measure, "contact": contact}, wrong
+             + (["held"] if shows else []))
+    return {**measure, "contact": contact, "shows": shows}, wrong
 
 
 def _made(interpolate: rife_mod.Interpolate, a: Image.Image, b: Image.Image, t: float, window: tuple[float, float], *,
@@ -181,18 +183,28 @@ def _made(interpolate: rife_mod.Interpolate, a: Image.Image, b: Image.Image, t: 
     """The frame between `a` and `b` at `t`, or at the fraction of RETIME_T nearest it inside `window` that is made
     with no fault (`judge`, `before` the cell delivered before it, None where that is `a`) and, made only off its time,
     with its ghost band under RETIME_WINDOW_MAX in every window (align's bar for a frame made again at another
-    fraction); None and what each try was refused for, where none is."""
+    fraction); None and what each try was refused for, where none is. The frames between run from `a` to `b`, so one
+    that shows `a` or the cell before it again (`held`, `shows`) is made again only later, one that shows `b` only
+    earlier, and one that shows both not again: a fraction on the side of a picture it showed would show it too."""
     from sprite_gen.video.align import RETIME_T, RETIME_WINDOW_MAX
 
+    lo, hi = window
     tries = []
     for at in [t] + sorted((r for r in RETIME_T if window[0] < r < window[1] and abs(r - t) > 1e-3), key=lambda r: (abs(r - t), r)):
+        if not lo < at < hi:
+            continue
         frame = interpolate(a, b, at)
         measure, wrong = judge(frame, a, b, at, reads=reads, before=before)
         seen = at != t and (measure.get("ghost_window") or 0.0) >= RETIME_WINDOW_MAX
-        tries.append({"t": round(at, 4), "faults": wrong, **({"window_over": RETIME_WINDOW_MAX} if seen and not wrong else {})})
+        tries.append({"t": round(at, 4), "faults": wrong, **({"shows": measure["shows"]} if measure["shows"] else {}),
+                      **({"window_over": RETIME_WINDOW_MAX} if seen and not wrong else {})})
         if not wrong and not seen:
             return frame, {"t": round(at, 4), **({"from_t": round(t, 4)} if at != t else {}),
                            "contact": measure["contact"], "look": looks(measure), "tries": tries}
+        if "b" in measure["shows"]:
+            hi = at
+        if "a" in measure["shows"] or "before" in measure["shows"]:
+            lo = at
     return None, {"t": round(t, 4), "tries": tries}
 
 
