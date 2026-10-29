@@ -12,22 +12,24 @@ Each walker is drawn so the pixel search alone makes one of the faults a walk lo
 - a slow front walk in a short clip, refused outright (no periodic cycle found);
 - a walk that stalls, its cut playing the stalled step.
 
-Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle, their
-body rising and falling twice an interval between crossings on legs whose feet stay on the ground — the witness that
-reads no leg, read against the lowest row and the head's width: a walk seen from behind whose far foot passes hidden
-behind the near one, on ones, twos or threes, a cycle a whole number of frames or not, its legs drawn apart or alike
-(the parent engine counted the cycle one step and cut two cycles, or kept the search's cut unwritten); and a walk on a
-front diagonal whose near foot steps out toward the camera and passes the far one apart, read so where its view is
-given. The guards: from the side, and where the view's foot cue says the other leg leads an interval on, the count
-stands however alike a step on draws; and where nothing that reads no leg witnesses two steps an interval — legs drawn
-alike from any view, alike and wide as a hidden pass is, alike and wide under a light fixed on the screen, the swing
-foot lifted under such a light, a far leg a few tones off with no view, a walk whose feet do meet once a cycle but
-whose body does not bob, the same walk carried up and down whole, feet and all (the picture moved on its beat), a body
-held still on a picture shaken twice an interval, and feet that run off the frame — the crossings stay on steps,
-named in a warning. Read off drawn frames, no walk that does not rise and fall twice an interval on its legs is
-witnessed however the whole picture moves or zooms, on any beat, nor a run whose feet leave the ground, nor a planted
-foot sliding down the screen. And one the count alone gets wrong, where the search's cut stands: a walk on threes whose
-tail closes on no cut of two steps.
+Two whose feet meet on the screen once a cycle, read as cycles (`local_cycle.read_cycles`) and cut one cycle, their body
+rising and falling twice an interval between crossings on legs whose feet stay on the ground — the witness that reads no
+leg, read against the lowest row and the widths of the upper body, every band of it holding still on the beat (the arms
+swinging within the body's sides): a walk seen from behind whose far foot passes hidden behind the near one, on ones,
+twos or threes, a cycle a whole number of frames or not, its legs drawn apart or alike (the parent engine counted the
+cycle one step and cut two cycles, or kept the search's cut unwritten); and a walk on a front diagonal whose near foot
+steps out toward the camera and passes the far one apart, read so where its view is given. The guards: from the side,
+and where the view's foot cue says the other leg leads an interval on, the count stands however alike a step on draws;
+and where nothing that reads no leg witnesses two steps an interval — legs drawn alike from any view, alike and wide as
+a hidden pass is, alike and wide under a light fixed on the screen, the swing foot lifted under such a light, a far leg
+a few tones off with no view, a walk whose feet do meet once a cycle but whose body does not bob, or whose arms swing
+past its sides on the beat (a zoom's part of its width not told from theirs), the same walk carried up and down whole,
+feet and all (the picture moved on its beat), a body held still on a picture shaken twice an interval, and feet that run
+off the frame — the crossings stay on steps, named in a warning. Read off drawn frames, no walk that does not rise and
+fall twice an interval on its legs is witnessed however the whole picture moves or zooms, on any beat, whatever the top
+of its head (flat, round, a point, two ears' tips) or however its head or a cape is drawn against the zoom, nor a run
+whose feet leave the ground, nor a planted foot sliding down the screen. And one the count alone gets wrong, where the
+search's cut stands: a walk on threes whose tail closes on no cut of two steps.
 
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
@@ -95,72 +97,80 @@ def _front(k: float, *, cycle: float, phase: float = 0, tail_cycle: float = 1, t
     return im
 
 
-def _behind(k: int, *, cycle: float, hold: int, alike: bool = False, bob: int = 3, whole: bool = False) -> Image.Image:
+ARMS_IN = 8  # an arm's swing either way of the body's middle that keeps it within the body's sides (28 px apart)
+
+
+def _behind(k: int, *, cycle: float, hold: int, alike: bool = False, bob: int = 3, whole: bool = False,
+            top: str = "flat", arm: float = 16) -> Image.Image:
     """A walker seen from behind on a diagonal, drawn on twos or threes (`hold`): the near leg swings ahead and back,
     and the far one is seen beside it only while it is behind — ahead, it stands hidden behind the near leg. The feet
     are seen apart once a cycle and together through the other step, its pass hidden among them: one crossing shows a
     cycle. The body rises and falls `bob` px once a step on its legs, the feet on the ground (`whole`: carried up and
     down with it, feet and all — the picture moved, not a walk); the far leg darker (`alike`: drawn as the near one);
-    arms opposite, the far one darker; each repeat of a drawing redrawn a little (a pixel aside, a few tones)."""
+    arms opposite, the far one darker, swinging `arm` px either way of the body's middle (at 16 past its sides, its
+    upper body widening and narrowing once a step; at ARMS_IN within them); each repeat of a drawing redrawn a little (a
+    pixel aside, a few tones). Its head's top is `top` (`_head`)."""
     redraw = k % hold
     ph = 2 * math.pi * (k - redraw) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     x, y = 90 + redraw, 40 + round(bob * math.cos(2 * ph))
     sole = y + 126 if whole else GROUND
-    sw = 16 * math.sin(ph)
+    sw, swing = 16 * math.sin(ph), arm * math.sin(ph)
     near = x + 14 + sw
     far = x + 14 - sw if sw > 0 else near
-    d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
+    d.rectangle((x + 14 - swing - 4, y + 34, x + 14 - swing + 4, y + 72), fill=(150, 150, 150, 255))
     d.rectangle((far - 5, y + 80, far + 5, sole), fill=(70, 70, 80, 255) if alike else (50, 50, 60, 255))
     d.rectangle((near - 5, y + 80, near + 5, sole), fill=(70, 70, 80, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200 + 12 * redraw, 80, 80, 255))
-    d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
-    d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
+    _head(d, x, y, top)
+    d.rectangle((x + 14 + swing - 4, y + 34, x + 14 + swing + 4, y + 72), fill=(225, 225, 225, 255))
     return im
 
 
-def _outward(k: float, *, cycle: float, bob: int = 3, whole: bool = False) -> Image.Image:
+def _outward(k: float, *, cycle: float, bob: int = 3, whole: bool = False, arm: float = 16) -> Image.Image:
     """A walker on a front diagonal whose near foot steps out toward the camera: it swings wide ahead and back, and the
     far foot hardly moves, so the feet meet on the screen once a cycle, where the near foot passes the far one on its
     way back; its pass on the way out is made apart. The body rises and falls `bob` px once a step on its legs, the feet
-    on the ground (`whole`: carried with it); arms opposite, the far one darker; the far leg a tone off the near."""
+    on the ground (`whole`: carried with it); arms opposite, the far one darker, swinging `arm` px either way (as
+    `_behind`'s); the far leg a tone off the near."""
     ph = 2 * math.pi * k / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     x, y = 90, 40 + round(bob * math.cos(2 * ph))
     sole = y + 126 if whole else GROUND
-    sw = 16 * math.sin(ph)
+    sw, swing = 16 * math.sin(ph), arm * math.sin(ph)
     near, far = x + 14 + sw, x + 34 - 4 * math.sin(ph)
-    d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(150, 150, 150, 255))
+    d.rectangle((x + 14 - swing - 4, y + 34, x + 14 - swing + 4, y + 72), fill=(150, 150, 150, 255))
     d.rectangle((far - 5, y + 80, far + 5, sole), fill=(61, 61, 71, 255))
     d.rectangle((near - 5, y + 80, near + 5, sole), fill=(60, 60, 70, 255))
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
-    d.rectangle((x + 14 + sw - 4, y + 34, x + 14 + sw + 4, y + 72), fill=(225, 225, 225, 255))
+    d.rectangle((x + 14 + swing - 4, y + 34, x + 14 + swing + 4, y + 72), fill=(225, 225, 225, 255))
     return im
 
 
 def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0, leg_tone: int | None = None,
            leg_half: int = 5, lift: int = 0, light: tuple[str, int] | None = None, bob: int = 3, whole: bool = False,
-           air: int = 0, slide: int = 0, limp: int = 0) -> Image.Image:
+           air: int = 0, slide: int = 0, limp: int = 0, top: str = "flat", arm: float = 16) -> Image.Image:
     """A side walker whose two steps are the same silhouette: the far leg and arm `tone` tones lighter than the near
-    ones (the far leg `leg_tone`, where given: 0 draws the legs alike), the arms swinging `lean` px further back than
-    forward — nothing else tells a step from the next. Each leg is drawn `leg_half` px either side of its line: at 10
+    ones (the far leg `leg_tone`, where given: 0 draws the legs alike), the arms swinging `arm` px either way of the
+    body's middle, behind it (at ARMS_IN hidden within its sides), and `lean` px further back than forward — nothing
+    else tells a step from the next. Each leg is drawn `leg_half` px either side of its line: at 10
     the feet are seen together over half the interval at a pass, as where the far foot passes hidden. The leg swinging
     forward is lifted up to `lift` px, most at its pass; `light` lays a light fixed on the screen over the legs
     (`_lit`). The body rises and falls `bob` px once a step on its legs, the feet on the ground (`whole`: carried with
     it). A run lifts both soles up to `air` px off the ground while the body is high; a view from behind or a diagonal
     draws each sole up to `slide` px lower the further back its foot is (the planted foot sliding down the screen
     through its step). A limp sinks the body `limp` px either way once a cycle, low on one leg's step, high on the
-    other's."""
+    other's. Its head's top is `top` (`_head`)."""
     ph = 2 * math.pi * (k + phase) / cycle
     im = Image.new("RGBA", (300, 220))
     d = ImageDraw.Draw(im)
     drawn = Image.new("L", im.size)
     x, y = 90, 40 + round(bob * math.cos(2 * ph) + limp * math.cos(ph))
     for sign, t in ((1, 0), (-1, tone)):
-        sw = sign * (16 * math.sin(ph) + lean)
+        sw = sign * (arm * math.sin(ph) + lean)
         d.rectangle((x + 14 - sw - 4, y + 34, x + 14 - sw + 4, y + 72), fill=(190 + t, 190 + t, 190 + t, 255))
     for sign, t in ((1, 0), (-1, tone if leg_tone is None else leg_tone)):
         lx = x + 14 + 14 * sign * math.sin(ph)
@@ -171,8 +181,32 @@ def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: flo
         ImageDraw.Draw(drawn).rectangle(box, fill=255)
     d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
     ImageDraw.Draw(drawn).rectangle((x, y + 30, x + 28, y + 84), fill=0)
-    d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
+    _head(d, x, y, top)
     return _lit(im, drawn, light)
+
+
+TOPS = ("flat", "round", "pointed", "ears")
+
+
+def _head(d: ImageDraw.ImageDraw, x: int, y: int, top: str = "flat") -> None:
+    """The head of a walker whose body's box starts at (x, y), its top `top` (TOPS): `flat`, the box every walker here
+    draws; `round`, an ellipse in that box; `pointed`, a triangle from a point over the box's middle down to a base
+    wider than the body; `ears`, the box from a third of the way down with an ear's tip over each corner. A zoom widens
+    a band across a flat top by its whole part, across a round one by part of it, and across a point or an ear's tip by
+    nothing."""
+    skin = (230, 200, 170, 255)
+    if top == "flat":
+        d.rectangle((x + 2, y, x + 26, y + 28), fill=skin)
+    elif top == "round":
+        d.ellipse((x + 2, y, x + 26, y + 28), fill=skin)
+    elif top == "pointed":
+        d.polygon(((x + 14, y), (x - 21, y + 28), (x + 49, y + 28)), fill=skin)
+    elif top == "ears":
+        d.rectangle((x + 2, y + 10, x + 26, y + 28), fill=skin)
+        d.polygon(((x + 4, y), (x + 2, y + 10), (x + 11, y + 10)), fill=skin)
+        d.polygon(((x + 24, y), (x + 17, y + 10), (x + 26, y + 10)), fill=skin)
+    else:
+        raise ValueError(top)
 
 
 def _lit(im: Image.Image, legs_drawn: Image.Image, light: tuple[str, int] | None) -> Image.Image:
@@ -356,11 +390,12 @@ def _one_cycle(out: Path, cycle: float) -> dict:
 def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
     """Seen from behind on a diagonal, the far foot passes hidden behind the near one: the feet are seen together over
     more than half the interval between two crossings, one crossing a cycle. The clip one interval on is the same
-    picture, a cycle on, and the body rises and falls twice an interval — a step each rise: the count reads the
-    crossings as cycles, two steps an interval. The cut is one cycle, `steps: 2` (the parent engine counted the cycle
-    one step: on twos and threes it kept the search's cut unwritten, and on ones, a cycle a whole number of frames or
-    not, cut two cycles, 35 and 37 frames). With no view, no foot cue is read."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold)))
+    picture, a cycle on, and the body rises and falls twice an interval — a step each rise — its arms swinging within
+    its sides, every band of its upper body seen still on the beat: the count reads the crossings as cycles, two steps
+    an interval. The cut is one cycle, `steps: 2` (the parent engine counted the cycle one step: on twos and threes it
+    kept the search's cut unwritten, and on ones, a cycle a whole number of frames or not, cut two cycles, 35 and 37
+    frames). With no view, no foot cue is read."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold, arm=ARMS_IN)))
     counted = _one_cycle(tmp_path / "out", cycle)
     said = counted["cycles"]
     assert report["drawings"]["hold"] == hold
@@ -369,6 +404,8 @@ def test_a_walk_whose_far_foot_hides_is_cut_one_cycle(tmp_path, cycle, hold):
     assert said["bob"]["says"] == "cycles" and said["bob"]["half"] >= local_cycle.BOB_TWICE and said["bob"]["swing"] >= local_cycle.BOB_FLOOR
     assert said["bob"]["body"]["share"] >= local_cycle.BOB_OWN and said["bob"]["body"]["scale"] >= local_cycle.BOB_SCALE
     assert said["bob"]["edge"] == 0 and "rises and falls twice an interval" in said["why"] and "the body's own" in said["why"]
+    reads = [r for r in said["bob"]["body"]["bands"]["reads"] if r is not None]
+    assert reads and said["bob"]["body"]["still_bands"] == len(reads)
 
 
 @pytest.mark.slow
@@ -378,7 +415,8 @@ def test_a_walk_whose_far_foot_hides_is_cut_one_cycle_however_alike_its_legs(tmp
     """The same walker with its far leg drawn as the near one: the view's shade of the feet does not move (`alike`) and
     says nothing, and the body's bob, which reads no leg, still witnesses two steps an interval: one cycle (the parent
     engine left legs drawn alike to the cue on steps and cut two cycles, with a warning)."""
-    _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold, alike=True)), *(("--view", view) if view else ()))
+    _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _behind(k, cycle=cycle, hold=hold, alike=True, arm=ARMS_IN)),
+         *(("--view", view) if view else ()))
     said = _one_cycle(tmp_path / "out", cycle)["cycles"]
     assert said["bob"]["says"] == "cycles" and (view is None) == ("cue" not in said)
     assert view is None or said["cue"]["says"] == "alike"
@@ -415,16 +453,36 @@ def test_a_walk_whose_feet_meet_once_a_cycle_but_whose_body_does_not_bob_is_cut_
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("walker, view, interval", [("behind", None, 17.5), ("outward", "front_diagonal", 16)])
+def test_a_walk_whose_feet_meet_once_a_cycle_its_arms_swinging_past_its_sides_is_cut_two_intervals_with_a_warning(tmp_path, walker,
+                                                                                                                   view, interval):
+    """The two walkers whose feet meet once a cycle, rising and falling on their legs twice an interval as the ones cut
+    one cycle do, their arms swinging 16 px either way of the body's middle, past its sides: the upper body widens and
+    narrows twice an interval across the bands the arms swing over. A picture zooming on the beat moves a band so too,
+    and its part there is not told from the arms' at any turn: less as much of the zoom as such a band reads, the
+    line's rise and fall is not left. Nothing that reads no leg witnesses two steps an interval: two intervals, two
+    cycles, named in a warning (the parent engine witnessed it on a band that held still and cut one cycle)."""
+    draw = (lambda k: _behind(k, cycle=interval, hold=1)) if walker == "behind" else (lambda k: _outward(k, cycle=interval))
+    report = _cut(tmp_path / "out", _keyed(tmp_path, draw), *(("--view", view) if view else ()))
+    bob = _unwitnessed(report, interval)["bob"]
+    assert bob["half"] >= local_cycle.BOB_TWICE and bob["quarter"] <= -local_cycle.BOB_TWICE
+    assert bob["body"]["less_lowest"] >= local_cycle.BOB_OWN * bob["body"]["beat"] and bob["body"]["scale"] < local_cycle.BOB_SCALE
+    reads = [r for r in bob["body"]["bands"]["reads"] if r is not None]
+    assert max(reads) > 1 - local_cycle.BOB_SCALE and bob["body"]["still_bands"] < len(reads)
+    assert "its upper body's width changes with it" in bob["why"] and "the picture may zoom with the body" in bob["why"]
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("cycle", [16, 18])
 def test_a_diagonal_walk_whose_near_foot_steps_out_is_cut_one_cycle_from_its_view(tmp_path, cycle):
     """On a front diagonal the near foot steps out toward the camera and passes the far one apart: the feet meet on the
     screen once a cycle, and briefly — no pass hides. Given the view, the count asks the picture: the clip one interval
     on is the same picture, the legs as they were, the view's foot cue does not turn over there, and the body rises and
-    falls twice an interval. One cycle, `steps: 2` (the parent engine counted each meeting a step and cut two cycles,
-    32 and 36 frames). Without the view it is not asked, and cuts as before, two cycles: its body rises and falls four
-    times in the cut, which stands, its strip counting two steps, and `video-set` leaves it out of its cycle alignment
-    (`local_cycle.four_steps`)."""
-    keyed = _keyed(tmp_path, lambda k: _outward(k, cycle=cycle))
+    falls twice an interval, its arms swinging within its sides. One cycle, `steps: 2` (the parent engine counted each
+    meeting a step and cut two cycles, 32 and 36 frames). Without the view it is not asked, and cuts as before, two
+    cycles: its body rises and falls four times in the cut, which stands, its strip counting two steps, and `video-set`
+    leaves it out of its cycle alignment (`local_cycle.four_steps`)."""
+    keyed = _keyed(tmp_path, lambda k: _outward(k, cycle=cycle, arm=ARMS_IN))
     _cut(tmp_path / "view", keyed, "--view", "front_diagonal")
     counted = _one_cycle(tmp_path / "view", cycle)
     assert counted["cycles"]["overlap"] <= crossings.HIDE_SHARE and counted["cycles"]["asked"] == "the front_diagonal view, the legs side by side"
@@ -447,25 +505,30 @@ def test_a_side_walk_whose_two_steps_look_alike_is_cut_two_steps_however_near_a_
     """The case the count was made for, guarded: from the side the two steps are one silhouette, the near leg and arm
     a tone or a few apart from the far ones. The walk is slower than the window, so the search cuts one step, and at
     one tone the clip a step on draws nearer than the next frame (0.89 playback steps). Its feet pass briefly — no pass
-    can hide — and from the side the picture is not asked: the count stands, two steps, a cycle long."""
+    can hide — and from the side the picture is not asked: the count stands, two steps, a cycle long. Its arms swing
+    past its sides on the beat, and a zoom is not told from the bands they swing across: nothing that reads no leg
+    witnesses the cut whole cycles, held as cut, named (the parent engine witnessed it on a band that held still)."""
     keyed = _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=tone, lean=lean))
     for out, extra in (("plain", ()), ("side", ("--view", "side"))):
-        counted = _two_steps(_cut(tmp_path / out, keyed, *extra), 46)
+        report = _cut(tmp_path / out, keyed, *extra)
+        counted = _two_steps(report, 46)
         assert counted["search"]["verdict"] == "refuted" and counted["search"]["k"] == [1]
-        assert "cycles" not in counted
+        assert "cycles" not in counted and _held(report)["says"] is None
 
 
 @pytest.mark.slow
 def test_a_diagonal_walk_whose_foot_cue_turns_over_a_step_on_is_cut_two_steps(tmp_path):
     """The same walker filmed as a front diagonal: its legs a step on are one silhouette, so the clip one interval on is
     as near as a cycle on, but its far leg is drawn a few tones off the near one, and the view's foot cue turns over one
-    interval on — the other leg leads. The count stands: two steps, a cycle long."""
+    interval on — the other leg leads. The count stands: two steps, a cycle long. Its arms swinging past its sides,
+    nothing that reads no leg witnesses the cut whole cycles: held as cut, named."""
     report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1)),
                   "--view", "front_diagonal")
     counted = _two_steps(report, 46)
     said = counted["cycles"]
     assert said["cycles"] is False and said["one"] <= said["two"] + local_cycle.CYCLE_SLACK
     assert said["cue"]["one"] <= local_cycle.CUE_SWAPPED and said["cue"]["says"] == "steps" and "the other leg leads" in said["why"]
+    assert "unwitnessed" not in said and _held(report)["says"] is None
 
 
 @pytest.mark.slow
@@ -534,11 +597,13 @@ def test_a_walk_whose_swing_foot_lifts_under_a_light_fixed_on_the_screen_is_cut_
 @pytest.mark.slow
 @pytest.mark.parametrize("view", [None, "side", "front_diagonal"])
 def test_a_wide_walk_whose_far_leg_is_drawn_a_few_tones_off_is_cut_two_steps(tmp_path, view):
-    """The wide walker with its far leg four tones off the near one: a pass can hide. From the side or a diagonal the
-    view's shade turns over one interval on — the other leg leads — and refuses cycles; with no view no cue is read,
-    and the body rising and falling once an interval witnesses nothing: two steps, 46 frames either way, a warning
-    only where nothing refused (the parent engine let the picture mark cycles with no view and cut 23 frames)."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_half=10)),
+    """The wide walker with its far leg four tones off the near one, its arms swinging within its sides: a pass can
+    hide. From the side or a diagonal the view's shade turns over one interval on — the other leg leads — and refuses
+    cycles; with no view no cue is read, and the body rising and falling once an interval witnesses nothing: two steps,
+    46 frames either way, a warning only where nothing refused (the parent engine let the picture mark cycles with no
+    view and cut 23 frames)."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_half=10,
+                                                                       arm=ARMS_IN)),
                   *(("--view", view) if view else ()))
     counted = _two_steps(report, 46)
     if view is None:
@@ -574,10 +639,10 @@ def test_a_walk_whose_crossings_are_its_steps_carried_up_and_down_is_cut_two_ste
 @pytest.mark.slow
 @pytest.mark.parametrize("motion, room", [("arc", 0), ("cubic", 60)])
 def test_a_walk_whose_feet_meet_once_a_cycle_carried_up_and_down_is_cut_one_cycle(tmp_path, motion, room):
-    """The walker whose far foot passes hidden, its legs drawn alike, carried along the arc or the cubic with the
-    whole picture: less its flow its top line rises and falls twice an interval as it did with the picture still,
-    one cycle."""
-    walker = lambda k: _behind(k, cycle=17.5, hold=1, alike=True)  # noqa: E731
+    """The walker whose far foot passes hidden, its legs drawn alike, its arms swinging within its sides, carried along
+    the arc or the cubic with the whole picture: less its flow its top line rises and falls twice an interval as it did
+    with the picture still, one cycle."""
+    walker = lambda k: _behind(k, cycle=17.5, hold=1, alike=True, arm=ARMS_IN)  # noqa: E731
     _cut(tmp_path / "out", _keyed(tmp_path, _carried(walker, motion, room)))
     said = _one_cycle(tmp_path / "out", 17.5)["cycles"]
     assert said["bob"]["says"] == "cycles" and said["bob"]["quarter"] <= -local_cycle.BOB_TWICE
@@ -674,10 +739,12 @@ def test_a_walk_the_search_cuts_two_steps_in_phase_is_cut_as_before(tmp_path):
 @pytest.mark.slow
 def test_a_body_with_no_feet_to_read_is_cut_as_the_search_cuts_it(tmp_path):
     """A legless body bouncing every 16 frames — a walk the window admits (`walk`'s floor): no feet to read, and the
-    search's cut stands as it cut it, never cut again two long. The body rises and falls once a bounce, once a cycle: a
-    cut of one bounce is the body's whole cycle, and to the body's word it is one step as well — nothing that reads no
-    leg tells them apart, so the cut is held and named, not cut again (two bounces); a cut the body rises and falls
-    twice in stands."""
+    search's cut stands as it cut it, never cut again two long. The search cuts one bounce, and the body rises and falls
+    once in it, once a cycle; but it squashes as it bounces, and its upper body's widths, read on rows below its top,
+    change with it on that beat: its own rise and fall is not told from the picture zooming, and nothing witnesses the
+    cut — held and named, not cut again (two bounces). (The parent engine read the bounce in the cut as one step, which
+    held it so too: to the body's word one step and a whole cycle of a body that rises and falls once a cycle are
+    alike.)"""
     keyed = _keyed(tmp_path, _blob, frames=64)
     report = _cut(tmp_path / "out", keyed)
     c = report["cycle"]
@@ -685,13 +752,12 @@ def test_a_body_with_no_feet_to_read_is_cut_as_the_search_cuts_it(tmp_path):
     assert counted["readable"] is False and counted["chosen_by"] == "search" and counted["why"]
     assert counted["search"]["cut"] == [c["start"], c["length"]]
     assert "steps" not in report["cycle"] and "steps" not in json.loads((tmp_path / "out" / "loop.strip.json").read_text())
-    said = c["cut_witness"]
-    assert said["cut"] == [c["start"], c["length"]] and said["says"] in ("one step", "two steps")
-    if said["says"] == "one step":
-        _held(report)
-        assert abs(c["length"] - 16) <= 1
-    else:
-        assert "held" not in said and not local_cycle.unwitnessed(c)
+    said = _held(report)
+    assert said["cut"] == [c["start"], c["length"]] and said["says"] is None and abs(c["length"] - 16) <= 1
+    frames = [_blob(k) for k in range(64)]
+    once = local_cycle.bob_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, 2 * c["length"])
+    assert once["half"] >= local_cycle.BOB_TWICE and once["quarter"] <= -local_cycle.BOB_TWICE
+    assert once["says"] is None and "its upper body's width changes with it" in once["why"]
 
 
 @pytest.mark.slow
@@ -741,15 +807,27 @@ def _reading(run: int) -> crossings.Reading:
                              runs=[(c - run // 2, c + run // 2) for c in middles])
 
 
-def _body(top, *, lowest=None, crown=None, edge=None, sole=None) -> dict:
+def _column(outline: str = "straight") -> np.ndarray:
+    """The alpha of a body 100 rows tall from row 40: its sides running straight down 20 px apart (`straight`), or a
+    cone from a point at its top, 20 px wide at its middle (`cone`)."""
+    frame = np.zeros((200, 120), np.uint8)
+    for r in range(100):
+        half = 10 if outline == "straight" else max(1, round(r / 5))
+        frame[40 + r, 60 - half:60 + half] = 255
+    return frame
+
+
+def _body(top, *, lowest=None, width=None, edge=None, sole=None, outline="straight") -> dict:
     """Leg signals (`legs.strike_signals`, `legs.body_signals`) of a body 100 rows tall whose top line is `top` (per
     frame), its lowest row `lowest` (140 throughout: the feet on the ground), its lowest opaque row `sole` (the lowest
-    row's: nothing translucent under the feet) and its head `crown` wide (log; 20 px throughout), no lowest row on the
-    frame's last row unless `edge` says where."""
+    row's: nothing translucent under the feet) and each band of its upper body `width` wide (px; 20 throughout), drawn
+    as `_column` draws its `outline`, no lowest row on the frame's last row unless `edge` says where."""
     n = len(top)
     reach = [140.0] * n if lowest is None else [float(v) for v in lowest]
+    rows = legs.band_rows(100)
+    widths = [20.0] * n if width is None else [float(v) for v in width]
     return {"top": [float(v) for v in top], "reach": reach, "sole": list(reach) if sole is None else [float(v) for v in sole],
-            "crown": [math.log(20)] * n if crown is None else [float(v) for v in crown],
+            "bands": [[w] * len(rows) for w in widths], "band_rows": rows, "median_frame": _column(outline),
             "edge": [0.0] * n if edge is None else [float(v) for v in edge], "height": [100.0] * n}
 
 
@@ -991,20 +1069,88 @@ def test_a_rise_and_fall_the_lowest_row_shares_is_the_picture_moving(motion):
 
 
 @pytest.mark.parametrize("about", ["feet", "middle"])
-def test_a_rise_and_fall_the_heads_width_shares_is_the_picture_zooming(about):
-    """`bob_word` on an interval of 15 frames: a body 100 rows tall, zoomed in and out with the picture twice an interval
-    about its feet (3 % either way: its top line rising and falling 3 rows, its lowest row still) or about its middle
-    (6 %: the top line and the lowest row 3 rows either way, turned over from each other). Against the lowest row the top
-    line rises and falls as a body on its legs would, but its head widens as the line lifts, as much as the body's
-    height grows: less the head's scale nothing is left. The picture zooms; nothing is witnessed."""
+def test_a_rise_and_fall_the_upper_bodys_width_shares_is_the_picture_zooming(about):
+    """`bob_word` on an interval of 15 frames: a body 100 rows tall, its sides running straight down, zoomed in and out
+    with the picture twice an interval about its feet (3 % either way: its top line rising and falling 3 rows, its
+    lowest row still) or about its middle (6 %: the top line and the lowest row 3 rows either way, turned over from each
+    other). Against the lowest row the top line rises and falls as a body on its legs would, but every band of its upper
+    body widens as the line lifts, as much as a zoom so far would widen it: less the zoom each reads nothing is left.
+    The picture zooms; nothing is witnessed."""
     t = np.arange(FRAMES)
     f = 1 + (0.03 if about == "feet" else 0.06) * np.sin(2 * np.pi * t / 7.5)
     at = 140 if about == "feet" else 90
     top, lowest = np.round(at - (at - 40) * f), np.round(at + (140 - at) * f)
-    word = local_cycle.bob_word({**_body(top, lowest=lowest, crown=np.log(20 * f)), "height": list(100 * f)}, 15)
+    word = local_cycle.bob_word({**_body(top, lowest=lowest, width=20 * f), "height": list(100 * f)}, 15)
     assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
     assert word["says"] is None and word["body"]["scale"] < local_cycle.BOB_SCALE
-    assert "its head's width changes with it" in word["why"] and "the picture zooms with the body" in word["why"]
+    assert all(z >= local_cycle.BAND_FLOOR for z in word["body"]["bands"]["zoom"])
+    assert "its upper body's width changes with it" in word["why"] and "the picture may zoom with the body" in word["why"]
+
+
+def test_a_body_no_band_of_which_would_show_a_zoom_is_never_witnessed():
+    """A top line rising and falling twice an interval on legs whose feet stay on the ground witnesses two steps an
+    interval on a body whose sides run straight down; on a cone from a point at its top, the same line does not: a zoom
+    as far as the line rises and falls would move no band of it a pixel (each band's width at its depth is the same
+    zoomed), so its width could not tell the picture zooming from the body's own. Held by default, the word says why."""
+    t = np.arange(FRAMES)
+    top = np.round(40 + 3 * np.cos(2 * np.pi * t / 7.5))
+    straight = local_cycle.bob_word(_body(top), 15)
+    assert straight["says"] == "cycles" and straight["body"]["scale"] == pytest.approx(1)
+    rows = legs.band_rows(100)
+    cone = local_cycle.bob_word({**_body(top, outline="cone"), "bands": [legs.band_widths(_column("cone"), rows)] * FRAMES}, 15)
+    assert cone["says"] is None and cone["body"]["less_bands"] is None and cone["body"]["scale"] is None
+    assert all(abs(z) < local_cycle.BAND_FLOOR for z in cone["body"]["bands"]["zoom"])
+    assert "no band of its upper body would show the picture zooming" in cone["why"]
+
+
+def test_a_body_any_band_of_whose_upper_body_moves_on_the_beat_is_never_witnessed():
+    """A top line rising and falling 3 rows either way twice an interval on legs whose feet stay on the ground, the
+    body's sides running straight down, every band of its upper body widening and narrowing 2 px either way twice an
+    interval a quarter of the beat on — as arms swinging across them do, or a zoom whose turn the line hides: more than
+    a zoom so far would move them, and the zoom's part is not told from the swing at any turn. Held by default, the
+    word says why. So with the band across its head's top holding still, the rest swinging so: a head drawn narrower as
+    the picture zooms in holds still too, and one band holding still says only that no zoom shows in it (the parent
+    engine took it as the witness that nothing zooms). With every band holding still, the body's own is told: two steps
+    an interval."""
+    t = np.arange(FRAMES)
+    top = np.round(40 + 3 * np.cos(2 * np.pi * t / 7.5))
+    swing = list(20 + 2 * np.cos(2 * np.pi * t / 7.5 + np.pi / 2))
+    rows = legs.band_rows(100)
+    for still in (0, 1):
+        word = local_cycle.bob_word({**_body(top), "bands": [[20.0] * still + [w] * (len(rows) - still) for w in swing]}, 15)
+        assert word["says"] is None and word["body"]["still_bands"] == still, still
+        assert word["body"]["scale"] < local_cycle.BOB_SCALE and max(word["body"]["bands"]["reads"]) > 1 - local_cycle.BOB_SCALE
+        assert "its upper body's width changes with it" in word["why"] and "the picture may zoom with the body" in word["why"]
+    assert local_cycle.bob_word(_body(top), 15)["says"] == "cycles"
+
+
+def _shrugging(k: int) -> Image.Image:
+    """A column 20 px wide on feet planted at row 140, its top rising and falling 3 rows either way twice an interval of
+    16 frames; its crown (11 rows) and the column under its shoulders hold still, and its shoulders (the 41 rows under
+    the crown) widen and narrow 2 px either way a quarter of the beat on."""
+    phase = 4 * np.pi * k / 16
+    first, half = 40 + round(3 * np.cos(phase)), 10 + round(2 * np.sin(phase))
+    alpha = np.zeros((200, 120), np.uint8)
+    alpha[first:141, 50:70] = 255
+    alpha[first + 11:first + 52] = 0
+    alpha[first + 11:first + 52, 60 - half:60 + half] = 255
+    rgba = np.zeros((200, 120, 4), np.uint8)
+    rgba[:, :, :3] = (160, 100, 60)
+    rgba[:, :, 3] = alpha
+    return Image.fromarray(rgba)
+
+
+def test_a_body_whose_shoulders_swing_on_the_beat_is_never_witnessed_however_its_crown_holds_still():
+    """`bob_word` off drawn frames (128) at an interval of 16: a column on planted feet rising and falling twice an
+    interval, its crown and the column under its shoulders holding still, its shoulders swinging a quarter of the beat
+    on (`_shrugging`). Nothing zooms, but band by band it reads as a picture zoomed with the body whose crown and column
+    are drawn against the zoom and whose shoulders swing over it: five bands are seen, one holds still, four move on the
+    beat. The parent engine witnessed it on the one holding still; held, named."""
+    frames = [_shrugging(k) for k in range(128)]
+    word = local_cycle.bob_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, 16)
+    assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
+    assert sum(r is not None for r in word["body"]["bands"]["reads"]) == 5 and word["body"]["still_bands"] == 1
+    assert word["says"] is None and "its upper body's width changes with it" in word["why"]
 
 
 def test_a_lowest_row_on_the_frames_last_row_holds_the_word():
@@ -1078,8 +1224,8 @@ def test_a_walk_moved_up_and_down_with_the_whole_picture_on_any_beat_is_never_wi
 def test_a_walk_zoomed_in_and_out_with_the_whole_picture_on_any_beat_is_never_witnessed(walker, period):
     """The same walkers, held still or rising and falling on their legs once a step, zoomed in and out with the picture
     0.5 to 4 % either way every d/4, d/2 or d frames about their feet, middle or head, at two phases (`_zoomed`): where
-    the top line rises and falls twice an interval against the lowest row, the head widens with it, and less its scale
-    nothing of the body's own is left. None is witnessed."""
+    the top line rises and falls twice an interval against the lowest row, the bands of the upper body widen with it,
+    and less the zoom they read nothing of the body's own is left. None is witnessed."""
     d, draw = NOT_TWICE[walker]
     frames = [draw(k) for k in range(FRAMES)]
     for amount in (0.005, 0.01, 0.02, 0.04):
@@ -1088,6 +1234,130 @@ def test_a_walk_zoomed_in_and_out_with_the_whole_picture_on_any_beat_is_never_wi
                 scale = lambda k, a=amount, f=phase: 1 + a * math.sin(2 * math.pi * k / (period * d) + f)  # noqa: E731
                 word = _word_of(_zoomed(lambda k: frames[k], scale, about), d)
                 assert word["says"] is None, (walker, period, amount, about, phase, word)
+
+
+# The walker zoomed with the picture whatever its head's top (`_head`): the wide walker with its legs drawn alike, no tone
+# between them, its feet together over half the interval at a pass (46 frames a cycle, its crossings its steps every
+# 23), held still or rising and falling on its legs once a step.
+_TOPPED = {"cycle": 46, "phase": 11, "tone": 0, "leg_half": 10}
+
+
+def _zoom_every(period: float, amount: float = 0.04):
+    return lambda k: 1 + amount * math.sin(2 * math.pi * k / period)
+
+
+@pytest.mark.slow
+def test_a_still_walk_with_a_pointed_head_zoomed_about_its_feet_twice_a_step_is_never_cut_half_a_cycle_unnamed(tmp_path):
+    """The wide walker held still on its legs, its head a triangle from a point down to a base wider than its body,
+    zoomed in and out 4 % either way about its feet twice a step (every 11.5 frames, `_zoomed`): against its lowest
+    row, which the zoom about the feet leaves where it is, its top line rises and falls twice an interval of a step,
+    and the band across its head's top widens with it by nothing — a zoom moves a band under a point not at all. The
+    step count's crossings count its steps, and the parent engine cut one of them, 23 frames, half a cycle, as two
+    steps, nothing named. The bands lower down its upper body, whose sides run straight down, widen with the zoom:
+    less the zoom they read, nothing of the line's rise and fall is left. Not witnessed half a cycle; held, named."""
+    draw = _zoomed(lambda k: _alike(k, **_TOPPED, bob=0, top="pointed"), _zoom_every(11.5), "feet")
+    report = _cut(tmp_path / "out", _keyed(tmp_path, draw))
+    _not_silent(report, 46)
+    word = _word_of(draw, 23)
+    assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
+    assert word["says"] is None and "its upper body's width changes with it" in word["why"]
+    bands = word["body"]["bands"]
+    assert abs(bands["zoom"][0]) < local_cycle.BAND_FLOOR and max(bands["zoom"]) >= local_cycle.BAND_FLOOR
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("about", ["feet", "middle", "head"])
+@pytest.mark.parametrize("top", TOPS)
+def test_a_walk_zoomed_with_the_picture_whatever_its_heads_top_is_never_witnessed_half_a_cycle_or_two(top, about):
+    """The wide walker (`_TOPPED`), its head's top flat, round, pointed or two ears' tips (`_head`), held still or rising
+    and falling on its legs once a step, zoomed in and out 4 % either way with the picture about its feet, middle or
+    head every quarter, half or whole cycle (11.5, 23 or 46 frames), 140 frames drawn. However far a zoom widens the
+    band across its head's top — wholly, in part or not at all — the bands lower down its upper body widen with it, and
+    where the zoom lifts the top line twice an interval nothing of it is left less the zoom they read. Never two steps
+    an interval of a step (23 frames), nor a cut of a step said to be a cycle or two, nor a cut of two cycles (92) said
+    to be one."""
+    for bob in (0, 3):
+        for period in (11.5, 23, 46):
+            draw = _zoomed(lambda k, b=bob: _alike(k, **_TOPPED, bob=b, top=top), _zoom_every(period), about)
+            frames = [draw(k) for k in range(140)]
+            signals = {**legs.strike_signals(frames), **legs.body_signals(frames)}
+            case = (top, about, bob, period)
+            assert local_cycle.bob_word(signals, 23)["says"] is None, case
+            assert local_cycle.cut_word(signals, 23)["says"] not in ("two steps", "four steps"), case
+            assert local_cycle.cut_word(signals, 92)["says"] != "two steps", case
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("bob", [0, 3])
+@pytest.mark.parametrize("about", ["feet", "middle", "head"])
+@pytest.mark.parametrize("top", ["pointed", "ears"])
+def test_a_walk_with_a_pointed_head_or_ears_zoomed_every_quarter_cycle_is_never_cut_half_a_cycle_unnamed(tmp_path, top, about,
+                                                                                                         bob):
+    """The wide walker (`_TOPPED`), its head a point or two ears' tips (`_head`), held still or rising and falling on its
+    legs once a step, zoomed in and out 4 % either way with the picture about its feet, middle or head every quarter
+    cycle (11.5 frames): twice an interval of a step. The parent engine read the band across the head's top alone,
+    which such a zoom widens by nothing, and handed some of these out cut one step, half a cycle, as two steps, nothing
+    named. Through the loop none is."""
+    draw = _zoomed(lambda k: _alike(k, **_TOPPED, bob=bob, top=top), _zoom_every(11.5), about)
+    _not_silent(_cut(tmp_path / "out", _keyed(tmp_path, draw)), 46)
+
+
+def _drawn_against(turn: str):
+    """The wide walker (`_TOPPED`) held still on its legs, its upper body redrawn: its head a box 36 px wide drawn
+    narrower as the picture zooms in (36/s), its torso a box under it whose half width swings 4 px either way twice a
+    step, a quarter of the beat off the zoom (`quarter`), in step with it or against it; zoomed in and out 4 % either
+    way about its feet twice a step (every 11.5 frames, `_zoomed`)."""
+    swing = {"quarter": math.cos, "in step": math.sin, "against": lambda u: -math.sin(u)}[turn]
+    scale = _zoom_every(11.5)
+
+    def frame(k: int) -> Image.Image:
+        im = _alike(k, **_TOPPED, bob=0)
+        d = ImageDraw.Draw(im)
+        d.rectangle((60, 40, 148, 109), fill=(0, 0, 0, 0))
+        d.rectangle((104 - 18 / scale(k), 40, 104 + 18 / scale(k), 69), fill=(230, 200, 170, 255))
+        half = 17 + 4 * swing(4 * math.pi * k / 23)
+        d.rectangle((104 - half, 70, 104 + half, 109), fill=(200, 80, 80, 255))
+        return im
+    return _zoomed(frame, scale, "feet")
+
+
+def _caped():
+    """The wide walker (`_TOPPED`) held still on its legs, the 65 rows from its head's top redrawn, their edges drawn to
+    the part of a pixel they cover: a crown 13 rows deep and 25 px wide drawn narrower as the picture zooms in (25/s),
+    over a cape 29 px wide widening and narrowing 4 px either way twice a step, a quarter of the beat before the zoom;
+    zoomed in and out 4 % either way about its feet twice a step (every 11.5 frames, `_zoomed`)."""
+    scale = _zoom_every(11.5)
+
+    def frame(k: int) -> Image.Image:
+        a = np.array(_alike(k, **_TOPPED, bob=0))
+        cols = np.arange(a.shape[1])
+        a[40:105] = 0
+        for rows, width, rgb in ((slice(40, 53), 25 / scale(k), (230, 200, 170)),
+                                 (slice(53, 105), 29 + 4 * math.cos(2 * math.pi * k / 11.5), (120, 60, 160))):
+            cover = np.clip(np.minimum(cols + 1, 104.5 + width / 2) - np.maximum(cols, 104.5 - width / 2), 0, 1)
+            a[rows, :, :3] = rgb
+            a[rows, :, 3] = np.round(255 * cover).astype(np.uint8)
+        return Image.fromarray(a)
+    return _zoomed(frame, scale, "feet")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("form", ["quarter", "in step", "against", "cape"])
+def test_a_still_walk_zoomed_twice_a_step_its_head_drawn_against_the_zoom_is_never_cut_half_a_cycle_unnamed(tmp_path, form):
+    """The wide walker held still on its legs, zoomed about its feet twice a step, its head drawn narrower as the
+    picture zooms in and the body under it swinging on the beat: its torso a quarter of the beat off the zoom, in step
+    with it or against it (`_drawn_against`), or a cape a quarter of the beat before it under a crown (`_caped`).
+    Against its lowest row its top line rises and falls twice an interval of a step; the bands across its head hold
+    still on the screen, and those across the body under it move. The parent engine took a band holding still as the
+    witness that nothing zooms and read the swing under it as the body's own, and cut 23 frames, half a cycle, as two
+    steps, nothing named. The swing may hide the zoom at any turn: never witnessed half a cycle; held, named."""
+    draw = _caped() if form == "cape" else _drawn_against(form)
+    report = _cut(tmp_path / "out", _keyed(tmp_path, draw))
+    _not_silent(report, 46)
+    assert local_cycle.unwitnessed(report["cycle"])
+    word = _word_of(draw, 23)
+    assert word["half"] >= local_cycle.BOB_TWICE and word["quarter"] <= -local_cycle.BOB_TWICE
+    assert word["says"] is None and word["body"]["still_bands"] >= 1 and "its upper body's width changes with it" in word["why"]
 
 
 # The picture moved up and down (of the interval d, px either way, phase), or held still (None).
@@ -1227,10 +1497,12 @@ def _held(report: dict) -> dict:
 def test_a_walk_whose_feet_a_shadow_hides_from_the_step_count_is_never_cut_one_step_unnamed(tmp_path, body):
     """The wide walker with its legs drawn alike, its crossings its steps every 23 frames, over a shadow drawn with it
     apart under its feet: the step count reads no feet, and the search cuts 23 frames — one step, which loops as a cycle
-    does where the legs are drawn alike (the parent engine handed it out so, nothing named). Rising and falling on its
+    does where the legs are drawn alike (the parent engine handed it out so, nothing named). Its arms swing past its
+    sides on the beat, and a zoom is not told from the bands they swing across: nothing that reads no leg says the cut
+    is a cycle, held as cut, named. Drawn with its arms within its sides, read off its frames: rising and falling on its
     legs once a step, the body rises and falls once the cut — one step, or a whole cycle of a body that does so once a
-    cycle; carried up and down whole, feet and all, it does not of its own. Either way nothing that reads no leg says
-    the cut is a cycle: held as cut, named. (Held still on its legs, the loop is refused: its wrap jumps.)"""
+    cycle; carried up and down whole, feet and all, it does not of its own. (So drawn, or held still on its legs, the
+    loop is refused: its wrap jumps.)"""
     drawn = {"on-its-legs": {}, "whole": {"whole": True}}[body]
     report = _cut(tmp_path / "out", _keyed(tmp_path, _shadowed(lambda k: _alike(k, **_STEPS, **drawn), lambda k: 0,
                                                                  shadow="apart", screen=False)))
@@ -1238,18 +1510,22 @@ def test_a_walk_whose_feet_a_shadow_hides_from_the_step_count_is_never_cut_one_s
     counted = report["cycle"]["step_count"]
     assert counted["readable"] is False and counted["chosen_by"] == "search"
     said = _held(report)
-    assert said["says"] == {"on-its-legs": "one step", "whole": None}[body]
-    assert said["cut"] == counted["search"]["cut"] and abs(said["cut"][1] - 23) <= 1
+    assert said["says"] is None and said["cut"] == counted["search"]["cut"] and abs(said["cut"][1] - 23) <= 1
+    within = _shadowed(lambda k: _alike(k, **_STEPS, arm=ARMS_IN, **drawn), lambda k: 0, shadow="apart", screen=False)
+    frames = [within(k) for k in range(FRAMES)]
+    word = local_cycle.cut_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, said["cut"][1])
+    assert word["says"] == {"on-its-legs": "one step", "whole": None}[body]
 
 
 @pytest.mark.slow
 def test_a_walk_whose_planted_foot_slides_is_never_cut_one_step_unnamed(tmp_path):
-    """The wide walker rising and falling on its legs once a step, its crossings its steps every 23 frames, each sole
-    drawn up to 12 px lower the further back its foot is (as a view from behind or a diagonal draws it) and the foot
-    moving forward lifted 8 px: the step count reads a crossing every half step and counts the search's 23 frames — one
-    step — two (the parent engine handed it out so, nothing named). The body rises and falls once the cut: one step,
-    or a whole cycle of a body that does so once a cycle, and the crossings cannot say which: held as cut, named."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, **_STEPS, lift=8, slide=12)))
+    """The wide walker rising and falling on its legs once a step, its arms swinging within its sides, its crossings its
+    steps every 23 frames, each sole drawn up to 12 px lower the further back its foot is (as a view from behind or a
+    diagonal draws it) and the foot moving forward lifted 8 px: the step count reads a crossing every half step and
+    counts the search's 23 frames — one step — two (the parent engine handed it out so, nothing named). The body rises
+    and falls once the cut: one step, or a whole cycle of a body that does so once a cycle, and the crossings cannot say
+    which: held as cut, named."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, **_STEPS, lift=8, slide=12, arm=ARMS_IN)))
     _not_silent(report, 46)
     counted = report["cycle"]["step_count"]
     assert counted["readable"] and counted["chosen_by"] == "search" and counted["cut"]["verdict"] == "two"
@@ -1259,12 +1535,13 @@ def test_a_walk_whose_planted_foot_slides_is_never_cut_one_step_unnamed(tmp_path
 
 @pytest.mark.slow
 def test_a_limping_walk_is_never_cut_two_cycles_long(tmp_path):
-    """A side walker whose legs a tone or a few apart tell its steps apart, 30 frames a cycle, filmed 100 frames (long
-    enough to read its body's rise and fall over twice the cut), whose body sinks on one leg's step and not the
-    other's: it rises and falls once a cycle, as a body with no legs that bounces does. The search cuts it a cycle, two
-    steps by its crossings. To the body's word the cut is one step, and it cannot tell that from one cycle of such a
-    body: the cut stands as it was cut, held, named — never cut again two long, two cycles."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=30, phase=8, tone=4, lean=1, bob=0, limp=3),
+    """A side walker whose legs a tone or a few apart tell its steps apart, its arms swinging within its sides, 30
+    frames a cycle, filmed 100 frames (long enough to read its body's rise and fall over twice the cut), whose body
+    sinks on one leg's step and not the other's: it rises and falls once a cycle, as a body with no legs that bounces
+    does. The search cuts it a cycle, two steps by its crossings. To the body's word the cut is one step, and it cannot
+    tell that from one cycle of such a body: the cut stands as it was cut, held, named — never cut again two long, two
+    cycles."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=30, phase=8, tone=4, lean=1, bob=0, limp=3, arm=ARMS_IN),
                                            frames=100))
     c = report["cycle"]
     assert report["status"] == "passed" and abs(c["length"] - 30) <= 1.5
@@ -1301,13 +1578,15 @@ def test_a_walk_on_a_picture_moved_every_two_thirds_of_a_step_is_never_cut_a_thi
 
 @pytest.mark.slow
 def test_a_still_walk_over_a_shadow_on_the_screen_on_a_picture_shaken_twice_a_step_is_never_witnessed(tmp_path):
-    """The wide walker held still on its legs (crossings its steps, 23 frames), over a shadow drawn on the screen
-    touching its soles, on a picture shaken 6 px up and down twice a step: the step count reads no feet, and the search
-    cuts 23 frames — one step. On the screen the top line rises and falls twice the cut with the picture, and the
-    lowest opaque row, the feet's, with it: the picture's moving, not the body's own. The lowest solid row is the
-    shadow, holding still: read over it alone, the picture's moving is the body's own and witnesses two steps. Over the
-    lowest opaque row the top line holds still. Neither line witnesses the cut: held, named."""
-    shaken = _shadowed(lambda k: _alike(k, **_STEPS, bob=0), _shake((0.5, 6, math.pi / 2), 23), shadow="touch", screen=True)
+    """The wide walker held still on its legs (crossings its steps, 23 frames), its arms swinging within its sides, over
+    a shadow drawn on the screen touching its soles, on a picture shaken 6 px up and down twice a step: the step count
+    reads no feet, and the search cuts 23 frames — one step. On the screen the top line rises and falls twice the cut
+    with the picture, and the lowest opaque row, the feet's, with it: the picture's moving, not the body's own. The
+    lowest solid row is the shadow, holding still: read over it alone, the picture's moving is the body's own and
+    witnesses two steps, every band of its upper body holding still on the beat. Over the lowest opaque row the top line
+    holds still. Neither line witnesses the cut: held, named."""
+    shaken = _shadowed(lambda k: _alike(k, **_STEPS, bob=0, arm=ARMS_IN), _shake((0.5, 6, math.pi / 2), 23), shadow="touch",
+                       screen=True)
     report = _cut(tmp_path / "out", _keyed(tmp_path, shaken))
     _not_silent(report, 46)
     assert report["cycle"]["step_count"]["readable"] is False
@@ -1324,16 +1603,18 @@ def test_a_still_walk_over_a_shadow_on_the_screen_on_a_picture_shaken_twice_a_st
 
 @pytest.mark.slow
 @pytest.mark.parametrize("walker, cycle, sway", [("steps", 46, (2, 12, 0)), ("steps", 46, (3, 24, math.pi / 2)),
-                                                 ("behind", 20, (2, 24, 0))])
+                                                 ("behind", 20, (2, 24, math.pi))])
 def test_a_walk_rising_on_its_legs_on_a_picture_swaying_once_a_cycle_or_slower_is_witnessed_one_cycle(tmp_path, walker, cycle, sway):
-    """A walk rising and falling on its legs once a step, its feet on the ground, on a picture swaying up and down once
-    a cycle or slower — 12 px either way every 46 frames or 24 px every 69 (the wide walker with its legs drawn alike,
-    its crossings its steps every 23 frames), 24 px every 40 (the walker whose far foot passes hidden, 20 frames a cycle
-    on twos): a slow motion of the whole picture, not the walk's. The cut is a cycle. Taken out at the cut's length,
-    the flow leaves the sway whole, and the top line on the screen rises and falls with it once the cut: read there
-    alone, the body's rise and fall twice the cut is hidden and the cycle held. Over its feet, which move with the
-    picture, the top line rises and falls twice the cut: two steps, witnessed, nothing named."""
-    draw, d = {"steps": (lambda k: _alike(k, **_STEPS), 23), "behind": (lambda k: _behind(k, cycle=20, hold=2), 20)}[walker]
+    """A walk rising and falling on its legs once a step, its feet on the ground, its arms swinging within its sides, on
+    a picture swaying up and down once a cycle or slower — 12 px either way every 46 frames or 24 px every 69 (the wide
+    walker with its legs drawn alike, its crossings its steps every 23 frames), 24 px every 40, up first (the walker
+    whose far foot passes hidden, 20 frames a cycle on twos): a slow motion of the whole picture, not the walk's. The
+    cut is a cycle. Taken out at the cut's length, the flow leaves the sway whole, and the top line on the screen rises
+    and falls with it once the cut: read there alone, the body's rise and fall twice the cut is hidden and the cycle
+    held. Over its feet, which move with the picture, the top line rises and falls twice the cut: two steps, witnessed,
+    nothing named."""
+    draw, d = {"steps": (lambda k: _alike(k, **_STEPS, arm=ARMS_IN), 23),
+               "behind": (lambda k: _behind(k, cycle=20, hold=2, arm=ARMS_IN), 20)}[walker]
     report = _cut(tmp_path / "out", _keyed(tmp_path, _carried(draw, _shake(sway, d))))
     _not_silent(report, cycle)
     c = report["cycle"]
@@ -1359,19 +1640,85 @@ def _leaning(draw, degrees: float):
 @pytest.mark.slow
 def test_a_walk_leaning_further_on_its_feet_as_it_goes_is_witnessed_one_cycle(tmp_path):
     """The walker whose far foot passes hidden behind the near one, its legs drawn alike, its feet meeting once a cycle
-    (17.5 frames), rising and falling on its legs once a step, turned 15 degrees about its feet over the clip: a lean
-    changing slowly, on its feet. The search cuts a cycle. The lean tilts the ground under the feet, and the line over
-    them takes in the two feet's heights by turns: it does not rise and fall twice the cut, nor four times, nor once —
-    read there alone the cycle is held. On the screen the top line, less its flow, rises and falls of its own twice the
-    cut: two steps, witnessed, nothing named."""
-    report = _cut(tmp_path / "out", _keyed(tmp_path, _leaning(lambda k: _behind(k, cycle=17.5, hold=1, alike=True), -15)))
+    (17.5 frames), rising and falling 3 px on its legs once a step, its arms swinging within its sides, turned 15
+    degrees about its feet over the clip: a lean changing slowly, on its feet. The count reads its crossings as cycles
+    and cuts one cycle. On the screen the top line, less its flow, rises and falls of its own twice the cut, every band
+    of its upper body a zoom so far would move a pixel holding still on the beat: two steps, witnessed, nothing named.
+    The lean tilts the ground under the feet, and the line over them takes in the two feet's heights by turns: read off
+    its frames on a cut of 18, it does not rise and fall twice the cut, nor four times, nor once, where the line on the
+    screen says two steps. (Its arms swinging past its sides, as the parent engine's walker's did, the bands they swing
+    across move on the beat, and a zoom is not told from them: its crossings stay on steps, two intervals, named.)"""
+    leaning = _leaning(lambda k: _behind(k, cycle=17.5, hold=1, alike=True, arm=ARMS_IN), -15)
+    report = _cut(tmp_path / "out", _keyed(tmp_path, leaning))
     _not_silent(report, 17.5)
     c = report["cycle"]
     said = c["cut_witness"]
     assert report["status"] == "passed" and abs(c["length"] - 17.5) <= 1 and said["cut"] == [c["start"], c["length"]]
-    assert said["says"] == "two steps" and said["by"] == ["screen"] and "held" not in said
-    assert said["lines"]["feet"]["says"] is None and "does not rise and fall twice an interval" in said["lines"]["feet"]["why"]
+    assert c["step_count"]["cycles"]["cycles"] is True and c["steps"] == {"count": 2, "by": "crossings"}
+    assert said["says"] == "two steps" and "screen" in said["by"] and "held" not in said
+    body = said["lines"]["screen"]["bob"]["body"]
+    assert body["still_bands"] == sum(r is not None for r in body["bands"]["reads"]) >= 1
     assert not local_cycle.unwitnessed(c) and not any(local_cycle.UNWITNESSED in w for w in report["jolt"]["warnings"])
+    frames = [leaning(k) for k in range(FRAMES)]
+    word = local_cycle.cut_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, 18)
+    assert word["says"] == "two steps" and word["by"] == ["screen"] and word["lines"]["feet"]["says"] is None
+    assert "does not rise and fall twice an interval" in word["lines"]["feet"]["why"]
+
+
+# The walkers the tests above draw with their arms swinging within their sides (ARMS_IN) and witness, or read one step,
+# drawn with their arms swinging 16 px either way of the body's middle, past its sides, as the parent engine's tests
+# drew them: (draw, frames, view, the walk's cycle, the cut: "steps" and the interval its crossings are left on steps
+# at, cut two intervals, or "held" and the length of the cut held as chosen).
+PAST_ITS_SIDES = {
+    "hidden-18.5-ones": (lambda k: _behind(k, cycle=18.5, hold=1), FRAMES, None, 18.5, ("steps", 18.5)),
+    "hidden-20-twos": (lambda k: _behind(k, cycle=20, hold=2), FRAMES, None, 20, ("steps", 20)),
+    "hidden-24-threes": (lambda k: _behind(k, cycle=24, hold=3), FRAMES, None, 24, ("steps", 24)),
+    "alike-17.5": (lambda k: _behind(k, cycle=17.5, hold=1, alike=True), FRAMES, None, 17.5, ("steps", 17.5)),
+    "alike-17.5-back_diagonal": (lambda k: _behind(k, cycle=17.5, hold=1, alike=True), FRAMES, "back_diagonal", 17.5,
+                                 ("steps", 17.5)),
+    "alike-20": (lambda k: _behind(k, cycle=20, hold=2, alike=True), FRAMES, None, 20, ("steps", 20)),
+    "alike-20-back_diagonal": (lambda k: _behind(k, cycle=20, hold=2, alike=True), FRAMES, "back_diagonal", 20, ("steps", 20)),
+    "outward-18": (lambda k: _outward(k, cycle=18), FRAMES, "front_diagonal", 18, ("steps", 18)),
+    "carried-arc": (_carried(lambda k: _behind(k, cycle=17.5, hold=1, alike=True), "arc", 0), FRAMES, None, 17.5,
+                    ("steps", 17.5)),
+    "carried-cubic": (_carried(lambda k: _behind(k, cycle=17.5, hold=1, alike=True), "cubic", 60), FRAMES, None, 17.5,
+                      ("steps", 17.5)),
+    "leaning": (_leaning(lambda k: _behind(k, cycle=17.5, hold=1, alike=True), -15), FRAMES, None, 17.5, ("steps", 17.5)),
+    "far-leg-off-side": (lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_half=10), FRAMES, "side", 46,
+                         ("held", 46)),
+    "far-leg-off-front_diagonal": (lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_half=10), FRAMES,
+                                   "front_diagonal", 46, ("held", 46)),
+    "slides": (lambda k: _alike(k, **_STEPS, lift=8, slide=12), FRAMES, None, 46, ("held", 23)),
+    "limps": (lambda k: _alike(k, cycle=30, phase=8, tone=4, lean=1, bob=0, limp=3), 100, None, 30, ("held", 30)),
+    "shaken-over-a-shadow": (_shadowed(lambda k: _alike(k, **_STEPS, bob=0), _shake((0.5, 6, math.pi / 2), 23), shadow="touch",
+                                       screen=True), FRAMES, None, 46, ("held", 23)),
+    "swaying-12-every-46": (_carried(lambda k: _alike(k, **_STEPS), _shake((2, 12, 0), 23)), FRAMES, None, 46, ("held", 46)),
+    "swaying-24-every-69": (_carried(lambda k: _alike(k, **_STEPS), _shake((3, 24, math.pi / 2), 23)), FRAMES, None, 46,
+                            ("held", 46)),
+    "hidden-swaying-24-every-40": (_carried(lambda k: _behind(k, cycle=20, hold=2), _shake((2, 24, 0), 20)), FRAMES, None, 20,
+                                   ("held", 20)),
+}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("form", list(PAST_ITS_SIDES))
+def test_a_walk_whose_arms_swing_past_its_sides_is_never_witnessed_its_crossings_left_on_steps_or_its_cut_held(tmp_path, form):
+    """The walkers witnessed above, or read one step, drawn as the parent engine's tests drew them, their arms swinging
+    past their sides (`PAST_ITS_SIDES`): the bands the arms swing across widen and narrow on the beat, and a zoom's
+    part there is not told from theirs. Nothing that reads no leg witnesses two steps an interval, or the cut whole
+    cycles. A walk whose feet meet once a cycle has its crossings left on steps and is cut two intervals, named (the
+    parent engine witnessed it one cycle, or, leaning, held that cycle); any other cut is held as chosen, named, its
+    word null (the parent engine witnessed the far leg's two steps and the swaying walks' cycle over their feet,
+    nothing named, and held the sliding foot's and the limp's cut on the word one step). Never a silent half cycle."""
+    draw, frames, view, cycle, (kind, length) = PAST_ITS_SIDES[form]
+    report = _cut(tmp_path / "out", _keyed(tmp_path, draw, frames=frames), *(("--view", view) if view else ()))
+    _not_silent(report, cycle)
+    if kind == "steps":
+        said = _unwitnessed(report, length)
+        assert "its upper body's width changes with it" in said["bob"]["why"]
+    else:
+        said = _held(report)
+        assert said["says"] is None and abs(said["cut"][1] - length) <= 1.5
 
 
 @pytest.mark.parametrize("verdict, named", [("uncertain", True), ("two", False)])

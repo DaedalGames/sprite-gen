@@ -14,16 +14,23 @@ Both read the same per-frame signals (`strike_signals`) and choose between them 
 - `top`: the body's top line, for a body with no legs to read. It rises and falls once a step
   whichever leg leads, so the step count reads it as the witness that a crossing interval, or a
   cut, holds two steps (`local_cycle.bob_word`, `local_cycle.cut_word`) — against the lowest row,
-  the lowest opaque row and the head's width, since the picture moving or zoomed with the body
-  moves the line as well.
+  the lowest opaque row and the widths of the upper body, since the picture moving or zoomed with
+  the body moves the line as well.
 - `gap`: the widest empty run between the foot band's two ends, of the frame's height — two feet
   seen apart.
 
-The step count's witness reads two more (`body_signals`), recorded nowhere else:
+The step count's witness reads more (`body_signals`), recorded nowhere else:
 
-- `crown`: the head's width, the log of the mean width (in alpha) of the band CROWN of the clip's
-  median body height below the first solid row. A picture zoomed in and out widens and narrows
-  it as it lifts and lowers the top line; a body rising and falling on its legs leaves it.
+- `bands`: the upper body's widths, the mean width (in alpha, pixels) of each band of BANDS, each
+  at its own depth below the first solid row, of the clip's median body height: from the top of
+  the head down to the middle of the body. A body rising and falling on its legs carries them
+  whole and leaves their widths; a picture zoomed in and out widens and narrows each as the top
+  line lifts and lowers, as far as its outline lets it: a band whose sides run straight down by
+  the zoom's whole part, a band across a top that widens as it goes down (a pointed head, an
+  ear's tip, a hat's point) by less, the band under a point by none. How far is measured, not
+  assumed (`zoomed`, `band_widths`): `band_rows` are the bands' rows below the first solid row,
+  and `median_frame` is the alpha of the frame whose body height is the clip's median, to be
+  zoomed as far as the beat the witness reads.
 - `sole`: the lowest row with a pixel drawn fully opaque (alpha OPAQUE), or the lowest solid row
   where a frame has none. A shadow is drawn translucent under the feet, solid all the same, and
   it need not move with them: one drawn on the screen stays while the picture moves, and the
@@ -57,7 +64,9 @@ FOOT_BAND = 0.08  # fraction of the frame's own height, measured up from its low
 LOW_ALPHA = 128  # the legs are read off solid pixels only
 OPAQUE = 255  # drawn fully opaque: the feet, not a shadow drawn translucent under them
 BODY_RUN = 0.5  # the body's top line: the first row at least half as wide as the frame's widest
-CROWN = (0.02, 0.10)  # the head's top band: from 2 % to 10 % of the body's median height below its first solid row
+# The upper body's bands, each from and to these fractions of the body's median height below its first solid row: the
+# head's top band first, then down to the middle of the body, where the legs part.
+BANDS = ((0.02, 0.10), (0.10, 0.18), (0.18, 0.26), (0.26, 0.34), (0.34, 0.42), (0.42, 0.50))
 # A walk seen from the side or a diagonal opens its feet by a good part of its height each step;
 # from the front or back its foot band hardly changes width, but the foot nearer the viewer is
 # drawn lower by a few hundredths of it.
@@ -115,11 +124,46 @@ def strike_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
     return out
 
 
-def body_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
-    """Per frame, from the solid pixels, what the step count's witness reads besides `strike_signals`:
-    `crown`, `sole` and `edge` (see the module). `crown` reads the same band of every frame, of the
-    clip's median body height."""
-    edge, sole, firsts, heights, widths = [], [], [], [], []
+def band_rows(median: float) -> list[tuple[int, int]]:
+    """The rows of each band of BANDS below the first solid row of a body `median` rows tall, from and to (not
+    including), each at least a row."""
+    rows = []
+    for a, b in BANDS:
+        a0 = max(1, math.ceil(a * median))
+        rows.append((a0, max(a0 + 1, math.ceil(b * median))))
+    return rows
+
+
+def _row_widths(alpha: np.ndarray) -> tuple[int, np.ndarray]:
+    """(the first solid row, each row's width in alpha, pixels) of `alpha`."""
+    solid = np.nonzero((alpha >= LOW_ALPHA).any(axis=1))[0]
+    if solid.size == 0:
+        raise ValueError("a loop frame has no solid body")
+    return int(solid[0]), alpha.sum(axis=1, dtype=np.float64) / 255.0
+
+
+def _bands_of(y0: int, width: np.ndarray, rows: list[tuple[int, int]]) -> list[float]:
+    return [float(width[y0 + a0 : y0 + a1].sum() / (a1 - a0)) for a0, a1 in rows]
+
+
+def band_widths(alpha: np.ndarray, rows: list[tuple[int, int]]) -> list[float]:
+    """The mean width (in alpha, pixels) of each band `rows` (`band_rows`) below the first solid row of `alpha`."""
+    return _bands_of(*_row_widths(alpha), rows)
+
+
+def zoomed(alpha: np.ndarray, scale: float) -> np.ndarray:
+    """`alpha` zoomed in by `scale` (bilinear) on a canvas grown to hold it."""
+    im = Image.fromarray(np.asarray(alpha, dtype=np.uint8))
+    size = (math.ceil(im.width * scale), math.ceil(im.height * scale))
+    return np.asarray(im.transform(size, Image.Transform.AFFINE, (1 / scale, 0, 0, 0, 1 / scale, 0),
+                                   resample=Image.Resampling.BILINEAR))
+
+
+def body_signals(frames: list[Image.Image]) -> dict[str, Any]:
+    """From the solid pixels, what the step count's witness reads besides `strike_signals` (see the module): per
+    frame `bands`, `sole` and `edge`; and `band_rows` and `median_frame`. `bands` reads the same rows of every frame,
+    of the clip's median body height."""
+    edge, sole, heights, read = [], [], [], []
     for f in frames:
         alpha = np.asarray(f.getchannel("A"))
         rows = np.nonzero((alpha >= LOW_ALPHA).any(axis=1))[0]
@@ -129,13 +173,14 @@ def body_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
         opaque = np.nonzero((alpha >= OPAQUE).any(axis=1))[0]
         sole.append(float(opaque[-1] if opaque.size else y1))
         edge.append(float(y1 == alpha.shape[0] - 1))
-        firsts.append(y0)
         heights.append(y1 - y0 + 1)
-        widths.append(alpha.sum(axis=1, dtype=np.float64) / 255.0)
+        read.append(_row_widths(alpha))
     median = float(np.median(heights)) if frames else 0.0
-    a0, a1 = max(1, math.ceil(CROWN[0] * median)), max(2, math.ceil(CROWN[1] * median))
-    crown = [float(np.log(max(1e-6, w[y0 + a0 : y0 + a1].sum() / (a1 - a0)))) for y0, w in zip(firsts, widths)]
-    return {"crown": crown, "sole": sole, "edge": edge}
+    rows = band_rows(median)
+    middle = (np.asarray(frames[int(np.argmin([abs(h - median) for h in heights]))].getchannel("A")) if frames
+              else np.zeros((1, 1), np.uint8))
+    return {"bands": [_bands_of(y0, width, rows) for y0, width in read], "band_rows": rows, "median_frame": middle,
+            "sole": sole, "edge": edge}
 
 
 def swings(sig: dict[str, list[float]]) -> dict[str, float]:
