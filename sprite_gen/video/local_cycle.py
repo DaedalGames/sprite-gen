@@ -19,6 +19,7 @@ import math
 from sprite_gen._deps import np
 from sprite_gen.video import period as period_mod
 from sprite_gen.video import crossings as crossings_mod
+from sprite_gen.video import legs as legs_mod
 from sprite_gen.video.crossings import HIDE_SHARE
 
 REFUSED_SHOWN = 12  # refused windows a failed search reports, as many as a found cycle's candidates
@@ -54,21 +55,33 @@ CUE_FLOOR = 0.5
 # the ground under them, and the line over its feet takes in the two feet's heights by turns, where the screen line
 # has none of them.
 # The picture moving up and down moves the line as the body does, on any beat — shaken twice an interval it is pixel for
-# pixel a body carried up and down whole, feet and all — and the picture zoomed in and out lifts and lowers it too. So the
-# line's rise and fall twice an interval (`twice_an_interval`) is read against the body's own lowest row and head
-# (`own_beat`): less the lowest solid row's (`legs.strike_signals` `reach`, the planted foot, which a body rising on its
-# legs leaves on the ground and the picture carries along), and less that again of the head's width's
-# (`legs.body_signals` `crown`, scaled to the body's median height: a zoom widens the head as it lifts the line, a body
-# rising leaves it). What is left of the line's rise and fall either way is the body's own: at least BOB_OWN of it and
-# over the floor above, and the head's width taking it down to no less than BOB_SCALE of what is left against the lowest
-# row. Else the picture moves or zooms with the line, or the body does not rise and fall enough of its own to tell from
-# it, and nothing is witnessed. Where the lowest solid row is the frame's last row in any frame (`legs.body_signals`
-# `edge`) it is the frame's, not the feet's, and nothing is witnessed either.
+# pixel a body carried up and down whole, feet and all — and the picture zoomed in and out lifts and lowers it too. So
+# the line's rise and fall twice an interval (`twice_an_interval`) is read against the body's own lowest row and upper
+# body (`own_beat`): less the lowest solid row's (`legs.strike_signals` `reach`, the planted foot, which a body rising
+# on its legs leaves on the ground and the picture carries along), and less that again of the zoom each band of the
+# upper body reads (`legs.body_signals` `bands`: a body rising on its legs carries them whole and leaves their widths; a
+# zoom widens each as it lifts the line, as far as the band's outline lets it — one whose sides run straight down by the
+# zoom's whole part, one under a point, as of a pointed head, an ear or a hat, by none). How far a zoom moves each band
+# is measured on the body as it is drawn, not assumed of its outline: the frame of its median height zoomed in as far as
+# the line's rise and fall against the lowest row lengthens the body (`legs.zoomed`). A band such a zoom moves
+# BAND_FLOOR pixels or more is seen; under a pixel, how far a band's width moves is set as much by how its outline sits
+# on the pixel grid (its first solid row rounded, a point's edges blurred) as by the zoom — a pointed head's top band,
+# zoomed in once, may move most of a pixel and, zoomed so on the beat, a quarter of one — and one moved less reads none.
+# A body rising and falling so little that no band would move a pixel is not told from a zoom. A band seen holds still
+# on the beat where its width rises and falls twice an interval by no more than 1 - BOB_SCALE of what that zoom moves
+# it. The witness holds by default: where no band is seen, or none seen holds still, nothing tells the picture zooming
+# from the body's own, and nothing is witnessed — a band its parts swing across on the beat, as arms do, moves as much
+# as a zoom might. What is left of the line's rise and fall is the body's own where, against the lowest row, it is at
+# least BOB_OWN of it and over the floor above, and less the zoom each band seen reads, it is so again and no less than
+# BOB_SCALE of what is left against the lowest row. Else the picture moves or zooms with the line, or the body does not
+# rise and fall enough of its own to tell from it, and nothing is witnessed. Where the lowest solid row is the frame's
+# last row in any frame (`legs.body_signals` `edge`) it is the frame's, not the feet's, and nothing is witnessed either.
 BOB_TWICE = 0.28
 BOB_FLOOR = 0.005
 BOB_ROWS = 2
 BOB_OWN = 0.3
 BOB_SCALE = 0.6
+BAND_FLOOR = 1.0  # pixels of a band's mean width a zoom moves: under it the pixel grid moves the band as much
 BEAT_FRAMES = 8  # a rise and fall twice an interval is fitted (`twice_an_interval`) to no fewer frames
 # The lines a walk's cut is read on (`cut_word`), and where each reads the body's top line: on the screen, and over its
 # feet (`over_feet`). Each says its own word; the cut's is the first either says, in CUT_WORDS' order.
@@ -602,21 +615,40 @@ def twice_an_interval(values, interval):
 
 def own_beat(signals, interval):
     """The body's own rise and fall twice an interval `interval` frames long (`bob_word`), read off `signals`
-    (`legs.strike_signals` `top`, `reach` and `height`, `legs.body_signals` `crown` and `sole`) as `twice_an_interval`
-    reads each: the top line's, less the lowest row's (the picture moving taken out) — the lowest solid row's or the
-    lowest opaque row's, whichever leaves less: a shadow drawn translucent under the feet and fixed on the screen is the
-    lowest solid row and does not move with the picture, the feet do — and less that again of the head's width's scaled
-    to the body's median height (the picture zooming taken out). Returns, in rows up and down: `beat` (the top line's),
-    `lowest`, `sole`, `head`, `less_lowest`, `less_head`, and `own`, the smaller of the last two. None where a line is
-    not read."""
+    (`legs.strike_signals` `top`, `reach` and `height`, `legs.body_signals`) as `twice_an_interval` reads each: the top
+    line's, less the lowest row's (the picture moving taken out) — the lowest solid row's or the lowest opaque row's,
+    whichever leaves less: a shadow drawn translucent under the feet and fixed on the screen is the lowest solid row and
+    does not move with the picture, the feet do — and, band by band of the upper body (`legs.body_signals` `bands`),
+    less the zoom that band's width reads (the picture zooming taken out). A band reads a zoom as far as one moves it:
+    the frame of the body's median height (`median_frame`) zoomed in as far as the line's rise and fall left against
+    the lowest row lengthens the body (`legs.zoomed`) moves the band's width `zoom` pixels; a band it moves under
+    BAND_FLOOR pixels is not seen, and reads nothing. A band seen holds still on the beat where its width rises and
+    falls twice an interval no more than 1 - BOB_SCALE of `zoom`: whatever the turn of that, less it no less than
+    BOB_SCALE of the line's rise and fall is left. Returns, in rows up and down: `beat` (the top line's), `lowest`,
+    `sole`, `less_lowest`, `bands` (per band: its `rows` below the first solid row, its `width` in the median frame and
+    `zoom`, in pixels; `beat`, its width's rise and fall twice an interval, in pixels up and down; where it is seen,
+    `reads`, `beat` of `zoom` — the share of the zoom making the line's rise and fall it reads — and `less`, what is
+    left of the line's rise and fall less that zoom, else None), `less_bands`, the least `less` (None where no band is
+    seen), `still_bands`, the bands seen that hold still on the beat, and `own`, the smaller of `less_lowest` and
+    `less_bands`. None where a line is not read."""
     height = float(np.median(signals['height']))
-    top, lowest, sole, crown = (twice_an_interval(signals[k], interval) for k in ('top', 'reach', 'sole', 'crown'))
-    if top is None or lowest is None or sole is None or crown is None:
+    top, lowest, sole = (twice_an_interval(signals[k], interval) for k in ('top', 'reach', 'sole'))
+    if top is None or lowest is None or sole is None:
         return None
-    less_lowest = min(top - lowest, top - sole, key=abs)
-    less_head = less_lowest + height*crown
-    return {'beat': 2*abs(top), 'lowest': 2*abs(lowest), 'sole': 2*abs(sole), 'head': 2*height*abs(crown),
-            'less_lowest': 2*abs(less_lowest), 'less_head': 2*abs(less_head), 'own': 2*min(abs(less_lowest), abs(less_head))}
+    left = min(top - lowest, top - sole, key=abs)
+    rows, still = signals['band_rows'], signals['median_frame']
+    widths = legs_mod.band_widths(still, rows)
+    zoom = [z - w for z, w in zip(legs_mod.band_widths(legs_mod.zoomed(still, 1 + 2*abs(left)/height), rows), widths)]
+    beats = [twice_an_interval([f[b] for f in signals['bands']], interval) for b in range(len(rows))]
+    seen = [abs(z) >= BAND_FLOOR for z in zoom]
+    less = [2*abs(left + beat*2*abs(left)/z) if s else None for z, beat, s in zip(zoom, beats, seen)]
+    reads = [2*abs(beat)/abs(z) if s else None for z, beat, s in zip(zoom, beats, seen)]
+    less_bands = min((v for v in less if v is not None), default=None)
+    return {'beat': 2*abs(top), 'lowest': 2*abs(lowest), 'sole': 2*abs(sole), 'less_lowest': 2*abs(left),
+            'bands': {'rows': [list(r) for r in rows], 'width': widths, 'zoom': zoom, 'beat': [2*abs(b) for b in beats],
+                      'reads': reads, 'less': less},
+            'less_bands': less_bands, 'still_bands': sum(1 for r in reads if r is not None and r <= 1 - BOB_SCALE),
+            'own': 2*abs(left) if less_bands is None else min(2*abs(left), less_bands)}
 
 
 def over_feet(signals, interval):
@@ -639,13 +671,17 @@ def bob_word(signals, interval, *, feet=False):
     and -BOB_TWICE or under here): it rises and falls twice an interval. With `feet`, the line so read is the top line
     over the lowest row (`over_feet`), the picture's moving taken out first (`cut_word`: the picture moving once a cut,
     which `off_flow` leaves whole, would hide the rise and fall twice it). And that rise and fall is the body's own
-    (`own_beat`): what is left of it against the lowest row (solid or opaque, whichever leaves less), and against the
-    head's width as well, is at least BOB_OWN of it and over the floor, the head's width taking it down to no less than
-    BOB_SCALE of what is left against the lowest row, and no frame's lowest row is its last (`edge`). Then `says`
-    `cycles` — a step each rise, two steps an interval; None otherwise, with why. Returns the record: `swing` (the line
-    left's range, of the body's height), `rows` (in rows), `floor`, `twice`, `over` (with `feet`: the row the line is
-    read over), `half` and `quarter` (where read), `edge` (frames whose lowest row is their last), `body` (`own_beat`,
-    in rows up and down, with `share`, `own` of `beat`, and `scale`, `less_head` of `less_lowest`; where read), `says`."""
+    (`own_beat`): what is left of it against the lowest row (solid or opaque, whichever leaves less) is at least BOB_OWN
+    of it and over the floor; a band of the upper body would show the picture zooming as far as that (seen, BAND_FLOOR
+    pixels or more), and less the zoom each band seen reads, as much is left again, and no less than BOB_SCALE of what
+    is left against the lowest row; a band seen holds still on the beat; and no frame's lowest row is its last (`edge`).
+    Held by default: where no band is seen, or none seen holds still (its parts swinging on the beat, as arms do, or the
+    picture zooming), the body's own is not told from a zoom, and nothing is witnessed. Then `says` `cycles` — a step
+    each rise, two steps an interval; None otherwise, with why. Returns the record: `swing` (the line left's range, of
+    the body's height), `rows` (in rows), `floor`, `twice`, `over` (with `feet`: the row the line is read over), `half`
+    and `quarter` (where read), `edge` (frames whose lowest row is their last), `body` (`own_beat`, in rows up and down,
+    with `share`, `own` of `beat`, and `scale`, `less_bands` of `less_lowest`, None where no band is seen; where read),
+    `says`."""
     height = float(np.median(signals['height']))
     line, what, extent = signals['top'], "its top line", "its top line's range"
     word = {}
@@ -667,10 +703,14 @@ def bob_word(signals, interval, *, feet=False):
     beat = own_beat(signals, interval)
     word.update(half=None if half is None else round(half, 3), quarter=None if quarter is None else round(quarter, 3), edge=edge)
     if beat is not None:
-        word['body'] = {**{k: round(v, 2) for k, v in beat.items()},
+        bands = beat['bands']
+        word['body'] = {**{k: None if v is None else round(v, 2) for k, v in beat.items() if k != 'bands'},
+                        'bands': {'rows': bands['rows'], **{k: [None if v is None else round(v, 2) for v in bands[k]]
+                                                            for k in ('width', 'zoom', 'beat', 'reads', 'less')}},
                         'share': round(beat['own']/beat['beat'], 3) if beat['beat'] else 0.0,
-                        'scale': round(beat['less_head']/beat['less_lowest'], 3) if beat['less_lowest'] else 0.0,
-                        'least': BOB_OWN, 'scale_least': BOB_SCALE}
+                        'scale': (None if beat['less_bands'] is None else
+                                  round(beat['less_bands']/beat['less_lowest'], 3) if beat['less_lowest'] else 0.0),
+                        'least': BOB_OWN, 'scale_least': BOB_SCALE, 'band_floor': BAND_FLOOR}
     if half is None or quarter is None or half < BOB_TWICE or quarter > -BOB_TWICE:
         return {**word, 'says': None, 'why': f"{what} less its flow does not rise and fall twice an interval "
                                              f"({'not read' if half is None else f'{half:+.2f}'} half an interval on, "
@@ -681,20 +721,35 @@ def bob_word(signals, interval, *, feet=False):
                                              "the feet may run off the frame, and the picture moving is not read off them"}
     if beat is None:
         return {**word, 'says': None, 'why': f"its top line's rise and fall twice an interval is not read against its lowest row "
-                                             f"and head: under {BEAT_FRAMES} frames are left less the flow"}
+                                             f"and upper body: under {BEAT_FRAMES} frames are left less the flow"}
     floor = max(BOB_ROWS, BOB_FLOOR*height)
     if beat['less_lowest'] < max(BOB_OWN*beat['beat'], floor):
         return {**word, 'says': None, 'why': f"its lowest row rises and falls with it: less the lowest row's, its top line's rise "
                                              f"and fall twice an interval is {beat['less_lowest']:.1f} rows of {beat['beat']:.1f} "
                                              f"({beat['less_lowest']/beat['beat']:.0%}; at least {BOB_OWN:.0%} and {floor:.1f} "
                                              "rows): the picture moves with the body, and the body's own is not told from it"}
-    if beat['less_head'] < max(BOB_OWN*beat['beat'], floor, BOB_SCALE*beat['less_lowest']):
-        return {**word, 'says': None, 'why': f"its head's width changes with it: less the head's scale too, its top line's rise "
-                                             f"and fall twice an interval is {beat['less_head']:.1f} rows of {beat['beat']:.1f} "
-                                             f"({beat['less_head']/beat['beat']:.0%}), {beat['less_head']/beat['less_lowest']:.2f} "
+    if beat['less_bands'] is None:
+        return {**word, 'says': None, 'why': f"no band of its upper body would show the picture zooming: zoomed in as far as "
+                                             f"its top line rises and falls twice an interval against its lowest row "
+                                             f"({beat['less_lowest']:.1f} rows of {height:.0f}), no band's width moves "
+                                             f"{BAND_FLOOR:g} px (at most {max(abs(z) for z in beat['bands']['zoom']):.2f}): "
+                                             "the picture zooming with the body is not told from the body's own"}
+    if beat['less_bands'] < max(BOB_OWN*beat['beat'], floor, BOB_SCALE*beat['less_lowest']):
+        a, b = legs_mod.BANDS[beat['bands']['less'].index(beat['less_bands'])]
+        return {**word, 'says': None, 'why': f"its upper body's width changes with it: less the zoom its band {a:.0%} to {b:.0%} "
+                                             f"of its height below its top reads, its top line's rise and fall twice an interval "
+                                             f"is {beat['less_bands']:.1f} rows of {beat['beat']:.1f} "
+                                             f"({beat['less_bands']/beat['beat']:.0%}), {beat['less_bands']/beat['less_lowest']:.2f} "
                                              f"of the {beat['less_lowest']:.1f} left against the lowest row (at least "
                                              f"{BOB_OWN:.0%}, {floor:.1f} rows and {BOB_SCALE:g}): the picture zooms with the body, "
                                              "and the body's own is not told from it"}
+    if not beat['still_bands']:
+        r, i = min((r, i) for i, r in enumerate(beat['bands']['reads']) if r is not None)
+        a, b = legs_mod.BANDS[i]
+        return {**word, 'says': None, 'why': f"no band of its upper body holds still with it: each band a zoom so far would "
+                                             f"move {BAND_FLOOR:g} px or more rises and falls twice an interval by more than "
+                                             f"{1 - BOB_SCALE:.0%} of that (the least, its band {a:.0%} to {b:.0%} of its height "
+                                             f"below its top, {r:.0%}): the picture zooming is not told from the body's own"}
     return {**word, 'says': 'cycles'}
 
 
@@ -712,11 +767,11 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
     cycles only where a witness that reads no leg says the interval holds two steps — the body's top line (`signals`,
     `legs.strike_signals` with `legs.body_signals`) rising and falling twice an interval, less its flow and of its own
     (`bob_word`: the picture drifting, swaying, shaking or zooming up and down as it pleases witnesses nothing, read
-    against the lowest row and the head's width; a lowest row on the frame's edge holds the word). The view's foot cue
-    (`cue`, per frame, drawn in steps of `cue_step`; `cue_word`) only refuses: where it turns over one interval on, the other leg leads
-    there, a step. With no witness the crossings stay on steps, as from the side, and the record names it
-    (`unwitnessed`): where the feet do meet once a cycle, each step counted is a cycle. Returns what was read, None
-    where it is not asked."""
+    against the lowest row and the widths of the upper body; a lowest row on the frame's edge holds the word). The
+    view's foot cue (`cue`, per frame, drawn in steps of `cue_step`; `cue_word`) only refuses: where it turns over one
+    interval on, the other leg leads there, a step. With no witness the crossings stay on steps, as from the side, and
+    the record names it (`unwitnessed`): where the feet do meet once a cycle, each step counted is a cycle. Returns
+    what was read, None where it is not asked."""
     if reading.mode != 'gap' or not reading.readable:
         return None
     overlap, hides = reading.overlap, reading.hides
@@ -747,7 +802,8 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
             said.update(cycles=True, why=f"{picture}, and the body's top line less its flow rises and falls twice an interval "
                                          f"({bob['half']:+.2f} half an interval on, at least {BOB_TWICE:+g}; {bob['quarter']:+.2f} a "
                                          f"quarter on, at most {-BOB_TWICE:+g}), the body's own ({bob['body']['own']:.1f} rows of "
-                                         f"{bob['body']['beat']:.1f} left against its lowest row and head, {bob['body']['share']:.0%}; "
+                                         f"{bob['body']['beat']:.1f} left against its lowest row and upper body, "
+                                         f"{bob['body']['share']:.0%}; "
                                          f"at least {BOB_OWN:.0%}): two steps an interval, the feet meet once a cycle")
         else:
             said.update(cycles=False, unwitnessed=True,
