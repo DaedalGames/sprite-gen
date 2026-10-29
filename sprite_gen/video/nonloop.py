@@ -89,6 +89,14 @@ def hold_ending(D: np.ndarray, masses: np.ndarray, fps: float, *, pose: EndPose)
     raise ValueError(f"once has no stable end pose: {reason} ({count} frames, limit {STABLE_MAX})")
 
 
+def given_ending(D: np.ndarray, masses: np.ndarray, fps: float, *, start: int, length: int) -> tuple[int, int, dict[str, Any]]:
+    """The bounds the caller names (`video-loop --cycle once --start --length`): those frames played once, a move cut
+    out of a longer motion (a vault in a run) that settles on no pose, so none is read."""
+    if start < 0 or length < 2 or start + length > len(D):
+        raise ValueError(f"--start {start} --length {length} does not fit {len(D)} frames")
+    return start, start + length - 1, {"kind": "given", "start": start, "length": length}
+
+
 def end_pose(state: str | None, frames: list[Image.Image], features: Callable[[Image.Image], np.ndarray]) -> EndPose:
     """The one judge of the pose a once cut ends on. A named terminal state (`STATES`) ends in its own body geometry
     (`terminal_pose`): lowered for `death` and `fall`, changed for the rest. Any other motion played once — a once-hold

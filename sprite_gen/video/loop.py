@@ -2220,8 +2220,9 @@ def _cut_loop(
             raise SystemExit(f"video-loop: cyclic state {state} cannot use --cycle {cycle_mode}")
         if anchor not in (None, "none"):
             raise SystemExit("video-loop: a single-play cut requires --anchor none")
-        if start is not None or length is not None:
-            raise SystemExit("video-loop: a single-play cut selects its terminal bounds; drop --start/--length")
+        if (start is not None or length is not None) and not (cycle_mode == "once" and None not in (start, length)):
+            raise SystemExit("video-loop: a single-play cut selects its terminal bounds; drop --start/--length (--cycle once "
+                             "takes both: the frames the caller plays once)")
         if not math.isfinite(fps) or fps <= 0 or not math.isfinite(gif_fps) or gif_fps <= 0 or (n_out is not None and n_out < 2):
             raise SystemExit("video-loop: positive fps and at least two output frames are required")
     if steps is not None and steps not in STEPS:
@@ -2410,6 +2411,10 @@ def _cut_loop(
                 print(f"video-loop: warning: the automatic motion anchor found its two regions from frame {skip} on, not from "
                       f"the clip's first frames: {left} left out of the search as a lead-in is (untracked_opening)",
                       file=sys.stderr)
+        elif cycle_mode == "once" and start is not None:
+            # The frames the caller plays once (a move cut out of a run, which settles on no pose): no terminal pose read.
+            cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(nonloop.given_ending, start=start, length=length))
+            nonloop.validate_body([Image.open(f).convert("RGBA") for f in files[start:start + length]])
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(
@@ -3094,9 +3099,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--n-out", type=int, help="frames in the GIF/WebP (default: cycle seconds x --gif-fps)")
     parser.add_argument("--gif-fps", type=float, default=GIF_FPS_DEFAULT, help=f"GIF/WebP playback density (default {GIF_FPS_DEFAULT:g}); every state plays at this rate regardless of cycle length")
     parser.add_argument("--seam-max", type=float, default=SEAM_RATIO_MAX, help=f"loop seam gate (default {SEAM_RATIO_MAX}): the wrap over the mean step. A walk or run is also held to the step gate — its largest step between drawings over their mean step at most {STEP_RATIO_MAX:g} (a step its drawing moving at most {STEP_JITTER_PX:g} pixels of the frames as filmed makes is a pixel's jitter, not held to it), and a fixed cut not one the clip's crossings count an odd number of steps; a --seam-max past {STEP_RATIO_MAX:g} lifts the step gate with it (every step's bound is then --seam-max, and an odd count a warning line)")
-    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate; auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin); once-return: the whole clip with its last frame, played once from its first pose back to it (loop false, returns true), for a clip pinned to end on its first frame (the gate is that pin)")
-    parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed)")
-    parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed)")
+    parser.add_argument("--cycle", choices=CYCLE_MODES, default="auto", help="once: a performed action ending in a stable held pose, with no return or seam gate (with --start and --length, exactly those frames played once: a move cut out of a longer motion, no end pose read); auto: non-loop states use once, otherwise periodic first, one-shot failover for action states (recorded in the report); periodic / one-shot force one detector; fixed cuts exactly --start/--length (no detection, reported as kind=fixed); pinned: the whole clip but its last frame, for a clip pinned to end on its first frame (the gate is that pin); once-return: the whole clip with its last frame, played once from its first pose back to it (loop false, returns true), for a clip pinned to end on its first frame (the gate is that pin)")
+    parser.add_argument("--start", type=int, help="fixed cut: first keyed frame of the cycle (with --cycle fixed, or --cycle once: the first frame played once)")
+    parser.add_argument("--length", type=int, help="fixed cut: cycle length in frames (with --cycle fixed, or --cycle once: the frames played once)")
     parser.add_argument("--strip-height", type=int, default=STRIP_MAX_HEIGHT, help=f"cell/strip/GIF height cap in px (default {STRIP_MAX_HEIGHT}); the cycle is scaled down to fit, and never up unless --body-height asks for it")
     parser.add_argument("--body-height", type=int, help="scale so the STANDING height (the subject in the clip's first frame, i.e. the base still's pose) is this many px — the same value across states gives the same character size; --strip-height stays the cap")
     parser.add_argument("--anchor", choices=ANCHOR_MODES, default=None, help="motion-auto: automatic stable regions, local repeat selection and XY ramp (walk/run); motion: fixed cut with explicit regions; body (default for walk/run): measure the last-to-first head-and-torso offset once and spread it as a ramp over the cycle; feet: remove in-canvas drift (a straight-line trend) so every cell stands on the mean foot line; none: leave placement as filmed (default for other states)")
