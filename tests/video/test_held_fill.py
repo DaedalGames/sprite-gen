@@ -156,14 +156,15 @@ def test_a_stalled_walk_has_its_held_cells_made_between_the_poses_beside_them(tm
     assert rep["seam_measurement"] == "rendered-cells"
 
 
-def test_an_interpolator_that_gives_the_pose_back_leaves_the_stalled_walk_as_filmed_and_says_so(tmp_path, capsys):
-    # No frame between at all: each frame it gives is the frame before, a held cell itself. Tried again at other
+@pytest.mark.parametrize("given", ["the frame before", "the frame after"])
+def test_an_interpolator_that_gives_the_pose_back_leaves_the_stalled_walk_as_filmed_and_says_so(given, tmp_path, capsys):
+    # No frame between at all: each frame it gives is a pose beside it, a held cell itself. Tried again at other
     # fractions, never taken: the cut is delivered as filmed, its record and its warnings say both runs are still held.
     calls: list[float] = []
 
     def stuck(a, b, t):
         calls.append(t)
-        return a
+        return a if given == "the frame before" else b
 
     rep = _run(tmp_path, shown_again(walk(), STALLED), interpolate=stuck, **STALLED_CUT)
     assert rep["status"] == "passed"
