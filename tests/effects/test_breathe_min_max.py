@@ -270,6 +270,15 @@ def test_a_bound_left_out_is_the_original_size() -> None:
     assert "depth" not in cfg and "depth_x" not in cfg
 
 
+def test_a_bake_handed_part_of_the_keys_reads_the_rest_as_zero() -> None:
+    """정규화를 거치지 않고 굽기에 바로 준 설정도 같다 — 네 키 중 일부만 있으면 나머지는 0 이지 세기 줄이 아니다
+    (큐레이터 미러 breatheBounds 와 같은 읽기)."""
+    src = _humanoid()
+    raw = {"width_max": 0.05, "breaths": 1, "lag": 0.1}
+    for t in (0.25, 0.75):
+        assert B.phase_frame(src, raw, t).tobytes() == B.phase_frame(src, _cfg(raw), t).tobytes()
+
+
 def test_the_row_strain_cap_reads_the_extremes() -> None:
     """행당 변형 상한(0.25)은 새 키의 극값으로 잰다 — 가로 극값은 그 자체가 가장 크게 숨쉬는 행의 몫이라 범위
     안(0.20 까지)이면 걸리지 않고, 세로 극값은 목 아래 몸통에 고루 나눈 몫이라 변형 구간이 좁은 그림에서 걸린다."""

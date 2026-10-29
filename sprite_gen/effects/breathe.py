@@ -89,7 +89,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
-from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
+from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_RANGE_KEYS, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
 from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish, reference_frame
@@ -202,11 +202,12 @@ def row_strain(anat: Anatomy, depth: float) -> float:
 # smooth 의 짝: 쉼(곡선 0)에서 최소, 들숨 꼭대기(곡선 1)에서 최대 — 가슴이 부풀며 오른다.
 
 def _bounds(cfg: dict) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """((가로 최소, 최대), (세로 최소, 최대)) — 줄이 최소·최대 키로 적혔으면(정규화가 네 키를 다 싣는다). 세기 줄은 None."""
-    if cfg.get("width_min") is None:
+    """((가로 최소, 최대), (세로 최소, 최대)) — 줄이 최소·최대 키로 적혔으면. 정규화는 네 키를 다 싣지만, 정규화를 거치지
+    않은 설정도 적지 않은 경계를 0 으로 읽는다 (state_breathe·미러 breatheBounds 와 같다). 세기 줄은 None."""
+    if all(cfg.get(k) is None for k in BREATHE_RANGE_KEYS):
         return None
-    return ((float(cfg["width_min"]), float(cfg["width_max"])),
-            (float(cfg["height_min"]), float(cfg["height_max"])))
+    value = lambda k: 0.0 if cfg.get(k) is None else float(cfg[k])
+    return ((value("width_min"), value("width_max")), (value("height_min"), value("height_max")))
 
 
 def pixel_gains(anat: Anatomy, cfg: dict) -> tuple[tuple[float, float], tuple[float, float]]:
