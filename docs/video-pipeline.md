@@ -694,31 +694,44 @@ lowercase hexadecimal digits; anything else is refused before anything is read):
   (`gait_fallback.scale_undone`) held cut frames to one size before cutting, which refuses the whole
   cut whatever frame is paired. It also occurs if `jump_repair` omits what jump repair made, if the
   paired frame is in `jump_repair.replaced`, `wrap_overlap.frames`, or `wrap_blend.cells`, or if one
-  of those three lists does not name its frames as whole frames. The refusal names whose records do
-  not give that frame as filmed (the cut's, given by `--read-on-cut`, or this loop's), and why. The
-  regions' centres, a `--region-mask` PNG, and a single `--hold-mask` PNG are moved pixel for pixel
-  onto cell j by the whole pixel shift derived from their crops and cell sizes taken on the frame as
-  filmed, provided every pixel lands within `RECUT_DRIFT` (1.0 px) of that shift. Each cut's crop is
-  its `source_rect` less where its anchor moved that frame before the crop. The anchor moves nothing
-  at `--anchor none`, moves frame k of a cut L frames long across by round(`wrap_dx_px` x k / L) px
-  at `--anchor body`, and lays frame k at the left and top of `padding_ltrb` plus that frame's entry
-  of `shifts_xy` at `--anchor motion` and `--anchor motion-auto`. On an unaligned loop the regions
-  are read on cell j and carried from there, while on an aligned loop they sit on the aligned cell
-  matching cut cell j and are carried as `transported` carries them. A run is refused no-match if
-  the clips differ, if either cut lacks recorded source frames, if this loop does not hold that
-  source frame, if a record does not give where its anchor moved the frame, or if the strip
-  `--read-on-cut` names is a loop aligned from its cut (`cycle_align`), whose cells are not the
-  cut's frames in order, and refused uncertain if a cut records no crop, if crops, scales and
-  anchors set pixels more than 1 px off one whole shift, or if an aligned loop holds no cell for cut
-  cell j. `STRIP` is that cut's strip PNG, whose bytes must have the sha256 `--read-on` names, with
-  its record beside it as `video-loop` writes one using the same file name ending `.json` instead of
-  `.png`, refusing with "--read-on-cut names the strip --read-on names by its sha256; it needs
-  --read-on" when `--read-on` is not given and "wants the strip's PNG and its record beside it" when
-  either file is missing. Masks are moved by the shift alone with no polygon grown and no scaling,
-  while a mask pixel that would leave the cell refuses the run, and a folder of masks (one per cell)
-  is refused under `--read-on-cut` with "regions read on another cut (--read-on-cut) are drawn on
-  its cell 0 alone: give one PNG". `video-sway` takes `--read-on-cut` on `--loop-dir` only, and
-  `video-sway-inspect` does not take it.
+  of those three lists does not name its frames as whole frames. Each step's record in each cut's
+  report is read as `video-loop` writes it, and a missing record or field is never taken for a step
+  that did not run. `video-loop` writes the `jump_repair` record of every cut, the `size_hold`
+  record of every cut at `--anchor motion-auto` and of every walk or run cut given with
+  `--cycle fixed`, and the `wrap_blend` record of every pinned cut, whether the step ran or not, but
+  the `gait_fallback` and `wrap_overlap` records only where the step ran or was asked; the report's
+  strip tells those cuts by its `foot_anchor`, `kind` and `state`. The run is also refused no-match
+  if a report lacks a record `video-loop` always writes of that cut, if the report's strip does not
+  say the anchor, kind or state that tells, if a step's record is not a JSON object or a field of
+  one is missing or not of its kind (`size_hold.applied`, `gait_fallback.scale_undone`,
+  `jump_repair.applied` and `wrap_blend.applied` must be true or false), or if an `applied` is not
+  borne out by its list (true with no frame named, or false with one named). What `video-loop`
+  writes of a step that did not run still pairs: `applied` false with no list or an empty one, an
+  empty `wrap_overlap.frames`, and no `gait_fallback` or `wrap_overlap` record. The refusal names
+  whose records do not give that frame as filmed (the cut's, given by `--read-on-cut`, or this
+  loop's), and why. The regions' centres, a `--region-mask` PNG, and a single `--hold-mask` PNG are
+  moved pixel for pixel onto cell j by the whole pixel shift derived from their crops and cell sizes
+  taken on the frame as filmed, provided every pixel lands within `RECUT_DRIFT` (1.0 px) of that
+  shift. Each cut's crop is its `source_rect` less where its anchor moved that frame before the
+  crop. The anchor moves nothing at `--anchor none`, moves frame k of a cut L frames long across by
+  round(`wrap_dx_px` x k / L) px at `--anchor body`, and lays frame k at the left and top of
+  `padding_ltrb` plus that frame's entry of `shifts_xy` at `--anchor motion` and
+  `--anchor motion-auto`. On an unaligned loop the regions are read on cell j and carried from
+  there, while on an aligned loop they sit on the aligned cell matching cut cell j and are carried
+  as `transported` carries them. A run is refused no-match if the clips differ, if either cut lacks
+  recorded source frames, if this loop does not hold that source frame, if a record does not give
+  where its anchor moved the frame, or if the strip `--read-on-cut` names is a loop aligned from its
+  cut (`cycle_align`), whose cells are not the cut's frames in order, and refused uncertain if a cut
+  records no crop, if crops, scales and anchors set pixels more than 1 px off one whole shift, or if
+  an aligned loop holds no cell for cut cell j. `STRIP` is that cut's strip PNG, whose bytes must
+  have the sha256 `--read-on` names, with its record beside it as `video-loop` writes one using the
+  same file name ending `.json` instead of `.png`, refusing with "--read-on-cut names the strip
+  --read-on names by its sha256; it needs --read-on" when `--read-on` is not given and "wants the
+  strip's PNG and its record beside it" when either file is missing. Masks are moved by the shift
+  alone with no polygon grown and no scaling, while a mask pixel that would leave the cell refuses
+  the run, and a folder of masks (one per cell) is refused under `--read-on-cut` with "regions read
+  on another cut (--read-on-cut) are drawn on its cell 0 alone: give one PNG". `video-sway` takes
+  `--read-on-cut` on `--loop-dir` only, and `video-sway-inspect` does not take it.
 - **`no-match`**, refused: neither — another clip, another cut no record pairs with this one
   (`--read-on-cut` names the cut that one does), a strip nothing here was cut or aligned from.
   Locate the regions again on this strip.
