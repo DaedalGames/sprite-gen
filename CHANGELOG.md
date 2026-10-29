@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased
+## v3.7.0 - Breathe row width and height minimum and maximum sizing, and curator breathe editor range inputs
 
 **Upgrading from 3.6.0: a Breathe row's breath can now be sized by the two ends it travels between, across and up, instead of a strength (`width_min`, `width_max`, `height_min`, `height_max`; flags `--width-min`, `--width-max`, `--height-min`, `--height-max`). Every existing sidecar, flag and output keeps its bytes, and so does every normalized sidecar; the curator's breathe editor shows four range inputs in place of the two depth selects.**
 
