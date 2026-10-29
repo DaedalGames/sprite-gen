@@ -302,6 +302,17 @@ def test_codec_copies_read_as_the_same_picture_and_the_slowest_motion_does_not()
     assert held_fill.same_steps([still, noisy, planter(11)]) == [True, False]
 
 
+def test_a_whole_figure_moving_under_a_thumbnail_pixel_is_not_the_same_picture():
+    # A walker going away, a frame 280 px wide: its steps move a thousand of its pixels, and some move none of the
+    # analysis thumbnail's. The frame as cut is read too: a cut of it shows no held cell.
+    from tests.video.test_gait_fallback import walking_away
+
+    frames = [walking_away(k) for k in range(73)][24:48]
+    thumbs = held_fill._thumbs(frames)
+    assert any(held_fill._same(a, b) for a, b in zip(thumbs, thumbs[1:]))
+    assert held_fill.same_steps(frames) == [False] * 23
+
+
 # A higher rate than the clip's: frames between, never frames shown again.
 
 
