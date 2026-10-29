@@ -8,8 +8,12 @@ its cut, through the alignment's record of where each cell is from. Each crop is
 its cut's anchor moved that frame (the body anchor's ramp, the motion anchor's correction), as its record gives it. A cut
 whose frame the loop's cut does not hold, a cut whose record names no source frame, a cut of another clip, a record that
 does not give where its anchor moved the frame and a loop aligned from its cut are refused no-match, saying which, and
-leave the loop as it was. Synthetic figures only: the read-on test's runner, cut from a clip of two strides at two starts
-and two crops, by hand or by video-loop.
+leave the loop as it was. So is a frame that is not in its cut as filmed, or that nothing says is: the strip's record says
+nothing of the size hold, the gait fallback or RIFE, the report video-loop wrote beside it does, so a cut with no report
+of its own beside its strip, a cut held to one size, and a frame RIFE made again, gave way or blended at the wrap are
+refused too. Synthetic figures only: the read-on test's runner, cut from a clip of two strides at two starts and two
+crops, by hand or by video-loop, each with the report video-loop writes beside it; and the walk away from the camera of
+the gait fallback's tests, cut by video-loop as a walk.
 
 Each case first reads what a sway writes with the new key (its cells, its record, whether it refuses and what it says),
 so on a release without it the same input fails on what comes out.
@@ -23,7 +27,8 @@ from PIL import Image
 from sprite_gen import cli
 from sprite_gen.video import loop, sway
 
-from tests.video.test_follow_read_on import H, N, PATCH, SHIFT, W, aligned, cells_of, cut, files, meta_of, runner, sha
+from tests.video.test_follow_read_on import H, N, PATCH, SHIFT, W, aligned, cells_of, copy, cut, files, meta_of, runner, sha
+from tests.video.test_gait_fallback import walking_away
 from tests.video.test_sway_region import mask_png
 
 CLIP = 2*N  # the clip's frames: the runner's stride twice
@@ -43,26 +48,45 @@ def bbox(frames):
     return int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1
 
 
-def cut_of(path, start, rect, *, source='clip-a', record=True, name='run', anchor='none'):
+def cut_of(path, start, rect, *, source='clip-a', record=True, name='run', anchor='none', report=None, made=()):
     """A loop directory as video-loop leaves one, cut from the clip at `start` with the crop `rect` at scale 1: its strip,
     and its record with how its frames were anchored (`foot_anchor`; None: not said) and the source frame each cell is
-    (`source_cut`) where `record`."""
+    (`source_cut`, and its cut: `cycle_drawings`) where `record`, the report video-loop wrote of the cut beside them
+    (`report_beside`: `report` what it says of a step in place of off; False: none). A cell in `made` is drawn between
+    the frames either side of its own, half of each, as an interpolator makes it."""
     frames = clip()
     x0, y0, x1, y1 = rect
     w, h = x1-x0, y1-y0
     strip = Image.new('RGBA', (w*N, h))
     for k in range(N):
-        strip.alpha_composite(frames[(start+k) % CLIP].crop(rect), (k*w, 0))
+        cell = (Image.blend(frames[(start+k-1) % CLIP].crop(rect), frames[(start+k+1) % CLIP].crop(rect), 0.5) if k in made
+                else frames[(start+k) % CLIP].crop(rect))
+        strip.alpha_composite(cell, (k*w, 0))
     meta = {'frames': N, 'sample_indices': list(range(N)), 'source_rect': list(rect), 'w': w, 'h': h, 'kind': 'periodic',
             'loop': True, 'scale': 1.0, 'delay_ms': round(1000/FPS, 2), 'cycle_frames': N, 'cycle_seconds': N/FPS,
             'subsampled': False} | ({} if anchor is None else {'foot_anchor': anchor})
     if record:
         meta['source_cut'] = {'source': {'sha256': source, 'frames': CLIP, 'fps': FPS}, 'start': start, 'length': N,
                               'samples': [start+k for k in range(N)]}
+        meta['cycle_drawings'] = {'start': start, 'length': N}
     path.mkdir(parents=True)
     strip.save(path/f'{name}.strip.png')
     (path/f'{name}.strip.json').write_text(json.dumps(meta, indent=2)+'\n')
+    if record and report is not False:
+        report_beside(path, name, **(report or {}))
     return path
+
+
+def report_beside(loop_dir, name='run', **steps):
+    """The report video-loop writes beside a loop's strip (`<name>.loop.report.json`), passed, of the cut its record names
+    (its strip's record, and its cut: `cycle`): the size hold and the jump repair off, and each of `steps` as given."""
+    meta = json.loads((loop_dir/f'{name}.strip.json').read_text())
+    report = {'kind': 'sprite-gen-video-loop-report', 'status': 'passed', 'fps': FPS,
+              'cycle': {key: meta['cycle_drawings'][key] for key in ('start', 'length')},
+              'size_hold': {'applied': False, 'why': '--size-hold off'}, 'jump_repair': {'applied': False, 'why': '--repair off'},
+              'strip': {'path': str(loop_dir/f'{name}.strip.png'), **meta}} | steps
+    (loop_dir/f'{name}.loop.report.json').write_text(json.dumps(report, indent=2)+'\n')
+    return loop_dir
 
 
 def patch_at(frame_index, rect):
@@ -93,11 +117,12 @@ def walked(path, step, size):
     return path
 
 
-def loop_cut(clip_dir, path, start, anchor, **kw):
-    """`video-loop` on the keyed clip: the cut given (--cycle fixed from `start`, N frames long), anchored by `anchor`."""
-    loop.run_loop(clip_dir, path, fps=FPS, state=None, min_len=None, max_len=None, n_out=None, seam_max=100, name='run',
-                  report_path=None, cycle_mode='fixed', start=start, length=N, anchor=anchor, repair='off', size_hold='off',
-                  seam_pop_max=None, wrap_blend='off', strip_height=520, **kw)
+def loop_cut(clip_dir, path, start, anchor, *, length=N, state=None, size_hold='off', **kw):
+    """`video-loop` on the keyed clip: the cut given (--cycle fixed from `start`, `length` frames long), anchored by
+    `anchor`, of the `state` given (a walk held to one size where `size_hold` is auto), its report beside its strip."""
+    loop.run_loop(clip_dir, path, fps=FPS, state=state, min_len=None, max_len=None, n_out=None, seam_max=100, name='run',
+                  report_path=None, cycle_mode='fixed', start=start, length=length, anchor=anchor, repair='off',
+                  size_hold=size_hold, seam_pop_max=None, wrap_blend='off', strip_height=520, **kw)
     return path
 
 
@@ -106,14 +131,20 @@ def patch_in(loop_dir, cell):
     return np.all(cells_of(loop_dir)[cell] == PATCH, axis=2)
 
 
+def read_on(a, drawn=None):
+    """A region on the chest patch of `a`'s cell 0 (or on the pixels `drawn` there) and its mask, those pixels, asked
+    with `--read-on-cut a`: the region and the request's keywords."""
+    drawn = patch_in(a, 0) if drawn is None else drawn
+    ys, xs = np.nonzero(drawn)
+    return (float(xs.mean()), float(ys.mean()), 18.0, 18.0), dict(
+        region_mask=mask_png(a.parent/f'{a.name}-mask.png', drawn), read_on=sha(a/'run.strip.png'),
+        read_on_cut=a/'run.strip.png', **KW)
+
+
 def read_on_cut(a, b):
     """A region on the chest patch of `a`'s cell 0 and its mask, those pixels, asked on `b` with `--read-on-cut a`: the
     region, the request's keywords, and the answer solved on `b`'s strip as cut."""
-    drawn = patch_in(a, 0)
-    ys, xs = np.nonzero(drawn)
-    region = (float(xs.mean()), float(ys.mean()), 18.0, 18.0)
-    kw = dict(region_mask=mask_png(a.parent/f'{a.name}-mask.png', drawn), read_on=sha(a/'run.strip.png'),
-              read_on_cut=a/'run.strip.png', **KW)
+    region, kw = read_on(a)
     answer = sway.solve(sway.read_request(b, [region], **kw), Image.open(b/'run.strip.png').convert('RGBA'),
                         strip_name='run.strip.png', strip_sha256=sha(b/'run.strip.png'))
     return region, kw, answer
@@ -179,14 +210,16 @@ def test_on_a_cut_again_at_another_start_the_mask_is_moved_onto_the_cell_that_is
 
 
 def test_on_a_loop_aligned_from_the_cut_again_the_pair_is_carried_through_the_alignment(tmp_path):
-    # The loop's cut as video-loop cuts one (its own crop), from frame 1; the regions read on a cut from frame 4 cropped
-    # 3 px in from its left and 2 px from its top.
+    # The loop's cut as video-loop cuts one (its own crop), from frame 1, its report beside it; the regions read on a cut
+    # from frame 4 cropped 3 px in from its left and 2 px from its top.
     b = cut(tmp_path/'b', clip()[1:1+N])
     meta = meta_of(b)
     assert meta['scale'] == 1.0 and meta['sample_indices'] == list(range(N))
     meta['source_cut'] = {'source': {'sha256': 'clip-a', 'frames': CLIP, 'fps': FPS}, 'start': 1, 'length': N,
                           'samples': [1+k for k in range(N)]}
+    meta['cycle_drawings'] = {'start': 1, 'length': N}
     (b/'run.strip.json').write_text(json.dumps(meta, indent=2)+'\n')
+    report_beside(b)
     left, top, right, bottom = meta['source_rect']
     inner = (left+3, top+2, right, bottom)
     a = cut_of(tmp_path/'a', 4, inner)
@@ -370,3 +403,150 @@ def test_what_the_key_is_refused_for_leaves_the_loop_as_it_was(cuts, tmp_path):
                      '0', '--gain', '1', '--on-fold', 'lower', '--read-on', sha(a/'run.strip.png'), '--read-on-cut',
                      str(a/'run.strip.png')]) == 0
     assert meta_of(loop_dir)['follow']['read_on']['relation'] == 'recut'
+
+
+# ---------------------------------------------------------------- only the frame as filmed, as the cut's report says
+
+def test_a_cell_rife_made_is_refused_no_match_not_paired_as_the_frame_filmed(cuts, tmp_path):
+    # The loop's cell 3, frame 4 of the clip, made again by RIFE between the frames either side (the jump repair,
+    # `jump_repair.replaced`): it is not frame 4 as filmed, and the patch there is not the patch drawn on the cut's cell 0
+    # moved by the crops. The strip's record says nothing of it; the report beside it does.
+    a, tight, region, mask = cuts
+    wide = (tight[0]-3, tight[1]-2, tight[2]+2, tight[3]+1)
+    loop_dir = cut_of(tmp_path/'b', 1, wide, made=(3,), report={'jump_repair': {'applied': True, 'replaced': [3]}})
+    assert not np.array_equal(patch_in(loop_dir, 3), moved(patch_in(a, 0), [3, 2], wide))
+    assert 'jump_repair' not in meta_of(loop_dir)
+    before = files(loop_dir)
+    with pytest.raises(SystemExit, match=r"no-match — the regions were read on another cut, whose cell 0 is source frame 4 "
+                                         r"\(this loop's cut's cell 3\), but this loop's records do not give that frame as "
+                                         r"filmed: its cell 3 is frame 3 of its cut, made again by RIFE, or given way to the "
+                                         r"frame beside it for a filmed ghost \(the jump repair\) \(jump_repair\.replaced\); "
+                                         r"locate them again on this strip$"):
+        sway.sway_loop(loop_dir, [region], region_mask=mask, read_on=sha(a/'run.strip.png'), read_on_cut=a/'run.strip.png', **KW)
+    assert files(loop_dir) == before
+
+
+WHOSE = {'read-on-cut': r"the cut's \(--read-on-cut\)", 'this-loop': "this loop's"}
+BESIDE = {  # what is beside a cut's strip in place of the report video-loop wrote of that cut, and the refusal's words
+    'none': r"no report video-loop wrote of its cut is beside its strip \(in its folder or the one above it\), and its "
+            r"record does not say whether the size hold, the gait fallback or RIFE changed its frames",
+    'another-cuts': r"the report beside its strip is another cut's: its strip's source_cut is not the record's"}
+
+
+@pytest.mark.parametrize('side', list(WHOSE))
+@pytest.mark.parametrize('beside', list(BESIDE))
+def test_a_cut_with_no_report_of_its_own_beside_its_strip_is_refused_no_match(cuts, tmp_path, side, beside):
+    # The strip's record says which source frame each cell is and nothing of the size hold, the gait fallback or RIFE:
+    # with no report video-loop wrote of the cut beside it, or only the report of the same cut of another take (its
+    # strip's source_cut names another clip), nothing says the frame is as filmed.
+    a, tight, region, mask = cuts
+    report = {'none': False, 'another-cuts': None}[beside]  # no report, or its own (made another take's below)
+    read = cut_of(tmp_path/'read', 4, tight, report=report) if side == 'read-on-cut' else a
+    loop_dir = cut_of(tmp_path/'b', 1, (tight[0]-3, tight[1]-2, tight[2]+2, tight[3]+1),
+                      report=report if side == 'this-loop' else None)
+    if beside == 'another-cuts':
+        path = (read if side == 'read-on-cut' else loop_dir)/'run.loop.report.json'
+        other = json.loads(path.read_text())
+        other['strip']['source_cut']['source']['sha256'] = 'clip-b'  # the same cut of another take
+        path.write_text(json.dumps(other, indent=2)+'\n')
+    before = files(loop_dir)
+    with pytest.raises(SystemExit, match=r"no-match — the regions were read on another cut, whose cell 0 is source frame 4 "
+                                         r"\(this loop's cut's cell 3\), but " + WHOSE[side] + r" records do not give that "
+                                         r"frame as filmed: " + BESIDE[beside] + r"; locate them again on this strip$"):
+        sway.sway_loop(loop_dir, [region], region_mask=mask, read_on=sha(read/'run.strip.png'),
+                       read_on_cut=read/'run.strip.png', **KW)
+    assert files(loop_dir) == before
+
+
+CHANGED = {  # what the report says a step of video-loop did to a cut's frames, in place of off: on the cut the regions
+    # were read on or on this loop's, the frames the two are cut from, and the refusal's words
+    'seam-bridge': ('read-on-cut', 4, 1, {'jump_repair': {'applied': True, 'reading': 'seam', 'replaced': [12, 0]}},
+                    r"its cell 0 is frame 0 of its cut, made again by RIFE round the wrap \(the seam bridge\) "
+                    r"\(jump_repair\.replaced\)"),
+    'overlapped-wrap': ('this-loop', 4, 1, {'wrap_overlap': {'frames': [0, 1, 2, 3]}},
+                        r"its cell 3 is frame 3 of its cut, made again beside the wrap from the clip's frames a cycle apart "
+                        r"\(the overlapped wrap\) \(wrap_overlap\.frames\)"),
+    'wrap-blend': ('this-loop', 13, 1, {'wrap_blend': {'applied': True, 'K': 3, 'cells': [10, 11, 12]}},
+                   r"its cell 12 is frame 12 of its cut, redrawn toward the first frame's drawing before the wrap "
+                   r"\(the wrap blend\) \(wrap_blend\.cells\)"),
+    'gait-fallback': ('this-loop', 4, 1, {'gait_fallback': {'scale_undone': True}},
+                      r"the gait fallback held its frames to one size, scaled about their feet, before it was cut "
+                      r"\(gait_fallback\): its crop is not on the frame as filmed, and no whole px shift undoes a scale"),
+    'repair-unsaid': ('read-on-cut', 4, 1, {'jump_repair': None},
+                      r"its report does not say what the jump repair made of its frames \(jump_repair\)"),
+    'frames-not-whole': ('this-loop', 4, 1, {'jump_repair': {'applied': True, 'replaced': [3.0]}},
+                         r"its report does not name the frames of its cut it changed as whole frames "
+                         r"\(jump_repair\.replaced\)")}
+
+
+@pytest.mark.parametrize('case', list(CHANGED))
+def test_a_frame_the_report_says_video_loop_changed_is_refused_no_match_saying_which(tmp_path, case):
+    side, read_at, loop_at, steps, said = CHANGED[case]
+    tight = bbox(clip())
+    read = cut_of(tmp_path/'read', read_at, tight, report=steps if side == 'read-on-cut' else None)
+    loop_dir = cut_of(tmp_path/'b', loop_at, (tight[0]-3, tight[1]-2, tight[2]+2, tight[3]+1),
+                      report=steps if side == 'this-loop' else None)
+    region, kw = read_on(read)
+    before = files(loop_dir)
+    with pytest.raises(SystemExit, match=rf"no-match — the regions were read on another cut, whose cell 0 is source frame "
+                                         rf"{read_at} \(this loop's cut's cell {read_at - loop_at}\), but {WHOSE[side]} "
+                                         rf"records do not give that frame as filmed: {said}; locate them again on this strip$"):
+        sway.sway_loop(loop_dir, [region], **kw)
+    assert files(loop_dir) == before
+
+
+WALK_TORSO = (20, 90, 180)  # the walker's torso (tests/video/test_gait_fallback.py)
+
+
+def torso_in(loop_dir, cell):
+    """The walker's torso, its own colour's opaque pixels (within 12 of it: a frame scaled is resampled), in a cell of a
+    loop's strip as drawn."""
+    rgba = cells_of(loop_dir)[cell].astype(int)
+    return (np.abs(rgba[..., :3] - WALK_TORSO).max(axis=-1) <= 12) & (rgba[..., 3] == 255)
+
+
+@pytest.fixture(scope='module')
+def walk_cuts(tmp_path_factory):
+    """The walk away from the camera of tests/video/test_gait_fallback.py (15 % smaller by its last frame, its feet 20 px
+    higher), keyed as video-frames leaves it and cut by video-loop as a walk at --anchor body, a stride from frame 24 and
+    from frame 20: each held to one size (--size-hold auto) and as filmed (off)."""
+    root = tmp_path_factory.mktemp('walk')
+    keyed = root/'keyed'
+    keyed.mkdir()
+    for k in range(73):
+        walking_away(k).save(keyed/f'frame-{k:03d}.png')
+    return {(start, hold): loop_cut(keyed, root/f'{start}-{hold}', start, 'body', length=24, state='walk', size_hold=hold)
+            for start in (24, 20) for hold in ('auto', 'off')}
+
+
+HOLDS = {  # how each cut was held (--size-hold): the cut the regions were read on, then this loop's; whose report says it
+    'read-on-cut-held': ('auto', 'off', 'read-on-cut'),
+    'this-loop-held': ('off', 'auto', 'this-loop'),
+    'both-held': ('auto', 'auto', 'read-on-cut')}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('case', list(HOLDS))
+def test_a_walk_cut_the_size_hold_held_to_one_size_is_refused_no_match(walk_cuts, tmp_path, case):
+    # Frame 24 is the first cut's cell 0 and the second's cell 4. A cut held to one size was cut from frames scaled about
+    # their feet: its strip's record does not say so, the report beside it does. Held in one cut and not in the other,
+    # frame 24's torso is not the same size in the two, and no whole px shift carries the one onto the other.
+    read_hold, loop_hold, side = HOLDS[case]
+    a, b = copy(walk_cuts[24, read_hold], tmp_path/'a'), copy(walk_cuts[20, loop_hold], tmp_path/'b')
+    assert meta_of(a)['source_cut']['samples'][0] == meta_of(b)['source_cut']['samples'][4] == 24
+    for loop_dir, hold in ((a, read_hold), (b, loop_hold)):
+        assert json.loads((loop_dir/'run.loop.report.json').read_text())['size_hold']['applied'] is (hold == 'auto')
+        assert 'size_hold' not in meta_of(loop_dir)
+    drawn = torso_in(a, 0)
+    assert drawn.sum() > 100
+    if read_hold != loop_hold:
+        assert drawn.sum() != torso_in(b, 4).sum()
+    region, kw = read_on(a, drawn)
+    before = files(b)
+    with pytest.raises(SystemExit, match=r"no-match — the regions were read on another cut, whose cell 0 is source frame 24 "
+                                         r"\(this loop's cut's cell 4\), but " + WHOSE[side] + r" records do not give that "
+                                         r"frame as filmed: the size hold held its frames to one size, scaled about their "
+                                         r"feet, before it was cut \(size_hold\): its crop is not on the frame as filmed, and "
+                                         r"no whole px shift undoes a scale; locate them again on this strip$"):
+        sway.sway_loop(b, [region], **kw)
+    assert files(b) == before

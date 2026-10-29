@@ -55,8 +55,11 @@ named by `--read-on-cut STRIP` with its record beside it, is `recut`: paired by 
 is, its regions and masks moved onto this loop's cell that is that frame by the whole px shift the two
 crops set it apart by on the frame as filmed — each crop less where its cut's anchor moved that frame, as
 its record gives it (`anchor_move`; refused `no-match` where a record does not) — never scaled
-(`recut_pair`). Any other strip is refused `no-match`. Without `--read-on` nothing of this is read or
-written.
+(`recut_pair`). The frame each cut pairs must be that frame as filmed but for its anchor's move, as its
+cut's record and the report `video-loop` wrote of that cut beside it say (`as_filmed`, `align.cut_report`):
+a cut the size hold or the gait fallback scaled, a frame RIFE made, given way or blended at the wrap, and a
+cut whose report is not beside it or is another cut's are refused `no-match`, saying which. Any other strip
+is refused `no-match`. Without `--read-on` nothing of this is read or written.
 
 `--stretch-floor D` asks every region's move to leave each pixel at least D of its area. The weight's
 steepest slope is π/2 over each radius, so a move (ox, oy) leaves 1 − (π/2)·hypot(ox/rx, oy/ry) of it —
@@ -220,7 +223,7 @@ TRANSPORT_POLICY = "cut-reading/whole-cell/1"
 # How regions read on another cut of the same clip are paired with this loop's cut (`--read-on` with `--read-on-cut`): by
 # the source frame the cut's cell 0 is, onto the cell of this loop's cut that is that frame, moved by the whole px the two
 # crops set that frame's pixels apart, each crop taken on the frame as filmed (less where its cut's anchor moved it); never
-# scaled or grown.
+# scaled or grown, and only where that frame is in each cut as filmed, as the cut's report says (`as_filmed`).
 RECUT_POLICY = "same-clip/source-frame/whole-px-shift/1"
 RECUT_DRIFT = 1.0  # px: the most a pixel of the one cut may lie off the whole shift from the same pixel of the other
 # How `--stretch-floor` reads a region's least area: the cos² weight's closed form, by direction, never above the
@@ -574,6 +577,63 @@ def _clip(cut: dict[str, Any]) -> str:
     return str(source.get("sha256", source)) if isinstance(source, dict) else str(source)
 
 
+def _cut_frame(record: dict[str, Any], cell: int) -> tuple[int, int]:
+    """The frame of its cut a cut's cell `cell` is, and the cut's length, read off its record (`source_cut`). A ValueError
+    where the record names no whole start and length of its cut that hold that cell."""
+    cut = record["source_cut"]
+    start, length = cut.get("start"), cut.get("length")
+    k = int(cut["samples"][cell]) - start if type(start) is int else None
+    if type(length) is not int or k is None or not 0 <= k < length:
+        raise ValueError(f"it names no whole start and length of its cut that hold its cell {cell} (source_cut)")
+    return k, length
+
+
+def _report_of(loop_dir: Path, meta_path: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The report `video-loop` wrote of a loop's cut, where `video-cycle-align` reads one (`align.cut_report`: in the
+    loop's folder or the one above it); None where none is."""
+    from sprite_gen.video import align as align_mod  # align imports this module
+    found = align_mod.cut_report(loop_dir, meta_path, meta)
+    return None if found is None else found[1]
+
+
+def as_filmed(record: dict[str, Any], report: dict[str, Any] | None, cell: int) -> None:
+    """Whether the frame a cut's cell `cell` is, is in that cut as filmed but for where its anchor moved it (`anchor_move`),
+    as the cut's records say: its record (`record`) and the report `video-loop` wrote of the cut (`report`, beside its
+    strip as `align.cut_report` finds one; None where none is), whose strip's `source_cut` is the record's. The record
+    says nothing of the size hold, the gait fallback or RIFE; the report says what each did. A cut the size hold or the
+    gait fallback held to one size was cut from frames scaled about their feet (`size_hold.applied`,
+    `gait_fallback.scale_undone`): its crop is not on the frame as filmed, and no whole px shift undoes a scale. A frame
+    the jump repair or the seam bridge made again or gave way (`jump_repair.replaced`), the overlapped wrap made
+    (`wrap_overlap.frames`) or the wrap blend redrew toward the first frame's drawing (`wrap_blend.cells`) is not the
+    frame its source frame number says. A step that did not run is not in the report, or names no frame. A ValueError says
+    which, or what the records do not give."""
+    if report is None:
+        raise ValueError("no report video-loop wrote of its cut is beside its strip (in its folder or the one above it), and "
+                         "its record does not say whether the size hold, the gait fallback or RIFE changed its frames")
+    if (report.get("strip") or {}).get("source_cut") != record.get("source_cut"):
+        raise ValueError("the report beside its strip is another cut's: its strip's source_cut is not the record's")
+    k, _ = _cut_frame(record, cell)
+    for key, said, step in (("size_hold", "applied", "the size hold"), ("gait_fallback", "scale_undone", "the gait fallback")):
+        if (report.get(key) or {}).get(said):
+            raise ValueError(f"{step} held its frames to one size, scaled about their feet, before it was cut ({key}): its "
+                             "crop is not on the frame as filmed, and no whole px shift undoes a scale")
+    repair = report.get("jump_repair")
+    if not isinstance(repair, dict):
+        raise ValueError("its report does not say what the jump repair made of its frames (jump_repair)")
+    made = (("jump_repair.replaced", repair.get("replaced", []),
+             "made again by RIFE round the wrap (the seam bridge)" if repair.get("reading") == "seam" else
+             "made again by RIFE, or given way to the frame beside it for a filmed ghost (the jump repair)"),
+            ("wrap_overlap.frames", (report.get("wrap_overlap") or {}).get("frames", []),
+             "made again beside the wrap from the clip's frames a cycle apart (the overlapped wrap)"),
+            ("wrap_blend.cells", (report.get("wrap_blend") or {}).get("cells", []),
+             "redrawn toward the first frame's drawing before the wrap (the wrap blend)"))
+    for key, frames, how in made:
+        if not isinstance(frames, list) or any(type(f) is not int for f in frames):
+            raise ValueError(f"its report does not name the frames of its cut it changed as whole frames ({key})")
+        if k in frames:
+            raise ValueError(f"its cell {cell} is frame {k} of its cut, {how} ({key})")
+
+
 def anchor_move(record: dict[str, Any], cell: int) -> tuple[int, int]:
     """Where the anchor of a cut moved the frame its cell `cell` is before the cut was cropped, across and down in px of
     the frame as filmed, read off the cut's record as `video-loop` writes one (`record`; `foot_anchor`, `source_cut`):
@@ -586,11 +646,7 @@ def anchor_move(record: dict[str, Any], cell: int) -> tuple[int, int]:
     if anchor not in ("body", "motion", "motion-auto"):
         raise ValueError("it does not say how its frames were anchored (foot_anchor)" if anchor is None else
                          f"its anchor (--anchor {anchor}) keeps no move of each frame")
-    cut = record["source_cut"]
-    start, length = cut.get("start"), cut.get("length")
-    k = int(cut["samples"][cell]) - start if type(start) is int else None  # the frame of the cut the cell is
-    if type(length) is not int or k is None or not 0 <= k < length:
-        raise ValueError(f"it names no whole start and length of its cut that hold its cell {cell} (source_cut)")
+    k, length = _cut_frame(record, cell)  # the frame of the cut the cell is
     if anchor == "body":
         wrap = record.get("wrap_dx_px")
         if type(wrap) is not int:
@@ -606,16 +662,17 @@ def anchor_move(record: dict[str, Any], cell: int) -> tuple[int, int]:
 
 
 def recut_pair(meta: dict[str, Any], cut: dict[str, Any], read_on: str, size: tuple[int, int], *,
-               verb: str = VERB) -> dict[str, Any]:
+               reports: tuple[dict[str, Any] | None, dict[str, Any] | None], verb: str = VERB) -> dict[str, Any]:
     """How the cut the regions were read on (`cut`: its record, `--read-on-cut`; `read_on` its strip's sha256) pairs with
     this loop's cut (`meta`; cells `size`) when both are cut from one source clip (`source_cut`): the source frame the
     cut's cell 0 is, the cell of this loop's cut that is that frame, and the whole px across and down a pixel of that
     frame lies from where it lies in the cut — their crops and scales (`source_rect`) taken on the frame as filmed, each
     less where its cut's anchor moved that frame before the crop (`anchor_move`); a pixel lies at most RECUT_DRIFT px
-    off that shift anywhere in the cell. Refused `no-match` where they are not one clip's, the frame is not this cut's,
-    a record does not give where its anchor moved the frame, or the strip named is a loop aligned from a cut (its cell 0
-    is not the frame its cut starts on), saying which; `uncertain` where their crops do not set the frame apart by one
-    whole shift."""
+    off that shift anywhere in the cell. `reports` are the reports `video-loop` wrote of the two cuts, the cut's then
+    this loop's (None where none is beside its strip). Refused `no-match` where they are not one clip's, the frame is
+    not this cut's, it is not in a cut as filmed or its records do not say it is (`as_filmed`), a record does not give
+    where its anchor moved the frame, or the strip named is a loop aligned from a cut (its cell 0 is not the frame its
+    cut starts on), saying which; `uncertain` where their crops do not set the frame apart by one whole shift."""
     then, now = cut.get("source_cut"), meta.get("source_cut")
 
     def no_match(why: str) -> SystemExit:
@@ -635,6 +692,12 @@ def recut_pair(meta: dict[str, Any], cut: dict[str, Any], read_on: str, size: tu
         raise no_match(f"whose cell 0 is source frame {frame}, which this loop's cut does not hold (it holds source frames "
                        f"{min(held)} to {max(held)})")
     cell = held.index(frame)
+    for whose, record, report, at in (("the cut's (--read-on-cut)", cut, reports[0], 0), ("this loop's", meta, reports[1], cell)):
+        try:
+            as_filmed(record, report, at)
+        except ValueError as exc:
+            raise no_match(f"whose cell 0 is source frame {frame} (this loop's cut's cell {cell}), but {whose} records do not "
+                           f"give that frame as filmed: {exc}") from None
 
     def uncertain(why: str) -> SystemExit:
         return SystemExit(f"{verb}: --read-on {read_on} is a cut of this loop's clip, paired at source frame {frame} (this "
@@ -1378,6 +1441,7 @@ class Request:
     meta: dict[str, Any]
     ask: Ask
     read_on_cut: dict[str, Any] | None = None  # the record of the strip the regions were read on (`--read-on-cut`)
+    loop_report: dict[str, Any] | None = None  # with it, the report video-loop wrote of this loop's cut (`_report_of`)
 
     @property
     def strip_path(self) -> Path:
@@ -1413,13 +1477,16 @@ def read_request(loop_dir: Path, regions: list[tuple[float, ...]], *, gain: floa
                    region_crease=region_crease, region_over=region_over, region_shear=region_shear,
                    region_membrane=region_membrane, region_over_solid=region_over_solid, region_rim_round=region_rim_round,
                    verb=verb)
-    return Request(loop_dir, name, meta_path, meta_bytes, meta, ask,
-                   None if read_on_cut is None else read_cut(read_on_cut, ask.read_on, verb))
+    if read_on_cut is None:
+        return Request(loop_dir, name, meta_path, meta_bytes, meta, ask)
+    return Request(loop_dir, name, meta_path, meta_bytes, meta, ask, read_cut(read_on_cut, ask.read_on, verb),
+                   _report_of(loop_dir, meta_path, meta))
 
 
 def read_cut(path: Path, read_on: str | None, verb: str = VERB) -> dict[str, Any]:
     """The strip the regions were read on (`--read-on-cut`, with `--read-on`): its PNG, whose bytes are the sha256
-    `--read-on` names, and its record beside it as `video-loop` writes one (`<name>.strip.json` by `<name>.strip.png`)."""
+    `--read-on` names, its record beside it as `video-loop` writes one (`<name>.strip.json` by `<name>.strip.png`), and
+    the report `video-loop` wrote of its cut where one is beside it (`_report_of`; None where none is)."""
     if read_on is None:
         raise SystemExit(f"{verb}: --read-on-cut names the strip --read-on names by its sha256; it needs --read-on")
     path = Path(path).expanduser()
@@ -1435,7 +1502,7 @@ def read_cut(path: Path, read_on: str | None, verb: str = VERB) -> dict[str, Any
         raise SystemExit(f"{verb}: --read-on-cut {record}: not a strip record ({exc})") from exc
     if not isinstance(meta, dict):
         raise SystemExit(f"{verb}: --read-on-cut {record}: not a strip record")
-    return {"path": str(path), "sha256": digest, "meta": meta}
+    return {"path": str(path), "sha256": digest, "meta": meta, "report": _report_of(record.absolute().parent, record, meta)}
 
 
 @dataclass(frozen=True, eq=False)
@@ -1778,7 +1845,8 @@ def solve(request: Request, strip: Image.Image, *, strip_name: str, verb: str = 
     if read_on is not None and read_on["relation"] == "recut":
         # Read on another cut of the clip: paired by the source frame its cell 0 is, the regions moved onto this loop's
         # cut's cell that is that frame, and every cell carried from there (`Answer.carry`).
-        pair = recut_pair(meta, request.read_on_cut["meta"], ask.read_on, (w, h), verb=verb)
+        pair = recut_pair(meta, request.read_on_cut["meta"], ask.read_on, (w, h),
+                          reports=(request.read_on_cut["report"], request.loop_report), verb=verb)
         read_on.update(pair)
         ask = recut_ask(ask, pair, (w, h), verb=verb)
         if not aligned:  # carried from that cell by its own pixels; on an aligned loop, as the alignment carries the cut's
@@ -3531,9 +3599,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "regions and the region mask moved onto that cell by the whole px the two crops set it apart, each "
                              "taken on the frame as filmed (less where its cut's anchor moved that frame, as its record gives "
                              "it), pixel for pixel, and carried from there (relation recut); refused no-match where the clip "
-                             "differs, this loop's cut does not hold that frame, a record does not give its anchor's move of it "
-                             "or the strip is a loop aligned from its cut, uncertain where the crops do not set it apart by one "
-                             "whole shift. Off by default")
+                             "differs, this loop's cut does not hold that frame, the report video-loop wrote of either cut is "
+                             "not beside its strip or does not give that frame as filmed (the size hold or the gait fallback "
+                             "scaled the cut, or RIFE, the wrap overlap or the wrap blend made it), a record does not give its "
+                             "anchor's move of it or the strip is a loop aligned from its cut, uncertain where the crops do not "
+                             "set it apart by one whole shift. Off by default")
     parser.add_argument("--band", type=parse_band, default=None, metavar=f"PX|{AUTO}",
                         help="move each region as one mass: 1 over its ellipse grown by --band-margin, falling to 0 (cos²) over PX px "
                              f"past it ({AUTO}: ceil(reach x π/2) + 1, the narrowest the move does not fold), carried into each cell by "
