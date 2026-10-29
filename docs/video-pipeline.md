@@ -414,17 +414,37 @@ and a true cycle half a drawing late are **the same picture**. So
 `video-loop` cuts the period it always cut, and only **records** what a half or a third of it shows
 (`cycle.fundamental`, `sprite_gen/video/period.py`).
 
-**A cut under the gait floor is named a half step.** A walk or run loops on an even number of steps —
-two, one cycle; a loop of one step plays the same leg leading every time round. The gait floor
-(`LoopProfile.min_seconds`: walk 0.6 s, run 0.35 s) is the duration under which a period is one step,
-and the half-period guard reads it in whole frames, rounded, to choose among candidates: a run cut 8
-frames long at 24 fps (0.33 s) is taken. Such a periodic cut (`--cycle auto` or `periodic`) whose steps
-nothing counted — no `cycle.steps`: not the clip's crossings, `--steps` or the held side's two lengths —
-is kept as cut, recorded in `cycle.half_step` (`rule`, `state`, `seconds`, `gait_floor` in seconds and
-frames, `why` the steps were not counted, `two_steps`: twice the cut and whether the clip holds it) and
-named in a warning line (`loop.half_step`, `HALF_STEP_RULE`). Nothing is cut again on it: where the two
-legs are drawn alike the pixels cannot count the steps, and a clip that draws the same leg forward every
-step shows the same step twice in a cut two lengths long. `--steps 1` cuts it two lengths long.
+**A cut under the gait floor is one step: the clip is asked for two, and the cut is named a half step
+where it gives none.** A walk or run loops on an even number of steps — two, one cycle; a loop of one
+step plays the same leg leading every time round. The gait floor (`LoopProfile.min_seconds`: walk 0.6 s,
+run 0.35 s) is the duration under which a period is one step, and the half-period guard reads it in
+whole frames, rounded, to choose among candidates: a run cut 8 frames long at 24 fps (0.33 s) is taken.
+Such a periodic cut (`--cycle auto` or `periodic`) whose steps nothing counted — no `cycle.steps`: not
+the clip's crossings, `--steps` or the held side's two lengths — is one step.
+
+Under `--anchor motion-auto` it is cut two lengths long where the clip says it holds two
+(`loop._two_lengths`). One step on, the legs are back in place with near and far swapped, and where the
+two are drawn alike (one colour of trousers) the silhouette repeats; the body's turn, the shading across
+the torso and the folds of the clothes come back only two steps on. So each length of [2L − 1, 2L + 1]
+(inside an explicit `--min-len`/`--max-len`) is cut as `--steps 1` cuts it, and about each cut's wrap
+(two frames either side of its first, `TWO_LENGTHS_AROUND`) the frames as filmed are read two lengths on
+over one length on, the same frames (`two_lengths_on`). The nearest at most **0.85**
+(`period.STEP_RATIO_MAX`, the step screen's bound for the same ratio, which the screen reads over the
+whole clip, where a run that changes its pace does not repeat) is taken where the seam gate and the seam
+pop gate pass it as they will the loop; `cycle.steps` is `{"count": 2, "by": "two-lengths", "first_cut",
+"window"}` and `cycle.two_lengths` records `first_cut`, `tried` (each length's cut: `near`, `one`,
+`ratio`, or why it was not read), `cut` and `taken`. The frames are read as filmed, not on the search's
+distances: the analysis canvas moves every frame by the drift it reads, one vertical slope over the clip,
+and a slope tilted by frames that open higher moves frames two steps apart further than one step apart
+where the body runs in place, so two lengths on read no nearer there. A drift the clip does walk only
+makes two lengths on read farther: it keeps a cut one step, never doubles one.
+
+A cut the clip gives no two — two lengths on no nearer, one length on the same picture, no window to
+cut, a gate that would not pass it — and a cut under any other anchor are kept as cut, recorded in
+`cycle.half_step` (`rule`, `state`, `seconds`, `gait_floor` in seconds and frames, `why` the steps were
+not counted, `two_steps`: twice the cut and whether the clip holds it, `two_lengths`: why the clip gave
+none) and named in a warning line (`loop.half_step`, `HALF_STEP_RULE`). `--steps 1` cuts it two lengths
+long.
 
 **The size is held before the search or cut** (`--size-hold auto`, the default). A walk or run clip filmed from its first frame only often grows or shrinks as it plays, so the frame one cycle after the first is not the first's size and the loop pops at the wrap. Under `--size-hold auto`, a walk or run cut automatically with `--anchor motion-auto` (before the cycle search) or cut by hand with `--cycle fixed` under any anchor (before the cut is read, over the whole clip) is held at its first frame's size. When a clip's height changes by 1 % or more over the clip, read one cycle on, frames are scaled back to the first frame's size about their feet. Where the size is held and the feet climb or sink by 1 % of the first frame's height or more over the clip, frames are also shifted so their feet stand on the first frame's row. This stops a receding walk's jump at the wrap from moving into place: the motion anchor's fine search corrects a climb within 28 rows over the cut but leaves the cut uncorrected when feet climb further than that, and the body anchor moves frames sideways only.
 

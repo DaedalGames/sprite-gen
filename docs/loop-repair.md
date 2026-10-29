@@ -1414,7 +1414,10 @@ not whole — a cycle of 23.5 frames cut at 24 repeats better at 47, being whole
 only names the cut, and the count comes from whoever looks at the loop (how often each foot lands:
 by eye, or a vision call). Its images, `strip.json`, warnings and stderr are what they were without
 it; the report's `cycle`, and the summary `video-loop` prints, gain `step_screen`. A twice-the-cut
-lag past the clip (fewer than 4 pairs) is not read: `lag` null, not a suspect. The synthetic walker
+lag past the clip (fewer than 4 pairs) is not read: `lag` null, not a suspect. A cut under the gait
+floor is the exception: it is one step by its length, and the clip is asked whether it holds two about
+the doubled cut's wrap, on the frames as filmed — not over the whole clip — and cut two lengths long
+where it does ([video pipeline](video-pipeline.md) section 4, "A cut under the gait floor"). The synthetic walker
 of `tests/video/test_one_step_cut.py` — a 42-frame cycle, legs drawn alike and arms shaded apart, 73
 frames, its feet read as unseen — is cut at 21 (`ratio` 0.48, a suspect); the same drawing on a
 25-frame cycle is cut at 25 (`ratio` 1.53), and on 23.5 frames at 24 (`ratio` 0.66: a suspect that is a
@@ -1433,7 +1436,9 @@ the cut it takes without `--steps` holds.
   cut all the same — the count stands for the repeat — at the window whose wrap the clip plays
   (`method: "counted-window-v1"`, `unseen` saying why the search found none). `cycle.steps` is
   `{"count": 2, "by": "given", "given": 1, "first_cut": {start, length}, "window": [lo, hi]}`, with
-  `counted_window` beside `window` where an explicit window left only part of [2L − 1, 2L + 1].
+  `counted_window` beside `window` where an explicit window left only part of [2L − 1, 2L + 1]. A cut
+  under the gait floor that the clip itself gives two steps is cut the same way, one length at a time,
+  and recorded `"by": "two-lengths"` without `given`.
 - **`--steps 2`**: the cut is a cycle already; it is kept, and recorded `{"count": 2, "by":
   "given", "given": 2}`.
 

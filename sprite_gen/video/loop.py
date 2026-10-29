@@ -1682,7 +1682,7 @@ def _by_steps(cycle: dict[str, Any] | None, refused: ValueError | None, *, frame
 
 def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndarray, trajectory: np.ndarray,
              frames: list[Image.Image], moved: list[np.ndarray], detect: dict[str, Any], cells: CutOnCells,
-             turn: body_turn_mod.Turn | None = None) -> dict[str, Any]:
+             turn: body_turn_mod.Turn | None = None, by: str = "given", length: int | None = None) -> dict[str, Any]:
     """The cut once its steps are counted (`--steps`): 2 keeps it; 1 cuts again in the window two of
     its lengths long, [2L-1, 2L+1], inside the caller's bounds (`window.within`) — not half the clip —
     with the same search (a repeat seen in the clip, the top band and the held side read again) save that
@@ -1691,19 +1691,21 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
     bounds disagree: a failure, neither followed. Where they leave part of it, that part is read
     (`steps.window`, beside `steps.counted_window`). A clip too short to see such a window repeat is cut
     all the same, the count standing for the repeat (`local_cycle.counted`, `unseen` says why);
-    `cycle.coverage` and the seam gate say the rest. Recorded `steps` (`first_cut`: the cut counted). With `turn`, no cut
-    that holds a frame of a body turn is taken."""
+    `cycle.coverage` and the seam gate say the rest. Recorded `steps` (`first_cut`: the cut counted; `by`, who counted
+    it: "given", or "two-lengths" where the clip did, `_two_lengths`, which reads one `length` of the window at a time).
+    With `turn`, no cut that holds a frame of a body turn is taken."""
     first = {"start": cycle["start"], "length": cycle["length"]}
     if steps == 2:
         cycle["steps"] = {"count": 2, "by": "given", "given": 2}
         return cycle
+    asked = "--steps 1" if by == "given" else "two lengths"
     counted_window = [2 * first["length"] - 1, 2 * first["length"] + 1]
-    lo, hi = window.within(*counted_window)
-    record = {"count": 2, "by": "given", "given": 1, "first_cut": first, "window": [lo, hi]}
+    lo, hi = window.within(*((length, length) if length is not None else counted_window))
+    record = {"count": 2, "by": by, **({"given": 1} if by == "given" else {}), "first_cut": first, "window": [lo, hi]}
     if [lo, hi] != counted_window:
         record["counted_window"] = counted_window
     if lo > hi:
-        exc = ValueError(f"--steps 1: the cut of {first['length']} frames from {first['start']} is one step, so the cycle is "
+        exc = ValueError(f"{asked}: the cut of {first['length']} frames from {first['start']} is one step, so the cycle is "
                          f"{counted_window[0]}-{counted_window[1]} frames long, and {window.said()} leaves none of that: the count "
                          f"and the window disagree — drop one, or give a window that holds the cycle")
         exc.diagnostics = {**cycle, "steps": {**record, "window": None, "refused": f"outside {window.said()}"}}  # type: ignore[attr-defined]
@@ -1719,7 +1721,7 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
             found = local_cycle.counted(D, trajectory, min_len=lo, max_len=hi, periodicity_min=detect["periodicity_min"],
                                         signals=signals, pop_gate=cells.gate, turn=turn)
         except ValueError as exc:
-            failed = ValueError(f"--steps 1: the cut of {first['length']} frames from {first['start']} is one step, and the clip "
+            failed = ValueError(f"{asked}: the cut of {first['length']} frames from {first['start']} is one step, and the clip "
                                 f"({len(D)} frames) has no window {lo}-{hi} frames long to cut: {exc}")
             failed.diagnostics = {**getattr(unseen, "diagnostics", {}), "steps": record}  # type: ignore[attr-defined]
             raise failed from exc
@@ -1729,12 +1731,13 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
 
 
 def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, trajectory: np.ndarray, analysis: dict[str, Any],
-                 *, fps: float, window: CutWindow, prof: LoopProfile, steps: int | None, seam_max: float,
+                 *, fps: float, window: CutWindow, prof: LoopProfile, state: str, steps: int | None, seam_max: float,
                  seam_pop_max: float | None, scratch: _Scratch, said: dict[str, Any],
                  turn: body_turn_mod.Turn | None = None) -> tuple[dict[str, Any], list[Path], dict[str, Any]]:
     """`--anchor motion-auto`'s cut of `frames` — the clip after its lead-in, held, `files` written of them and `D`,
     `trajectory` and `analysis` read on them (auto_motion.analyse): the search, the gait fallback after a first search
-    that finds nothing, then the count, given (`steps`, `_counted`) or the clip's crossings (`_by_steps`). Returns the
+    that finds nothing, then the count, given (`steps`, `_counted`) or the clip's crossings (`_by_steps`) and, for a cut
+    one step long that neither counted, the clip two lengths on (`_two_lengths`). Returns the
     cut, and the files and the analysis it was read on (the gait fallback's, where it scaled the frames back); `said`
     takes what the report adds (`automatic_motion_analysis` read again, `gait_fallback`), whether a cut is found or the
     search raises. With `turn` (body_turn.Turn), no cut that holds a frame of a body turn is taken."""
@@ -1794,6 +1797,9 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
     else:
         cycle = _by_steps(cycle, refused, frames=frames, analysis=analysis, D=D, trajectory=trajectory,
                           window=window, searched=searched, detect=detect, seam_max=seam_max, cells=cells, turn=turn)
+        # A cut one step long that nothing counted: the clip itself is asked for two (`_two_lengths`).
+        cycle = _two_lengths(cycle, prof=prof, fps=fps, state=state, window=window, D=D, trajectory=trajectory, frames=frames,
+                             files=files, moved=moved, detect=detect, cells=cells, seam_max=seam_max, turn=turn)
     return cycle, files, analysis
 
 
@@ -1836,14 +1842,28 @@ def coverage_verdict(cycle: dict[str, Any]) -> list[str]:
 # the duration under which a period is one step; the half-period guard reads it in whole frames, rounded, to choose among
 # the search's candidates (`detect_cycle`, `local_cycle.detect`), so a cut up to half a frame under it is taken. Such a
 # cut whose steps nothing counted (no `cycle.steps`: neither the clip's crossings, --steps nor the held side's two
-# lengths) is named — `cycle.half_step` and a warning line — and kept: pixels cannot count steps where the legs are
-# drawn alike, and a cut two of its lengths long is the count's to take (`--steps 1`).
+# lengths) is one step. Under `--anchor motion-auto` the clip is asked for two (`_two_lengths`); a cut it does not
+# give two to is named — `cycle.half_step` and a warning line — and kept.
 HALF_STEP_RULE = "a walk or run loops on an even number of steps — two, one cycle"
+# The clip's word on a cut one step long (`_two_lengths`). One step on, the legs are back in place with near and far
+# swapped, and where the two are drawn alike (one colour of trousers) the silhouette repeats; the body's turn, the
+# shading across the torso and the folds of the clothes come back only two steps on. So the cut two lengths long —
+# `--steps 1`'s own (`_counted`), at each length it reads — is read about its wrap, TWO_LENGTHS_AROUND frames either
+# side of its first (two, so a clip drawn on twos shows two drawings there), on the frames as filmed
+# (`distance_matrix`): the clip two lengths on over one length on, the same frames (`two_lengths_on`). The nearest at
+# most period.STEP_RATIO_MAX — the step screen's bound for the same ratio, which it reads over the whole clip, where a
+# run that changes its pace does not repeat — is taken where the seam gate and the seam pop gate pass it as they will
+# the loop (`CutOnCells`). Not on the search's distances: the analysis canvas moves every frame by the drift it reads
+# (`auto_motion.analyse`), and a drift read where the body runs in place (one slope over the clip, tilted by frames
+# that open higher) moves frames two steps apart further than frames one step apart, so two lengths on reads no nearer
+# there. A drift the clip does walk only moves two lengths on further: it keeps a cut one step, never doubles one.
+TWO_LENGTHS_AROUND = 2
 
 
 def half_step(cycle: dict[str, Any], prof: LoopProfile, fps: float, *, state: str, clip_frames: int) -> dict[str, Any] | None:
     """The record of a periodic walk or run cut shorter than its state's gait floor whose steps were not counted
-    (HALF_STEP_RULE); None for any other cut. `clip_frames` is what the clip holds after its lead-in."""
+    (HALF_STEP_RULE); None for any other cut. `clip_frames` is what the clip holds after its lead-in. Where the clip
+    was asked for two steps and did not give them (`cycle.two_lengths`, `_two_lengths`), `two_lengths` says why."""
     if not prof.gait or prof.min_seconds <= 0 or cycle.get("kind") != "periodic" or "steps" in cycle:
         return None
     seconds = cycle["length"] / fps
@@ -1857,9 +1877,12 @@ def half_step(cycle: dict[str, Any], prof: LoopProfile, fps: float, *, state: st
     else:
         why = (counted.get("cut") or {}).get("why") or "no count of two"
     two = 2 * cycle["length"]
-    return {"rule": HALF_STEP_RULE, "state": state, "seconds": round(seconds, 4),
+    said = {"rule": HALF_STEP_RULE, "state": state, "seconds": round(seconds, 4),
             "gait_floor": {"seconds": prof.min_seconds, "frames": round(prof.min_seconds * fps)},
             "steps": "not counted", "why": why, "two_steps": {"frames": two, "in_clip": two <= clip_frames}}
+    if "two_lengths" in cycle:
+        said["two_lengths"] = cycle["two_lengths"]["why"]
+    return said
 
 
 def half_step_verdict(cycle: dict[str, Any]) -> list[str]:
@@ -1867,10 +1890,96 @@ def half_step_verdict(cycle: dict[str, Any]) -> list[str]:
     said = cycle.get("half_step")
     if not said:
         return []
+    asked = f", and the clip gives it no two ({said['two_lengths']})" if "two_lengths" in said else ""
     return [f"the cut {cycle['start']}/{cycle['length']} plays {said['seconds']:.2f} s, under the {said['state']}'s gait floor of "
             f"{said['gait_floor']['seconds']:g} s, and its steps were not counted ({said['why']}): {HALF_STEP_RULE}, and a cut "
-            "this short is one, the same leg leading every time round (a half step) — count the steps in the loop "
+            f"this short is one, the same leg leading every time round (a half step){asked} — count the steps in the loop "
             f"(video-loop --steps 1 cuts it two lengths long, {said['two_steps']['frames']} frames)"]
+
+
+def two_lengths_on(D: np.ndarray, start: int, length: int, step: int) -> dict[str, Any] | None:
+    """About a cut's first frame (TWO_LENGTHS_AROUND frames either side of its wrap, from `start`): the mean distance to
+    the frame `length` on (`near`) and to the frame `step` on (`one`), over the same frames, and `ratio` near over one —
+    None where one `step` on is the same picture, which two lengths on can come back no nearer than. None where no such
+    frame has the one `length` on in the clip."""
+    js = np.arange(max(0, start - TWO_LENGTHS_AROUND), start + TWO_LENGTHS_AROUND)
+    js = js[js + length < len(D)]
+    if js.size == 0:
+        return None
+    near, one = float(D[js, js + length].mean()), float(D[js, js + step].mean())
+    return {"context_pair_range": [int(js[0]), int(js[-1]) + 1], "near": round(near, 6), "one": round(one, 6),
+            "ratio": round(near / one, 4) if one > 0 else None}
+
+
+def _two_lengths(cycle: dict[str, Any], *, prof: LoopProfile, fps: float, state: str, window: CutWindow, D: np.ndarray,
+                 trajectory: np.ndarray, frames: list[Image.Image], files: list[Path], moved: list[np.ndarray],
+                 detect: dict[str, Any], cells: CutOnCells, seam_max: float,
+                 turn: body_turn_mod.Turn | None = None) -> dict[str, Any]:
+    """A motion-auto cut one step long (`half_step`: under the gait floor, its steps not counted), cut two lengths long
+    where the clip says it holds two (TWO_LENGTHS_AROUND): that cut, `steps` by "two-lengths" and `two_lengths` (taken).
+    Else the cut as it was, `two_lengths` (not taken, `why`), which `half_step` names. Any other cut, as it was.
+
+    Each length of the window two lengths long ([2L-1, 2L+1] inside the caller's bounds, as --steps 1 reads it) is cut
+    by --steps 1's own search at that length (`_counted`) and read (`two_lengths_on`, `tried`); nearest first, the
+    first within period.STEP_RATIO_MAX that the seam gate and the seam pop gate pass is taken."""
+    if half_step(cycle, prof, fps, state=state, clip_frames=len(frames)) is None:
+        return cycle
+    first = {"start": cycle["start"], "length": cycle["length"]}
+    record: dict[str, Any] = {"read": "the frames as filmed, about the wrap", "first_cut": first,
+                              "ratio_max": period_mod.STEP_RATIO_MAX, "seam_max": seam_max, "tried": []}
+
+    def kept(why: str) -> dict[str, Any]:
+        cycle["two_lengths"] = {**record, "taken": False, "why": why}
+        return cycle
+
+    lo, hi = window.within(2 * first["length"] - 1, 2 * first["length"] + 1)
+    if lo > hi:
+        return kept(f"{window.said()} leaves no length of {2 * first['length'] - 1}-{2 * first['length'] + 1} frames to cut")
+    filmed = distance_matrix(files)
+    cuts: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for length in range(lo, hi + 1):
+        try:
+            found = _counted(cycle, 1, window=window, D=D, trajectory=trajectory, frames=frames, moved=moved, detect=detect,
+                             cells=cells, turn=turn, by="two-lengths", length=length)
+        except ValueError as exc:
+            record["tried"].append({"length": length, "unread": str(exc)})
+            continue
+        row = {"start": found["start"], "length": found["length"]}
+        read = two_lengths_on(filmed, found["start"], found["length"], first["length"])
+        row.update(read if read is not None else {"unread": "the clip holds no frame two lengths on about its wrap"})
+        if read is not None and read["ratio"] is None:
+            row["unread"] = "one length on is the same picture, which two lengths on comes back no nearer than"
+        record["tried"].append(row)
+        if "unread" not in row:
+            cuts.append((row, found))
+    if not cuts:
+        return kept(f"no cut {lo}-{hi} frames long is read two lengths on ({record['tried'][-1]['unread']})")
+    cuts.sort(key=lambda pair: (pair[0]["ratio"], pair[0]["start"], pair[0]["length"]))
+    for row, found in cuts:
+        if row["ratio"] > period_mod.STEP_RATIO_MAX:
+            break
+        s, L = row["start"], row["length"]
+        row["seam"] = round(cells.seam(s, L), 3)
+        if row["seam"] > seam_max:
+            row["gate"] = (f"its wrap on the cells is {row['seam']:g} of its step, over {seam_max:g}: the seam gate would "
+                           "not pass it")
+            continue
+        if cells.gate is not None:
+            row["seam_pop"] = pop = cells.gate(s, L)
+            if pop.get("over"):
+                row["gate"] = (f"its top band jumps {pop['pop']:g} into its first frame, over {pop['max']:g}: the seam pop "
+                               "gate would not pass it")
+                continue
+        found["two_lengths"] = {**record, "cut": {"start": s, "length": L}, "taken": True}
+        if "step_count" in cycle:
+            found["step_count"] = cycle["step_count"]
+        return found
+    row = cuts[0][0]
+    if "gate" in row:
+        return kept(f"the cut {row['start']}/{row['length']} comes back two lengths on ({row['ratio']:.2f}x as far as one "
+                    f"length on), but {row['gate']}")
+    return kept(f"about the wrap of the nearest, {row['start']}/{row['length']}, the clip two lengths on is {row['ratio']:.2f}x "
+                f"as far as one length on, over {period_mod.STEP_RATIO_MAX:g}: the step comes back no nearer two steps on")
 
 
 def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor: str, cycle: dict[str, Any], fps: float,
@@ -2144,7 +2253,7 @@ def _cut_loop(
                 report_base["lead_in"]["search_from"] = skip
             report_base["automatic_motion_analysis"] = analysis
             search = partial(_motion_auto, source_frames, files, D, trajectory, analysis, fps=fps, window=window, prof=prof,
-                             steps=steps, seam_max=seam_max, seam_pop_max=seam_pop_max, scratch=scratch)
+                             state=state, steps=steps, seam_max=seam_max, seam_pop_max=seam_pop_max, scratch=scratch)
             # The body's turn (sprite_gen/video/body_turn.py), read on the clip as keyed against its first frame, the still,
             # lead-in or not: a cut that holds a frame of one is not taken while another holds a cycle. Where none does,
             # --body-turn warn takes the cut the search takes with the turn in, and says so; refuse refuses the clip in a line
@@ -2918,6 +3027,8 @@ def run(**kwargs: object) -> int:
         summary["cycle"]["coverage"] = payload["cycle"]["coverage"]
     if "step_screen" in payload["cycle"]:
         summary["cycle"]["step_screen"] = payload["cycle"]["step_screen"]
+    if "two_lengths" in payload["cycle"]:
+        summary["cycle"]["two_lengths"] = payload["cycle"]["two_lengths"]
     if "half_step" in payload["cycle"]:
         summary["cycle"]["half_step"] = payload["cycle"]["half_step"]
     if "step_count" in payload["cycle"]:

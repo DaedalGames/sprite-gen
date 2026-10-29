@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A walk or run cut shorter than its state's gait floor, its steps not counted, is named a half step.
+"""A walk or run cut shorter than its state's gait floor, its steps not counted, is named a half step where the clip
+gives it no two.
 
 A walk or run loops on two steps. The half-period guard reads the gait floor in whole frames, rounded, so a run cut 8
-frames long at 24 fps (0.33 s, under the run's 0.35 s) is taken as a cycle; the cut stays as it was, and the report and
-a warning line say it is one step (`cycle.half_step`, docs/video-pipeline.md section 4)."""
+frames long at 24 fps (0.33 s, under the run's 0.35 s) is taken as a cycle. This walker repeats exactly every 8 frames,
+so two lengths on comes back no nearer (tests/video/test_loop_two_lengths.py has one that does): the cut stays as it
+was, and the report and a warning line say it is one step (`cycle.half_step`, docs/video-pipeline.md section 4)."""
 from __future__ import annotations
 
 import pytest
