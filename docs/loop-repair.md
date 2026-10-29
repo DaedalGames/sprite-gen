@@ -1566,17 +1566,34 @@ those). This witness is needed because legs drawn alike loop as well on one step
 feet that slide down the screen through their step (as a view from behind or a diagonal draws a planted foot),
 or off a shadow under the feet on a picture that moves, count half steps or quarter steps; and a shadow under the
 feet can leave the step count no feet to read, handing out the search's one-step cut with nothing named.
-`local_cycle.cut_word(signals, length)` reads `local_cycle.bob_word` (the body's own rise and fall twice an
-interval) over the feet (`local_cycle.over_feet`, `bob_word(..., feet=True)`; taking the top line less the lowest
-solid row, `reach`, or less the lowest opaque row, `sole`, whichever leaves less of the top line's rise and
-fall twice an interval; the flow at the cut's length leaves a sway of the picture once a cut whole, and the feet
-move with the picture, while the step count's reading at the crossing interval keeps the top line on the screen)
-at the cut's length L and says: `"two steps"` where the body rises and falls of its own twice in the
-cut (the cut is a cycle); `"four steps"` where it does so twice in half the cut (two cycles); `"one step"` where
-it does so twice in two cuts, that is once in the cut; null where none of these is read (`why` is the reading's
-own why); returning `{says, bob, on, why}`: `bob` the reading on the cut, `on` the reading at L/2 or 2L that said
-four steps or one step, with its `interval`. Two steps or four steps: the cut stands, and `cycle.cut_witness`
-records `{cut: [s, L], says, bob}`.
+`local_cycle.cut_word(signals, length)` reads the body's top line on two lines, `local_cycle.CUT_LINES` =
+`{'screen': 'on the screen', 'feet': 'over its feet'}`: the top line on the screen, less its flow
+(`bob_word(signals, L)`), and the top line over its feet (`bob_word(..., feet=True)`, `local_cycle.over_feet`,
+taking the top line less the lowest solid row, `reach`, or less the lowest opaque row, `sole`, whichever leaves
+less of its rise and fall twice an interval). Read on the screen alone, a picture swaying up and down once a cut
+or slower hides that rise and fall instead (the flow taken out at the cut's length leaves such a sway whole, and
+the feet move with the picture), and the line over the feet reads it; read over the feet alone, a walk turned
+slowly about its feet as it goes (a lean changing on them) tilts the ground under the feet, and the line over
+them takes in the two feet's heights by turns. Each line (`local_cycle._cut_line`) reads `local_cycle.bob_word`
+(the body's own rise and fall twice an interval) on the cut L, on half of it (L/2) and on twice it (2L), and says
+the first it rises and falls twice on: `"two steps"` on L (the cut is a cycle); `"four steps"` on L/2 (two
+cycles); `"one step"` on 2L (once in the cut); null where none, with the reading's `why`. The cut's word is the
+first either line says, in the order `local_cycle.CUT_WORDS` = `("two steps", "four steps", "one step", None)`.
+It returns `{says, by, lines, on, why, mark}`: `by`, the lines that said the word (`"screen"`, `"feet"`, or
+both), only where it says one; `lines`, each line's own word, `{screen: {...}, feet: {...}}`, each
+`{says, bob, on, why}` (`bob` that line's reading on the cut, `on` its reading at L/2 or 2L that said four
+steps or one step, with its `interval`, only for four steps or one step, `why` only where that line's `says` is
+null; the feet line's `bob` and `on` record `over`, the row it was read over, `reach` or `sole`); `on`, for four
+steps or one step, the first line in `by`'s reading that said it, with its `line` and `interval`; `why`, only
+where neither line says a word: each line's why, joined by "; "; `mark`, only where marked. Where the cut
+stands (two steps or four steps) and its lowest row (the one the line over the feet is read over: `sole` where
+the feet line was read over `sole`, else the lowest solid row) rises and falls twice the cut more than its top
+line does on the screen (`local_cycle.own_beat`'s `sole` or `lowest` greater than its `beat`, both rounded to two
+places), the record carries `mark: {over, feet, beat}` (`local_cycle._feet_mark`), in rows up and down to two
+places. The line over the feet is then the feet's as much as the body's: a foot hidden behind the other shakes it
+so once a cycle, and a cut of two cycles could be stood on it as one. A mark holds nothing: the cut stands as its
+word says, and nothing is warned or left out for it. Two steps or four steps: the cut stands, and
+`cycle.cut_witness` records `{cut: [s, L], ...cut_word's record}`.
 A cut of four steps (two cycles) still has its strip counting two steps (`steps: 2`), which `video-cycle-align`
 reads as one cycle; so `local_cycle.four_steps(cycle)` is true and `video-set` leaves the item out of its state's
 cycle alignment (`left_out` `["cycle-four-steps"]`, `local_cycle.FOUR_STEPS`), its loop as cut. `video-cycle-align`
@@ -1593,10 +1610,15 @@ half a cycle or two, and, where its step screen suspects the cut is one step, ad
 one step of a walk whose legs are drawn alike (half its cycle), or a whole cycle of a body that rises and falls
 once a cycle: a limp, or a legless body bouncing as it goes (the walk window already admits a legless body's fast
 bounce); nothing that reads no leg tells the two apart, and cutting again two long would loop two cycles of the
-second. The loop report's `cycle.cut_witness` records `{cut, says, bob, on, why, held}` (`on` only for four steps
-or one step, `why` only where `says` is null, `held` only where held); the printed summary's
-`cycle.cut_witness` records `{cut, says, held}`.
-The loop report's `bob` and `on` record `over`, the row the line was read over (`reach` or `sole`).
+second. The warning of a cut held on one step names the line or lines its body's top line rose and fell once on
+("the body's top line on the screen", "over its feet", or "on the screen and over its feet") and, for the other
+line, that it says nothing, with that line's why. `local_cycle.held_verdict` refuses by name, with a `ValueError`,
+a cut held on one step whose record names no line it was read on (no `by` or `lines`), and `step_verdict` with it;
+no engine path hands it one, its one caller saying the record the same run has just written. The loop report's
+`cycle.cut_witness` records `{cut, says, by, lines, on, why, held, mark}` (`by` only where it says a word,
+`on` only for four steps or one step, `why` only where `says` is null, `held` only where held, `mark` only where
+marked); the printed summary's `cycle.cut_witness` records `{cut, says, by, held, mark}` (each where present).
+The feet line's `bob` and `on` record `over`, the row it was read over (`reach` or `sole`).
 
 **What crossings cannot see**: a hold the step range absorbs (a 13-frame step held to 17), a still run of
 the feet together inside the clip as long as a pass, and a wobble that reaches the reading's sides at a
