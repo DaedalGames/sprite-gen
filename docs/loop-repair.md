@@ -1577,6 +1577,46 @@ each sole up to 6, 12 or 24 px lower the further back its foot is, the foot movi
 (the lowest row is the planted foot, sliding down the screen through its step); still, or on a picture
 moved 3, 6 (four phases) or 12 px either way every d/2 frames, or 6 px every d: never witnessed.
 
+**The order the feet are drawn in.** `legs.feet_order(frame)` reads the order a frame draws its two feet in.
+`ground` records the first and last column of each run of solid pixels within `legs.CONTACT` (0.005 of the body's
+height, at least one row) of the frame's lowest row, and `height` records the body height. The feet are seen
+`apart` when the foot band (the lowest `legs.FOOT_BAND`, 0.08, of the height) parts at its widest empty run, and
+that run spans at least `legs.FEET_APART` (0.02) of the height. Where they are apart, `depth` measures how many
+rows lower the right foot's lowest solid row is drawn than the left's, `left` and `right` record each foot's
+contact columns within `CONTACT` of its own lowest row, and `sway` records how far right of the middle of that
+empty run the mean column of the upper half of the body lies. From the front, the back, or a diagonal, the foot
+nearer the viewer is drawn lower, and the nearer foot changes sides once a step, twice a cycle. Counted over a
+crossing interval or a cut, those changes say how many steps it holds. The view's label is not taken for it,
+because a generated walk's label may be wrong: the clip must show that its two sides of feet are its two legs, or
+nothing is witnessed. `local_cycle.order_word(order, span)` tests the frames across a span through a sequence of
+gates in order: the feet must be seen apart in at least `legs.FEET_APART_SHARE` (20 %) of the frames; the depth's
+swing (10th to 90th percentile) must reach at least `ORDER_ROWS` (2) rows and `legs.REACH_MIN` (0.015) of the
+height, or the feet are drawn level; each frame's lower side is read where one foot is at least an eighth of the
+swing (at least one row) lower; no change of side may have the lower foot's contact before it and the other
+side's contact after it share or touch a column, which marks one foot sliding under the body from one side to the
+other as seen from the side; nothing standing on the lowest row may slide along it `ORDER_TRAVEL` (0.8) of the
+feet's median distance apart or more (`_travel` follows each run frame to frame while it touches exactly one run
+of the next frame, starting afresh where runs meet or part); and the upper body's sway (10th to 90th percentile)
+must stay under `ORDER_SWAY` (0.5) of what a tilt about the feet would need to draw one foot that much lower (the
+swing times `ORDER_REACH`, 0.75, of the height, over the feet's distance apart), because a picture rocking on its
+feet draws one foot lower and then the other. Then at least three changes are required, and their rate over the
+span (the span over the mean distance between changes) must fall within `ORDER_SLACK` (0.2) of two, four, or one,
+with no two changes more than twice their mean apart (`ORDER_WORDS`), giving `"two steps"`, `"four steps"`, or
+`"one step"`, or null with `why`. The record keeps `apart`, `swing`, `floor`, `changes`, `slides`, `spacing`,
+`travel`, `sway`, `tilt`, `per`, `says`, and `why`. It is not read from the side (`--view side`,
+`local_cycle.SIDE_VIEW`), where the two sides of the feet are the front foot and the back foot rather than two
+legs. In `local_cycle.read_cycles(..., order=None)`, `video-loop` passes `order=[legs.feet_order(f) for f in
+frames]`. After the foot cue's refusal and the body's word, where the body does not witness two steps an interval
+and the order says `"two steps"` over the crossing interval, the crossings mark cycles: `cycles` is true, and
+`why` records that the foot drawn nearer changes sides `<per>` times an interval, the clip's two sides of feet
+its two legs (none slides from one to the other, the upper body sways `<sway>` px of the `<tilt>` a tilt would
+need): two steps an interval, the feet meet once a cycle. The record is kept as `cycle.step_count.cycles.order`.
+Where nothing witnesses, `why` adds the order's own reason ("the order of the feet is not read from the side"
+from the side). A diagonal walk whose feet pass each other on the screen, one foot always drawn lower and the
+other passing it on either side, shows the same changes a side walk does (a planted foot sliding under the body
+past the other), and the order does not witness it: its crossings stay on steps or its cut is held, named. A side
+walk is never read on the order, and reading which foot passes in front of which on the screen is not done here.
+
 **Choosing the cut.**
 
 - The clip does not show its steps (no feet seen, a legless body, a lean that does not turn over, under
@@ -1672,10 +1712,28 @@ places. The line over the feet is then the feet's as much as the body's: a foot 
 so once a cycle, and a cut of two cycles could be stood on it as one. A mark holds nothing: the cut stands as its
 word says, and nothing is warned or left out for it. Two steps or four steps: the cut stands, and
 `cycle.cut_witness` records `{cut: [s, L], ...cut_word's record}`.
+`local_cycle.cut_word(signals, length, order=None, declined=None)` reads the order on the cut: `loop._witnessed`
+passes it the order (none from the side, none where the frames give no top line) and the step count's `declined`
+record. Where neither line says two steps or four steps, the order is read on the cut: if it says two steps or
+four steps, the cut stands, `by` records `["order"]`, and the record is placed under `order`. Otherwise the
+lines' word stands, the order's record is kept under `order`, and its reason is joined to the cut's why. A cut of
+four steps read on the order is two cycles exactly as one read by the body: `local_cycle.four_steps` is true,
+`video-set` leaves it out (`cycle-four-steps`), and the `video-set` warning reads "its body rises and falls, or
+its foot drawn nearer changes sides, four times in its cut (cycle-four-steps)". Because the order counts the
+changes in a cut rather than whether the cut's length closes them, a cut a sixth short of a cycle still reads two
+steps. Where the cut is the search's, kept because none of the clip's two-step cuts closes (`declined`, the step
+count's record of the best of them), the order does not stand a length the closing refused: `order.says` is null,
+`order.read` keeps the word it read, its why says the order "counts its steps, not whether its length closes, and
+does not stand a length the closing refused", and the cut is held (`cut_witness.held` "unwitnessed",
+`cycle-unwitnessed`). The body's word on such a cut is unchanged.
 A cut of four steps (two cycles) still has its strip counting two steps (`steps: 2`), which `video-cycle-align`
 reads as one cycle; so `local_cycle.four_steps(cycle)` is true and `video-set` leaves the item out of its state's
-cycle alignment (`left_out` `["cycle-four-steps"]`, `local_cycle.FOUR_STEPS`), its loop as cut. `video-cycle-align`
-run on its own does not read the witness.
+cycle alignment (`left_out` `["cycle-four-steps"]`, `local_cycle.FOUR_STEPS`), its loop as cut.
+`video-cycle-align` run on its own reads the cut report beside each loop through `align.held_cut(loop_dir,
+meta_path, meta)`. Where nothing witnessed the cut whole cycles (`cycle-unwitnessed`) or the cut spans four steps
+(`cycle-four-steps`), the loop is named under `held` and the aligner stops under `--multi-cycle fail` before
+rewriting any files, adding "and nothing witnessed some of the cuts whole cycles". Under `--multi-cycle warn` it
+aligns the loop with a warning, matching `video-set` instead of aligning held loops as one cycle without a word.
 Anything else: the cut is held: kept exactly as it was chosen (two of the clip's crossing intervals where the
 step count counted them, else the search's cut), `cut_witness.held` is `"unwitnessed"`, a warning line names
 `cycle-unwitnessed` (`local_cycle.held_verdict(cycle)`, said through `local_cycle.step_verdict`), and
@@ -1862,6 +1920,19 @@ sprite-gen video-cycle-align --loop-dir set/front-walk/loop --loop-dir set/side-
   In `video-set`, a walk whose cut its cut witness held is left out of the alignment
   (`cycle-unwitnessed`) before it is screened, and where its step screen suspects one step, its
   warning gives the same advice (cut it again with `video-loop --steps 1` if it is one).
+  `video-cycle-align` run on its own reads the cut report beside each loop through
+  `align.held_cut(loop_dir, meta_path, meta)` (using `align.cut_report` in the loop's directory or
+  the directory above it, matching the strip metadata). When nothing witnessed the cut whole cycles
+  (`local_cycle.unwitnessed`, reason `cycle-unwitnessed`) or a loop with two strip steps was cut two
+  cycles long (`local_cycle.four_steps`, reason `cycle-four-steps`), `held` records `{reason,
+  report}`. Under `--multi-cycle fail` (the default), the command stops before anything is rewritten,
+  adding "and nothing witnessed some of the cuts whole cycles". A loop counted two steps whose cut is
+  held receives no `steps` status and its return half way is not read as its second step; `settle`
+  offers `--cycles <loop>=1` to align it as one cycle and `--cycles <loop>=2` to take one cycle out
+  of two, and a held loop that may be one step is cut again with `video-loop ... --steps 1`. Under
+  `--multi-cycle warn`, it is aligned and warned that "at the set's length it plays half or twice as
+  fast as the rest, if it is not one cycle" where no return was found, bringing standalone alignment
+  into agreement with `video-set` instead of aligning held loops as one cycle without a word.
 - **Two cycles in one loop are stopped, and counted by whoever looks**: one length for the set is
   one beat only if every loop holds one cycle. A loop that holds two strides, resampled to the
   set's length, walks twice as fast as the rest, arms and legs alike — and pixels cannot tell it
