@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (v3.8.0)
+## v3.8.0 - Held cells found and filled with in-betweens by default, and a cut given above its clip's frame rate (--out-fps)
 
 **Upgrading from 3.7.0: `video-loop` (and so `video-set`) now finds neighbour cells of a cut that show the same picture and, by default, makes them again with RIFE's frames between. A cut with no such cell comes out byte for byte as before. A cut with them comes out with its held cells made, its length, beat, first and last cells and wrap unchanged. `--fill-held off` cuts as before. Every cut's report and strip metadata gain `held_fill`.**
 
