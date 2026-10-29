@@ -111,6 +111,23 @@ def env_api_key(name: str, env: Mapping[str, str] | None = None, *, who: str, al
     return None
 
 
+# Whether a subscription login may be read (docs/gen.md "Subscription logins off"): `on` where unset or empty, the
+# order every provider keeps (the login first, the key only without one); `off` reads none of them — the grok login
+# file, `codex login status`, `claude auth status` — so every call runs on its API key, as in a container that holds a
+# key and no login. Anything else is refused, not read as either.
+LOGINS_ENV = "SPRITE_GEN_LOGINS"
+LOGINS_OFF = f"subscription logins are off here ({LOGINS_ENV}=off)"
+
+
+def logins_on(env: Mapping[str, str] | None = None) -> bool:
+    """Whether a subscription login may be read here (`LOGINS_ENV`, in `env`, default `os.environ`)."""
+    named = (os.environ if env is None else env).get(LOGINS_ENV) or "on"
+    if named not in ("on", "off"):
+        raise SystemExit(f"{LOGINS_ENV}={named!r}: name off (every provider call on its API key, no subscription "
+                         "login read) or on (the default), or leave it unset")
+    return named == "on"
+
+
 def provider_binary(name: str) -> str:
     """Resolve a provider CLI through PATH, including Windows PATHEXT shims.
 

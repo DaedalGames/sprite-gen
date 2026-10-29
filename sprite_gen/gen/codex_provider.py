@@ -36,11 +36,13 @@ from pathlib import Path
 
 from .base import (
     GEN_TIMEOUT_SECONDS,
+    LOGINS_OFF,
     TRANSPARENCY_NATIVE,
     announce_api_billing,
     GenRequest,
     GenTimeoutError,
     ProviderRun,
+    logins_on,
     provider_binary,
     provider_subprocess_env,
     verify_png,
@@ -99,7 +101,10 @@ def codex_login() -> CodexLogin:
     """How `codex` is signed in here, by `codex login status`: exit 0 and "ChatGPT" in what it
     says is the subscription; exit 0 otherwise is signed in with an API key. No CLI, a probe that
     fails or does not answer, and a non-zero exit are not usable, with the reason. What the CLI
-    says is never repeated: an API-key login can name its key."""
+    says is never repeated: an API-key login can name its key. With SPRITE_GEN_LOGINS=off codex is
+    not asked and is not usable: its login is all it runs on."""
+    if not logins_on():
+        return CodexLogin(None, LOGINS_OFF)
     binary = provider_binary("codex")
     try:
         completed = subprocess.run([binary, "login", "status"], capture_output=True, text=True, encoding="utf-8",
@@ -398,6 +403,9 @@ class CodexProvider:
                     f"codex-gen: {flag} is not carried into codex image_gen; "
                     "drop it or use --provider openai"
                 )
+        if not logins_on():
+            raise SystemExit(f"codex-gen: {LOGINS_OFF}; codex runs on its own login only — "
+                             "name --provider openai or grok, which run on an API key")
         codex_home = _resolve_codex_home()
         if not codex_home.is_dir():
             raise SystemExit(

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
-from . import refusal, retry, xai
+from . import address, refusal, retry, xai
 from .base import (
     GEN_TIMEOUT_SECONDS,
     RESOLUTIONS,
@@ -149,7 +149,7 @@ class GrokProvider:
         # refused request goes again count in it (`retry`), and each send reads only what is left of it.
         deadline = started + GEN_TIMEOUT_SECONDS
         status, reply, sends = xai.post(lambda *a: xai.http_json(*a, timeout=GEN_TIMEOUT_SECONDS, deadline=deadline),
-                                        xai.API_BASE + endpoint, credential.token, body, who="grok", label="gen",
+                                        address.url("xai", endpoint), credential.token, body, who="grok", label="gen",
                                         deadline=deadline)
         # The provider's code goes in front, format-checked; the body it sent goes
         # last, as received, with keys and URL query strings masked (refusal.said).

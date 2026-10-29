@@ -53,7 +53,7 @@ def server(monkeypatch):
     srv.script, srv.asked = [], []
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setattr(api, "API_BASE", f"http://127.0.0.1:{srv.server_address[1]}/v1")
+    monkeypatch.setenv("SPRITE_GEN_ANTHROPIC_BASE_URL", f"http://127.0.0.1:{srv.server_address[1]}/v1")
     yield srv
     srv.shutdown()
     srv.server_close()
@@ -191,7 +191,8 @@ def test_message_batches(server):
     assert sent["path"] == "/v1/messages/batches"
     assert [r["custom_id"] for r in sent["body"]["requests"]] == ["c1-gen1", "c2-gen1"]
     assert all("stream" not in r["params"] for r in sent["body"]["requests"])
-    results_url = api.API_BASE + "/messages/batches/msgbatch_01/results"
+    # The results file is Anthropic's own URL; with the base pointed here it is fetched through it (`address.fetched`).
+    results_url = "https://api.anthropic.com/v1/messages/batches/msgbatch_01/results"
     server.script.append(("json", 200, {}, {"id": "msgbatch_01", "processing_status": "ended", "results_url": results_url}))
     status = api.get_batch(KEY, batch["id"], sleep=lambda s: None)
     message = {"id": "msg_b1", "model": api.MODEL, "stop_reason": "end_turn", "content": [
@@ -203,7 +204,9 @@ def test_message_batches(server):
              {"custom_id": "c3-gen1", "result": {"type": "expired"}}]
     server.script.append(("raw", 200, {}, "\n".join(json.dumps(l) for l in lines).encode() + b"\n"))
     results = api.batch_results(KEY, status, sleep=lambda s: None)
-    assert server.asked[-1]["path"] == "/v1/messages/batches/msgbatch_01/results"
+    assert server.asked[-1]["path"] == ("/v1/sprite-gen/fetch?url="
+                                        "https%3A%2F%2Fapi.anthropic.com%2Fv1%2Fmessages%2Fbatches%2Fmsgbatch_01%2Fresults")
+    assert server.asked[-1]["headers"]["x-api-key"] == KEY
     ok = results["c1-gen1"]
     assert (ok.text, ok.thinking, ok.mode, ok.batch_id, ok.message_id) == ("```pixels\n```", "rows", "batch", "msgbatch_01", "msg_b1")
     assert isinstance(results["c2-gen1"], api.ApiError) and "code=invalid_request_error" in results["c2-gen1"].line

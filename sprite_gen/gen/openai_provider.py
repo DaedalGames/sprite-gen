@@ -41,7 +41,7 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from . import refusal, retry
+from . import address, refusal, retry
 from .xai import NO_ANSWER, error_body, read_whole, time_left
 from .base import (
     GEN_TIMEOUT_SECONDS,
@@ -54,7 +54,6 @@ from .base import (
     publish_png,
 )
 
-API_BASE = "https://api.openai.com/v1"
 AUTH_ENV = "OPENAI_API_KEY"
 AUTH_SOURCE_API_KEY = AUTH_ENV
 
@@ -299,7 +298,7 @@ class OpenAIProvider:
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, f" ({label}).")
         data = json.dumps(body).encode("utf-8")
-        status, reply, _headers, _asks = _ask(API_BASE + "/responses", token, data, "application/json")
+        status, reply, _headers, _asks = _ask(address.url("openai", "/responses"), token, data, "application/json")
         text, metadata = vision.response_text(status, reply, label=label)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -319,7 +318,7 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply, headers, asks = _ask(API_BASE + endpoint, token, data, content_type)
+        status, reply, headers, asks = _ask(address.url("openai", endpoint), token, data, content_type)
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).
