@@ -762,7 +762,7 @@ def build_strip(frames: list[Image.Image], *, max_cells: int = STRIP_MAX_CELLS, 
     # over the whole cycle undercounts a jump (crouch + airborne frames dominate) and then
     # over-scales it — the 2026-09-09 hero read 22 % taller than the walk beside it.
     floor = max(b[3] for b in boxes)
-    grounded = [b[3] - b[1] for b in boxes if b[3] >= floor - 4] or [b[3] - b[1] for b in boxes]
+    grounded = [b[3] - b[1] for b in boxes if nonloop.on_floor(b, floor)] or [b[3] - b[1] for b in boxes]
     # `standing_src` is the caller's own measurement of the standing pose (run_loop: the clip's
     # first frame, or the cut's first — clip frame `standing_frame` — where the cut is filmed at
     # another size than it). The tallest grounded frame counts whatever is raised overhead — an attack's

@@ -45,6 +45,7 @@ POSE_SHAPE_TOLERANCE = 0.05
 POSE_FLOOR_TOLERANCE = 0.02
 GROUND_HEIGHT_MAX = 0.8
 GROUND_STATES = frozenset({"death", "fall"})
+GROUND_PX = 4  # a body whose lowest row is this close to the floor row stands on it (`on_floor`)
 
 
 Box = tuple[int, int, int, int]
@@ -190,6 +191,13 @@ def metadata(cycle: dict[str, Any], indices: list[int]) -> dict[str, Any]:
             "end_frame": len(indices) - 1,
             "events": [{"frame": min(range(len(indices)), key=lambda k: abs(indices[k] - event)),
                         "name": "motion_peak"}]}
+
+
+def on_floor(box: Box, floor: int) -> bool:
+    """Whether a body box (`body_box`) stands on the floor: its lowest row within GROUND_PX of the floor's, the lowest
+    row a body reaches. The strip's standing height is read on the frames that do (`loop.build_strip`), and a single
+    play's contacts with the ground are (sprite_gen/video/root_motion.py)."""
+    return box[3] >= floor - GROUND_PX
 
 
 def body_box(frame: Any) -> Box | None:
