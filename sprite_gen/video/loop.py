@@ -1831,6 +1831,48 @@ def coverage_verdict(cycle: dict[str, Any]) -> list[str]:
             f"past it (under {COVERAGE_MIN:g}): its repeat is barely seen — the seam says whether it closes; a longer take shows it repeat"]
 
 
+# A walk or run loops on an even number of steps — two, one cycle: the left foot forward once and the right once. A loop
+# of one step plays the same leg leading every time round (a half step). The gait floor (`LoopProfile.min_seconds`) is
+# the duration under which a period is one step; the half-period guard reads it in whole frames, rounded, to choose among
+# the search's candidates (`detect_cycle`, `local_cycle.detect`), so a cut up to half a frame under it is taken. Such a
+# cut whose steps nothing counted (no `cycle.steps`: neither the clip's crossings, --steps nor the held side's two
+# lengths) is named — `cycle.half_step` and a warning line — and kept: pixels cannot count steps where the legs are
+# drawn alike, and a cut two of its lengths long is the count's to take (`--steps 1`).
+HALF_STEP_RULE = "a walk or run loops on an even number of steps — two, one cycle"
+
+
+def half_step(cycle: dict[str, Any], prof: LoopProfile, fps: float, *, state: str, clip_frames: int) -> dict[str, Any] | None:
+    """The record of a periodic walk or run cut shorter than its state's gait floor whose steps were not counted
+    (HALF_STEP_RULE); None for any other cut. `clip_frames` is what the clip holds after its lead-in."""
+    if not prof.gait or prof.min_seconds <= 0 or cycle.get("kind") != "periodic" or "steps" in cycle:
+        return None
+    seconds = cycle["length"] / fps
+    if seconds >= prof.min_seconds:
+        return None
+    counted = cycle.get("step_count")
+    if counted is None:
+        why = "the clip's crossings were not read"
+    elif not counted.get("readable"):
+        why = counted.get("why") or "the clip does not show its steps"
+    else:
+        why = (counted.get("cut") or {}).get("why") or "no count of two"
+    two = 2 * cycle["length"]
+    return {"rule": HALF_STEP_RULE, "state": state, "seconds": round(seconds, 4),
+            "gait_floor": {"seconds": prof.min_seconds, "frames": round(prof.min_seconds * fps)},
+            "steps": "not counted", "why": why, "two_steps": {"frames": two, "in_clip": two <= clip_frames}}
+
+
+def half_step_verdict(cycle: dict[str, Any]) -> list[str]:
+    """A cut recorded as one step (`cycle.half_step`), in words; empty otherwise."""
+    said = cycle.get("half_step")
+    if not said:
+        return []
+    return [f"the cut {cycle['start']}/{cycle['length']} plays {said['seconds']:.2f} s, under the {said['state']}'s gait floor of "
+            f"{said['gait_floor']['seconds']:g} s, and its steps were not counted ({said['why']}): {HALF_STEP_RULE}, and a cut "
+            "this short is one, the same leg leading every time round (a half step) — count the steps in the loop "
+            f"(video-loop --steps 1 cuts it two lengths long, {said['two_steps']['frames']} frames)"]
+
+
 def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor: str, cycle: dict[str, Any], fps: float,
                 seam_max: float) -> tuple[list[Image.Image], dict[str, Any]]:
     """`wrap_blend.apply` on a pinned cut, the pinned last frame cleaned as the cut's frames are (`_scrub`,
@@ -2259,6 +2301,8 @@ def _cut_loop(
     if "steps" in cycle:
         # A cut two steps long is one cycle: how much of a second the clip holds past it (after its lead-in).
         cycle["coverage"] = round((n - skip - L) / L, 4)
+    if cycle_mode in ("auto", "periodic") and (said := half_step(cycle, prof, fps, state=state, clip_frames=n - skip)):
+        cycle["half_step"] = said
     # The same, over the cut alone: a clip held for part of its length is held where the cut is.
     report_base["cycle_drawings"] = held_mod.measure_cycle(clip_steps, start=i, length=L, fps=fps)
     if gait_frames is not None:
@@ -2447,6 +2491,7 @@ def _cut_loop(
         warnings += repair_mod.held_edge_verdict(cycle.get("seam_pop"))
         warnings += coverage_verdict(cycle)
         warnings += local_cycle.step_verdict(cycle)
+        warnings += half_step_verdict(cycle)
         gated = repair != "off" and (jolt_max is not None or head_step_max is not None)
         over = repair_mod.jolt_verdict(jolt, jolt_max=jolt_max, head_step_max=head_step_max) if gated else []
         report_base["jolt"] = {**jolt, "reference": reference, "warnings": warnings,
@@ -2873,6 +2918,8 @@ def run(**kwargs: object) -> int:
         summary["cycle"]["coverage"] = payload["cycle"]["coverage"]
     if "step_screen" in payload["cycle"]:
         summary["cycle"]["step_screen"] = payload["cycle"]["step_screen"]
+    if "half_step" in payload["cycle"]:
+        summary["cycle"]["half_step"] = payload["cycle"]["half_step"]
     if "step_count" in payload["cycle"]:
         counted = payload["cycle"]["step_count"]
         summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
