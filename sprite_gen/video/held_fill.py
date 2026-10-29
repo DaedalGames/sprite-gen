@@ -29,15 +29,18 @@ its held-drawings reading (`held.measure_cycle`, which `video-cycle-align` reads
 that long, but a run cut short at the cut's first or last cell: a clip carried to a higher rate by repeating frames
 reads a hold too (24 fps carried to 60 shows each frame two or three times), its runs two and three cells by turns, and
 a clip that stalls now and then reads none. A frame made
-is judged as the frames the alignment makes are (`align.measure_made`, `faults`), and for a part standing still on
-both sides of it (`still_kept`: a foot planted, a hand on a ledge), which must stand where it stood; a frame refused is
-made again at another fraction of RETIME_T within half a cell of its own time, else the run is kept as filmed and says
-why. A run is made whole or kept whole: half made it would step back.
+is judged as the frames the alignment makes are (`align.measure_made`, `faults`), for a part standing still on both
+sides of it (`still_kept`: a foot planted, a hand on a ledge), which must stand where it stood, and for a picture of its
+own (`same_picture`, `held`): one that shows the picture of either frame it is made between, or of the cell before it,
+is no frame between but a held cell again. A frame refused is made again at another fraction of RETIME_T within half a
+cell of its own time, else the run is kept as filmed and says why. A run is made whole or kept whole: half made it would
+step back.
 
-`upsample` gives a cut at a rate above its own (`--out-fps`) its frames between, at their own times, never a frame
-shown again; a cell where both frames beside its time show one picture (a hold kept) is that picture. `at_times` makes
-a cut's cells at any times so: `upsample`'s, and the air a single play's air retime gives a new length
-(`root_motion.retime`, docs/video-pipeline.md "Root motion")."""
+`upsample` gives a cut at a rate above its own (`--out-fps`) its frames between, at their own times, judged as the
+fill's are, never a frame shown again; a cell where both frames beside its time show one picture (a hold kept) is that
+picture, and one no frame made is taken for is the nearer frame, named. `at_times` makes a cut's cells at any times
+so: `upsample`'s, and the air a single play's air retime gives a new length (`root_motion.retime`,
+docs/video-pipeline.md "Root motion")."""
 
 from __future__ import annotations
 
@@ -91,6 +94,11 @@ def same_steps(frames: Sequence[Image.Image]) -> list[bool]:
     t = _thumbs(frames)
     return [_same(t[k], t[k + 1]) and _same(_premultiplied(frames[k]), _premultiplied(frames[k + 1]))
             for k in range(len(frames) - 1)]
+
+
+def same_picture(frame: Image.Image, others: Sequence[Image.Image]) -> bool:
+    """Whether `frame` shows the same picture as one of `others`: each pair read as `same_steps` reads a step."""
+    return any(same_steps([other, frame])[0] for other in others)
 
 
 def runs(same: Sequence[bool]) -> list[dict[str, int]]:
@@ -152,28 +160,34 @@ def still_kept(frame: Image.Image, a: Image.Image, b: Image.Image) -> dict[str, 
     return {"reads": True, "still_px": int(still.sum()), "kept": round(least, 4), "at_row": at, "window_px": win}
 
 
-def judge(frame: Image.Image, a: Image.Image, b: Image.Image, t: float, *, reads: bool) -> tuple[dict[str, Any], list[str]]:
+def judge(frame: Image.Image, a: Image.Image, b: Image.Image, t: float, *, reads: bool,
+          before: Image.Image | None = None) -> tuple[dict[str, Any], list[str]]:
     """A frame made between `a` and `b` at `t`: the alignment's measure and faults (`align.measure_made`, `faults`),
-    and `contact` where a part standing still on both sides does not stand where it stood (`still_kept`)."""
+    `contact` where a part standing still on both sides does not stand where it stood (`still_kept`), and `held` where
+    it shows the same picture as `a`, `b` or the cell delivered `before` it (`same_picture`): no frame between, but a
+    held cell again."""
     from sprite_gen.video.align import measure_made  # align imports loop, which imports this module
 
     measure = measure_made(frame, a, b, t, reads=reads)
     contact = still_kept(frame, a, b)
-    wrong = faults(measure) + (["contact"] if contact["reads"] and contact["kept"] < STILL_KEPT_MIN else [])
+    held = same_picture(frame, (a, b) if before is None else (a, b, before))
+    wrong = (faults(measure) + (["contact"] if contact["reads"] and contact["kept"] < STILL_KEPT_MIN else [])
+             + (["held"] if held else []))
     return {**measure, "contact": contact}, wrong
 
 
 def _made(interpolate: rife_mod.Interpolate, a: Image.Image, b: Image.Image, t: float, window: tuple[float, float], *,
-          reads: bool) -> tuple[Image.Image | None, dict[str, Any]]:
+          reads: bool, before: Image.Image | None = None) -> tuple[Image.Image | None, dict[str, Any]]:
     """The frame between `a` and `b` at `t`, or at the fraction of RETIME_T nearest it inside `window` that is made
-    with no fault and, made only off its time, with its ghost band under RETIME_WINDOW_MAX in every window (align's
-    bar for a frame made again at another fraction); None and what each try was refused for, where none is."""
+    with no fault (`judge`, `before` the cell delivered before it, None where that is `a`) and, made only off its time,
+    with its ghost band under RETIME_WINDOW_MAX in every window (align's bar for a frame made again at another
+    fraction); None and what each try was refused for, where none is."""
     from sprite_gen.video.align import RETIME_T, RETIME_WINDOW_MAX
 
     tries = []
     for at in [t] + sorted((r for r in RETIME_T if window[0] < r < window[1] and abs(r - t) > 1e-3), key=lambda r: (abs(r - t), r)):
         frame = interpolate(a, b, at)
-        measure, wrong = judge(frame, a, b, at, reads=reads)
+        measure, wrong = judge(frame, a, b, at, reads=reads, before=before)
         seen = at != t and (measure.get("ghost_window") or 0.0) >= RETIME_WINDOW_MAX
         tries.append({"t": round(at, 4), "faults": wrong, **({"window_over": RETIME_WINDOW_MAX} if seen and not wrong else {})})
         if not wrong and not seen:
@@ -244,7 +258,8 @@ def fill(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, *,
         for c in cells:
             t = (c - a) / (b - a)
             half = 0.5 / (b - a)
-            frame, how = _made(interpolate, frames[a], frames[b % n], t, (t - half, t + half), reads=reads)
+            frame, how = _made(interpolate, frames[a], frames[b % n], t, (t - half, t + half), reads=reads,
+                               before=taken[-1][1] if taken else None)
             tried.append({"cell": c, "between": [a, b % n], **how})
             if frame is None:
                 break
@@ -307,7 +322,8 @@ def at_times(frames: list[Image.Image], interpolate: rife_mod.Interpolate, at: S
             continue
         t = tau - a
         half = (spacing if isinstance(spacing, (int, float)) else spacing[k]) / 2
-        frame, how = _made(interpolate, frames[a], frames[(a + 1) % n], t, (t - half, t + half), reads=reads)
+        frame, how = _made(interpolate, frames[a], frames[(a + 1) % n], t, (t - half, t + half), reads=reads,
+                           before=out[-1] if out else None)
         if frame is None:
             out.append(frames[near % n])
             shown_again.append(k)
