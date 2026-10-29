@@ -12,13 +12,14 @@ import os
 import re
 import socket
 import urllib.error
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from sprite_gen.gen import retry, video, xai
+from sprite_gen.gen import address, retry, video, xai
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
@@ -150,13 +151,13 @@ def test_generate_video_posts_data_url_polls_and_publishes_verified_mp4(tmp_path
     )
 
     method, url, token, body = api.calls[0]
-    assert (method, url, token) == ("POST", f"{video.API_BASE}/videos/generations", "tok")
+    assert (method, url, token) == ("POST", "https://api.x.ai/v1/videos/generations", "tok")
     assert body["model"] == video.DEFAULT_MODEL
     assert body["duration"] == 6 and body["resolution"] == "720p" and body["aspect_ratio"] == "1:1"
     assert body["generate_audio"] is False
     assert body["image"]["url"].startswith("data:image/png;base64,")
     assert "output" not in body  # no upload_url: the direct call is what works on ZDR teams
-    assert api.calls[1][:2] == ("GET", f"{video.API_BASE}/videos/req-1")
+    assert api.calls[1][:2] == ("GET", "https://api.x.ai/v1/videos/req-1")
     assert slept == [video.POLL_INTERVAL_SECONDS]
     assert api.downloads == ["https://vidgen.x.ai/v/1.mp4"]
     assert result.out.read_bytes() == MP4
@@ -517,7 +518,7 @@ def test_a_throttled_poll_asks_the_same_request_again_and_publishes(tmp_path: Pa
     result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
                                   call=api.call, download=api.download, sleep=slept.append)
     assert [call[0] for call in api.calls] == ["POST", "GET", "GET", "GET", "GET"]
-    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    assert {call[1] for call in api.calls[1:]} == {"https://api.x.ai/v1/videos/req-1"}
     # The wait doubles from the poll interval while the polls are refused; an answer puts it back.
     assert slept == [video.POLL_INTERVAL_SECONDS * 2, video.POLL_INTERVAL_SECONDS * 4, video.POLL_INTERVAL_SECONDS]
     assert result.out.read_bytes() == MP4
@@ -542,7 +543,7 @@ def test_polls_refused_until_the_poll_timeout_end_naming_the_request_to_ask_agai
                              call=api.call, download=api.download, sleep=clock.sleep, poll_timeout=300)
     assert isinstance(unfinished.value, SystemExit)
     assert [call[0] for call in api.calls].count("POST") == 1
-    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    assert {call[1] for call in api.calls[1:]} == {"https://api.x.ai/v1/videos/req-1"}
     # Doubling, held at the ceiling; the poll at 296 s would wait past the timeout for the next, so it is the last.
     assert clock.slept == [8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
     assert clock.now == 296 and len(api.calls) == 1 + 8
@@ -722,7 +723,7 @@ def test_http_json_names_a_request_that_got_no_answer(monkeypatch, raised, reaso
 
     monkeypatch.setattr(xai.urllib.request, "urlopen", urlopen)
     with pytest.raises(xai.TransportError) as lost:
-        xai.http_json("GET", f"{xai.API_BASE}/videos/req-1", "t")
+        xai.http_json("GET", "https://api.x.ai/v1/videos/req-1", "t")
     assert isinstance(lost.value, SystemExit) and video.TransportError is xai.TransportError
     assert str(lost.value) == "xai: request failed or timed out; no automatic retry (the server may have accepted it)"
     assert lost.value.reason == reason
@@ -734,7 +735,7 @@ def test_a_poll_that_gets_no_answer_is_asked_again_and_publishes(tmp_path: Path,
     result = video.generate_video(_request(tmp_path), credential=video.Credential("t", video.AUTH_SOURCE_GROK_LOGIN),
                                   call=api.call, download=api.download, sleep=slept.append)
     assert [call[0] for call in api.calls] == ["POST", "GET", "GET", "GET", "GET", "GET"]
-    assert {call[1] for call in api.calls[1:]} == {f"{video.API_BASE}/videos/req-1"}
+    assert {call[1] for call in api.calls[1:]} == {"https://api.x.ai/v1/videos/req-1"}
     # A lost poll waits like a refused one, and a refused poll then a lost one are two in a row.
     assert slept == [8.0, 4.0, 8.0, 16.0]
     assert result.out.read_bytes() == MP4
@@ -818,7 +819,7 @@ def test_resume_polls_the_request_without_a_submission_and_publishes(tmp_path: P
     api = _FakeApi(polls=[(429, {"error": "slow down"}), (200, {"status": "pending"}), DONE])
     result = _resume(tmp_path, api, credential=video.Credential("xai-console", video.AUTH_SOURCE_API_KEY))
     assert [call[0] for call in api.calls] == ["GET", "GET", "GET"]
-    assert {call[1] for call in api.calls} == {f"{video.API_BASE}/videos/req-7"}
+    assert {call[1] for call in api.calls} == {"https://api.x.ai/v1/videos/req-7"}
     assert result.out == (tmp_path / "clip.mp4").resolve() and result.out.read_bytes() == MP4
     payload = result.to_dict()
     assert payload["kind"] == "sprite-gen-video-report" and payload["mode"] == "resume"
@@ -1042,12 +1043,13 @@ class _Connection:
 @pytest.fixture
 def wire(monkeypatch, clock):
     """`wire(*answers)` scripts a _Wire on the test's clock, opens every HTTP connection of the test on it, and
-    points every xAI URL of the video module at it."""
+    makes it xAI's own address (the variable unset, so a clip is downloaded from where the poll names it)."""
 
     def serve(*answers: bytes | _Hold | _Trickle) -> _Wire:
         server = _Wire(clock, list(answers))
         monkeypatch.setattr(http.client.HTTPConnection, "connect", lambda connection: server.connect(connection))
-        monkeypatch.setattr(video, "API_BASE", server.base)
+        monkeypatch.delenv("SPRITE_GEN_XAI_BASE_URL", raising=False)
+        monkeypatch.setitem(address.PROVIDERS, "xai", replace(address.PROVIDERS["xai"], default=server.base))
         return server
 
     return serve

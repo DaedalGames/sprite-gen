@@ -68,7 +68,7 @@ def test_image_only_body_is_the_pre_modes_snapshot(tmp_path: Path) -> None:
     still = _still(tmp_path)
     api = _FakeApi()
     result = video.generate_video(_gen(tmp_path, image=still, duration=6, resolution="720p"), **api.kw())
-    assert api.endpoint == f"{video.API_BASE}/videos/generations"
+    assert api.endpoint == "https://api.x.ai/v1/videos/generations"
     assert list(api.body) == ["model", "prompt", "duration", "resolution", "image"]
     assert api.body == {
         "model": "grok-imagine-video-1.5",
@@ -195,7 +195,7 @@ def test_extend_posts_classic_model_to_extensions_and_inherits_the_rest(tmp_path
     # Live 2026-09-13: the poll's video.duration is the seconds ADDED (5), the bytes are 20.04 s.
     api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/2.mp4", "duration": 5}, "model": "grok-imagine-video"})
     result = video.extend_video(_ext(tmp_path, duration=5), probe=_probe(15.04, 20.04), **api.kw())
-    assert api.endpoint == f"{video.API_BASE}/videos/extensions"
+    assert api.endpoint == "https://api.x.ai/v1/videos/extensions"
     assert list(api.body) == ["model", "prompt", "duration", "video"]
     assert api.body["model"] == "grok-imagine-video" and api.body["duration"] == 5
     assert api.body["video"]["url"].startswith("data:video/mp4;base64,")
@@ -249,7 +249,7 @@ def _edit(tmp_path: Path, **overrides) -> video.EditRequest:
 def test_edit_posts_classic_model_to_edits_without_duration(tmp_path: Path) -> None:
     api = _FakeApi(done={"status": "done", "video": {"url": "https://vidgen.x.ai/v/3.mp4", "duration": 7.71}, "model": "grok-imagine-video"})
     result = video.edit_video(_edit(tmp_path), probe=_probe(8.0, 7.71), **api.kw())
-    assert api.endpoint == f"{video.API_BASE}/videos/edits"
+    assert api.endpoint == "https://api.x.ai/v1/videos/edits"
     assert list(api.body) == ["model", "prompt", "video"]
     assert api.body["model"] == "grok-imagine-video"
     payload = result.to_dict()

@@ -8,11 +8,10 @@ import re
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from sprite_gen.gen import retry
+from sprite_gen.gen import address, retry
 from sprite_gen.gen.base import announce_api_billing, env_api_key
 from sprite_gen.gen.xai import error_body, NO_ANSWER
 
-BASE = 'https://api.elevenlabs.io/v1'
 AUTH_ENV = 'ELEVENLABS_API_KEY'
 FORMAT = 'mp3_44100_128'
 SAFE_CODES = frozenset({'system_busy', 'too_many_concurrent_requests', 'quota_exceeded',
@@ -58,7 +57,7 @@ def _code(body):
 
 def generate(document):
     key = credential()
-    req = Request(f"{BASE}/{document['endpoint']}?output_format={document['output_format']}",
+    req = Request(address.url('elevenlabs', f"/{document['endpoint']}?output_format={document['output_format']}"),
                   data=json.dumps(document['body']).encode(),
                   headers={'xi-api-key': key, 'Content-Type': 'application/json'}, method='POST')
 
