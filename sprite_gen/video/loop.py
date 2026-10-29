@@ -54,6 +54,7 @@ from sprite_gen.video import cadence as cadence_mod
 from sprite_gen.video import crossings as crossings_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import held_fill as held_fill_mod
+from sprite_gen.video import root_motion as root_motion_mod
 from sprite_gen.video import body_turn as body_turn_mod
 from sprite_gen.video import legs as legs_mod
 from sprite_gen.video import period as period_mod
@@ -1366,6 +1367,40 @@ def _upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate | Non
     return out, record
 
 
+def _air_retime(frames: list[Image.Image], interpolate: rife_mod.Interpolate | None, **kw: Any
+                ) -> tuple[list[Image.Image], dict[str, Any], dict[str, Any] | None]:
+    """`root_motion.retime` on a cut played once, with RIFE located only once a frame is to be made: an air given its
+    own length at the clip's rate makes none. A frame to make and no RIFE installed: the cut is delivered as filmed, and
+    the record says which air and how to install it."""
+    made_by: list[dict[str, str]] = []
+    lazy = _located(interpolate, made_by)
+    try:
+        frames_out, record, plan = root_motion_mod.retime(frames, lazy, **kw)
+    except rife_mod.RifeNotInstalled as exc:
+        roots, touch = root_motion_mod.reading(frames, floor=kw["floor"], times=kw["times"], declared=kw["declared"])
+        before = root_motion_mod.read(roots, touch, [k / kw["fps"] for k in range(len(frames))])["air"]
+        return frames, {"asked": dict(kw["asked"]), "applied": False, "before": before, "why": "RIFE is not installed",
+                        "rife": str(exc), "install": rife_mod.install_command()}, None
+    if record["applied"] and record["made"]:
+        record["interpolator"] = {**made_by[0], **lazy.counts()} if made_by else {"kind": "injected"}
+    return frames_out, record, plan
+
+
+def _air_lines(name: str, record: dict[str, Any]) -> list[str]:
+    """What became of `--air-retime`, in words: the air not retimed and why, or the cells of it that show the frame
+    beside them again."""
+    if not record["applied"]:
+        if record["why"] == "RIFE is not installed":
+            spans = ", ".join(f"cells {s['cells'][0]}-{s['cells'][1]}" for s in record["before"] if s["seconds"] is not None)
+            return [f"the air of {name} ({spans}) was not retimed — RIFE is not installed, so no frame between was made; "
+                    f"run `{record['install']}` and cut it again (docs/video-pipeline.md, \"Root motion\")"]
+        return [f"--air-retime: {record['why']}: cut as filmed"]
+    again = record["shown_again"]
+    return [f"{len(again)} cell{'s' if len(again) > 1 else ''} of the retimed air ({', '.join(map(str, again))}) show the "
+            "frame beside them again: no frame between was made there without a fault (docs/video-pipeline.md, \"Root "
+            "motion\")"] if again else []
+
+
 def _fill_lines(record: dict[str, Any]) -> list[str]:
     """What became of the cut's held cells, in words (`video-loop: warning:` lines): the cells left for want of RIFE, the
     runs a frame between was refused for, the frames made to look at. A run kept as the motion's own says nothing."""
@@ -2203,6 +2238,9 @@ def _cut_loop(
     body_turn: str = "warn",
     fill_held: str = "auto",
     out_fps: float | None = None,
+    air_retime: str | None = None,
+    meters_per_px: float | None = None,
+    contacts: list[str] | None = None,
 ) -> dict[str, Any]:
     state = state.strip().lower() if state else state
     if state == effect.STATE:
@@ -2251,6 +2289,17 @@ def _cut_loop(
                              "rate than it was filmed (its frames between made), a lower one is its preview's (--gif-fps)")
         if cycle_mode == "lifetime":
             raise SystemExit("video-loop: --out-fps: an effect's lifetime plays as filmed")
+    asked_air = None
+    if air_retime is not None:
+        try:
+            asked_air = root_motion_mod.parse_retime(air_retime)
+        except ValueError as exc:
+            raise SystemExit(f"video-loop: {exc}") from None
+        if meters_per_px is None and {"gravity", "speed"} & set(asked_air):
+            raise SystemExit("video-loop: --air-retime gravity= and speed= are metres: give --meters-per-px, the metres a "
+                             "pixel of the clip as filmed holds (the standing height in metres over the strip's body_src_h)")
+    if meters_per_px is not None and not (math.isfinite(meters_per_px) and meters_per_px > 0):
+        raise SystemExit(f"video-loop: --meters-per-px {meters_per_px:g}: a number over 0")
     if anchor is None:
         # gaits drift a few pixels over a cycle and the wrap shows it; in-place states do not
         anchor = "body" if profile_for(state).gait else "none"
@@ -2279,6 +2328,10 @@ def _cut_loop(
     _refuse_overlap(given, files, out_dir, name, target, report_path is not None)
     prof = profile_for(state)
     n = len(files)
+    try:
+        declared = root_motion_mod.parse_contacts(contacts or [], n)
+    except ValueError as exc:
+        raise SystemExit(f"video-loop: {exc}") from None
     # A walk or run may open on a lead-in (gait_fallback.lead_in): the video model reframing a small
     # subject before it walks at the clip's size. An automatic search reads the clip after it as a clip
     # of its own, and what it finds is said in the clip's own frame numbers (`_from_lead_in`); a cut the
@@ -2778,7 +2831,39 @@ def _cut_loop(
                   "of it is named a ghost, here or in video-cycle-align, so look at cycle/ (docs/loop-repair.md)", file=sys.stderr)
     held_record = report_base["held_fill"]
     upsampled = None
-    if out_fps is not None:
+    # A cut played once carries its root motion (docs/video-pipeline.md, "Root motion"), read against the clip's floor.
+    floor = root_motion_mod.clip_floor(files) if cycle["kind"] in root_motion_mod.KINDS else None
+    retimed = None
+    if asked_air is not None:
+        if cycle["kind"] not in root_motion_mod.KINDS:
+            report_base["air_retime"] = {"asked": asked_air, "applied": False,
+                                         "why": f"a {cycle['kind']} cut: the air of a cut played once is retimed"}
+        else:
+            # The air given its own length, gravity and speed: its cells made again between the clip's frames at the
+            # cut's rate (held_fill.at_times), each moved onto the parabola, the landing on along.
+            try:
+                frames, report_base["air_retime"], retimed = _air_retime(
+                    frames, interpolate, fps=fps, rate=out_fps or fps, floor=floor, times=[i + k for k in range(L)],
+                    declared=declared, asked=asked_air, meters_per_px=meters_per_px, facing=facing)
+            except (ValueError, rife_mod.RifeUnavailable) as exc:
+                error = (f"video-loop: {exc}; --air-retime makes the frames between the clip's — fix RIFE, or cut it "
+                         "without --air-retime (docs/video-pipeline.md, \"Root motion\")")
+                refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
+                raise SystemExit(error) from exc
+        for line in _air_lines(name, report_base["air_retime"]):
+            print(f"video-loop: warning: {name}: {line}", file=sys.stderr)
+        if retimed is not None:
+            upsampled = retimed["times"]
+            report_base["seam_measurement"] = "rendered-cells"
+            as_filmed = {}  # the cells are each made at a time of their own: read as they play
+            cycle_seconds = len(frames) / (out_fps or fps)
+            n_out = min(len(frames), max(n_asked, round(cycle_seconds * gif_fps)))
+            if out_fps is not None:
+                record = report_base["air_retime"]
+                held_record["out_fps"] = {"asked": out_fps, "fps": fps, "applied": True, "cells": len(frames),
+                                          "times": [round(x, 4) for x in upsampled], "made": record["made"],
+                                          "shown_again": record["shown_again"]}
+    if out_fps is not None and retimed is None:
         # A rate above the clip's: every cell at its own time, made between the frames beside it (held_fill.upsample).
         try:
             frames, held_record["out_fps"] = _upsample(frames, interpolate, ring=ring, fps=fps, out_fps=out_fps)
@@ -2832,9 +2917,13 @@ def _cut_loop(
     strip_meta["source_cut"] = {"source": report_base["source"], "start": i, "length": L,
                                 **({"samples": [i + k for k in strip_meta["sample_indices"]]} if upsampled is None else
                                    {"times": [round(i + upsampled[k], 4) for k in strip_meta["sample_indices"]]})}
-    if upsampled is not None:
+    if upsampled is not None and out_fps is not None:
         # Each cell is a time of its own, at a rate above the clip's: the cells are not the clip's frames.
         strip_meta.update(out_fps=out_fps, source_fps=fps)
+    if "air_retime" in report_base:
+        # The air given its own length, or why it was not: a retimed cut's cells are times of their own, and the air's
+        # are moved onto its parabola.
+        strip_meta["air_retime"] = root_motion_mod.public(report_base["air_retime"])
     if cycle["kind"] in nonloop.KINDS:
         strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"] if upsampled is None else
                                            [upsampled[k] for k in strip_meta["sample_indices"]]))
@@ -2855,6 +2944,18 @@ def _cut_loop(
         strip_meta["clip_feet"] = report_base["clip_feet"]
     # The cut's held cells, what became of them, and its poses over its cells (docs/loop-repair.md section 7).
     strip_meta["held_fill"] = held_fill_mod.public(held_record)
+    if cycle["kind"] in root_motion_mod.KINDS:
+        # Where the body is in each cell, what each touches and the air (docs/video-pipeline.md, "Root motion"): read on
+        # the cells' frames as delivered, each at its time as it plays.
+        cells_of = strip_meta["sample_indices"]
+        played = len(frames) / cycle_seconds
+        shown = [frames[k] for k in cells_of]
+        touch = ([retimed["touch"][k] for k in cells_of] if retimed is not None else root_motion_mod.touching(
+            shown, floor=floor, times=[i + (k if upsampled is None else upsampled[k]) for k in cells_of], declared=declared))
+        report_base["root_motion"] = strip_meta["root_motion"] = root_motion_mod.sidecar(
+            shown, rect=strip_meta["source_rect"], size=(strip_meta["w"], strip_meta["h"]),
+            floor=None if floor is None else floor + (retimed["offset"][1] if retimed is not None else 0),
+            seconds=[k / played for k in cells_of], touch=touch, meters_per_px=meters_per_px)
     # A cut frame that is no longer the frame as filmed for a filmed ghost, and one kept with no clean frame beside
     # it: `cycle/` is the alignment's material (`cycle.source/`), whose screen no longer sees a ghost given way, so the
     # strip says it, and an alignment carries it over (frames of the cut).
@@ -3150,6 +3251,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "between the frames beside it — never a frame shown again. A loop keeps its cycle's seconds, a "
                              "cut played once runs from its first frame to its last; the strip metadata says `out_fps`. With no "
                              "RIFE installed the cut is delivered at its own rate, with a warning (docs/loop-repair.md section 7)")
+    parser.add_argument("--air-retime", default=None, metavar="gravity=G,air=T,speed=V",
+                        help="a cut played once: give each air with its take-off and landing in the cut (the frames between the "
+                             "last contact and the next) a length of T seconds, a gravity of G m/s² and a speed along of V m/s, "
+                             "any of them, each the clip's own where not given: its cells made again at the cut's rate, each "
+                             "showing the clip's pose at the same share of its air, made by RIFE between the frames where it "
+                             "falls between them, and moved onto the parabola; the take-off, the landing and the contacts as "
+                             "filmed, the landing moved along. G and V need --meters-per-px. The strip metadata says "
+                             "`air_retime`; with no RIFE installed the air is cut as filmed, with a warning "
+                             "(docs/video-pipeline.md, \"Root motion\")")
+    parser.add_argument("--meters-per-px", type=float, default=None,
+                        help="the metres a pixel of the clip as filmed holds (the standing height in metres over the strip's "
+                             "`body_src_h`): the root motion in metres too (`root_m`, each apex's `apex_m`), and --air-retime's "
+                             "gravity and speed")
+    parser.add_argument("--contact", action="append", default=None, metavar="NAME=SPANS",
+                        help="a contact the floor does not show (a hand on a wall the clip does not draw), over zero-based frames "
+                             "of the clip, as inspect-motion's spans: hand=12:20 (repeatable). The ground is read off the floor; "
+                             "the air is the frames that touch neither")
     parser.add_argument("--name", default="loop", help="basename for strip/gif/webp outputs")
     parser.add_argument("--report", type=Path)
 
@@ -3173,6 +3291,8 @@ def run(**kwargs: object) -> int:
         seam_pop_max=kwargs.get("seam_pop_max", repair_mod.SEAM_POP_REFERENCE),  # type: ignore[arg-type]
         body_turn=str(kwargs.get("body_turn") or "warn"),
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
+        air_retime=kwargs.get("air_retime"), meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
+        contacts=kwargs.get("contact"),  # type: ignore[arg-type]
     )
     summary = {k: payload[k] for k in ("state", "frames_total", "window", "cycle_seconds", "n_out", "delay_ms", "resampled_seam_ratio", "specks_dropped", "report")}
     summary["cycle"] = {k: payload["cycle"].get(k) for k in ("kind", "start", "length", "period_global", "ratio", "review_recommended", "half_period_guard", "fundamental")}
@@ -3245,6 +3365,12 @@ def run(**kwargs: object) -> int:
                             "held_runs": held["held_runs"], "made": held["made"],
                             **({"unmade": held["unmade"]["cells"]} if "unmade" in held else {}),
                             **({"out_fps": {k: held["out_fps"][k] for k in ("asked", "applied", "cells")}} if "out_fps" in held else {})}
+    if "root_motion" in payload:
+        # Each air of a cut played once, as a person is told it: its seconds and its apex.
+        summary["air"] = root_motion_mod.said(payload["root_motion"])
+    if "air_retime" in payload:
+        summary["air_retime"] = {k: payload["air_retime"][k] for k in ("applied", "why", "made", "shown_again", "cells", "poses")
+                                 if k in payload["air_retime"]}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
