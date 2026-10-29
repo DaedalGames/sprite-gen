@@ -211,14 +211,15 @@ def test_the_view_picks_the_signal_so_a_short_legged_walk_starts_on_a_strike(vie
         assert strike["foot_why"].startswith("no legs to read"), strike
 
 
-def _cut(tmp_path: Path, name: str, length: int, cycles: int = 1) -> Path:
+def _cut(tmp_path: Path, name: str, length: int, cycles: int = 1, report: bool = False) -> Path:
     keyed = tmp_path / f"{name}-keyed"
     keyed.mkdir()
     for k in range(length + 6):
         _walker(2 * math.pi * cycles * k / length).save(keyed / f"{k:04d}.png")
     out = tmp_path / name
     loop_mod.run_loop(keyed, out, fps=24.0, state="walk", min_len=None, max_len=None, n_out=None, seam_max=1000.0,
-                      name="walk", report_path=None, cycle_mode="fixed", start=0, length=length, anchor="none", repair="off")
+                      name="walk", report_path=out / "walk.loop.report.json" if report else None, cycle_mode="fixed",
+                      start=0, length=length, anchor="none", repair="off")
     return out
 
 
@@ -397,6 +398,42 @@ def test_video_set_leaves_a_loop_its_body_rises_and_falls_four_times_in_out_of_t
     meta = json.loads((tmp_path / "back-walk" / "loop" / "walk.strip.json").read_text())
     assert meta["frames"] == 40 and meta["steps"] == 2 and "cycle_align" not in meta
     assert f"four times in its cut ({local_cycle.FOUR_STEPS})" in capsys.readouterr().err
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("witness, reason", [({"held": "unwitnessed"}, local_cycle.UNWITNESSED),
+                                             ({"says": "four steps", "by": ["order"]}, local_cycle.FOUR_STEPS)])
+def test_video_cycle_align_alone_stops_on_a_loop_whose_cut_its_report_holds_and_names_why(tmp_path, witness, reason):
+    """`video-cycle-align` run on a set's loops alone, without the rows `video-set` marks, reads the report beside each
+    loop (`align.held_cut`): a loop whose cut nothing witnessed whole cycles (`cycle-unwitnessed`) may hold half a
+    cycle or two, and one cut two cycles long where its strip counts two steps (`cycle-four-steps`) returns half way at
+    its second step, which alone reads as one cycle. Either stops the set before anything is rewritten, named under
+    `suspects` with its reason and its report, never aligned as one cycle without a word (the parent engine aligned
+    both: the first at its own length, the second at twice the speed of the rest); a count settles it."""
+    four = reason == local_cycle.FOUR_STEPS
+    dirs = [_cut(tmp_path, n, L, cycles=c, report=n == "N")
+            for n, L, c in (("S", 20, 1), ("E", 24, 1), ("N", 40 if four else 28, 2 if four else 1))]
+    report = dirs[2] / "walk.loop.report.json"
+    data = json.loads(report.read_text())
+    report.write_text(json.dumps({**data, "cycle": {**data["cycle"], "cut_witness": witness}}))
+    if four:
+        strip = dirs[2] / "walk.strip.json"
+        strip.write_text(json.dumps({**json.loads(strip.read_text()), "steps": 2}))
+    before = [(d / "walk.strip.png").read_bytes() for d in dirs]
+    with pytest.raises(align.CycleSuspects) as stop:
+        align.align_set(dirs, interpolate=Recorder(), between="rife")
+    (entry,) = stop.value.suspects
+    assert entry["dir"] == str(dirs[2].resolve()) and entry["status"] == "stopped" and "one_step" not in entry
+    assert entry["held"] == {"reason": reason, "report": str(report.resolve())}
+    assert entry["settle"] == [f"--cycles {dirs[2].resolve()}={c}" for c in (1, 2)]
+    said = str(stop.value)
+    assert reason in said and "nothing witnessed some of the cuts whole cycles" in said and ("--steps 1" in said) is (not four)
+    assert [(d / "walk.strip.png").read_bytes() for d in dirs] == before
+    out = align.align_set(dirs, interpolate=Recorder(), between="rife", multi_cycle="warn")
+    assert out["applied"] is True and any(reason in line for line in out["warnings"])
+    counted = align.align_set(dirs, interpolate=Recorder(), between="rife", cycles={str(dirs[2]): 2 if four else 1})
+    assert counted["applied"] is True and counted["lengths"] == [20, 24, 20 if four else 28]
+    assert counted["suspects"][0]["status"] == "counted" and counted["suspects"][0]["held"]["reason"] == reason
 
 
 def _no_rife(monkeypatch, tmp_path: Path) -> None:

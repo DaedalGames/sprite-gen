@@ -234,24 +234,30 @@ def _set(root: Path, side: Path) -> list[Path]:
 
 @pytest.mark.slow
 def test_cycle_align_stops_on_a_loop_that_may_be_one_step_and_names_the_count_that_settles_it(slow, tmp_path):
+    """The step screen suspects the side walk's cut; and the walker is carried whole on its legs, so the cut witness
+    held both cuts (`cycle-unwitnessed`, as `test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so`
+    reads): alone, `video-cycle-align` reads both in the reports beside the loops and stops on both, the front walk
+    named held and the side walk held and suspected one step."""
     root, keyed, _ = slow
     whole = _keyed(tmp_path / "whole", cycle=25)
     _cut(tmp_path / "front", whole)
     dirs = _set(tmp_path, root / "out")
     with pytest.raises(align.CycleSuspects) as stop:
         align.align_set(dirs, between="nearest")
-    (entry,) = stop.value.suspects
+    front, entry = stop.value.suspects
+    assert [e["held"]["reason"] for e in (front, entry)] == [local_cycle.UNWITNESSED] * 2 and "one_step" not in front
+    assert front["dir"] == str(dirs[0].resolve()) and front["status"] == "stopped"
     assert entry["dir"] == str(dirs[1].resolve()) and entry["status"] == "stopped" and entry["candidates"] == []
     assert entry["one_step"]["lag"] in (CYCLE - 1, CYCLE, CYCLE + 1) and entry["one_step"]["report"] == str((dirs[1] / "loop.loop.report.json").resolve())
-    assert entry["settle"] == [f"--cycles {dirs[1].resolve()}=1"]
+    assert entry["settle"] == [f"--cycles {dirs[1].resolve()}={c}" for c in (1, 2)]
     assert "may be one step" in str(stop.value) and "--steps 1" in str(stop.value)
     # Nothing was rewritten: the side loop is as cut.
     assert (dirs[1] / "loop.strip.png").read_bytes() == (root / "out" / "loop.strip.png").read_bytes()
-    # warn aligns it as it is and says so; a count of one cycle settles it.
+    # warn aligns it as it is and says so; a count of one cycle in each settles it.
     out = align.align_set(dirs, between="nearest", multi_cycle="warn")
     assert out["applied"] is True and any("one step where the rest play two" in line for line in out["warnings"])
-    out = align.align_set(dirs, between="nearest", cycles={str(dirs[1]): 1})
-    assert out["applied"] is True and out["suspects"][0]["status"] == "counted"
+    out = align.align_set(dirs, between="nearest", cycles={str(d): 1 for d in dirs})
+    assert out["applied"] is True and [e["status"] for e in out["suspects"]] == ["counted"] * 2
 
 
 # --- video-set ----------------------------------------------------------------------------
@@ -263,7 +269,7 @@ def test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so(slow,
     the front walk's whole cycle and the side walk's step (`cycle-unwitnessed`), and the step screen suspects the
     side walk's. The set leaves both out of its alignment, named in words true of half a cycle and of two, and tells the
     side walk what settles the step screen's suspicion (`--steps 1`), as `video-cycle-align` does: run on the items'
-    loops, it reads the step screen in the report beside the side walk's loop and stops on it."""
+    loops, it reads the held cuts and the step screen in the reports beside them and stops on both."""
     _, keyed, _ = slow
     rows = []
     for direction, source in (("front", _keyed(tmp_path / "whole", cycle=25)), ("side", keyed)):
@@ -286,7 +292,8 @@ def test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so(slow,
     assert held in front and held in side and settle in side and settle not in front, (front, side)
     with pytest.raises(align.CycleSuspects) as stop:
         align.align_set([Path(r["dir"]) / "loop" for r in rows], between="nearest")
-    (entry,) = stop.value.suspects
+    front, entry = stop.value.suspects
+    assert [e["held"]["reason"] for e in (front, entry)] == [local_cycle.UNWITNESSED] * 2 and "one_step" not in front
     assert entry["one_step"]["report"] == str((tmp_path / "side-walk" / "loop.report.json").resolve())
     assert "may be one step" in str(stop.value) and "--steps 1" in str(stop.value)
     table = batch.write_table(rows, tmp_path / "table.md")

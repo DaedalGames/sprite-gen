@@ -79,6 +79,7 @@ FEET_APART = 0.02
 FEET_APART_SHARE = 0.2
 SHADE_BAND = 0.15  # the shade cue reads the feet and lower legs: the lowest 15 % of the body
 TONE = 1 / 255  # one 8-bit level of luma (0..1): the step the shade cue's tones are drawn in; the depth cue's is a pixel row
+CONTACT = 0.005  # a foot's contact: its solid pixels this far (of the body's height, at least a row) up from its lowest row
 
 
 def _longest_runs(solid: np.ndarray) -> np.ndarray:
@@ -99,6 +100,19 @@ def _widest_gap(cols: np.ndarray) -> int:
         return 0
     edges = np.diff(np.pad(inner.astype(np.int8), 1))
     return int((np.nonzero(edges == -1)[0] - np.nonzero(edges == 1)[0]).max())
+
+
+def _gap_at(cols: np.ndarray) -> tuple[int, int] | None:
+    """(the first, the last column) of the longest run of False between the first and the last True of `cols`, or None
+    where there is none."""
+    xs = np.nonzero(cols)[0]
+    inner = ~cols[xs[0] : xs[-1] + 1]
+    if not inner.any():
+        return None
+    edges = np.diff(np.pad(inner.astype(np.int8), 1))
+    starts, ends = np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]
+    widest = int(np.argmax(ends - starts))
+    return int(xs[0] + starts[widest]), int(xs[0] + ends[widest] - 1)
 
 
 def strike_signals(frames: list[Image.Image]) -> dict[str, list[float]]:
@@ -231,6 +245,44 @@ def depth_cue(frame: Image.Image) -> float:
     solid, right, height = feet_halves(frame)
     low = [int(np.nonzero(solid[:, half].any(axis=1))[0].max()) if solid[:, half].any() else 0 for half in (~right, right)]
     return (low[1] - low[0]) / height
+
+
+def _parts(cols: np.ndarray) -> list[list[int]]:
+    """[first, last] column of each run of True in `cols`."""
+    edges = np.diff(np.pad(cols.astype(np.int8), 1))
+    return [[int(a), int(b) - 1] for a, b in zip(np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0])]
+
+
+def feet_order(frame: Image.Image) -> dict[str, Any]:
+    """The order a frame draws its two feet in (`local_cycle.order_word` reads it). `ground`: what stands on its lowest
+    row, the [first, last] column of each run of its solid pixels CONTACT of the height (at least a row) up from it;
+    `height`, the frame's own body height; `apart`, whether two feet are seen apart: the foot band (the lowest
+    FOOT_BAND of the height) parted at its widest empty run, that run FEET_APART of the height or wider, the picture's
+    left foot left of it and its right foot right of it. Where they are, `depth`, how many rows lower the right foot's
+    lowest solid row is drawn than the left's (from the front, the back or a diagonal the foot nearer the viewer is
+    drawn lower); `left` and `right`, the first and the last column of each foot's contact (its solid pixels CONTACT of
+    the height up from its own lowest row); and `sway`, how far right of the run's middle the mean column of the upper
+    body's solid pixels lies (the first solid row down to the middle of the body)."""
+    solid = np.asarray(frame.getchannel("A")) >= LOW_ALPHA
+    rows = np.nonzero(solid.any(axis=1))[0]
+    if rows.size == 0:
+        raise ValueError("a loop frame has no solid body")
+    y0, y1 = int(rows[0]), int(rows[-1])
+    height = y1 - y0 + 1
+    contact = max(1, round(CONTACT * height))
+    read: dict[str, Any] = {"ground": _parts(solid[y1 + 1 - contact : y1 + 1].any(axis=0)), "height": height, "apart": False}
+    gap = _gap_at(solid[y1 + 1 - max(1, round(height * FOOT_BAND)) : y1 + 1].any(axis=0))
+    if gap is None or gap[1] - gap[0] + 1 < FEET_APART * height:
+        return read
+    feet = {}
+    for side, cols in (("left", slice(0, gap[0])), ("right", slice(gap[1] + 1, solid.shape[1]))):
+        part = solid[:, cols]
+        low = int(np.nonzero(part.any(axis=1))[0][-1])
+        xs = np.nonzero(part[low + 1 - contact : low + 1].any(axis=0))[0] + cols.start
+        feet[side] = (low, [int(xs[0]), int(xs[-1])])
+    upper = np.nonzero(solid[y0 : y0 + height // 2 + 1])[1]
+    return {**read, "apart": True, "depth": feet["right"][0] - feet["left"][0], "left": feet["left"][1],
+            "right": feet["right"][1], "sway": float(upper.mean() - (gap[0] + gap[1]) / 2)}
 
 
 def shade_cue(frame: Image.Image, facing: str) -> float:

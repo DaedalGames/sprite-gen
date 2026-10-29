@@ -31,6 +31,14 @@ of its head (flat, round, a point, two ears' tips) or however its head or a cape
 whose feet leave the ground, nor a planted foot sliding down the screen. And one the count alone gets wrong, where the
 search's cut stands: a walk on threes whose tail closes on no cut of two steps.
 
+A walk seen from the front whose feet stay apart and meet once a cycle, its body still, is witnessed by the order its
+feet are drawn in (`local_cycle.order_word`): the foot drawn nearer, lower, changes sides twice an interval, and the clip
+shows its two sides of feet are its legs — no foot planted on the ground slides under the body to the other side, the
+upper body does not rock over them — so the crossings mark cycles and the cut stands on the same word; labelled the
+side view, the order is not read. A side walk lifting its swing foot draws one foot lower and then the other too, but
+its planted foot passes under the body: never read so, whatever its label; nor a picture rocked on its feet, nor feet
+drawn level. Nor does the order stand a cut the search kept where none of the clip's two-step cuts closes.
+
 A walk the search already cuts two steps long, joined at the walk's own point, is cut exactly as before; a body
 whose feet cannot be read is cut as before. Synthetic frames only."""
 
@@ -148,6 +156,32 @@ def _outward(k: float, *, cycle: float, bob: int = 3, whole: bool = False, arm: 
     d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
     d.rectangle((x + 14 + swing - 4, y + 34, x + 14 + swing + 4, y + 72), fill=(225, 225, 225, 255))
     return im
+
+
+def _apart(k: float, *, cycle: float, rock: float = 0, slide: bool = False) -> Image.Image:
+    """A walker seen from the front whose feet stay apart: the foot stepping toward the camera is drawn lower, up to 3 px
+    under the ground and the other as far over it, so the foot drawn nearer changes sides once a step; the right foot,
+    drawn higher, swings in to meet the left over it and back, so the feet meet on the screen once a cycle, briefly, and
+    no foot on the ground slides along it. Its body does not rise and fall, its arms swinging within its sides
+    (ARMS_IN): nothing that reads no leg but the order its feet are drawn in tells a step on from a cycle on.
+    `rock`: its feet drawn level and still, the whole picture rocked that many degrees either way about its feet once a
+    cycle, one foot drawn lower and then the other with no step. `slide`: the right foot swings in to meet the left as
+    both stand level on the ground and back as it is drawn lower, planted, sliding along the ground as only a foot seen
+    from the side does."""
+    ph = 2 * math.pi * k / cycle
+    im = Image.new("RGBA", (300, 220))
+    d = ImageDraw.Draw(im)
+    x, y = 90, 40
+    drop = 0 if rock else round(3 * math.sin(ph))
+    inward = 0 if rock else 10 * max(0.0, -math.cos(ph)) ** 4 if slide else 10 * max(0.0, math.sin(ph)) ** 2
+    swing = ARMS_IN * math.sin(ph)
+    d.rectangle((x + 14 - swing - 4, y + 34, x + 14 - swing + 4, y + 72), fill=(150, 150, 150, 255))
+    for lx, sole, t in ((x + 6, GROUND + drop, 0), (x + 22 - inward, GROUND - drop, 1)):
+        d.rectangle((lx - 5, y + 80, lx + 5, sole), fill=(60 + t, 60 + t, 70 + t, 255))
+    d.rectangle((x, y + 30, x + 28, y + 84), fill=(200, 80, 80, 255))
+    d.rectangle((x + 2, y, x + 26, y + 28), fill=(230, 200, 170, 255))
+    d.rectangle((x + 14 + swing - 4, y + 34, x + 14 + swing + 4, y + 72), fill=(225, 225, 225, 255))
+    return im.rotate(rock * math.sin(ph), resample=Image.Resampling.NEAREST, center=(x + 14, GROUND)) if rock else im
 
 
 def _alike(k: float, *, cycle: float, phase: float = 0, tone: int = 1, lean: float = 0, leg_tone: int | None = None,
@@ -497,6 +531,46 @@ def test_a_diagonal_walk_whose_near_foot_steps_out_is_cut_one_cycle_from_its_vie
     assert "cycles" not in plain["cycle"]["step_count"] and abs(plain["cycle"]["length"] - 2 * cycle) <= 1
     said = plain["cycle"]["cut_witness"]
     assert said["says"] == "four steps" and local_cycle.four_steps(plain["cycle"]) and plain["cycle"]["steps"]["count"] == 2
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("cycle", [20, 24])
+def test_a_walk_whose_feet_stay_apart_and_meet_once_a_cycle_is_cut_one_cycle_on_the_order_its_feet_are_drawn_in(tmp_path, cycle):
+    """Seen from the front, the feet apart, the foot stepping toward the camera drawn lower: the feet meet on the screen
+    once a cycle, and the body does not rise and fall. The clip shows its two sides of feet are its two legs — seen apart
+    most of the time, one drawn lower and then the other by 6 rows either way, no foot planted on the ground sliding
+    along it or passing under the body to the other side, the upper body still over them — and the foot drawn nearer
+    changes sides twice an interval: the count reads the crossings as cycles, one cycle, `steps: 2`, and the cut stands
+    on the same word (the parent engine left the crossings on steps, nothing that reads no leg witnessing them, and cut
+    two cycles with a warning). Labelled the side view, the order is not read: two intervals, named."""
+    keyed = _keyed(tmp_path, lambda k: _apart(k, cycle=cycle))
+    _cut(tmp_path / "front", keyed, "--view", "front")
+    said = _one_cycle(tmp_path / "front", cycle)["cycles"]
+    assert said["bob"]["says"] is None and said["order"]["says"] == "two steps" and "unwitnessed" not in said
+    assert said["order"]["slides"] == [] and said["order"]["travel"] < local_cycle.ORDER_TRAVEL * said["order"]["spacing"]
+    assert "the foot drawn nearer changes sides" in said["why"]
+    witness = json.loads((tmp_path / "front" / "loop.loop.report.json").read_text())["cycle"]["cut_witness"]
+    assert witness["says"] == "two steps" and witness["by"] == ["order"] and "held" not in witness
+    side = _cut(tmp_path / "side", keyed, "--view", "side")
+    assert abs(side["cycle"]["length"] - 2 * cycle) <= 1.5 and local_cycle.unwitnessed(side["cycle"])
+    assert "order" not in (side["cycle"]["step_count"].get("cycles") or {}) and "order" not in side["cycle"]["cut_witness"]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("view", [None, "front", "front_diagonal", "back", "back_diagonal"])
+def test_a_side_walk_whose_swing_foot_lifts_is_never_cut_on_the_order_its_feet_are_drawn_in_whatever_its_label(tmp_path, view):
+    """The side walker with its legs drawn alike, the leg swinging forward lifted 6 px at its pass: one foot is drawn
+    higher and then the other, and its label, where given, says a view the order is read from. The planted foot slides
+    along the ground under the body from one side to the other, as only a foot seen from the side does: the clip's two
+    sides of feet are its front and its back, not its two legs, and the order witnesses nothing — two steps, 46 frames,
+    never one interval read as two steps on a wrong label."""
+    report = _cut(tmp_path / "out", _keyed(tmp_path, lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, lift=6)),
+                  *(("--view", view) if view else ()))
+    _two_steps(report, 46)
+    said = report["cycle"]["step_count"].get("cycles")
+    if said is not None:
+        assert said["cycles"] is False and said["order"]["says"] is None and "under the body" in said["order"]["why"]
+    assert report["cycle"]["cut_witness"].get("by") != ["order"]
 
 
 @pytest.mark.slow
@@ -1409,6 +1483,49 @@ def test_a_cut_is_witnessed_by_how_often_the_body_rises_and_falls_in_it(beat, sa
         assert word["by"] == list(local_cycle.CUT_LINES)
     if says in ("four steps", "one step"):
         assert word["on"]["says"] == "cycles" and word["on"]["interval"] == {"four steps": 8, "one step": 32}[says]
+
+
+@pytest.mark.parametrize("span, says", [(30, "two steps"), (60, "four steps"), (15, "one step"), (22, None)])
+def test_the_order_the_feet_are_drawn_in_says_how_many_steps_a_span_holds(span, says):
+    """`order_word` on the walker whose feet stay apart, a cycle 30 frames: the foot drawn nearer changes sides every 15
+    frames, twice in 30 — two steps; four times in 60, two cycles; once in 15, one step; in 22, none of those. No foot
+    on the ground slides along it, and its upper body is still."""
+    word = local_cycle.order_word([legs.feet_order(_apart(k, cycle=30)) for k in range(FRAMES)], span)
+    assert word["says"] == says and word["apart"] >= legs.FEET_APART_SHARE and word["swing"] >= word["floor"]
+    assert word["slides"] == [] and word["travel"] < local_cycle.ORDER_TRAVEL * word["spacing"]
+    assert word["sway"] < local_cycle.ORDER_SWAY * word["tilt"] and word["per"] == pytest.approx(span / 15, rel=0.05)
+
+
+def test_the_order_does_not_stand_a_cut_the_search_kept_where_none_of_the_two_step_cuts_closes():
+    """The walker whose feet stay apart, its body still, cut 20 frames, a cycle (loop `_witnessed`): the order says two
+    steps and the cut stands on it. Where the step count read the clip but none of its two-step cuts closed, and the
+    search's cut was kept (`declined`), the order counts the same steps but does not stand a length the closing refused:
+    the cut is held, named, the order's word kept as `read`."""
+    frames = [_apart(k, cycle=20) for k in range(FRAMES)]
+    cut = {"start": 4, "length": 20, "step_count": {"readable": True, "chosen_by": "search"}}
+    stood = loop._witnessed(json.loads(json.dumps(cut)), frames=frames, view="front")["cut_witness"]
+    assert stood["says"] == "two steps" and stood["by"] == ["order"] and "held" not in stood
+    cut["step_count"]["declined"] = {"cut": [6, 40], "phase": 0.0, "gated": True, "seam": 2.6}
+    held = loop._witnessed(cut, frames=frames, view="front")
+    said = held["cut_witness"]
+    assert said["says"] is None and said["held"] == "unwitnessed" and local_cycle.unwitnessed(held)
+    assert said["order"]["read"] == "two steps" and "does not stand a length the closing refused" in said["why"]
+
+
+@pytest.mark.parametrize("frames, why", [
+    (lambda k: _apart(k, cycle=30, rock=10), "may rock on its feet"),
+    (lambda k: _apart(k, cycle=30, slide=True), "slides"),
+    (lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, lift=6), "under the body"),
+    (lambda k: _alike(k, cycle=46, phase=13, tone=4, lean=1, leg_tone=0, leg_half=10, lift=6), "under the body"),
+    (lambda k: _behind(k, cycle=20, hold=2, arm=ARMS_IN), "drawn level"),
+])
+def test_the_order_the_feet_are_drawn_in_witnesses_nothing_where_the_clip_does_not_show_its_sides_are_two_legs(frames, why):
+    """A picture rocked on its feet draws one foot lower and then the other with its upper body swaying as far as the
+    tilt carries it; the walker whose feet stay apart, its right foot sliding along the ground planted to meet the left
+    and back, and a side walk lifting its swing foot draw one foot lower and then the other with a foot on the ground
+    passing under the body; feet drawn level say no order. None says a word, each says why."""
+    word = local_cycle.order_word([legs.feet_order(frames(k)) for k in range(FRAMES)], 23)
+    assert word["says"] is None and why in word["why"], word
 
 
 @pytest.mark.parametrize("verdict", ["held_verdict", "step_verdict"])

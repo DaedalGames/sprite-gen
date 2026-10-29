@@ -888,7 +888,7 @@ def run_item(
             # cycle or two
             result["loop"][local_cycle.UNWITNESSED] = True
         if local_cycle.four_steps(lp["cycle"]):
-            # its body rises and falls four times in its cut: two cycles where its strip counts two steps — aligned as one
+            # its cut holds four steps (its body or its feet say so): two cycles where its strip counts two steps — aligned as one
             # cycle, it would play twice as fast
             result["loop"][local_cycle.FOUR_STEPS] = True
         if (lp["cycle"].get("step_screen") or {}).get("suspect"):
@@ -985,7 +985,8 @@ def left_out_why(reasons: list[str], *, stands: bool = False, one_step: bool = F
     why = " and ".join([*([f"a take to film again ({', '.join(retake)}){stood}"] if retake else []),
                         *([f"nothing witnesses its cut whole cycles ({local_cycle.UNWITNESSED}): it may hold half a cycle or two"]
                           if local_cycle.UNWITNESSED in reasons else []),
-                        *([f"its body rises and falls four times in its cut ({local_cycle.FOUR_STEPS}): it holds two cycles "
+                        *([f"its body rises and falls, or its foot drawn nearer changes sides, four times in its cut "
+                           f"({local_cycle.FOUR_STEPS}): it holds two cycles "
                            "where its strip counts two steps, and aligned as one cycle it would play twice as fast"]
                           if local_cycle.FOUR_STEPS in reasons else [])])
     return why + ("; its step screen says it may be one step (cut it again with video-loop --steps 1 if it is)" if one_step else "")
@@ -1003,8 +1004,9 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
     A loop whose take is to be filmed again because the walk starts or stops in it (`retake` reason
     `start-stop`, loop.stand_retake) loops no two steps and has no cycle to match, a loop whose cut nothing
     witnesses whole cycles (`cycle-unwitnessed`, local_cycle.unwitnessed: its crossings left on steps, or
-    its cut held by the cut witness) may hold half a cycle or two, and a loop its body rises and falls four
-    times in (`cycle-four-steps`, local_cycle.four_steps) loops two where its strip counts two steps: each
+    its cut held by the cut witness) may hold half a cycle or two, and a loop cut four steps long (its body
+    rising and falling, or its foot drawn nearer changing sides, four times in it: `cycle-four-steps`,
+    local_cycle.four_steps) loops two where its strip counts two steps: each
     is left out, its loop kept as cut, the rest aligned without it, and its state names it under
     `left_out`, with its reasons — no loop is played at twice its speed, and no count of its cycles is
     asked for. One left out whose step screen suspects it is one step (`step_screen`) is told in its

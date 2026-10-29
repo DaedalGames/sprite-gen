@@ -95,6 +95,29 @@ BEAT_FRAMES = 8  # a rise and fall twice an interval is fitted (`twice_an_interv
 CUT_LINES = {'screen': 'on the screen', 'feet': 'over its feet'}
 CUT_WORDS = ('two steps', 'four steps', 'one step', None)
 SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as near as a cycle on: asked only where a pass hides
+# The order the feet are drawn in witnesses as the body does (`order_word`), for the step count and the cut alike: from
+# the front, the back or a diagonal the foot nearer the viewer is drawn lower (`legs.feet_order`), and the nearer foot
+# changes sides twice a cycle, once a step. Where the clip shows the two sides of its foot band are two legs, the
+# changes counted over a crossing interval, or over a cut, say how many steps it holds. The view's label is not taken
+# for it (a generated walk's label may be wrong): the clip shows it, or nothing is witnessed. Two feet are seen apart
+# (`legs.feet_order`) in at least `legs.FEET_APART_SHARE` of the frames; the lower foot's side swings ORDER_ROWS rows
+# or more and `legs.REACH_MIN` of the body's height (p10 to p90 of `depth`), a side read where one foot is drawn an
+# eighth of that swing (at least a row) lower; no foot planted on the ground passes under the body to the other side,
+# as one does seen from the side, the two sides then its front and back, not its two legs — no change of sides whose
+# nearer foot's contact before it and the other side's after it share or touch a column, and nothing standing on the
+# lowest row slides along it ORDER_TRAVEL of the feet's distance apart or more (`_travel`; a foot seen from the side
+# slides the whole of it, one seen from the front or the back stands, or steps toward or away from the viewer); and the
+# upper body sways under ORDER_SWAY of what a tilt about the feet would carry it to draw the lower foot so (`sway`, p10
+# to p90, against the swing over the feet's distance apart, at ORDER_REACH of the body's height over them): a picture
+# rocking on its feet draws one foot lower and then the other. Then the changes' rate over the span, within
+# ORDER_SLACK of two, four or one, no two changes further apart than two of their mean, says two steps, four or one;
+# from the side (SIDE_VIEW) it is not read.
+ORDER_ROWS = 2
+ORDER_TRAVEL = 0.8
+ORDER_SWAY = 0.5
+ORDER_REACH = 0.75
+ORDER_SLACK = 0.2
+ORDER_WORDS = (('two steps', 2), ('four steps', 4), ('one step', 1))
 # A loop whose clip one interval on is the same picture, as a walk whose feet meet once a cycle draws it, with nothing
 # to witness whether they do (`read_cycles`): its crossings stay on steps, so its two steps may be two cycles. Named on
 # its step count (`cycles.unwitnessed`), and `video-set` leaves it out of its state's cycle alignment under this reason.
@@ -102,8 +125,8 @@ SIDE_VIEW = 'side'  # from the side the legs a step on are one silhouette, as ne
 # `_witnessed`; `cut_witness.held`): it may be one step of a walk whose legs are drawn alike, or, the body rising and
 # falling once in it, a whole cycle of a body that does so once a cycle (`unwitnessed`).
 UNWITNESSED = 'cycle-unwitnessed'
-# A walk's cut its body rises and falls four times in (`cut_word` says four steps, loop `_witnessed`): two cycles, and it
-# stands. Its strip still counts the two steps the crossings counted (`steps: 2`), which `video-cycle-align` reads as one
+# A walk's cut its body rises and falls four times in, or its foot drawn nearer changes sides four times in (`cut_word`
+# says four steps, loop `_witnessed`): two cycles, and it stands. Its strip still counts the two steps the crossings counted (`steps: 2`), which `video-cycle-align` reads as one
 # cycle, a return half way its second step: aligned so, it would play twice as fast as the rest. `video-set` leaves it
 # out of its state's cycle alignment under this reason (`four_steps`).
 FOUR_STEPS = 'cycle-four-steps'
@@ -755,7 +778,104 @@ def bob_word(signals, interval, *, feet=False):
     return {**word, 'says': 'cycles'}
 
 
-def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signals=None):
+def _touch(a, b):
+    """Whether two contacts ([first, last] column) share or touch a column."""
+    return max(a[0], b[0]) <= min(a[1], b[1]) + 1
+
+
+def _travel(order):
+    """How far, in columns, the furthest anything standing on the lowest row (`ground`) slides along it while it stands
+    there: each run there followed from frame to frame while it shares or touches a column with one run, and only one,
+    of the next frame (two runs that meet, or one that parts, start afresh: two feet standing side by side), its
+    middle's range over the frames it is followed."""
+    chains, widest = [], 0.0
+    for o in order:
+        nxt = []
+        for part in o['ground']:
+            middle = (part[0]+part[1])/2
+            on = [c for c in chains if _touch(c['part'], part)]
+            go = on[0] if len(on) == 1 and sum(1 for p in o['ground'] if _touch(on[0]['part'], p)) == 1 else None
+            lo, hi = (min(go['lo'], middle), max(go['hi'], middle)) if go else (middle, middle)
+            nxt.append({'part': part, 'lo': lo, 'hi': hi})
+            widest = max(widest, hi-lo)
+        chains = nxt
+    return widest
+
+
+def order_word(order, span):
+    """What the order the feet are drawn in (`order`, per frame: `legs.feet_order`) says of `span` frames — a crossing
+    interval (`read_cycles`) or a cut (`cut_word`): `says` `two steps`, `four steps` or `one step` where the clip shows
+    its two sides of feet are two legs and the side drawn lower changes at that rate (ORDER_WORDS, within ORDER_SLACK),
+    else None with why (module notes before ORDER_ROWS). Returns the record: `apart` (the share of frames whose feet are
+    seen apart), `swing` (the depth's p10 to p90, in rows), `floor`, and where read `changes` (frames between which the
+    lower side changes), `slides` (those whose contacts touch), `spacing` (the feet's median distance apart) and
+    `travel` (`_travel`), in px, `sway` and `tilt` (the sway a tilt would need), `per` (changes per span)."""
+    seen = [o for o in order if o['apart']]
+    apart = len(seen)/len(order) if order else 0.0
+    word = {'apart': round(apart, 3)}
+    if apart < legs_mod.FEET_APART_SHARE or len(seen) < 3:
+        return {**word, 'says': None, 'why': f'the feet are seen apart in {apart:.0%} of the frames (from '
+                                              f'{legs_mod.FEET_APART_SHARE:.0%}): the order they are drawn in is not read'}
+    height = float(np.median([o['height'] for o in seen]))
+    depth = np.asarray([o['depth'] for o in seen], dtype=float)
+    swing = float(np.percentile(depth, 90) - np.percentile(depth, 10))
+    floor = max(ORDER_ROWS, legs_mod.REACH_MIN*height)
+    word.update(swing=round(swing, 2), floor=round(floor, 2))
+    if swing < floor:
+        return {**word, 'says': None, 'why': f'one foot is drawn lower than the other by {swing:.1f} rows either way, under '
+                                              f'{floor:.1f}: the feet are drawn level'}
+    least = max(1.0, swing/8)
+    sides, last, changes = [], None, []
+    for k, o in enumerate(order):
+        side = None if not o['apart'] or abs(o['depth']) < least else ('right' if o['depth'] > 0 else 'left')
+        if side is not None:
+            if last is not None and side != sides[last]:
+                changes.append((last, k))
+            last = k
+        sides.append(side)
+    slides = [[a, b] for a, b in changes if _touch(order[a][sides[a]], order[b][sides[b]])]
+    spacing = float(np.median([abs(sum(o['right'])-sum(o['left']))/2 for o in seen]))
+    travel = _travel(order)
+    word.update(changes=[[a, b] for a, b in changes], slides=slides, spacing=round(spacing, 1), travel=round(travel, 1))
+    if slides:
+        a, b = slides[0]
+        return {**word, 'says': None, 'why': f'the foot drawn lower on the {sides[a]} at frame {a} and the one on the '
+                                              f'{sides[b]} at frame {b} touch at the ground ({len(slides)} of '
+                                              f'{len(changes)} changes): one foot slides under the body from one side to '
+                                              'the other, as seen from the side, and the sides are not two legs'}
+    if travel >= ORDER_TRAVEL*spacing:
+        return {**word, 'says': None, 'why': f'a foot standing on the lowest row slides {travel:.0f} px along it, '
+                                              f'{travel/spacing:.0%} of the {spacing:.0f} px the feet are apart (from '
+                                              f'{ORDER_TRAVEL:.0%}): a planted foot passes under the body to the other '
+                                              'side, as seen from the side, and the sides are not two legs'}
+    sway = float(np.percentile([o['sway'] for o in seen], 90) - np.percentile([o['sway'] for o in seen], 10))
+    tilt = swing*ORDER_REACH*height/max(spacing, 1.0)
+    word.update(sway=round(sway, 1), tilt=round(tilt, 1))
+    if sway >= ORDER_SWAY*tilt:
+        return {**word, 'says': None, 'why': f'its upper body sways {sway:.0f} px, {sway/tilt:.0%} of the {tilt:.0f} px a tilt '
+                                              f'about its feet would carry it to draw one foot {swing:.0f} rows lower than '
+                                              f'the other (from {ORDER_SWAY:.0%}): the picture may rock on its feet'}
+    times = [(a+b)/2 for a, b in changes]
+    if len(times) < 3:
+        return {**word, 'says': None, 'why': f'the foot drawn lower changes sides {len(times)} times: too few to count'}
+    mean = (times[-1]-times[0])/(len(times)-1)
+    per = span/mean
+    word['per'] = round(per, 3)
+    widest = max(b-a for a, b in zip(times, times[1:]))
+    for says, k in ORDER_WORDS:
+        if abs(per/k-1) <= ORDER_SLACK and widest <= 2*mean:
+            return {**word, 'says': says}
+    return {**word, 'says': None, 'why': f'the foot drawn lower changes sides {per:.2f} times in {span:.1f} frames '
+                                          f'(every {mean:.1f}, at most {widest:g} apart): not within {ORDER_SLACK:.0%} of '
+                                          'two, four or one, each change at most two of their mean apart'}
+
+
+def _order_why(feet):
+    """Why the order of the feet (`order_word`) witnesses nothing: its own why, or the word it says instead."""
+    return feet.get('why') or f"the foot drawn nearer changes sides {feet['per']:.2f} times: {feet['says']}"
+
+
+def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signals=None, order=None):
     """Whether the crossings the clip shows (`reading`, gap mode) mark its cycles, not its steps, read and kept on the
     reading (`Reading.mark_cycles`; crossings.py, "Crossings that mark cycles"). The feet need not meet on the screen
     at every pass: the far foot can pass hidden behind the near one, or a foot step toward or away from the camera and
@@ -769,7 +889,9 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
     cycles only where a witness that reads no leg says the interval holds two steps — the body's top line (`signals`,
     `legs.strike_signals` with `legs.body_signals`) rising and falling twice an interval, less its flow and of its own
     (`bob_word`: the picture drifting, swaying, shaking or zooming up and down as it pleases witnesses nothing, read
-    against the lowest row and the widths of the upper body; a lowest row on the frame's edge holds the word). The
+    against the lowest row and the widths of the upper body; a lowest row on the frame's edge holds the word) — or the
+    order the feet are drawn in (`order`, per frame: `legs.feet_order`; `order_word`), the foot drawn nearer changing
+    sides twice an interval where the clip shows its two sides of feet are its two legs, not read from the side. The
     view's foot cue (`cue`, per frame, drawn in steps of `cue_step`; `cue_word`) only refuses: where it turns over one
     interval on, the other leg leads there, a step. With no witness the crossings stay on steps, as from the side, and
     the record names it (`unwitnessed`): where the feet do meet once a cycle, each step counted is a cycle. Returns
@@ -796,7 +918,9 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
                    f"and as near as two on ({near['two']:.2f}, +{CYCLE_SLACK:g})")
         word = None if cue is None or view is None else cue_word(cue, d, step=cue_step)
         bob = None if not signals else bob_word(signals, d)
-        said.update({**({'cue': word} if word is not None else {}), **({'bob': bob} if bob is not None else {})})
+        feet = None if order is None or view == SIDE_VIEW else order_word(order, d)
+        said.update({**({'cue': word} if word is not None else {}), **({'bob': bob} if bob is not None else {}),
+                     **({'order': feet} if feet is not None else {})})
         if word is not None and word['says'] == 'steps':
             said.update(cycles=False, why=f"{picture}, but the view's foot cue turns over there ({word['one']:+.2f}, at most "
                                           f"{CUE_SWAPPED:+g}): the other leg leads, a step")
@@ -807,11 +931,17 @@ def read_cycles(reading, distances, *, view=None, cue=None, cue_step=None, signa
                                          f"{bob['body']['beat']:.1f} left against its lowest row and upper body, "
                                          f"{bob['body']['share']:.0%}; "
                                          f"at least {BOB_OWN:.0%}): two steps an interval, the feet meet once a cycle")
+        elif feet is not None and feet['says'] == 'two steps':
+            said.update(cycles=True, why=f"{picture}, and the foot drawn nearer changes sides {feet['per']:.2f} times an "
+                                         f"interval, the clip's two sides of feet its two legs (none slides from one to the "
+                                         f"other, the upper body sways {feet['sway']:.0f} px of the {feet['tilt']:.0f} a tilt "
+                                         "would need): two steps an interval, the feet meet once a cycle")
         else:
             said.update(cycles=False, unwitnessed=True,
                         why=f"{picture}, but nothing that reads no leg witnesses two steps an interval "
-                            f"({'no top line read' if bob is None else bob['why']}): a step on draws as a cycle on, as from the "
-                            "side, and the crossings mark steps")
+                            f"({'no top line read' if bob is None else bob['why']}; "
+                            f"{'the order of the feet is not read from the side' if feet is None else _order_why(feet)}): "
+                            "a step on draws as a cycle on, as from the side, and the crossings mark steps")
     reading.mark_cycles(said)
     return said
 
@@ -845,7 +975,7 @@ def _feet_mark(signals, length, over):
     return {'over': over, 'feet': feet, 'beat': top} if feet > top else None
 
 
-def cut_word(signals, length):
+def cut_word(signals, length, *, order=None, declined=None):
     """The body's word on a walk's cut `length` frames long as it is about to be cut, whichever way it was chosen — the
     pixel search's, the step count's crossings read or not read (loop `_witnessed`). Legs drawn alike loop as well on
     one step as on two, and crossings read off feet that slide, or off a shadow under them on a picture that moves, can
@@ -865,20 +995,44 @@ def cut_word(signals, length):
     - None where neither line reads any of these: nothing witnesses the cut whole cycles (`why`, each line's reading
       on the cut).
 
+    Where neither line says the cut is a cycle or two, the order the feet are drawn in is read on it (`order`, per
+    frame: `legs.feet_order`; `order_word`, as the step count reads it, None from the side): two steps or four, where
+    the clip shows its two sides of feet are its two legs, and the cut stands on it (`by` ['order']); else the lines'
+    word stands, the order's record kept (`order`). The order counts the changes in the cut, not whether its length
+    closes them (a cut a sixth short of a cycle still reads two steps): where the cut is the search's, kept because none
+    of the clip's two-step cuts closes (`declined`, the step count's record of the best of them), it does not stand on
+    the order — a length the closing refused — and the order's word is kept as `read`.
+
     Where the cut stands (two steps or four) and its lowest row rises and falls twice it more than its top line does on
     the screen, the word carries a mark (`mark`, `_feet_mark`), and nothing more. Returns {'says', 'by': the lines that
     said it (where it says), 'lines': each line's own word (`_cut_line`), 'on': the first such line's reading that said
-    four steps or one step, with its `line` and `interval`, 'why' where None, 'mark' where marked}."""
+    four steps or one step, with its `line` and `interval`, 'why' where None, 'mark' where marked, 'order' where
+    read}."""
     if not signals:
         return {'says': None, 'why': 'no top line read: a frame has no solid body'}
     lines = {line: _cut_line(signals, length, feet=line == 'feet') for line in CUT_LINES}
     says = min((word['says'] for word in lines.values()), key=CUT_WORDS.index)
+    if says not in ('two steps', 'four steps') and order is not None:
+        feet = order_word(order, length)
+        if feet['says'] in ('two steps', 'four steps') and declined:
+            feet = {**feet, 'says': None, 'read': feet['says'], 'why': (
+                f"the foot drawn nearer changes sides {feet['per']:.2f} times in the cut ({feet['says']}), but the cut is "
+                f"the search's, kept where none of the clip's two-step cuts closes (the best, {declined['cut'][0]}/"
+                f"{declined['cut'][1]}): the order counts its steps, not whether its length closes, and does not stand a "
+                "length the closing refused")}
+        if feet['says'] in ('two steps', 'four steps'):
+            return {'says': feet['says'], 'by': ['order'], 'lines': lines, 'order': feet}
+        if says is None:
+            return {'says': None, 'lines': lines, 'order': feet,
+                    'why': '; '.join([*dict.fromkeys(word['why'] for word in lines.values()), _order_why(feet)])}
     if says is None:
         return {'says': None, 'lines': lines, 'why': '; '.join(dict.fromkeys(word['why'] for word in lines.values()))}
     by = [line for line, word in lines.items() if word['says'] == says]
     said = {'says': says, 'by': by, 'lines': lines}
     if says != 'two steps':
         said['on'] = {'line': by[0], **lines[by[0]]['on']}
+    if says == 'one step' and order is not None:
+        said['order'] = feet
     mark = None if says == 'one step' else _feet_mark(signals, length, lines['feet']['bob']['over'])
     return {**said, **({'mark': mark} if mark else {})}
 
@@ -892,7 +1046,7 @@ def unwitnessed(cycle):
 
 
 def four_steps(cycle):
-    """Whether a walk's loop is cut two cycles long, its body rising and falling four times in it (FOUR_STEPS:
+    """Whether a walk's loop is cut two cycles long, four steps read in it (FOUR_STEPS:
     `cut_word`, loop `_witnessed`, `cut_witness.says`). It stands; `video-set` leaves it out of its state's cycle
     alignment, its strip counting two steps."""
     return (cycle.get('cut_witness') or {}).get('says') == 'four steps'

@@ -1543,8 +1543,9 @@ def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = N
                signals: dict[str, list[float]] | None = None) -> crossings_mod.Reading:
     """The clip's crossings (`crossings.read`), and whether they mark its cycles (`local_cycle.read_cycles`, on `D`, the
     clip's distances, the body's bob read off `signals` — the frames' leg signals, read here where not given, with the
-    body's own (`legs.body_signals`) — and the `view`'s foot cue: `legs.shade_cue` from the side or a diagonal, drawn in
-    tones of `legs.TONE`, `legs.depth_cue` from the front or back, in pixel rows of the body's median height). Every
+    body's own (`legs.body_signals`) — the order its feet are drawn in (`legs.feet_order`), and the `view`'s foot cue:
+    `legs.shade_cue` from the side or a diagonal, drawn in tones of `legs.TONE`, `legs.depth_cue` from the front or
+    back, in pixel rows of the body's median height). Every
     count the clip's steps make is read on it: the search's cut (`_by_steps`), a fixed cut (`fixed_count`) and, carried
     to the loop, the loop as it plays (`ring_steps`)."""
     signals = leg_signals(frames) if signals is None else signals
@@ -1559,7 +1560,8 @@ def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = N
         heights = signals["height"] if signals else legs_mod.strike_signals(frames)["height"]
         step = legs_mod.TONE if lateral else 1.0 / float(np.median(heights))
     body = {**signals, **legs_mod.body_signals(frames)} if signals else None
-    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step, signals=body)
+    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step, signals=body,
+                            order=[legs_mod.feet_order(f) for f in frames])
     return reading
 
 
@@ -1785,12 +1787,14 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
     return found
 
 
-def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image]) -> dict[str, Any]:
+def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image], view: str | None = None) -> dict[str, Any]:
     """The cut a walk's search and step count chose (`_by_steps`), held to one word before it is cut whichever way it
     was chosen — the search's, two steps by the clip's crossings, crossings read or not: the body's
-    (`local_cycle.cut_word`: its top line on the screen and over its feet, the first word either says), recorded
-    `cut_witness`. Legs drawn alike loop as well on one step as on two, and crossings read off feet that slide, or off
-    a shadow under them on a picture that moves, count half steps.
+    (`local_cycle.cut_word`: its top line on the screen and over its feet, the first word either says), or where it says
+    no cycle the order the feet are drawn in (`legs.feet_order`, as the step count reads it; not from the side `view`),
+    recorded `cut_witness` — not the order where the cut is the search's, kept because none of the clip's two-step cuts
+    closes (`declined`). Legs drawn alike loop as well on one step as on two, and crossings read off feet that slide,
+    or off a shadow under them on a picture that moves, count half steps.
 
     - Its own rise and fall twice the cut, or four times: the cut is a cycle, or two, and stands. Cut two cycles, its
       strip still counts two steps where the crossings counted them, and `video-set` leaves it out of its state's cycle
@@ -1812,8 +1816,10 @@ def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image]) -> dict[str,
         cycle["cut_witness"] = {"cut": first, "held": "step count"}
         return cycle
     strike = leg_signals(frames)
+    order = None if view == local_cycle.SIDE_VIEW or not strike else [legs_mod.feet_order(f) for f in frames]
     said = {"cut": first, **local_cycle.cut_word({**strike, **legs_mod.body_signals(frames)} if strike else None,
-                                                 cycle["length"])}
+                                                 cycle["length"], order=order,
+                                                 declined=(cycle.get("step_count") or {}).get("declined"))}
     cycle["cut_witness"] = said if said["says"] in ("two steps", "four steps") else {**said, "held": "unwitnessed"}
     return cycle
 
@@ -2157,7 +2163,7 @@ def _cut_loop(
                 cycle = _by_steps(cycle, refused, frames=source_frames, analysis=analysis, D=D, trajectory=trajectory,
                                   window=window, searched=searched, detect=detect, seam_max=seam_max, cells=cells,
                                   view=view, facing=facing)
-                cycle = _witnessed(cycle, frames=source_frames)
+                cycle = _witnessed(cycle, frames=source_frames, view=view)
         elif cycle_mode == "once":
             source_frames = [Image.open(f).convert("RGBA") for f in files]
             cycle = nonloop.select_cut(D, masses, fps=fps, ending=partial(

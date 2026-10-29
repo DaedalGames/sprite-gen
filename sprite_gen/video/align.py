@@ -66,6 +66,13 @@ again (`video-loop --steps 1`) and aligns the set anew, or says it holds a whole
 taken so a held part closes (its strip metadata says `steps: 2`) — returns half way at its second
 step: that return is no suspect (status `steps`), and the loop is aligned as the one cycle it is.
 
+So is a loop whose cut, as the report beside it records (`held_cut`), nothing witnessed whole cycles
+(`cycle-unwitnessed`: the step count left its crossings on steps, or the cut witness held the cut — it may be half a
+cycle, one or two) or that was cut two cycles long where its strip counts two steps (`cycle-four-steps`): `video-set`
+leaves such a loop out of its alignment, and alone this command stops on it the same way, named under `suspects`
+(`held`, with the report), before anything is rewritten. Its return half way is no step then. `--cycles <loop>=1` says
+it holds one cycle, `=2` takes one out of two; one step is cut again (`video-loop --steps 1`).
+
 Where a loop's view cannot tell its feet apart (`start_foot` null, with `foot_why`), it starts on its
 larger strike, and the report names it under `unnamed_feet` with its two strike frames as they now
 stand in `cycle/` (`candidates`, the first being the frame it starts on) — for whoever looks, a
@@ -103,6 +110,7 @@ from sprite_gen.video import sway as sway_mod
 from sprite_gen.video import cadence as cadence_mod
 from sprite_gen.video import held as held_mod
 from sprite_gen.video import legs as legs_mod
+from sprite_gen.video import local_cycle
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import period as period_mod
 from sprite_gen.video import rife as rife_mod
@@ -889,14 +897,38 @@ def one_step(loop_dir: Path, meta_path: Path, meta: dict[str, Any]) -> dict[str,
             "seconds": round(screen["lag"] / float(data["fps"]), 3), "report": str(path)}
 
 
+def held_cut(loop_dir: Path, meta_path: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """A loop whose cut nothing witnessed whole cycles, or that was cut two cycles long where its strip counts two
+    steps, as the cut's report records it (`cut_report`; `local_cycle.unwitnessed`, `local_cycle.four_steps`, which
+    `video-set` leaves out of its alignment): `reason` (local_cycle.UNWITNESSED or local_cycle.FOUR_STEPS) and the
+    `report` it is in. None otherwise — and where no report is found."""
+    found = cut_report(loop_dir, meta_path, meta)
+    if found is None:
+        return None
+    path, data = found
+    cycle = data.get("cycle") or {}
+    reason = (local_cycle.UNWITNESSED if local_cycle.unwitnessed(cycle) else
+              local_cycle.FOUR_STEPS if local_cycle.four_steps(cycle) else None)
+    return {"reason": reason, "report": str(path)} if reason else None
+
+
 def _suspect_line(entry: dict[str, Any]) -> str:
     """One loop's suspects, in words: where it returns, how, and what that would make it."""
+    said = []
+    if "held" in entry:
+        held = entry["held"]
+        said.append(f"nothing witnessed its cut whole cycles ({held['reason']}, in {held['report']}): it may hold half a "
+                    "cycle, one or two — if it is one step, cut it again with `sprite-gen video-loop … --steps 1`"
+                    if held["reason"] == local_cycle.UNWITNESSED else
+                    f"its cut holds four steps ({held['reason']}, in {held['report']}): two cycles where its strip counts "
+                    "two steps, and aligned as one it would play twice as fast")
     if "one_step" in entry:
         step = entry["one_step"]
-        line = (f"{entry['dir']}: may be one step of a cycle {step['lag']} frames long ({step['seconds']:.3f} s) — it repeats "
-                f"{step['ratio']:.2f}x as far two lengths on in its clip as one length on; count its steps, and if it is one, cut it "
-                f"again with `sprite-gen video-loop … --steps 1` (the arguments are in {step['report']}) and align the set anew")
-        return line + ("; it may also hold " + "; or ".join(_returns_said(entry)) if entry["candidates"] else "")
+        said.append(f"may be one step of a cycle {step['lag']} frames long ({step['seconds']:.3f} s) — it repeats "
+                    f"{step['ratio']:.2f}x as far two lengths on in its clip as one length on; count its steps, and if it is one, cut it "
+                    f"again with `sprite-gen video-loop … --steps 1` (the arguments are in {step['report']}) and align the set anew")
+    if said:
+        return f"{entry['dir']}: " + "; ".join(said) + ("; it may also hold " + "; or ".join(_returns_said(entry)) if entry["candidates"] else "")
     return f"{entry['dir']}: may hold " + "; or ".join(_returns_said(entry))
 
 
@@ -1228,21 +1260,23 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
     cycle_warnings: list[str] = []
     for i, ((d, meta_path, meta, _), screen) in enumerate(zip(loops, screens)):
         k = given.get(i)
-        # A loop counted two steps long (`steps`) returns half way at its second step: not a second cycle.
-        stepped = [row for row in screen["suspects"] if meta.get("steps") == 2 and row["cycles"] == 2]
+        # A loop counted two steps long (`steps`) returns half way at its second step: not a second cycle — unless nothing
+        # witnessed its cut whole cycles, or it was cut two cycles long (`held`).
+        held = held_cut(d, meta_path, meta)
+        stepped = [row for row in screen["suspects"] if meta.get("steps") == 2 and row["cycles"] == 2 and held is None]
         rows = [row for row in screen["suspects"] if row not in stepped]
         step = one_step(d, meta_path, meta)
-        if rows or step or stepped:
-            status = ("counted" if k is not None else "steps" if not rows and not step
+        if rows or step or stepped or held:
+            status = ("counted" if k is not None else "steps" if not rows and not step and not held
                       else "stopped" if multi_cycle == "fail" else "warned")
             suspects.append({"dir": str(d), "name": meta_path.name[: -len(".strip.json")], "length": len(sources[i]),
                              "status": status, "cycles_given": k,
                              "candidates": [{key: row[key] for key in ("period", "seconds", "divisor", "cycles", "periodicity", "pose",
                                                                        "off_path", "distance", "steps", "follow", "why") if key in row}
                                             for row in (rows or stepped)],
-                             **({"one_step": step} if step else {}),
+                             **({"one_step": step} if step else {}), **({"held": held} if held else {}),
                              **({"steps": meta["steps"]} if stepped else {}),
-                             "settle": [f"--cycles {d}={c}" for c in sorted({1, *(row["cycles"] for row in rows)})]})
+                             "settle": [f"--cycles {d}={c}" for c in sorted({1, *(row["cycles"] for row in rows), *([2] if held else [])})]})
         if k is not None and k > 1:
             if not any(row["cycles"] == k for row in screen["suspects"]):
                 cycle_warnings.append(f"{d}: --cycles {k} given, but the screen found no return at 1/{k} of it; "
@@ -1264,6 +1298,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         message = ("video-cycle-align: " + "; ".join(_suspect_line(e) for e in stopped)
                    + ". Stopped before anything was rewritten: pixels cannot tell two cycles from one cycle whose steps look alike"
                    + (", nor one step from a cycle" if any("one_step" in e for e in stopped) else "")
+                   + (", and nothing witnessed some of the cuts whole cycles" if any("held" in e for e in stopped) else "")
                    + ". Count the cycles in each (look at it, or ask a vision model how often each foot lands), then run, with each count "
                    f"filled in (1: it holds one, aligned as it is; more: one cycle is taken out of it): {command}"
                    " — or add --multi-cycle warn to align the set as it is (docs/loop-repair.md section 4)")
@@ -1275,6 +1310,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         raise CycleSuspects(message, suspects, command)
     cycle_warnings += [f"{_suspect_line(e)}; aligned as it is (--multi-cycle warn) — at the set's length it plays "
                        + ("one step where the rest play two, if it is one" if "one_step" in e else
+                          "half or twice as fast as the rest, if it is not one cycle" if "held" in e and not e["candidates"] else
                           f"{max(row['cycles'] for row in e['candidates'])} times as fast as the rest if it does")
                        for e in suspects if e["status"] == "warned"]
     lengths = [len(f) for f in sources]
