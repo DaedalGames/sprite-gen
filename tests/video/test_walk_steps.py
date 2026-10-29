@@ -1238,6 +1238,18 @@ def test_a_lowest_row_on_the_frames_last_row_holds_the_word():
     assert word["says"] is None and word["edge"] == 1 and f"the frame's last row in 1 of {FRAMES} frames" in word["why"]
 
 
+def test_a_cut_of_a_body_whose_top_line_holds_still_says_why_whatever_its_length():
+    """The walker whose feet stay apart, its body still, a cycle 30 frames: its top line holds on the screen, and its
+    lowest row (the foot drawn nearer, lower) rises and falls once a step. Read over its feet on cuts of 10 to 46
+    frames, the line rises and falls as the lowest row does, and none of it is the top line's own: each cut says why
+    (the parent engine stopped there, dividing by that none, on cuts of 13, 17, 25, 26, 34 and 35 frames)."""
+    frames = [_apart(k, cycle=30) for k in range(FRAMES)]
+    signals = {**legs.strike_signals(frames), **legs.body_signals(frames)}
+    words = {length: local_cycle.cut_word(signals, length) for length in range(10, 47)}
+    still = [length for length, word in words.items() if "its top line holding still" in (word.get("why") or "")]
+    assert still == [25, 26, 34, 35] and all(words[length]["says"] is None for length in still)
+
+
 # Walkers moved or zoomed with the whole picture, by their interval between crossings d: the side walker whose legs are
 # drawn alike and wide, its crossings its steps (23 frames), and the walker seen from behind whose feet meet once a cycle
 # (17.5); held still, carried up and down whole (feet and all, on the walk's beat), or rising and falling on its legs

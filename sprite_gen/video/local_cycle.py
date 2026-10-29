@@ -695,6 +695,11 @@ def over_feet(signals, interval):
     return lines[over], over
 
 
+def _share(rows, beat):
+    """`rows` as a share of the top line's rise and fall twice an interval (`beat`, `own_beat`), for a why: or, where
+    that is none, the top line holding still on the screen."""
+    return f"{rows/beat:.0%}" if beat else "its top line holding still"
+
 def bob_word(signals, interval, *, feet=False):
     """Whether the body rises and falls twice an interval `interval` frames long (`read_cycles`), read off `signals`
     (`legs.strike_signals` with `legs.body_signals`) without telling the legs apart. Its top line (`top`, in pixel rows)
@@ -758,7 +763,7 @@ def bob_word(signals, interval, *, feet=False):
     if beat['less_lowest'] < max(BOB_OWN*beat['beat'], floor):
         return {**word, 'says': None, 'why': f"its lowest row rises and falls with it: less the lowest row's, its top line's rise "
                                              f"and fall twice an interval is {beat['less_lowest']:.1f} rows of {beat['beat']:.1f} "
-                                             f"({beat['less_lowest']/beat['beat']:.0%}; at least {BOB_OWN:.0%} and {floor:.1f} "
+                                             f"({_share(beat['less_lowest'], beat['beat'])}; at least {BOB_OWN:.0%} and {floor:.1f} "
                                              "rows): the picture moves with the body, and the body's own is not told from it"}
     if beat['less_bands'] is None:
         return {**word, 'says': None, 'why': f"no band of its upper body would show the picture zooming: zoomed in as far as "
@@ -771,7 +776,7 @@ def bob_word(signals, interval, *, feet=False):
         return {**word, 'says': None, 'why': f"its upper body's width changes with it: less as much of the zoom as its band "
                                              f"{a:.0%} to {b:.0%} of its height below its top reads, its top line's rise and fall "
                                              f"twice an interval is {beat['less_bands']:.1f} rows of {beat['beat']:.1f} "
-                                             f"({beat['less_bands']/beat['beat']:.0%}), {beat['less_bands']/beat['less_lowest']:.2f} "
+                                             f"({_share(beat['less_bands'], beat['beat'])}), {beat['less_bands']/beat['less_lowest']:.2f} "
                                              f"of the {beat['less_lowest']:.1f} left against the lowest row (at least "
                                              f"{BOB_OWN:.0%}, {floor:.1f} rows and {BOB_SCALE:g}): the picture may zoom with the "
                                              "body, and the body's own is not told from it"}
