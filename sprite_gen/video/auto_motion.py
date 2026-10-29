@@ -19,6 +19,12 @@ SAMPLE_COUNT = 9
 MATCH_TIE = 1e-9
 
 
+class RegionsUnfound(ValueError):
+    """`discover` found no two regions to track: none stable and textured, or not two apart that track throughout
+    the frames. Every other refusal of the anchor (too few frames, a frame without the subject, a search that
+    reaches its edge on the cut) stays a plain ValueError."""
+
+
 def correct_cycle(frames, regions, *, coarse_dx):
     """Do not turn an uncertain fine match into a potentially damaging shift.
 
@@ -204,7 +210,7 @@ def discover(frames: list[Image.Image], *, reference_index: int) -> tuple[list, 
     # rounding; read on MATCH_TIE's grain, such a tie is ordered by the box, the same on every machine.
     candidates.sort(key=lambda row: (round(row['quality']/MATCH_TIE), row['box']))
     if not candidates or candidates[0]['quality'] > .8:
-        raise ValueError("automatic motion anchor found no stable textured region")
+        raise RegionsUnfound("automatic motion anchor found no stable textured region")
     chosen = []
     validated = []
     for row in candidates:
@@ -226,7 +232,7 @@ def discover(frames: list[Image.Image], *, reference_index: int) -> tuple[list, 
         if len(chosen) == 2:
             break
     if len(chosen) != 2:
-        raise ValueError("automatic motion anchor needs two separated regions trackable throughout the clip")
+        raise RegionsUnfound("automatic motion anchor needs two separated regions trackable throughout the clip")
     ordered = sorted(zip(chosen, validated), key=lambda pair: pair[0]['box'][1])
     chosen = [pair[0] for pair in ordered]
     validated = [pair[1] for pair in ordered]
@@ -280,3 +286,22 @@ def analyse(frames: list[Image.Image], *, fps: float) -> tuple[np.ndarray, np.nd
     report['analysis_only_translation_xy'] = (shifts*scale).tolist()
     report['analysis_only'] = True
     return distances, trajectory, report
+
+
+def analyse_after_opening(frames: list[Image.Image], *, fps: float, shorter_than: int,
+                          unfound: RegionsUnfound) -> tuple[int, tuple[np.ndarray, np.ndarray, dict]]:
+    """`analyse` on `frames` after the fewest frames they open on, fewer than `shorter_than`, with which `discover`
+    finds its two regions through the rest: the opening (how many frames) and `analyse`'s three, on the frames after it.
+
+    A clip filmed from a still opens on that still, drawn as the still was and not as the video draws the walk, and on
+    the standing pose the body sets off from; the regions the middle of the clip shows may be nowhere in reach there
+    (`unfound`, the refusal on the whole clip). Left out as a lead-in is, those frames are no part of any cut, and one
+    fewer than `shorter_than` (the shortest cut the search takes) holds no cycle the search could have cut. Where every
+    such opening leaves the clip untracked, RegionsUnfound in `unfound`'s words and what was tried."""
+    for opening in range(1, min(shorter_than, len(frames) - 5)):
+        try:
+            return opening, analyse(frames[opening:], fps=fps)
+        except RegionsUnfound:
+            continue
+    raise RegionsUnfound(f"{unfound} — nor through the clip after any of its first 1 to {max(1, shorter_than - 1)} "
+                         f"frames left out (an opening shorter than the shortest cut, {shorter_than} frames)") from unfound
