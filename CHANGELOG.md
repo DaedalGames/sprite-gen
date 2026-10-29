@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (v3.10.0)
+## v3.10.0 - Root motion on single-play cuts, their air retimed on a given gravity, length and speed (--air-retime), and a caller-named single play (--cycle once --start --length)
 
 **Upgrading from 3.9.0: a cut played once with a body (`video-loop --cycle once`, `once-return`, `one-shot`, and so `video-set`'s single-play states) gains `root_motion` in its report and strip metadata: each cell's root, what it stands on, and its airs. Its cells and every other key keep their bytes and values. The air is drawn again only when asked (`--air-retime`).**
 
