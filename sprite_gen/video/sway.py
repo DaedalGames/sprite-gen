@@ -605,33 +605,96 @@ def as_filmed(record: dict[str, Any], report: dict[str, Any] | None, cell: int) 
     `gait_fallback.scale_undone`): its crop is not on the frame as filmed, and no whole px shift undoes a scale. A frame
     the jump repair or the seam bridge made again or gave way (`jump_repair.replaced`), the overlapped wrap made
     (`wrap_overlap.frames`) or the wrap blend redrew toward the first frame's drawing (`wrap_blend.cells`) is not the
-    frame its source frame number says. A step that did not run is not in the report, or names no frame. A ValueError says
-    which, or what the records do not give."""
+    frame its source frame number says. Each step is read as video-loop writes it, never guessed: the size hold on every
+    cut at --anchor motion-auto and every walk or run cut it is given, the wrap blend on every pinned cut and the jump
+    repair on every cut, whether they ran or not (`_always_written`, as the report's strip says how its cut was cut); the
+    gait fallback and the overlapped wrap only where they ran or were asked. A step that did not run says so: `applied`
+    false and no frame named, or no frame in the list. A step not in the report where video-loop writes it, a record or a
+    field of one missing or not of its kind, and an `applied` that is not whether the list names a frame are what the
+    records do not give. A ValueError says which, or what the records do not give."""
     if report is None:
         raise ValueError("no report video-loop wrote of its cut is beside its strip (in its folder or the one above it), and "
                          "its record does not say whether the size hold, the gait fallback or RIFE changed its frames")
-    if (report.get("strip") or {}).get("source_cut") != record.get("source_cut"):
+    strip = report.get("strip") if isinstance(report.get("strip"), dict) else {}
+    if strip.get("source_cut") != record.get("source_cut"):
         raise ValueError("the report beside its strip is another cut's: its strip's source_cut is not the record's")
     k, _ = _cut_frame(record, cell)
+
+    def step_record(key: str, step: str) -> dict[str, Any] | None:
+        """The report's record of a step (`key`); None where it holds none and video-loop writes one only where the step
+        ran or was asked."""
+        if key not in report:
+            where = _always_written(strip, key, step)
+            if where is not None:
+                raise ValueError(f"its report holds no record of {step} ({key}), which video-loop writes of {where}, whether "
+                                 "it ran or not")
+            return None
+        if not isinstance(report[key], dict):
+            raise ValueError(f"its report does not say what {step} did to its frames: its record of it is not one ({key})")
+        return report[key]
+
     for key, said, step in (("size_hold", "applied", "the size hold"), ("gait_fallback", "scale_undone", "the gait fallback")):
-        if (report.get(key) or {}).get(said):
+        done = step_record(key, step)
+        if done is None:
+            continue
+        if type(done.get(said)) is not bool:
+            raise ValueError(f"its report does not say whether {step} held its frames to one size ({key}.{said})")
+        if done[said]:
             raise ValueError(f"{step} held its frames to one size, scaled about their feet, before it was cut ({key}): its "
                              "crop is not on the frame as filmed, and no whole px shift undoes a scale")
     repair = report.get("jump_repair")
     if not isinstance(repair, dict):
         raise ValueError("its report does not say what the jump repair made of its frames (jump_repair)")
-    made = (("jump_repair.replaced", repair.get("replaced", []),
-             "made again by RIFE round the wrap (the seam bridge)" if repair.get("reading") == "seam" else
+    bridged = repair.get("reading") == "seam"
+    made = (("jump_repair", "replaced", "the seam bridge" if bridged else "the jump repair",
+             "made again by RIFE round the wrap (the seam bridge)" if bridged else
              "made again by RIFE, or given way to the frame beside it for a filmed ghost (the jump repair)"),
-            ("wrap_overlap.frames", (report.get("wrap_overlap") or {}).get("frames", []),
+            ("wrap_overlap", "frames", "the overlapped wrap",
              "made again beside the wrap from the clip's frames a cycle apart (the overlapped wrap)"),
-            ("wrap_blend.cells", (report.get("wrap_blend") or {}).get("cells", []),
+            ("wrap_blend", "cells", "the wrap blend",
              "redrawn toward the first frame's drawing before the wrap (the wrap blend)"))
-    for key, frames, how in made:
+    for key, field, step, how in made:
+        done = repair if key == "jump_repair" else step_record(key, step)
+        if done is None:
+            continue
+        says = key != "wrap_overlap"  # the overlapped wrap's record names the frames it made, not whether it made one
+        applied = done.get("applied") if says else None
+        if says and type(applied) is not bool:
+            raise ValueError(f"its report does not say whether {step} changed a frame of its cut ({key}.applied)")
+        if applied is False and field not in done:
+            continue  # what video-loop writes of the step where it did not run
+        frames = done.get(field)
         if not isinstance(frames, list) or any(type(f) is not int for f in frames):
-            raise ValueError(f"its report does not name the frames of its cut it changed as whole frames ({key})")
+            raise ValueError(f"its report does not name the frames of its cut it changed as whole frames ({key}.{field})")
+        if says and applied != bool(frames):
+            raise ValueError(f"its report says {step} changed {'a frame' if applied else 'no frame'} of its cut "
+                             f"({key}.applied) and names {'none' if applied else 'frames it changed'} ({key}.{field})")
         if k in frames:
-            raise ValueError(f"its cell {cell} is frame {k} of its cut, {how} ({key})")
+            raise ValueError(f"its cell {cell} is frame {k} of its cut, {how} ({key}.{field})")
+
+
+def _always_written(strip: dict[str, Any], key: str, step: str) -> str | None:
+    """The cuts video-loop writes its record of a step (`key`) of in their report whatever the step did, where the cut the
+    report's strip is (`strip`) is one of them (`run_loop`): every cut at --anchor motion-auto and every walk or run cut it
+    is given (--cycle fixed), for the size hold; every pinned cut, for the wrap blend. None where the cut is not, and for
+    the steps video-loop writes only where they ran or were asked (the gait fallback, the overlapped wrap). A ValueError
+    where the strip does not say what tells (its anchor, its kind, the state given)."""
+
+    def cut_as(field: str) -> str | None:
+        value = strip.get(field)
+        if not isinstance(value, str) and not (field == "state" and value is None):  # a cut given no state names none
+            raise ValueError(f"its report holds no record of {step} ({key}), and its strip does not say how its cut was cut, "
+                             f"which tells whether video-loop writes one of it (strip.{field})")
+        return value
+
+    if key == "wrap_blend":
+        return "every pinned cut" if cut_as("kind") == "pinned" else None
+    if key != "size_hold":
+        return None
+    if cut_as("foot_anchor") == "motion-auto":
+        return "every cut at --anchor motion-auto"
+    state = cut_as("kind") == "fixed" and cut_as("state")
+    return f"every {state} cut it is given (--cycle fixed)" if state and loop_mod.profile_for(state).gait else None
 
 
 def anchor_move(record: dict[str, Any], cell: int) -> tuple[int, int]:

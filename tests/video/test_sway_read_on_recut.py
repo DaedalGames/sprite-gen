@@ -11,9 +11,12 @@ does not give where its anchor moved the frame and a loop aligned from its cut a
 leave the loop as it was. So is a frame that is not in its cut as filmed, or that nothing says is: the strip's record says
 nothing of the size hold, the gait fallback or RIFE, the report video-loop wrote beside it does, so a cut with no report
 of its own beside its strip, a cut held to one size, and a frame RIFE made again, gave way or blended at the wrap are
-refused too. Synthetic figures only: the read-on test's runner, cut from a clip of two strides at two starts and two
-crops, by hand or by video-loop, each with the report video-loop writes beside it; and the walk away from the camera of
-the gait fallback's tests, cut by video-loop as a walk.
+refused too, and so is a report that does not say what a step did as video-loop writes it: a step's record, or a field
+of one, missing or not of its kind, a step's record missing where video-loop writes it whether the step ran or not (the
+size hold of a walk cut), and an `applied` the frames it names do not bear out. What video-loop writes of a step that
+did not run leaves the frame paired. Synthetic figures only: the read-on test's runner, cut from a clip of two strides
+at two starts and two crops, by hand or by video-loop, each with the report video-loop writes beside it; and the walk
+away from the camera of the gait fallback's tests, cut by video-loop as a walk.
 
 Each case first reads what a sway writes with the new key (its cells, its record, whether it refuses and what it says),
 so on a release without it the same input fails on what comes out.
@@ -77,14 +80,20 @@ def cut_of(path, start, rect, *, source='clip-a', record=True, name='run', ancho
     return path
 
 
+GONE = object()  # what a report does not hold (`report_beside`)
+
+
 def report_beside(loop_dir, name='run', **steps):
     """The report video-loop writes beside a loop's strip (`<name>.loop.report.json`), passed, of the cut its record names
-    (its strip's record, and its cut: `cycle`): the size hold and the jump repair off, and each of `steps` as given."""
+    (its strip's record, and its cut: `cycle`): the size hold and the jump repair off, and each of `steps` as given (GONE:
+    not in it; `strip`: what its strip says of the cut in place of its record's, GONE where it says nothing)."""
     meta = json.loads((loop_dir/f'{name}.strip.json').read_text())
+    strip = {'path': str(loop_dir/f'{name}.strip.png'), **meta} | steps.pop('strip', {})
     report = {'kind': 'sprite-gen-video-loop-report', 'status': 'passed', 'fps': FPS,
               'cycle': {key: meta['cycle_drawings'][key] for key in ('start', 'length')},
               'size_hold': {'applied': False, 'why': '--size-hold off'}, 'jump_repair': {'applied': False, 'why': '--repair off'},
-              'strip': {'path': str(loop_dir/f'{name}.strip.png'), **meta}} | steps
+              'strip': {key: said for key, said in strip.items() if said is not GONE}} | steps
+    report = {key: said for key, said in report.items() if said is not GONE}
     (loop_dir/f'{name}.loop.report.json').write_text(json.dumps(report, indent=2)+'\n')
     return loop_dir
 
@@ -495,6 +504,116 @@ def test_a_frame_the_report_says_video_loop_changed_is_refused_no_match_saying_w
     assert files(loop_dir) == before
 
 
+# The refusal's words where a report does not say what a step did as video-loop writes it (`sway.as_filmed`)
+NOT_ONE = r"its report does not say what the {} did to its frames: its record of it is not one \({}\)"
+NOT_HELD = r"its report does not say whether the {} held its frames to one size \({}\.{}\)"
+NOT_CHANGED = r"its report does not say whether the {} changed a frame of its cut \({}\.applied\)"
+NOT_WHOLE = r"its report does not name the frames of its cut it changed as whole frames \({}\.{}\)"
+NOT_THERE = r"its report holds no record of the {} \({}\), which video-loop writes of every {}, whether it ran or not"
+NOT_TOLD = (r"its report holds no record of the {} \({}\), and its strip does not say how its cut was cut, which tells "
+            r"whether video-loop writes one of it \(strip\.{}\)")
+NAMES = r"its report says the {} changed {} of its cut \({}\.applied\) and names {} \({}\.{}\)"
+WALK = {'kind': 'fixed', 'state': 'walk'}  # a walk cut it is given (--cycle fixed), as the report's strip says it
+
+UNSAID = {  # what a report says of a step of video-loop, on the cut the regions were read on or on this loop's, in place
+    # of off (GONE: nothing; `strip`: how its strip says the cut was cut), not as video-loop writes it; the refusal's words
+    'hold-applied-gone': ('read-on-cut', {'size_hold': {'why': '--size-hold off'}},
+                          NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'hold-applied-null': ('this-loop', {'size_hold': {'applied': None}}, NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'hold-applied-zero': ('read-on-cut', {'size_hold': {'applied': 0}}, NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'hold-applied-text': ('this-loop', {'size_hold': {'applied': 'false'}},
+                          NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'hold-null': ('read-on-cut', {'size_hold': None}, NOT_ONE.format('size hold', 'size_hold')),
+    'hold-list': ('this-loop', {'size_hold': []}, NOT_ONE.format('size hold', 'size_hold')),
+    'hold-text': ('read-on-cut', {'size_hold': 'held'}, NOT_ONE.format('size hold', 'size_hold')),
+    'hold-gone-walk': ('this-loop', {'size_hold': GONE, 'strip': WALK},
+                       NOT_THERE.format('size hold', 'size_hold', r'walk cut it is given \(--cycle fixed\)')),
+    'hold-gone-motion-auto': ('read-on-cut', {'size_hold': GONE, 'strip': {'foot_anchor': 'motion-auto'}},
+                              NOT_THERE.format('size hold', 'size_hold', 'cut at --anchor motion-auto')),
+    'hold-gone-anchor-untold': ('this-loop', {'size_hold': GONE, 'strip': {'foot_anchor': GONE}},
+                                NOT_TOLD.format('size hold', 'size_hold', 'foot_anchor')),
+    'hold-gone-state-not-text': ('read-on-cut', {'size_hold': GONE, 'strip': {'kind': 'fixed', 'state': 5}},
+                                 NOT_TOLD.format('size hold', 'size_hold', 'state')),
+    'fallback-undone-gone': ('this-loop', {'gait_fallback': {'scale_drift_min': 0.05}},
+                             NOT_HELD.format('gait fallback', 'gait_fallback', 'scale_undone')),
+    'fallback-undone-null': ('read-on-cut', {'gait_fallback': {'scale_undone': None}},
+                             NOT_HELD.format('gait fallback', 'gait_fallback', 'scale_undone')),
+    'fallback-undone-zero': ('this-loop', {'gait_fallback': {'scale_undone': 0}},
+                             NOT_HELD.format('gait fallback', 'gait_fallback', 'scale_undone')),
+    'fallback-null': ('read-on-cut', {'gait_fallback': None}, NOT_ONE.format('gait fallback', 'gait_fallback')),
+    'fallback-text': ('this-loop', {'gait_fallback': 'scaled'}, NOT_ONE.format('gait fallback', 'gait_fallback')),
+    'repair-replaced-gone': ('read-on-cut', {'jump_repair': {'applied': True}}, NOT_WHOLE.format('jump_repair', 'replaced')),
+    'repair-empty': ('this-loop', {'jump_repair': {}}, NOT_CHANGED.format('jump repair', 'jump_repair')),
+    'repair-applied-null': ('read-on-cut', {'jump_repair': {'applied': None}},
+                            NOT_CHANGED.format('jump repair', 'jump_repair')),
+    'repair-off-applied-gone': ('this-loop', {'jump_repair': {'why': '--repair off'}},
+                                NOT_CHANGED.format('jump repair', 'jump_repair')),
+    'bridge-replaced-gone': ('read-on-cut', {'jump_repair': {'applied': True, 'reading': 'seam'}},
+                             NOT_WHOLE.format('jump_repair', 'replaced')),
+    'repair-names-none': ('this-loop', {'jump_repair': {'applied': True, 'replaced': []}},
+                          NAMES.format('jump repair', 'a frame', 'jump_repair', 'none', 'jump_repair', 'replaced')),
+    'repair-off-names-one': ('read-on-cut', {'jump_repair': {'applied': False, 'replaced': [5]}},
+                             NAMES.format('jump repair', 'no frame', 'jump_repair', 'frames it changed', 'jump_repair',
+                                          'replaced')),
+    'overlap-frames-gone': ('this-loop', {'wrap_overlap': {'seam': 3.1}}, NOT_WHOLE.format('wrap_overlap', 'frames')),
+    'overlap-null': ('read-on-cut', {'wrap_overlap': None}, NOT_ONE.format('overlapped wrap', 'wrap_overlap')),
+    'overlap-list': ('this-loop', {'wrap_overlap': []}, NOT_ONE.format('overlapped wrap', 'wrap_overlap')),
+    'overlap-text': ('read-on-cut', {'wrap_overlap': 'made'}, NOT_ONE.format('overlapped wrap', 'wrap_overlap')),
+    'blend-cells-gone': ('this-loop', {'wrap_blend': {'applied': True, 'K': 3}}, NOT_WHOLE.format('wrap_blend', 'cells')),
+    'blend-applied-gone': ('read-on-cut', {'wrap_blend': {'K': 3}}, NOT_CHANGED.format('wrap blend', 'wrap_blend')),
+    'blend-null': ('this-loop', {'wrap_blend': None}, NOT_ONE.format('wrap blend', 'wrap_blend')),
+    'blend-text': ('read-on-cut', {'wrap_blend': 'blended'}, NOT_ONE.format('wrap blend', 'wrap_blend')),
+    'blend-names-none': ('this-loop', {'wrap_blend': {'applied': True, 'K': 3, 'cells': []}},
+                         NAMES.format('wrap blend', 'a frame', 'wrap_blend', 'none', 'wrap_blend', 'cells')),
+    'blend-gone-pinned': ('read-on-cut', {'strip': {'kind': 'pinned'}},
+                          NOT_THERE.format('wrap blend', 'wrap_blend', 'pinned cut')),
+    'blend-gone-kind-untold': ('this-loop', {'strip': {'kind': GONE}}, NOT_TOLD.format('wrap blend', 'wrap_blend', 'kind'))}
+
+
+@pytest.mark.parametrize('case', list(UNSAID))
+def test_a_report_that_does_not_say_what_a_step_did_as_video_loop_writes_it_is_refused_no_match_naming_it(tmp_path, case):
+    # The frames are as filmed; the report does not say they are, as video-loop says it: a step's record, or a field of
+    # one, missing or not of its kind; a step's record missing where video-loop writes one whether the step ran or not, or
+    # where the strip does not say how the cut was cut; an `applied` the frames it names do not bear out. Not read as off.
+    side, steps, said = UNSAID[case]
+    tight = bbox(clip())
+    read = cut_of(tmp_path/'read', 4, tight, report=steps if side == 'read-on-cut' else None)
+    loop_dir = cut_of(tmp_path/'b', 1, (tight[0]-3, tight[1]-2, tight[2]+2, tight[3]+1),
+                      report=steps if side == 'this-loop' else None)
+    region, kw = read_on(read)
+    before = files(loop_dir)
+    with pytest.raises(SystemExit, match=rf"no-match — the regions were read on another cut, whose cell 0 is source frame 4 "
+                                         rf"\(this loop's cut's cell 3\), but {WHOSE[side]} records do not give that frame "
+                                         rf"as filmed: {said}; locate them again on this strip$"):
+        sway.sway_loop(loop_dir, [region], **kw)
+    assert files(loop_dir) == before
+
+
+NOT_RUN = {  # what video-loop writes of a step that did not run, in both cuts' reports in place of off (GONE: nothing;
+    # `strip`: how its strip says the cut was cut)
+    'as-written': {},
+    'hold-off-walk': {'strip': WALK},
+    'hold-gone-idle': {'size_hold': GONE, 'strip': {'kind': 'fixed', 'state': 'idle'}},
+    'hold-gone-given-no-state': {'size_hold': GONE, 'strip': {'kind': 'fixed'}},
+    'fallback-not-undone': {'gait_fallback': {'scale_undone': False}},
+    'repair-replaced-none-motion-auto': {'jump_repair': {'applied': False, 'replaced': [], 'reading': 'flow'},
+                                         'strip': {'foot_anchor': 'motion-auto'}},
+    'bridge-replaced-none': {'jump_repair': {'applied': False, 'reading': 'seam', 'replaced': []}},
+    'overlap-skipped': {'wrap_overlap': {'frames': [], 'skipped': '--overlap-wrap off'}},
+    'blend-off-pinned': {'wrap_blend': {'applied': False, 'why': '--wrap-blend off'}, 'strip': {'kind': 'pinned'}},
+    'blend-kept-pinned': {'wrap_blend': {'applied': False, 'K': 3, 'cells': []}, 'strip': {'kind': 'pinned'}}}
+
+
+@pytest.mark.parametrize('case', list(NOT_RUN))
+def test_a_step_its_report_says_did_not_run_as_video_loop_writes_it_leaves_the_frame_paired(tmp_path, case):
+    tight = bbox(clip())
+    a = cut_of(tmp_path/'a', 4, tight, report=NOT_RUN[case])
+    b = cut_of(tmp_path/'b', 1, (tight[0]-3, tight[1]-2, tight[2]+2, tight[3]+1), report=NOT_RUN[case])
+    _, _, answer = read_on_cut(a, b)
+    assert (answer.read_on['relation'], answer.read_on['cut_cell'], answer.read_on['shift_px']) == ('recut', 3, [3, 2])
+    assert patch_in(b, 3).sum() > 100 and np.array_equal(answer.mask.worn[0], patch_in(b, 3))
+
+
 WALK_TORSO = (20, 90, 180)  # the walker's torso (tests/video/test_gait_fallback.py)
 
 
@@ -548,5 +667,44 @@ def test_a_walk_cut_the_size_hold_held_to_one_size_is_refused_no_match(walk_cuts
                                          r"frame as filmed: the size hold held its frames to one size, scaled about their "
                                          r"feet, before it was cut \(size_hold\): its crop is not on the frame as filmed, and "
                                          r"no whole px shift undoes a scale; locate them again on this strip$"):
+        sway.sway_loop(b, [region], **kw)
+    assert files(b) == before
+
+
+UNSAID_HOLDS = {  # a walk cut the size hold held to one size, its report changed so that it no longer says so: whose
+    # report it is (the other cut as filmed), what is taken out of it, and the refusal's words
+    'read-on-cut-applied-gone': ('read-on-cut', 'applied', NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'read-on-cut-record-gone': ('read-on-cut', 'record',
+                                NOT_THERE.format('size hold', 'size_hold', r'walk cut it is given \(--cycle fixed\)')),
+    'this-loop-applied-gone': ('this-loop', 'applied', NOT_HELD.format('size hold', 'size_hold', 'applied')),
+    'this-loop-record-gone': ('this-loop', 'record',
+                              NOT_THERE.format('size hold', 'size_hold', r'walk cut it is given \(--cycle fixed\)'))}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('case', list(UNSAID_HOLDS))
+def test_a_held_walk_cut_whose_report_no_longer_says_it_was_held_is_refused_no_match(walk_cuts, tmp_path, case):
+    # Frame 24 is the first cut's cell 0 and the second's cell 4, held to one size in one cut and as filmed in the other:
+    # its torso is not the same size in the two, and no whole px shift carries the one onto the other. video-loop writes
+    # the size hold's record of every walk cut it is given, held or not: a report with no record of it, or one that does
+    # not say whether it held, does not give the frame as filmed, and is not read as a cut as filmed.
+    side, taken, said = UNSAID_HOLDS[case]
+    read_hold, loop_hold = ('auto', 'off') if side == 'read-on-cut' else ('off', 'auto')
+    a, b = copy(walk_cuts[24, read_hold], tmp_path/'a'), copy(walk_cuts[20, loop_hold], tmp_path/'b')
+    path = (a if side == 'read-on-cut' else b)/'run.loop.report.json'
+    report = json.loads(path.read_text())
+    assert report['size_hold']['applied'] is True and (report['strip']['kind'], report['strip']['state']) == ('fixed', 'walk')
+    if taken == 'applied':
+        del report['size_hold']['applied']
+    else:
+        del report['size_hold']
+    path.write_text(json.dumps(report, indent=2)+'\n')
+    drawn = torso_in(a, 0)
+    assert drawn.sum() > 100 and drawn.sum() != torso_in(b, 4).sum()
+    region, kw = read_on(a, drawn)
+    before = files(b)
+    with pytest.raises(SystemExit, match=rf"no-match — the regions were read on another cut, whose cell 0 is source frame 24 "
+                                         rf"\(this loop's cut's cell 4\), but {WHOSE[side]} records do not give that frame "
+                                         rf"as filmed: {said}; locate them again on this strip$"):
         sway.sway_loop(b, [region], **kw)
     assert files(b) == before
