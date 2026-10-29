@@ -3,7 +3,8 @@
 // 로드 순서 SSoT = index.html (classic script 전역 어휘 공유; 빌드 스텝 없음)
 //
 // 호흡은 프레임 선택(깜빡임)과 직교하는 변조 레이어다 (maintainer 확정 2026-07-18).
-// truth = entries[state].breathe = {depth, breaths, lag, rigid_row, anatomy} | null.
+// truth = entries[state].breathe = {depth, breaths, lag, rigid_row, anatomy} | null — 숨의 크기는 세기(depth·depth_x)
+// 대신 가로·세로 최소·최대(width_min·width_max·height_min·height_max)로 적을 수도 있다 (둘을 같이 쓰면 굽기가 거부).
 // `mode: "smooth"` 줄은 미러하지 않는다 — breatheComposite 가 거부한다 (아래).
 //
 // **검출은 여기서 하지 않는다** (maintainer 결정 2026-07-25 b안). 목 병목·대칭 눈쌍·부속
@@ -23,6 +24,11 @@ const BREATHE_MAX_ROW_STRAIN = 0.25;
 const BREATHE_DEPTH_MAX = 0.20;
 const BREATHE_BREATHS_MAX = 8;
 const BREATHE_LAG_MAX = 0.45;
+// 숨 곡선의 꼭대기와 최소·최대 키 — 파이썬 breathe.WAVE_PEAK·curation.BREATHE_RANGE_KEYS·BREATHE_RANGE_MAX 미러.
+// 꼭대기는 식으로 풀지 않고 같은 수를 적는다 (Math.acos 와 libm 이 끝자리에서 갈릴 수 있다).
+const BREATHE_WAVE_PEAK = 0.9008738286182177;
+const BREATHE_RANGE_KEYS = ["width_min", "width_max", "height_min", "height_max"];
+const BREATHE_RANGE_MAX = 0.20;
 // 그림 자체의 테두리 — 파이썬 frames.extract.FRAME_SIDES·BORDER_MIN_FRACTION 미러 (거절 문구가 쓴다).
 const BREATHE_SIDES = ["top", "left", "right"];
 const BREATHE_SIDE_NAMES = { top: "위", left: "왼쪽", right: "오른쪽" };
@@ -82,6 +88,59 @@ function breatheEnvelope(anat) {
   for (let j = 0; j < height; j++) total += env(j / Math.max(1, height - 1));
   const basisRows = Math.max(1, height - anat.basis_row);
   return { env, ru, norm: total > 1e-6 ? basisRows / total : 0 };
+}
+
+// 봉투의 가장 큰 값 (파이썬 envelope_peak 미러).
+function breatheEnvelopePeak(anat, env) {
+  let peak = 0;
+  for (let j = 0; j < anat.height; j++) peak = Math.max(peak, env(j / Math.max(1, anat.height - 1)));
+  return peak;
+}
+
+// 줄이 최소·최대 키로 적혔나 — 하나라도 있으면 (null 은 생략). 적지 않은 경계는 0 (파이썬 state_breathe 와 같다).
+function breatheHasBounds(cfg) {
+  return !!cfg && BREATHE_RANGE_KEYS.some((k) => cfg[k] != null);
+}
+
+function breatheBounds(cfg) {
+  if (!breatheHasBounds(cfg)) return null;
+  const v = (k) => (cfg[k] == null ? 0 : Number(cfg[k]));
+  return { width: [v("width_min"), v("width_max")], height: [v("height_min"), v("height_max")] };
+}
+
+// pixel 봉투의 이득 계수 [[세로 B, A], [가로 B, A]] — 행·위상의 이득은 (B + A·wave)·env (파이썬 pixel_gains 미러,
+// 같은 연산 순서). 세기 줄은 [0, d·norm] 이라 옛 식 d·norm·wave·env 와 같은 바이트다.
+function breatheGains(anat, cfg) {
+  const { env, norm } = breatheEnvelope(anat);
+  const bounds = breatheBounds(cfg);
+  if (!bounds) {
+    const depth = cfg.depth || 0.06;
+    const depthX = cfg.depth_x == null ? depth : Number(cfg.depth_x);
+    return [[0, depth * norm], [0, depthX * norm]];
+  }
+  const [wLo, wHi] = bounds.width;
+  const [hLo, hHi] = bounds.height;
+  const peak = breatheEnvelopePeak(anat, env);
+  const across = peak <= 0 ? [0, 0]
+    : [(wLo + wHi) / (2.0 * peak), (wHi - wLo) / (2.0 * BREATHE_WAVE_PEAK * peak)];
+  return [[-norm * (hLo + hHi) / 2.0, norm * (hHi - hLo) / (2.0 * BREATHE_WAVE_PEAK)], across];
+}
+
+// 줄의 숨이 오가는 {width: [최소, 최대], height: [최소, 최대]} — 최소·최대 키의 단위 (파이썬 breathe_range 미러).
+// 세기만 적힌 줄을 편집기가 네 손잡이로 보여 줄 때 읽는다. pixel 세기 줄의 가로는 해부가 있어야 안다 (없으면 null).
+function breatheRange(anat, cfg) {
+  const bounds = breatheBounds(cfg);
+  if (bounds) return bounds;
+  if (cfg.mode === "smooth") {
+    return { width: [0, cfg.depth_x == null ? 0.028 : Number(cfg.depth_x)],
+             height: [0, cfg.depth == null ? 0.0085 : Number(cfg.depth)] };
+  }
+  if (!anat) return null;
+  const { env, norm } = breatheEnvelope(anat);
+  const depth = cfg.depth || 0.06;
+  const across = (cfg.depth_x == null ? depth : Number(cfg.depth_x)) * BREATHE_WAVE_PEAK * norm
+    * breatheEnvelopePeak(anat, env);
+  return { width: [-across, across], height: [-depth * BREATHE_WAVE_PEAK, depth * BREATHE_WAVE_PEAK] };
 }
 
 // 부속 보호 가중 — 1 이면 그 열은 가로로 안 늘어난다 (밀리기만 한다).
@@ -192,14 +251,14 @@ function breatheClipWording(off, data, w, h) {
   const where = BREATHE_SIDES.filter((s) => off[s]).map((s) => `${BREATHE_SIDE_NAMES[s]} 변 밖 ${off[s]}`).join(", ");
   const border = breatheOwnBorder(data, w, h);
   const crossed = BREATHE_SIDES.filter((s) => off[s] && border.sides.includes(s));
-  if (!crossed.length) return { where, advice: "셀 여백을 늘리거나 depth 를 낮춰라." };
+  if (!crossed.length) return { where, advice: "셀 여백을 늘리거나 숨의 크기(depth, 또는 최소·최대)를 줄여라." };
   const covers = crossed.map((s) => `${BREATHE_SIDE_NAMES[s]} 변 바깥 줄 ${border.outer[s]} px`).join(", ");
   return {
     where,
     advice: `그림이 ${covers} 를 덮는다 — 그 변 길이의 ${BREATHE_BORDER_MIN_FRACTION * 100} % 이상이라 그림 자체의 테두리로 `
       + "읽힌다. 원래 화면에 잘린 그림(큰 일러·영상 칸)이면 mode smooth(`--mode smooth`)로 구워라 — 머리와 "
       + "화면 변이 제자리에 있다. 여백을 붙여 굽고 잘라 내지 마라 — 밀려 나간 만큼 조용히 잃는다. 도트 "
-      + "스프라이트면 셀 여백을 늘리거나 depth 를 낮춰라.",
+      + "스프라이트면 셀 여백을 늘리거나 숨의 크기(depth, 또는 최소·최대)를 줄여라.",
   };
 }
 
@@ -329,30 +388,33 @@ function breatheComposite(base, cfg, phase) {
   const baseline = by1;
   const { env, ru, norm } = breatheEnvelope(anat);
   const pOf = breatheProtect(anat);
-  const depth = cfg.depth || 0.06;
-  // 가로 독립 진폭 — null/undefined 는 depth 따름(레거시 동일), 0 은 가로 항등 (파이썬 미러).
-  const depthX = cfg.depth_x == null ? depth : Number(cfg.depth_x);
-  let peak = 0;
-  for (let j = 0; j < anat.height; j++) peak = Math.max(peak, env(j / Math.max(1, anat.height - 1)));
-  for (const [axis, d] of [["depth", depth], ["depth_x", depthX]]) {
-    const strain = d * norm * peak;
+  // 축마다 이득 계수 — 세기 줄의 가로 null/undefined 는 depth 따름(레거시 동일), 0 은 가로 항등 (파이썬 미러).
+  const [down, across] = breatheGains(anat, cfg);
+  const peak = breatheEnvelopePeak(anat, env);
+  // 행당 변형 상한 — 세기 줄은 세기 그대로(극값보다 넉넉한 옛 판정), 최소·최대 줄은 극값으로 (파이썬 _row_refusals 미러).
+  const strains = breatheHasBounds(cfg)
+    ? [["height_min·height_max", down], ["width_min·width_max", across]].map(
+      ([axis, [b, a]]) => [axis, (Math.abs(b) + Math.abs(a) * BREATHE_WAVE_PEAK) * peak])
+    : [["depth", cfg.depth || 0.06], ["depth_x", cfg.depth_x == null ? cfg.depth || 0.06 : Number(cfg.depth_x)]].map(
+      ([axis, d]) => [axis, d * norm * peak]);
+  for (const [axis, strain] of strains) {
     if (strain > BREATHE_MAX_ROW_STRAIN) {
       throw new BreatheRefused(
         `행당 변형(${axis}) ${strain.toFixed(3)} > 상한 ${BREATHE_MAX_ROW_STRAIN} — 변형 구간이 너무 좁다 `
-        + `(강체 경계 ${anat.rigid_row}/${anat.height}). ${axis} 를 낮추거나 경계를 올려라.`);
+        + `(강체 경계 ${anat.rigid_row}/${anat.height}). ${axis} 를 줄이거나 경계를 올려라.`);
     }
   }
   const lag = cfg.lag == null ? 0.1 : cfg.lag;
-  const gain = (u, d) => {
+  const gain = (u, k) => {
     const e = env(u);
     if (e <= 0) return 0;
-    return d * norm * breatheWave(phase - lag * Math.min(1, u / Math.max(1e-6, ru))) * e;
+    return (k[0] + k[1] * breatheWave(phase - lag * Math.min(1, u / Math.max(1e-6, ru)))) * e;
   };
 
   const heights = [];
   let acc = 0;
   for (let j = 0; j < height; j++) {
-    const g = gain(1 - j / Math.max(1, height - 1), depth);
+    const g = gain(1 - j / Math.max(1, height - 1), down);
     acc += g === 0 ? 1 : 1 / (1 + g);
     heights.push(acc);
   }
@@ -371,7 +433,7 @@ function breatheComposite(base, cfg, phase) {
     const reps = Math.max(0, cur - prev);
     prev = cur;
     if (reps === 0) continue;
-    const g = gain(u, depthX);               // 가로 성분 — 독립 진폭 (depth_x)
+    const g = gain(u, across);               // 가로 성분 — 독립 계수 (depth_x, width_*)
     if (reps !== 1) deformed = true;         // 행 복제/삭제 = 세로 변형이 실재
     let rowMap;
     if (g === 0) {
@@ -548,16 +610,24 @@ async function defaultBreatheConfig(stateName) {
   // 같은 런에서 사람이 이미 튜닝한 세기를 물려받는다 (사람 판단 > 기본값).
   const sibling = run.states
     .map((s) => (s.name !== stateName && entries[s.name] ? entries[s.name].breathe : null))
-    .find((b) => b && typeof b.depth === "number");
+    .find((b) => b && (typeof b.depth === "number" || breatheHasBounds(b)));
   const { anatomy, defaults } = await fetchBreatheAnatomy(stateName);
   return {
-    depth: sibling ? sibling.depth : defaults.depth,
-    depth_x: sibling && sibling.depth_x != null ? sibling.depth_x : null,
+    ...breatheSizeOf(sibling, defaults),
     breaths: sibling ? sibling.breaths : defaults.breaths,
     lag: sibling ? sibling.lag : defaults.lag,
     rigid_row: null,
     anatomy,
   };
+}
+
+// 숨의 크기 키 — 형제 줄이 최소·최대로 적혔으면 그 네 값, 세기로 적혔으면 세기, 없으면 서버 기본 세기.
+function breatheSizeOf(sibling, defaults) {
+  if (sibling && breatheHasBounds(sibling)) {
+    return Object.fromEntries(BREATHE_RANGE_KEYS.filter((k) => sibling[k] != null).map((k) => [k, sibling[k]]));
+  }
+  return { depth: sibling ? sibling.depth : defaults.depth,
+           depth_x: sibling && sibling.depth_x != null ? sibling.depth_x : null };
 }
 
 // 사이드카에서 breathe 가 켜진 채 로드됐지만 anatomy 캐시가 비어 있으면(뷰 없이

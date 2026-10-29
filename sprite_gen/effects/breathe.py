@@ -89,7 +89,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
-from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
+from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_RANGE_KEYS, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
                                         BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
 from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish, reference_frame
@@ -120,6 +120,12 @@ SHOULDER_RX = 0.45
 def wave(t: float) -> float:
     """한 호흡의 기본 파형. 2차 하모닉을 살짝 섞어 정점이 뾰족해진다(들숨의 어택)."""
     return 0.86 * math.sin(2 * math.pi * t) + 0.14 * math.sin(4 * math.pi * t)
+
+
+# `wave` 의 꼭대기 — 곡선이 홀함수라 바닥은 그 음수다. 세기 d 의 숨은 이 곡선에 d 를 곱해 바닥 -WAVE_PEAK·d 에서 꼭대기
+# +WAVE_PEAK·d 를 오가고, 최소·최대 키는 같은 곡선의 바닥과 꼭대기를 쓴 값에 놓는다. 식(wave' = 0 인 cos 2πt 가 이차식의
+# 근)으로 풀지 않고 수로 적는다 — 미러(breathe.js)가 다른 libm 으로 끝자리가 다른 값을 내지 않게.
+WAVE_PEAK = 0.9008738286182177
 
 
 def smoothstep(a: float, b: float, x: float) -> float:
@@ -172,11 +178,67 @@ def protect(anat: Anatomy):
     return lambda x: _smoothstep_array(t0, t1, np.abs(np.asarray(x) - cx))
 
 
+def envelope_peak(anat: Anatomy) -> float:
+    """봉투의 가장 큰 값 — 숨이 가장 크게 걸리는 행의 env (보통 1)."""
+    env, _ = envelope(anat)
+    return max(env(j / max(1, anat.height - 1)) for j in range(anat.height))
+
+
 def row_strain(anat: Anatomy, depth: float) -> float:
-    """행당 최대 변형 — MAX_ROW_STRAIN 초과 여부 판정용 (관측 가능하게 노출)."""
-    env, norm = envelope(anat)
-    peak = max(env(j / max(1, anat.height - 1)) for j in range(anat.height))
-    return depth * norm * peak
+    """행당 최대 변형 — MAX_ROW_STRAIN 초과 여부 판정용 (관측 가능하게 노출). 세기 줄의 판정이다: 세기 d 의 실제 극값은
+    WAVE_PEAK·d 라 이 값은 극값보다 1/WAVE_PEAK 배 넉넉하게 막는다 (그대로 둔다 — 옛 줄의 판정이 바뀌지 않게)."""
+    _, norm = envelope(anat)
+    return depth * norm * envelope_peak(anat)
+
+
+# ── 숨의 크기: 세기 또는 최소·최대 ─────────────────────────────────
+#
+# 세기(`depth`·`depth_x`)는 곡선 `wave` 에 곱하는 진폭이고, 최소·최대(`width_min`·`width_max`·`height_min`·`height_max`)는 같은
+# 곡선의 바닥과 꼭대기를 원래 크기 대비 몫으로 바로 적은 것이다. 굽기는 둘 다 축마다 이득 계수 (B, A) 로 읽어 행 u·위상 t 의
+# 이득을 g = (B + A·wave(t - lag·u'))·env(u) 로 쓴다 — 세기 줄은 B = 0, A = d·norm 이라 옛 식 d·norm·wave·env 와 같은 연산이다.
+# pixel 의 짝: 곡선 꼭대기에서 가로 최대·세로 최소(넓어질 때 낮아진다), 바닥에서 가로 최소·세로 최대.
+#   가로 몫 = 몸통 열이 가장 크게 숨쉬는 행(env 최대)에서 넓어지는 몫 = g 그 자체
+#   세로 몫 = 목 아래 몸통(기준 행 수) 대비 머리 윗선이 오르는 몫 ≈ -Σg / 기준 행 수 = -(B + A·wave)/norm
+# smooth 의 짝: 쉼(곡선 0)에서 최소, 들숨 꼭대기(곡선 1)에서 최대 — 가슴이 부풀며 오른다.
+
+def _bounds(cfg: dict) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """((가로 최소, 최대), (세로 최소, 최대)) — 줄이 최소·최대 키로 적혔으면. 정규화는 네 키를 다 싣지만, 정규화를 거치지
+    않은 설정도 적지 않은 경계를 0 으로 읽는다 (state_breathe·미러 breatheBounds 와 같다). 세기 줄은 None."""
+    if all(cfg.get(k) is None for k in BREATHE_RANGE_KEYS):
+        return None
+    value = lambda k: 0.0 if cfg.get(k) is None else float(cfg[k])
+    return ((value("width_min"), value("width_max")), (value("height_min"), value("height_max")))
+
+
+def pixel_gains(anat: Anatomy, cfg: dict) -> tuple[tuple[float, float], tuple[float, float]]:
+    """pixel 봉투의 이득 계수 ((세로 B, A), (가로 B, A)) — 행 u·위상 t 의 이득은 (B + A·wave(t - lag·u'))·env(u), 가로 배율
+    1 + g, 세로 배율 1 / (1 + g). 세기 줄은 (0, d·norm) 이라 옛 굽기와 같은 연산이고, 최소·최대 줄은 곡선의 꼭대기
+    (wave = WAVE_PEAK)와 바닥(-WAVE_PEAK)에서 쓴 값이 나오게 둔다."""
+    _, norm = envelope(anat)
+    bounds = _bounds(cfg)
+    if bounds is None:
+        depth, depth_x = _pixel_depths(cfg)
+        return (0.0, depth * norm), (0.0, (depth if depth_x is None else depth_x) * norm)
+    (w_lo, w_hi), (h_lo, h_hi) = bounds
+    peak = envelope_peak(anat)
+    across = (0.0, 0.0) if peak <= 0.0 else ((w_lo + w_hi) / (2.0 * peak), (w_hi - w_lo) / (2.0 * WAVE_PEAK * peak))
+    return (-norm * (h_lo + h_hi) / 2.0, norm * (h_hi - h_lo) / (2.0 * WAVE_PEAK)), across
+
+
+def breathe_range(anat: Anatomy, cfg: dict) -> dict[str, tuple[float, float]]:
+    """줄의 숨이 오가는 가로·세로 (최소, 최대) — 최소·최대 키의 단위로. 최소·최대 줄은 쓴 값 그대로, 세기 줄은 그 세기의
+    극값이다 (pixel: 세로 ∓WAVE_PEAK·depth, 가로 ∓WAVE_PEAK·depth_x·norm·봉투 최대; smooth: 쉼 0 에서 depth·depth_x).
+    `sprite-gen breathe` 가 breathe.json `range` 에 싣는다 — 세기로 구운 판을 최소·최대로 옮길 때 읽는 수다."""
+    bounds = _bounds(cfg)
+    if bounds is not None:
+        return {"width": bounds[0], "height": bounds[1]}
+    if breathe_mode(cfg) == "smooth":
+        depth, swell = _smooth_depths(cfg)
+        return {"width": (0.0, swell), "height": (0.0, depth)}
+    _, norm = envelope(anat)
+    depth, depth_x = _pixel_depths(cfg)
+    across = (depth if depth_x is None else depth_x) * WAVE_PEAK * norm * envelope_peak(anat)
+    return {"width": (-across, across), "height": (-depth * WAVE_PEAK, depth * WAVE_PEAK)}
 
 
 # ── 외곽선 1px 다듬기 ───────────────────────────────────────────────
@@ -314,8 +376,8 @@ def _thin_outline_pass(rgba: np.ndarray) -> int:
 
 # ── 워프 ────────────────────────────────────────────────────────────
 
-def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
-          depth_x: float | None = None) -> Image.Image:
+def _warp(frame: Image.Image, anat: Anatomy, lag: float, t: float,
+          gains: tuple[tuple[float, float], tuple[float, float]]) -> Image.Image:
     """한 위상 t 의 프레임 — 캔버스 크기 불변, 발바닥 고정.
 
     세로는 행 국소 배율을 누적해 각 원본 행이 출력에서 몇 행을 차지하는지 정하고,
@@ -323,9 +385,9 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
     연산이라 출력이 정수 도트다. 한 행의 사상은 배열 하나로 만든다 — 밀도 누적합은 차례대로
     더하고(`np.cumsum`), 출력 열마다의 원본 열은 축 기준 경계를 넘은 개수다(`searchsorted`).
 
-    `depth_x` 는 가로 성분의 독립 진폭이다 (maintainer 요청 2026-07-30 — 가로/세로 분리).
-    None 이면 depth 를 따른다(레거시와 바이트 동일), 0 이면 가로 사상이 전 위상
-    항등이다. 파형·봉투·지연은 두 축이 공유한다 — 축마다 다른 건 스칼라뿐이다."""
+    `gains` 는 축마다 이득 계수 ((세로 B, A), (가로 B, A)) — `pixel_gains`. 가로 성분은 세로와 따로다 (maintainer 요청
+    2026-07-30 — 가로/세로 분리): 가로 (0, 0) 이면 가로 사상이 전 위상 항등이다. 파형·봉투·지연은 두 축이 공유한다 —
+    축마다 다른 건 계수뿐이다."""
     box = solid_alpha_bbox(frame)
     if not box:
         return frame.copy()
@@ -335,22 +397,22 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
     anchor_x = box[0] + anat.axis_x
     baseline = box[3]
 
-    env, norm = envelope(anat)
+    env, _ = envelope(anat)
     keep_cols = 1.0 - protect(anat)(np.arange(width))   # 열마다 늘어나는 몫 — 행마다 같다
     ru = anat.rigid_u
-    dx_amp = depth if depth_x is None else depth_x
+    down, across = gains
 
-    def gain(u: float, d: float) -> float:
+    def gain(u: float, k: tuple[float, float]) -> float:
         e = env(u)
         if e <= 0.0:
             return 0.0
-        return d * norm * wave(t - lag * min(1.0, u / max(1e-6, ru))) * e
+        return (k[0] + k[1] * wave(t - lag * min(1.0, u / max(1e-6, ru)))) * e
 
     # 세로 누적 — j=0 이 정수리
     heights: list[float] = []
     acc = 0.0
     for j in range(height):
-        g = gain(1.0 - j / max(1, height - 1), depth)
+        g = gain(1.0 - j / max(1, height - 1), down)
         acc += 1.0 if g == 0.0 else 1.0 / (1.0 + g)
         heights.append(acc)
     total = max(1, math.floor(acc + 0.5))
@@ -369,7 +431,7 @@ def _warp(frame: Image.Image, anat: Anatomy, depth: float, lag: float, t: float,
         prev = cur
         if reps == 0:
             continue
-        g = gain(u, dx_amp)                  # 가로 성분 — 독립 진폭 (depth_x)
+        g = gain(u, across)                  # 가로 성분 — 독립 계수 (depth_x, width_*)
         if reps != 1:
             deformed = True                  # 행 복제/삭제 = 세로 변형이 실재
         if g == 0.0:
@@ -443,12 +505,12 @@ def _clip_advice(frame: Image.Image, off: dict[str, int]) -> str:
     sides, outer = own_border(np.asarray(frame.convert("RGBA"))[..., 3] != 0)
     crossed = [s for s in FRAME_SIDES if off[s] and s in sides]
     if not crossed:
-        return "셀 여백을 늘리거나 depth 를 낮춰라."
+        return "셀 여백을 늘리거나 숨의 크기(depth, 또는 최소·최대)를 줄여라."
     covers = ", ".join(f"{SIDE_NAMES[s]} 변 바깥 줄 {outer[s]} px" for s in crossed)
     return (f"그림이 {covers} 를 덮는다 — 그 변 길이의 {BORDER_MIN_FRACTION * 100:g} % 이상이라 그림 자체의 테두리로 "
             f"읽힌다. 원래 화면에 잘린 그림(큰 일러·영상 칸)이면 mode smooth(`--mode smooth`)로 구워라 — 머리와 "
             f"화면 변이 제자리에 있다. 여백을 붙여 굽고 잘라 내지 마라 — 밀려 나간 만큼 조용히 잃는다. 도트 "
-            f"스프라이트면 셀 여백을 늘리거나 depth 를 낮춰라.")
+            f"스프라이트면 셀 여백을 늘리거나 숨의 크기(depth, 또는 최소·최대)를 줄여라.")
 
 
 # ── smooth 모드 (큰 일러·영상 프레임) ───────────────────────────────
@@ -573,9 +635,27 @@ def flat_cos2(r: np.ndarray, flat: float = 0.0) -> np.ndarray:
 
 
 def smooth_lift(anat: Anatomy, cfg: dict) -> float:
-    """smooth 의 가슴이 들숨 꼭대기에서 오르는 px — depth × 기준 높이. Sway 레이어가 숨 박자를 받을 때(`video-sway
-    --breathe`) 같은 식으로 그 크기를 읽는다."""
-    return float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH) * anat.basis_rows
+    """smooth 의 가슴이 쉼에서 들숨 꼭대기까지 오르는 px — depth × 기준 높이 (최소·최대 줄은 (height_max - height_min) ×
+    기준 높이). Sway 레이어가 숨 박자를 받을 때(`video-sway --breathe`)와 박자 고르기(`--avoid-region`)가 같은 식으로 그
+    크기를 읽는다 — 둘 다 쉼에서 움직인 만큼을 본다."""
+    return _smooth_amounts(anat, cfg)[1]
+
+
+def _smooth_depths(cfg: dict) -> tuple[float, float]:
+    """smooth 세기 줄의 (depth, depth_x) — 생략은 기본값."""
+    return (float(cfg.get("depth") if cfg.get("depth") is not None else DEFAULT_SMOOTH_DEPTH),
+            float(cfg.get("depth_x") if cfg.get("depth_x") is not None else DEFAULT_SMOOTH_DEPTH_X))
+
+
+def _smooth_amounts(anat: Anatomy, cfg: dict) -> tuple[float, float, float, float]:
+    """smooth 의 (쉼의 오름 px, 쉼에서 꼭대기까지 오름 px, 쉼의 부풂, 쉼에서 꼭대기까지 부풂) — 곡선 c 에서 가슴은
+    쉼 + c × 폭만큼 오르고 부푼다. 세기 줄은 쉼이 0 이고 폭이 depth × 기준 높이·depth_x 다 (위상 0 이 원본 바이트)."""
+    bounds = _bounds(cfg)
+    if bounds is None:
+        depth, swell = _smooth_depths(cfg)
+        return 0.0, depth * anat.basis_rows, 0.0, swell
+    (w_lo, w_hi), (h_lo, h_hi) = bounds
+    return h_lo * anat.basis_rows, (h_hi - h_lo) * anat.basis_rows, w_lo, w_hi - w_lo
 
 
 def _smoothstep_array(a: float, b: float, x: np.ndarray) -> np.ndarray:
@@ -614,16 +694,20 @@ def smooth_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray,
     across = np.minimum(1.0, np.abs(np.abs(x - axis) - SHOULDER_X * torso) / (SHOULDER_RX * torso))
     down = np.minimum(1.0, np.abs(y - smooth_shoulder_row(anat)) / (1.4 * band))   # 양 어깨 높이가 달라도
     w_shoulder = np.cos(0.5 * np.pi * down) ** 2 * np.cos(0.5 * np.pi * across) ** 2
-    lift = smooth_lift(anat, cfg)
-    swell = float(cfg.get("depth_x") if cfg.get("depth_x") is not None else DEFAULT_SMOOTH_DEPTH_X)
-    # 어깨가 켜지는 구간은 오르는 양의 8배 이상 — 더 짧으면 그 사이가 행당 상한 넘게 눌린다.
-    quick = max(0.15 * band, 8.0 * shape["shoulder"] * lift)
+    rest, lift, rest_swell, swell = _smooth_amounts(anat, cfg)
+    # 어깨가 켜지는 구간은 오르는 양(쉼과 꼭대기 중 큰 쪽)의 8배 이상 — 더 짧으면 그 사이가 행당 상한 넘게 눌린다.
+    quick = max(0.15 * band, 8.0 * shape["shoulder"] * (lift if rest == 0.0 else max(abs(rest), abs(rest + lift))))
     u = np.clip((y - top) / (quick + (band - quick) * neckness), 0.0, 1.0) if band > quick else \
         np.clip((y - top) / quick, 0.0, 1.0)
     guard = u * u * (3.0 - 2.0 * u) * (1.0 - _smoothstep_array(height - 0.5 * band, height, y))
     rise = lift * (chest * w_chest * math.cos(heading) + shape["shoulder"] * shoulders * w_shoulder * (1.0 - w_chest))
     forward = lift * chest * w_chest * math.sin(heading)
     puff = swell * chest * w_chest
+    if rest != 0.0 or rest_swell != 0.0:
+        # 최소가 0 이 아닌 줄 — 쉼(곡선 0)에서도 가슴과 어깨가 그만큼 올라(내려) 있고 부풀어(줄어) 있다.
+        rise = rise + rest * (w_chest * math.cos(heading) + shape["shoulder"] * w_shoulder * (1.0 - w_chest))
+        forward = forward + rest * w_chest * math.sin(heading)
+        puff = puff + rest_swell * w_chest
     return (puff * (x - px) + forward) * guard, (puff * (y - py) - rise) * guard
 
 
@@ -636,7 +720,19 @@ def smooth_strain(anat: Anatomy, cfg: dict) -> tuple[float, float]:
     grid = _content_grid(anat)
     if grid is None:
         return 0.0, 1.0
-    return _strain(*smooth_displacement(anat, cfg, *grid, 1.0, 1.0))
+    return _worst(_strain(*smooth_displacement(anat, cfg, *grid, c, c)) for c in _smooth_ends(anat, cfg))
+
+
+def _smooth_ends(anat: Anatomy, cfg: dict) -> tuple[float, ...]:
+    """변형을 잴 곡선 값 — 들숨 꼭대기(1), 최소가 0 이 아닌 줄은 쉼(0)도. 장은 곡선에 대해 일차라 두 끝 밖에서 더 크지 않다."""
+    rest, _, rest_swell, _ = _smooth_amounts(anat, cfg)
+    return (1.0,) if rest == 0.0 and rest_swell == 0.0 else (0.0, 1.0)
+
+
+def _worst(strains) -> tuple[float, float]:
+    """(행당 최대 변형, 최소 면적비) 여럿 중 가장 나쁜 것 — 큰 변형, 작은 면적비."""
+    found = list(strains)
+    return max(s for s, _ in found), min(a for _, a in found)
 
 
 def _content_grid(anat: Anatomy) -> tuple[np.ndarray, np.ndarray] | None:
@@ -712,8 +808,9 @@ def _smooth_warp(frame: Image.Image, anat: Anatomy, cfg: dict, t: float,
     chest = smooth_wave(t, shape["inhale"])
     shoulders = smooth_shoulder_wave(t, shape["shoulder_lag"], shape["inhale"])
     box = solid_alpha_bbox(rgba)
-    if not box or (chest == 0.0 and shoulders == 0.0):
-        return rgba                                  # 위상 0 — 원본 그대로 (바이트)
+    rest, _, rest_swell, _ = _smooth_amounts(anat, cfg)
+    if not box or (chest == 0.0 and shoulders == 0.0 and rest == 0.0 and rest_swell == 0.0):
+        return rgba                                  # 위상 0 — 원본 그대로 (바이트; 최소가 0 인 줄)
     if anat.origin is not None:
         # 줄의 기준 칸에서 잰 자리 — 해부가 한 벌이듯 경계·축·발바닥의 자리도 한 벌이다.
         # 영상 루프는 머리 윗선이 칸마다 흔들려, 칸마다 다시 놓으면 경계 위 행이 움직인다.
@@ -786,12 +883,14 @@ def _smooth_refusals(cfg: dict, anat: Anatomy, pins: "Pins | None" = None) -> No
     if pins is None or grid is None:
         strain, area = smooth_strain(anat, cfg)
     else:
-        strain, area = _pinned_strain(anat, pins, *smooth_displacement(anat, cfg, *grid, 1.0, 1.0))
+        strain, area = _worst(_pinned_strain(anat, pins, *smooth_displacement(anat, cfg, *grid, c, c))
+                              for c in _smooth_ends(anat, cfg))
     if strain > MAX_ROW_STRAIN or area < 1.0 - MAX_ROW_STRAIN:
+        size = "depth·depth_x" if _bounds(cfg) is None else "height_*·width_*"
         raise SystemExit(
             f"breathe(smooth): 행당 변형 {strain:.3f}·최소 면적비 {area:.3f} — 상한 {MAX_ROW_STRAIN} 을 넘는다. "
             f"가슴·어깨가 오르는 만큼을 목 밴드와 가슴 무게가 못 받는다 (강체 경계 {anat.rigid_row}/{anat.height}, "
-            f"기준 {anat.basis_rows}행). depth·depth_x 를 낮추거나 chest_rx·chest_ry 를 넓혀라. 조용히 깎지 않는다.")
+            f"기준 {anat.basis_rows}행). {size} 를 줄이거나 chest_rx·chest_ry 를 넓혀라. 조용히 깎지 않는다.")
 
 
 def _pinned_strain(anat: Anatomy, pins: "Pins", dx: np.ndarray, dy: np.ndarray) -> tuple[float, float]:
@@ -1743,16 +1842,20 @@ def _row_refusals(cfg: dict, anat: Anatomy, pins: Pins | None = None) -> None:
     if pixel_round(cfg):
         _round_refusals(cfg, anat, pins)
         return
-    depth, depth_x = _pixel_depths(cfg)
-    for axis, d in (("depth", depth), ("depth_x", depth_x)):
-        if d is None:
-            continue
-        strain = row_strain(anat, d)
+    if _bounds(cfg) is None:
+        depth, depth_x = _pixel_depths(cfg)
+        strains = [(axis, row_strain(anat, d)) for axis, d in (("depth", depth), ("depth_x", depth_x)) if d is not None]
+    else:
+        # 최소·최대 줄은 극값 그대로 잰다 — 이득 (B ± A·WAVE_PEAK) 의 큰 쪽이 봉투 최대 행에서 걸린다.
+        peak = envelope_peak(anat)
+        strains = [(f"{axis}_min·{axis}_max", (abs(b) + abs(a) * WAVE_PEAK) * peak)
+                   for axis, (b, a) in zip(("height", "width"), pixel_gains(anat, cfg))]
+    for axis, strain in strains:
         if strain > MAX_ROW_STRAIN:
             raise SystemExit(
                 f"breathe: 행당 변형({axis}) {strain:.3f} > 상한 {MAX_ROW_STRAIN} — 변형 구간이 너무 "
                 f"좁다 (강체 경계 {anat.rigid_row}/{anat.height}, 정규화 기준 {anat.basis_row}). "
-                f"{axis} 를 낮추거나 rigid_row 를 올려라. 조용히 깎지 않는다.")
+                f"{axis} 를 줄이거나 rigid_row 를 올려라. 조용히 깎지 않는다.")
 
 
 def _bake_phase(frame: Image.Image, cfg: dict, phase: float, anat: Anatomy, pins: Pins | None = None) -> Image.Image:
@@ -1768,8 +1871,7 @@ def _bake_phase_pieces(frame: Image.Image, cfg: dict, phase: float, anat: Anatom
         return _smooth_warp(frame, anat, cfg, phase, pins), [], []
     if pixel_round(cfg):
         return _round_warp(frame, anat, cfg, phase, pins)
-    depth, depth_x = _pixel_depths(cfg)
-    return _warp(frame, anat, depth, float(cfg.get("lag", DEFAULT_LAG)), phase, depth_x=depth_x), [], []
+    return _warp(frame, anat, float(cfg.get("lag", DEFAULT_LAG)), phase, pixel_gains(anat, cfg)), [], []
 
 
 def bake_breathe_sequence(images: list[Image.Image], cfg: dict, anat: Anatomy | None = None,
@@ -1858,6 +1960,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--depth-x", type=float, default=None,
                         help=f"sideways swell (pixel: follows --depth; smooth: the chest puffs out by this share, "
                              f"default {DEFAULT_SMOOTH_DEPTH_X})")
+    size = parser.add_argument_group(
+        "the breath's size as its extremes, shares of the original (instead of --depth and --depth-x; a bound left out "
+        "is 0, the original size; pixel: wider while lower, smooth: the chest puffs as it rises)")
+    size.add_argument("--width-min", type=float, default=None,
+                      help="the narrowest the body gets, a share of its width where it breathes most (pixel: the "
+                           "torso's columns on the fullest row; smooth: the chest's swell at its peak); 0 never "
+                           "narrower than the original")
+    size.add_argument("--width-max", type=float, default=None, help="the widest, the same share (-0.2..0.2)")
+    size.add_argument("--height-min", type=float, default=None,
+                      help="the lowest, a share of the body's height below the neck (pixel: the head's top line; "
+                           "smooth: the chest), negative down")
+    size.add_argument("--height-max", type=float, default=None,
+                      help="the highest, the same share; 0 never higher than the original")
     parser.add_argument("--breaths", type=int, default=None, help="breaths per loop (default 1)")
     parser.add_argument("--lag", type=float, default=None, help=f"pixel only: travelling-wave lag (default {DEFAULT_LAG})")
     parser.add_argument("--rigid-row", type=int, default=None,
@@ -1970,7 +2085,8 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         reference: str | None = None, loop_cells: int | None = None, start_cell: int | None = None,
         chest_round: float | None = None, arms_x: float | None = None, hold_mask: str | None = None,
         props_mask: str | None = None, axis_x: int | None = None, torso_half: int | None = None,
-        props_behind_mask: str | None = None, props_groups: str | None = None) -> int:
+        props_behind_mask: str | None = None, props_groups: str | None = None, width_min: float | None = None,
+        width_max: float | None = None, height_min: float | None = None, height_max: float | None = None) -> int:
     """프레임 폴더에 Breathe 레이어를 굽는다 — 큐레이션 사이드카 `breathe` 와 같은 값, 같은 정규화,
     같은 굽기(`bake_breathe_sequence`). 영상 루프의 칸처럼 큐레이션 런이 아닌 프레임이 이 길로 온다.
 
@@ -1982,7 +2098,9 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
     꼭대기의 가로 px, 칸마다 고정 칸 밑으로 가려진 칸 수(`hidden`)와 떠난 자리로 늘어나 지어낸 칸 수(`filled`), 그 최대
     (`hidden_max`·`filled_max`)가 실리고, 가려진 칸이나 지어낸 칸이 있는 조각마다 경고 줄이 나온다. `props_behind_mask` 는 몸 뒤
     물건의 같은 기록(`props_behind`)이다. `props_groups` 가 colour 면 두 마스크의 한 색 조각들이 같은 칸만큼 가고, 조각마다 그 색
-    (`colour`)이 실린다."""
+    (`colour`)이 실린다. `width_min`·`width_max`·`height_min`·`height_max` 는 세기(`depth`·`depth_x`) 대신 숨의 극값이고,
+    breathe.json 의 `range` 는 어느 줄이든 그 극값을 최소·최대 키의 단위로 싣는다 (`breathe_range` — 세기로 구운 판을
+    최소·최대로 옮길 때 그 수를 그대로 쓴다)."""
     src_dir, out_dir = Path(frames), Path(out)
     raw = {k: v for k, v in (("mode", mode), ("depth", depth), ("depth_x", depth_x), ("breaths", breaths),
                              ("lag", lag), ("rigid_row", rigid_row), ("chest_y", chest_y), ("chest_rx", chest_rx),
@@ -1991,7 +2109,8 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
                              ("chest_x", chest_x), ("chest_bias_y", chest_bias_y), ("chest_flat", chest_flat),
                              ("inhale", inhale), ("breath_peaks", breath_peaks), ("loop_cells", loop_cells),
                              ("start_cell", start_cell), ("chest_round", chest_round), ("arms_x", arms_x),
-                             ("axis_x", axis_x), ("torso_half", torso_half))
+                             ("axis_x", axis_x), ("torso_half", torso_half), ("width_min", width_min),
+                             ("width_max", width_max), ("height_min", height_min), ("height_max", height_max))
            if v is not None}
     if avoid_region is None and (avoid_anchor is not None or fps is not None):
         raise SystemExit("breathe: --avoid-anchor 와 --fps 는 --avoid-region 의 것이다 — 손 상자 없이는 읽지 않는다")
@@ -2038,8 +2157,10 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         for line in piece_warnings(record, flag):
             print(f"breathe: warning: {line}", file=sys.stderr)
     # 다 굽고 나서 한 번에 내놓는다 — 굽기가 중간에 거부되면 반쯤 찬 폴더를 남기지 않는다(frames.folder.publish).
+    span = {} if pixel_round(cfg) else {"range": {k: list(v) for k, v in breathe_range(anat, cfg).items()}}
     publish(folder, baked, "breathe.json", {"frames": len(images), "source": str(src_dir), "config": cfg,
-                                            "phases": phases, "resolved": resolved} | ({} if beat is None else {"beat": beat})
+                                            "phases": phases, "resolved": resolved} | span
+                                           | ({} if beat is None else {"beat": beat})
                                            | ({} if held is None else {"reference": held})
                                            | ({} if kept is None else {"hold": kept})
                                            | ({} if grips is None else {"props": grips})
@@ -2047,6 +2168,9 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
     if pixel_round(cfg):
         print(f"breathe: {len(images)} frames, pixel round chest, chest_round {cfg['chest_round']}, arms_x {cfg['arms_x']}, "
               f"breaths {cfg['breaths']} -> {out_dir}")
+    elif _bounds(cfg) is not None:
+        print(f"breathe: {len(images)} frames, {breathe_mode(cfg)}, width {cfg['width_min']}..{cfg['width_max']}, "
+              f"height {cfg['height_min']}..{cfg['height_max']}, breaths {cfg['breaths']} -> {out_dir}")
     else:
         print(f"breathe: {len(images)} frames, {breathe_mode(cfg)}, depth {cfg['depth']}, "
               f"breaths {cfg['breaths']} -> {out_dir}")

@@ -260,6 +260,13 @@ BREATHE_STRETCH_KEYS = ("start_cell", "loop_cells")
 # 쓰지 않는다.
 BREATHE_ROUND_KEYS = ("chest_round", "arms_x")
 BREATHE_ROUND_MAX = 0.20
+# 가로·세로 최소·최대 (pixel·smooth): 세기(`depth`·`depth_x`) 대신 숨 곡선의 바닥과 꼭대기를 원래 크기 대비 몫으로 바로
+# 적는다 — 최소 0 이면 숨의 그쪽 절반이 원래 크기에 머문다. 가로는 몸통이 가장 크게 숨쉬는 자리에서 넓어지는 몫(pixel: 그
+# 행의 몸통 열, smooth: 가슴 꼭대기의 부풂), 세로는 목 아래 몸통 높이(정규화 기준) 대비 오르는 몫(pixel: 머리 윗선, smooth:
+# 가슴)이다. 음수가 원래보다 좁거나 낮은 쪽이다. 곡선 모양과 박자(breaths·lag·inhale)는 세기 줄과 같고, 넓어질 때 낮아지는
+# 짝(pixel)과 부풀 때 오르는 짝(smooth)도 그대로다. 적지 않은 경계는 0(원래 크기)이고, 세기와 같이 쓰면 거부한다.
+BREATHE_RANGE_KEYS = ("width_min", "width_max", "height_min", "height_max")
+BREATHE_RANGE_MAX = 0.20
 BREATHE_ROUND_SHAPE = ("chest_y", "chest_rx", "chest_ry", "chest_tilt", "chest_bias", "chest_x", "chest_bias_y", "inhale")
 
 RETIRED_BREATHE_KEYS = {
@@ -307,7 +314,10 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
     예외는 둥근 가슴 pixel 줄이다 (`chest_round`·`arms_x` 중 하나가 0 보다 큼, `BREATHE_ROUND_KEYS`): 그 줄은 가슴 타원 키
     (`BREATHE_ROUND_SHAPE`, 들숨 몫 포함)·숨 꼭대기·토막을 smooth 와 같은 검사로 읽고, 봉투 값(`depth`·`depth_x`·`lag`)과
     smooth 만 쓰는 모양 값(어깨·chest_dir·chest_flat)은 거부한다. 반환은 {"chest_round", "arms_x", "breaths", "breath_peaks",
-    가슴 타원 키, "start_cell", "loop_cells", "rigid_row", "axis_x", "torso_half", "anatomy"} 다."""
+    가슴 타원 키, "start_cell", "loop_cells", "rigid_row", "axis_x", "torso_half", "anatomy"} 다.
+
+    최소·최대 키(`BREATHE_RANGE_KEYS`)를 하나라도 적은 pixel·smooth 줄은 반환에 `depth`·`depth_x` 대신 네 키가 다 실린다
+    (적지 않은 경계는 0). 세기만 적은 줄은 반환이 이전과 같다."""
     if not curation:
         return None
     entry = curation.get("states", {}).get(state)
@@ -347,7 +357,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
                 f"조용히 깎지 않는다 — 사이드카를 고쳐라.")
     rounded = any(amps.values())
     if rounded:
-        envelope = sorted(k for k in ("depth", "depth_x", "lag") if raw.get(k) is not None)
+        envelope = sorted(k for k in ("depth", "depth_x", "lag", *BREATHE_RANGE_KEYS) if raw.get(k) is not None)
         if envelope:
             raise SystemExit(
                 f"curation: states.{state}.breathe 의 {', '.join(envelope)} 는 봉투 스쿼시의 값이다 — 둥근 가슴 줄"
@@ -394,6 +404,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
             raise SystemExit(
                 f"curation: states.{state}.breathe.{name} = {value!r} 가 범위 [{lo}, {hi}] 밖이다. "
                 f"조용히 깎지 않는다 — 사이드카를 고쳐라 (큐레이터 컨트롤은 이 범위 안에서만 값을 낸다).")
+    bounds = _breathe_bounds(raw, state)
     rigid_row = raw.get("rigid_row")
     if rigid_row is not None:
         rigid_row = _exact_int("rigid_row", rigid_row, state)
@@ -466,15 +477,50 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
                    "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,
                    "anatomy": frozen if isinstance(frozen, dict) else None}
             return cfg if mode is None else {"mode": mode, **cfg}
-        return {"mode": mode, "depth": depth,
-                "depth_x": BREATHE_SMOOTH_DEPTH_X if depth_x is None else depth_x,
+        amplitude = bounds or {"depth": depth, "depth_x": BREATHE_SMOOTH_DEPTH_X if depth_x is None else depth_x}
+        return {"mode": mode, **amplitude,
                 "breaths": breaths, "breath_peaks": peaks, **shape, "start_cell": start_cell, "loop_cells": loop_cells,
                 "rigid_row": rigid_row, "axis_x": axis_x,
                 "torso_half": torso_half, "anatomy": frozen if isinstance(frozen, dict) else None}
-    cfg = {"depth": depth, "depth_x": depth_x, "breaths": breaths, "lag": lag,
+    cfg = {**(bounds or {"depth": depth, "depth_x": depth_x}), "breaths": breaths, "lag": lag,
            "rigid_row": rigid_row, "axis_x": axis_x, "torso_half": torso_half,
            "anatomy": frozen if isinstance(frozen, dict) else None}
     return cfg if mode is None else {"mode": mode, **cfg}
+
+
+def _breathe_bounds(raw: dict[str, Any], state: str) -> dict[str, float] | None:
+    """줄의 가로·세로 최소·최대 (`BREATHE_RANGE_KEYS`, 적지 않은 경계는 0) — 하나도 안 적었으면(null 은 생략) None.
+
+    세기(`depth`·`depth_x`)와 같이 적으면 거부한다: 둘 다 같은 곡선의 크기를 말해 어느 쪽을 따를지 조용히 고를 수 없다.
+    범위 밖, 수가 아닌 값, 최소가 최대보다 큰 축도 거부한다."""
+    given = {k: raw[k] for k in BREATHE_RANGE_KEYS if raw.get(k) is not None}
+    if not given:
+        return None
+    both = sorted(k for k in ("depth", "depth_x") if raw.get(k) is not None)
+    if both:
+        raise SystemExit(
+            f"curation: states.{state}.breathe 에 세기({', '.join(both)})와 최소·최대({', '.join(sorted(given))})가 같이 "
+            f"있다 — 둘 다 숨의 크기를 말한다. 하나만 적어라 (세기 d 는 최소 -0.9009 d, 최대 +0.9009 d 인 대칭 범위다). "
+            f"조용히 고르지 않는다.")
+    bounds = {}
+    for name in BREATHE_RANGE_KEYS:
+        try:
+            if isinstance(given.get(name), bool):          # float(False) 는 0 — 미러처럼 참거짓을 수로 읽지 않는다
+                raise TypeError
+            value = float(given.get(name, 0.0))
+        except (TypeError, ValueError):
+            raise SystemExit(f"curation: states.{state}.breathe.{name} 를 숫자로 못 읽는다: {given[name]!r}")
+        if not -BREATHE_RANGE_MAX <= value <= BREATHE_RANGE_MAX:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.{name} = {given[name]!r} 가 범위 [{-BREATHE_RANGE_MAX}, "
+                f"{BREATHE_RANGE_MAX}] 밖이다. 조용히 깎지 않는다 — 사이드카를 고쳐라.")
+        bounds[name] = value
+    for axis in ("width", "height"):
+        if bounds[f"{axis}_min"] > bounds[f"{axis}_max"]:
+            raise SystemExit(
+                f"curation: states.{state}.breathe.{axis}_min {bounds[f'{axis}_min']:g} 가 {axis}_max "
+                f"{bounds[f'{axis}_max']:g} 보다 크다 — 숨의 바닥이 꼭대기 위에 있을 수 없다 (적지 않은 경계는 0).")
+    return bounds
 
 
 def edit_index(curation: dict[str, Any] | None, state: str, index: int) -> int:

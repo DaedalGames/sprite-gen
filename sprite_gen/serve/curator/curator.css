@@ -1289,11 +1289,13 @@ body.show-grid .stage { background-image: none; background-color: #eef0f3; }
 .breathe-bar { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
 .breathe-auto { padding: 2px 7px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .breathe-auto:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.breathe-bar select { padding: 2px 4px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: inherit; }
 .breathe-count { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
 .breathe-count input { width: 44px; padding: 2px 4px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; text-align: center; }
 .breathe-count button { padding: 2px 7px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px; background: transparent; cursor: pointer; }
 .breathe-count button:hover { border-color: var(--accent); color: var(--accent); }
+.breathe-range { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.breathe-range > span { display: inline-flex; align-items: center; gap: 3px; }
+.breathe-range input { width: 50px; padding: 2px 4px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; text-align: center; }
 .breathe-fit-badge { color: #b45309; font-size: 11px; font-weight: 600; margin-left: 2px; }
 /* 줄 fps 스텝퍼 — 전체 재생 속도 (프레임별 시간은 복제가 담당) */
 .fps-stepper { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--fg-dim, #64748b); }

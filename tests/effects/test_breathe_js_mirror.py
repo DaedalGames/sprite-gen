@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from sprite_gen.effects.breathe import (MAX_ROW_STRAIN, anatomy_fingerprint,  # noqa: E402
+from sprite_gen.effects.breathe import (MAX_ROW_STRAIN, anatomy_fingerprint, breathe_range,  # noqa: E402
                                 freeze_anatomy, phase_frame, reference_key, resolve_anatomy,
                                 row_strain)
 from sprite_gen.frames.extract import solid_alpha_bbox  # noqa: E402
@@ -100,18 +100,28 @@ def _rgba(image):
     # 큰 도트 그림 — 다듬기·부속 보호·행 사상이 수백 줄에서 돈다. 굽기를 numpy 로 바꿔도 미러(바꾸지
     # 않은 화소 순회)와 바이트가 같은지 여기서 본다.
     (_outlined_figure, {}),
+    # 가로·세로 최소·최대 (2026-10-29): 최소 0 / 양쪽 / 원래 크기를 안 지나는 범위. 이득 계수(B + A·wave)의 연산 순서가
+    # 파이썬과 갈리면 여기서 잡힌다 — 세기 줄은 B = 0 이라 위 칸들이 못 본다.
+    (_outlined_figure, {"width_min": 0.0, "width_max": 0.06, "height_min": -0.05, "height_max": 0.0, "lag": 0.0}),
+    (_dome, {"width_min": -0.03, "width_max": 0.08, "height_min": -0.06, "height_max": 0.02}),
+    (_small_outlined, {"width_min": 0.02, "width_max": 0.07, "height_min": -0.05, "height_max": -0.01,
+                       "breaths": 3}),
 ], ids=["humanoid", "winged", "small-outlined-thinning",
-        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band", "outlined-figure"])
+        "dome-depth-x", "dome-depth-x-zero", "dome-manual-band", "outlined-figure",
+        "figure-min-zero", "dome-both-sides", "small-outlined-off-the-original"])
 def test_curator_mirror_is_byte_identical_to_the_bake(build, overrides, tmp_path):
     src = build()
     cfg = {**CFG, **overrides}
+    bounds = {k: cfg[k] for k in ("width_min", "width_max", "height_min", "height_max") if k in cfg}
+    if bounds:
+        del cfg["depth"]                             # 최소·최대 줄은 세기를 같이 쓰지 않는다
     cfg["anatomy"] = freeze_anatomy(src, cfg, _key())
 
     payload = {
         "script": str(CURATOR_BREATHE),
         "width": src.width,
         "height": src.height,
-        "cfg": {"depth": cfg["depth"], "breaths": cfg["breaths"], "lag": cfg["lag"],
+        "cfg": {**({"depth": cfg["depth"]} if "depth" in cfg else bounds), "breaths": cfg["breaths"], "lag": cfg["lag"],
                 **({"depth_x": cfg["depth_x"]} if "depth_x" in cfg else {}),
                 **({"torso_half": cfg["torso_half"]} if "torso_half" in cfg else {}),
                 "anatomy": cfg["anatomy"]},
@@ -473,3 +483,45 @@ def test_the_mirror_refuses_when_it_cannot_verify(tmp_path):
     got = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     assert not got["ok"] and got["refused"], (
         "지문이 null 인데 미러가 신선하다고 판정했다 — 확인 불가는 괜찮음이 아니다")
+
+
+RANGE_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const sandbox = { console, entries: {}, run: { states: [] }, t: () => "", setStatus: () => {}, fetch: () => {} };
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(payload.script, "utf8"), sandbox);
+fs.writeFileSync(payload.out, JSON.stringify(payload.cases.map((c) => sandbox.breatheRange(c.anatomy, c.cfg))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 JS 미러를 실행할 수 없다")
+def test_the_mirror_reads_the_same_range_as_the_bake(tmp_path):
+    """편집기가 세기만 적힌 줄을 네 손잡이로 보여 줄 때 읽는 범위 — 파이썬 breathe_range 와 같은 double 이어야 한다.
+    갈리면 손대지 않은 손잡이를 저장해도 옛 판과 다른 바이트가 구워진다."""
+    rows = [(_humanoid, {}), (_dome, {"depth": 0.10, "depth_x": 0.0}), (_dome, {"depth_x": 0.12}),
+            (_humanoid, {"mode": "smooth"}), (_humanoid, {"mode": "smooth", "depth": 0.01, "depth_x": 0.03}),
+            (_humanoid, {"width_min": 0.0, "width_max": 0.05, "height_min": -0.04, "height_max": 0.0})]
+    cases = []
+    for build, overrides in rows:
+        src = build()
+        cfg = {**CFG, **overrides}
+        if "mode" in cfg or "width_min" in cfg:
+            cfg.pop("lag", None)
+        if "width_min" in cfg:
+            del cfg["depth"]
+        cfg["anatomy"] = freeze_anatomy(src, cfg, _key())
+        py = breathe_range(resolve_anatomy(src, cfg), cfg)
+        cases.append({"anatomy": cfg["anatomy"], "cfg": cfg, "py": {k: list(v) for k, v in py.items()}})
+
+    payload = {"script": str(CURATOR_BREATHE), "out": str(tmp_path / "js.json"),
+               "cases": [{"anatomy": c["anatomy"], "cfg": c["cfg"]} for c in cases]}
+    (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "harness.cjs").write_text(RANGE_HARNESS, encoding="utf-8")
+    proc = subprocess.run([shutil.which("node"), str(tmp_path / "harness.cjs"),
+                           str(tmp_path / "payload.json")], capture_output=True, encoding="utf-8")
+    assert proc.returncode == 0, f"node 하네스 실패:\n{proc.stderr}"
+    for case, js in zip(cases, json.loads((tmp_path / "js.json").read_text(encoding="utf-8"))):
+        assert js == case["py"], f"{case['cfg']}: py={case['py']} js={js}"

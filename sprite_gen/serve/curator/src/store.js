@@ -46,7 +46,7 @@ function breatheRangeProblems(raw) {
     if (!Number.isFinite(v) || v < 0 || v > BREATHE_ROUND_MAX) bad.push(`${key}=${JSON.stringify(raw[key])}`);
   }
   if (rounded) {
-    for (const key of ["depth", "depth_x", "lag"]) {
+    for (const key of ["depth", "depth_x", "lag", ...BREATHE_RANGE_KEYS]) {
       if (raw[key] != null) bad.push(`${key} (둥근 가슴 줄은 봉투 값을 쓰지 않는다)`);
     }
   }
@@ -110,6 +110,21 @@ function breatheRangeProblems(raw) {
     } else {
       const dx = Number(raw.depth_x);
       if (!Number.isFinite(dx) || dx < 0 || dx > 0.20) bad.push(`depth_x=${JSON.stringify(raw.depth_x)}`);
+    }
+  }
+  // 가로·세로 최소·최대 (2026-10-29) — 파이썬 curation._breathe_bounds 미러. null 은 생략, 적지 않은 경계는 0.
+  // 세기와 같이 적으면 어느 쪽을 따를지 모르므로 굽기가 거부한다. 참거짓은 수로 읽지 않는다 (isNumericScalar).
+  const written = BREATHE_RANGE_KEYS.filter((k) => raw[k] != null);
+  if (written.length) {
+    const strength = ["depth", "depth_x"].filter((k) => raw[k] != null);
+    if (strength.length) bad.push(`${strength.join("·")} + ${written.join("·")} (세기와 최소·최대를 같이 적었다)`);
+    const v = {};
+    for (const key of BREATHE_RANGE_KEYS) {
+      v[key] = raw[key] == null ? 0 : isNumericScalar(raw[key]) ? Number(raw[key]) : NaN;
+      if (!Number.isFinite(v[key]) || Math.abs(v[key]) > BREATHE_RANGE_MAX) bad.push(`${key}=${JSON.stringify(raw[key])}`);
+    }
+    for (const axis of ["width", "height"]) {
+      if (v[`${axis}_min`] > v[`${axis}_max`]) bad.push(`${axis}_min > ${axis}_max`);
     }
   }
   if (raw.rigid_row != null) {
@@ -686,11 +701,20 @@ function seedEntries() {
         // `depth` 생략은 굽기에서 0.06 이다. `Number(undefined)` = NaN 이고
         // `JSON.stringify(NaN)` 은 `null` 이라, 기본값 분기가 없으면 첫 autosave 가
         // 사이드카에 `depth: null` 을 박아 **굽기가 죽는다** (validator 실측 2026-07-26).
-        : { depth: rawBreathe.depth == null ? 0.06 : Number(rawBreathe.depth),
+        // 최소·최대 줄은 적힌 경계만 들고 세기를 채우지 않는다 — depth 0.06 을 넣으면 첫 autosave 가 둘을 같이 적어
+        // 굽기가 거부한다. 세기 줄의 depth_x 와 영역 손잡이(axis_x·torso_half)도 되쓴다: 빼면 편집기에서 고친 가로
+        // 진폭과 몸통 띠가 다시 열 때 사라진다. 영역 값은 굽기가 정수 검사를 하므로 적힌 그대로 둔다.
+        : { ...(breatheHasBounds(rawBreathe)
+              ? Object.fromEntries(BREATHE_RANGE_KEYS.filter((k) => rawBreathe[k] != null)
+                .map((k) => [k, Number(rawBreathe[k])]))
+              : { depth: rawBreathe.depth == null ? 0.06 : Number(rawBreathe.depth),
+                  ...(rawBreathe.depth_x != null ? { depth_x: Number(rawBreathe.depth_x) } : {}) }),
             // 위에서 정수 검증을 통과했으므로 반올림이 필요 없다 — 반올림하면 굽기와 갈린다
             breaths: Number(rawBreathe.breaths == null ? 1 : rawBreathe.breaths),
             lag: Number(rawBreathe.lag == null ? 0.1 : rawBreathe.lag),
             rigid_row: rawBreathe.rigid_row == null ? null : Number(rawBreathe.rigid_row),
+            ...(rawBreathe.axis_x != null ? { axis_x: rawBreathe.axis_x } : {}),
+            ...(rawBreathe.torso_half != null ? { torso_half: rawBreathe.torso_half } : {}),
             anatomy: rawBreathe.anatomy || null,
             // 적힌 `mode: "pixel"` 은 그대로 되쓴다 — 생략과 같은 뜻이지만 사용자가 쓴 키다.
             ...(rawBreathe.mode != null ? { mode: rawBreathe.mode } : {}) }
