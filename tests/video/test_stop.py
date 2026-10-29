@@ -146,6 +146,9 @@ def test_stop_plays_the_start_backwards_from_the_loop_to_the_first_frame(tmp_pat
     assert smeta["from_loop"]["from_cell"] == out["entry"]["from_cell"] and smeta["body_h"] == lmeta["body_h"]
     assert smeta["source_cut"]["source"]["sha256"] == lmeta["source_cut"]["source"]["sha256"]
     assert out["source"]["same_as_loop"] is True
+    # Read for a picture shown again, as every cut is; a stop plays its filmed frames, none made between.
+    assert smeta["held_fill"]["mode"] == "off" and smeta["held_fill"]["made"] == []
+    assert (smeta["held_fill"]["cells"], smeta["held_fill"]["poses"], smeta["held_fill"]["held_runs"]) == (len(shown), len(shown), [])
     with Image.open(tmp_path / "stop" / "stop.gif") as gif:
         assert gif.n_frames == len(shown) and gif.info.get("loop") is None
     report = json.loads((tmp_path / "stop" / "stop.stop.report.json").read_text())

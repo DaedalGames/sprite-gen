@@ -37,6 +37,7 @@ from sprite_gen.video import facing as facing_mod
 from sprite_gen.video import canvas as canvas_mod
 from sprite_gen.video import frames as frames_mod
 from sprite_gen.video import loop as loop_mod
+from sprite_gen.video import held_fill as held_fill_mod
 from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
@@ -720,6 +721,8 @@ def run_item(
     end_frame: Path | None = None,
     play: str | None = None,
     motion: str | None = None,
+    fill_held: str = "auto",
+    out_fps: float | None = None,
 ) -> dict[str, Any]:
     """One (direction, state) item, canvas to loop. `play` is the request's play mode for it (`play.MODES`; None, the
     state's preset) and `motion` the caller's own motion text in place of the state's sentence."""
@@ -859,7 +862,8 @@ def run_item(
             result["frames"]["decontam_warning"] = decontam_note
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
                                cycle_mode=cycle_for(state, direction, play, pinned=pins),
-                               facing=facing if direction in handed_mod.LATERAL_VIEWS else "right")
+                               facing=facing if direction in handed_mod.LATERAL_VIEWS else "right",
+                               fill_held=fill_held, out_fps=out_fps)
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
         result["loop"]["half_period_guard"] = lp["cycle"].get("half_period_guard")
@@ -876,6 +880,12 @@ def run_item(
             result["loop"]["step_screen"] = {k: lp["cycle"]["step_screen"][k] for k in ("lag", "ratio", "depth", "coverage")}
         if lp.get("motion_anchor", {}).get("applied") is False:
             result["loop"]["motion_anchor"] = lp["motion_anchor"]
+        # The cut's poses over its cells, its held runs as delivered, and what became of them (docs/loop-repair.md section 7).
+        held = lp["held_fill"]
+        result["loop"]["poses"] = held_fill_mod.said(held)
+        result["loop"]["held_fill"] = {"before": held_fill_mod.said(held["before"]), "held_runs": held["held_runs"],
+                                       "made": held["made"], **({"unmade": held["unmade"]} if "unmade" in held else {}),
+                                       **({"out_fps": held["out_fps"]} if "out_fps" in held else {})}
         if "rife" in (lp.get("jump_repair") or {}):
             # cut as filmed for want of RIFE: the set report lists it under `warnings` (a wrap the seam bridge read carries
             # its `seam`, not the flow's `off_max_before`)
@@ -1091,6 +1101,8 @@ def run_set(
     end_frames: dict[str, Path] | None = None,
     play: dict[str, str] | None = None,
     motion: dict[str, str] | None = None,
+    fill_held: str = "auto",
+    out_fps: float | None = None,
 ) -> dict[str, Any]:
     """`bases` maps a view to its still; `facing` is right, left or `right,left` (`facings_of`), and a view filmed
     both ways is keyed `view@right` and `view@left` (`resolve_bases`). `handed` (`handedness.parse`) puts each
@@ -1132,6 +1144,9 @@ def run_set(
         raise SystemExit("video-set: non-loop states need --fit state and --anchor none")
     aligned_items = [i for i, _, s, _, _ in items if align_cycles == "auto" and loop_mod.profile_for(s).gait
                      and sum(1 for _, _, s2, _, _ in items if s2 == s) >= 2]
+    if out_fps is not None and aligned_items:
+        raise SystemExit(f"video-set: --out-fps gives each cut at a higher rate, and the cycle alignment of {', '.join(aligned_items)} "
+                         "makes its own frames between to one length — pass --align-cycles off with it")
     for item, foot in (align_feet or {}).items():
         if item not in aligned_items:
             raise SystemExit(f"video-set: --align-foot {item}={foot}: {item} is not an item the set aligns (a walk or run filmed in two or "
@@ -1153,7 +1168,7 @@ def run_set(
         return prepare_side
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {})): i for i, d, s, f, b in items}
+        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {}), fill_held=fill_held, out_fps=out_fps): i for i, d, s, f, b in items}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
@@ -1164,6 +1179,10 @@ def run_set(
     failed = [r["item"] for r in results if not r.get("ok")] + [f"cycle-align:{st}" for st, a in aligned.items() if not a.get("ok")]
     # What the set left undone for want of RIFE — never a failure, never silent.
     warnings = ([f"{r['item']}: jump frame not repaired — {r['loop']['jump_repair']['why']}" for r in results if r.get("ok") and "jump_repair" in r["loop"]]
+                + [f"{r['item']}: held cells {r['loop']['held_fill']['unmade']['cells']} shown as filmed — RIFE is not installed"
+                   for r in results if r.get("ok") and "unmade" in r["loop"]["held_fill"]]
+                + [f"{r['item']}: --out-fps {r['loop']['held_fill']['out_fps']['asked']:g} not met — {r['loop']['held_fill']['out_fps']['why']}"
+                   for r in results if r.get("ok") and not r["loop"]["held_fill"].get("out_fps", {"applied": True})["applied"]]
                 + [f"cycle-align:{st}: not aligned — {a['why']}" for st, a in aligned.items() if a.get("reason") == "rife-not-installed"])
     if warnings:
         warnings.append(f"install RIFE with `{rife_mod.install_command()}` (docs/loop-repair.md)")
@@ -1280,6 +1299,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="which own foot lands on the first strike of an item's loop (e.g. front-walk=left), for a loop the "
                              "alignment report lists under `unnamed_feet` (video-cycle-align --foot; repeatable): that loop starts as "
                              "the set's start foot lands, recorded start_foot_source given")
+    parser.add_argument("--fill-held", choices=held_fill_mod.MODES, default="auto",
+                        help="each cut's neighbour cells showing the same picture (video-loop --fill-held): auto (default) makes "
+                             "them again with RIFE's frames between, off cuts them as filmed; each item's `loop.poses` says its poses "
+                             "over its cells")
+    parser.add_argument("--out-fps", type=float, default=None,
+                        help="give each cut at this rate, above its clip's, made of frames between (video-loop --out-fps); with "
+                             "a walk or run filmed in two or more directions, pass --align-cycles off")
     parser.add_argument("--force", action="store_true", help="regenerate clips that already exist")
 
 
@@ -1302,6 +1328,7 @@ def run(**kwargs: object) -> int:
         body_plan=body_mod.parse_all(list(kwargs.get("body_plan") or [])) or None,  # type: ignore[arg-type]
         play=_parse_keyed(list(kwargs.get("play") or []), "--play") or None,  # type: ignore[arg-type]
         motion=_parse_keyed(list(kwargs.get("motion") or []), "--motion") or None,  # type: ignore[arg-type]
+        fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
     )
     return 0 if not payload["failed"] else 1
 

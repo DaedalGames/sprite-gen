@@ -78,7 +78,7 @@ def test_video_set_pins_idle_and_cuts_it_whole(tmp_path: Path, monkeypatch) -> N
 
     def fake_loop(frames_dir, out_dir, **kw):
         seen["cycle_mode"] = kw.get("cycle_mode")
-        return {"cycle": {"kind": "pinned", "length": 47, "period_global": None, "ratio": 1.0}, "resampled_seam_ratio": 1.0, "n_out": 47,
+        return {"cycle": {"kind": "pinned", "length": 47, "period_global": None, "ratio": 1.0}, "resampled_seam_ratio": 1.0, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 47,
                 "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s", "drift_px": 0}}
 
     def video(image, prompt, out, report, **kw):

@@ -197,7 +197,8 @@ def held_drawings(frames: list[Image.Image], *, fps: float, clip: dict[str, Any]
     loop's: a clip held for part of its length is held where it was cut. The clip's stands where the
     cut was too short to read, or was cut before that record (`span_why` says which). The cut cycle
     is the fallback for a loop cut before either record (`source` cycle, read as a ring): it is short,
-    and `--anchor motion-auto` shifts each cut frame, so a pair's repeat may no longer read as one."""
+    and `--anchor motion-auto` shifts each cut frame, so a pair's repeat may no longer read as one. It is
+    also how a loop whose held cells `video-loop` made again (`held_fill`) is read: as it plays."""
     n = len(frames)
     if clip and clip.get("hold"):
         whole = {"hold": clip["hold"], "drawings_per_second": clip["drawings_per_second"], "contrast": clip.get("contrast")}
@@ -977,6 +978,10 @@ def _loop_files(loop_dir: Path) -> tuple[Path, dict[str, Any]]:
     for key in ("cycle_frames", "cycle_seconds", "cell_height_cap", "kind"):
         if key not in meta:
             raise ValueError(f"{metas[0]}: no `{key}` — cut the loop again with this sprite-gen (video-loop) before aligning it")
+    if "out_fps" in meta:
+        raise ValueError(f"{metas[0]}: cut at --out-fps {meta['out_fps']:g}, its cells each made at a time of their own — the "
+                         "alignment makes its own frames between: align the loop cut at its clip's rate (video-loop without "
+                         "--out-fps)")
     strip = cut_strip(loop_dir, metas[0], meta)
     if strip is not None and not strip.is_file():
         raise ValueError(f"{loop_dir}: no {strip.name} — a first alignment reads the strip as cut to record where its cells are from "
@@ -1336,7 +1341,11 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
         except (ValueError, rife_mod.RifeUnavailable) as exc:
             raise SystemExit(f"video-cycle-align: {d}: {exc}; frames between source frames are made by RIFE (docs/loop-repair.md)") from exc
         start = strike["start"]
-        drawings = held_drawings(frames, fps=fps, clip=loops[i][2].get("drawings"), cut=loops[i][2].get("cycle_drawings"))
+        # A loop whose held cells video-loop made again (`held_fill`) shows a picture a cell where its clip held them: the
+        # clip's readings say how it was filmed, not how it plays, and its own cells are read.
+        filled = bool((loops[i][2].get("held_fill") or {}).get("made"))
+        drawings = held_drawings(frames, fps=fps, clip=None if filled else loops[i][2].get("drawings"),
+                                 cut=None if filled else loops[i][2].get("cycle_drawings"))
         # the ghosts passed over or kept as frames of cycle.source/, each cell where it now stands
         ghost_at = sorted(({**g, "at": (g["at"] - start) % target, "source": index[g["source"]], "taken": index[g["taken"]]}
                            for g in facts["ghost_at"]), key=lambda g: g["at"])
