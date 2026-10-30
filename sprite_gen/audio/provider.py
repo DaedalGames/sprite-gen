@@ -8,6 +8,7 @@ import re
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from sprite_gen.audio.manifest import AUDIO_KINDS, SFX
 from sprite_gen.gen import address, retry
 from sprite_gen.gen.base import announce_api_billing, env_api_key
 from sprite_gen.gen.xai import error_body, NO_ANSWER
@@ -20,21 +21,21 @@ SAFE_CODES = frozenset({*retry.ELEVENLABS_BUSY, 'quota_exceeded',
 
 
 def request(kind, prompt, duration, loop):
-    if kind not in ('sfx', 'bgm'):
+    if kind not in AUDIO_KINDS:
         raise ValueError('kind must be sfx or bgm')
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4100:
         raise ValueError('prompt requires 1 to 4100 characters')
     duration = float(duration)
-    low, high = (0.5, 30) if kind == 'sfx' else (3, 600)
+    low, high = (0.5, 30) if kind == SFX else (3, 600)
     if not math.isfinite(duration) or not low <= duration <= high:
         raise ValueError(f'{kind} duration must be between {low} and {high} seconds')
     if type(loop) is not bool:
         raise ValueError('loop must be a boolean')
     body = ({'text': prompt, 'duration_seconds': duration, 'loop': loop,
-             'model_id': 'eleven_text_to_sound_v2', 'prompt_influence': 0.3} if kind == 'sfx'
+             'model_id': 'eleven_text_to_sound_v2', 'prompt_influence': 0.3} if kind == SFX
             else {'prompt': prompt, 'music_length_ms': round(duration * 1000),
                   'model_id': 'music_v1', 'force_instrumental': True})
-    return {'endpoint': 'sound-generation' if kind == 'sfx' else 'music',
+    return {'endpoint': 'sound-generation' if kind == SFX else 'music',
             'output_format': FORMAT, 'body': body}
 
 
