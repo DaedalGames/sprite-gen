@@ -35,8 +35,9 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.frames.cutout import KEY_TARGETS
 
-RGB = (255, 0, 255)
+RGB = KEY_TARGETS["magenta"]
 HEIGHT = 0.49  # of the subject's height
 WIDTH = 0.20
 GAP = 0.84
