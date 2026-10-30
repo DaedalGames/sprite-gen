@@ -61,6 +61,7 @@ from typing import Any, Callable
 from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import address, prompt_parts, refusal, retry
+from . import handedness as handed_mod
 from .base import PROVIDER_GROK, announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
@@ -404,7 +405,7 @@ class VideoResult:
 
 def _validate(request: VideoRequest) -> None:
     validate_facing(request.facing, request.facing_fix)
-    if request.direction not in (None, "side", "front", "back", "front_diagonal", "back_diagonal"):
+    if request.direction not in (None, *handed_mod.VIEWS):
         raise SystemExit("video: --direction must be side, front, back, front_diagonal or back_diagonal")
     if request.facing_fix not in facing_mod.FIXES:
         raise SystemExit("video: --facing-fix must be mirror or none")
@@ -1003,7 +1004,7 @@ def _add_prompt_and_report(parser: argparse.ArgumentParser) -> None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--direction", choices=("side", "front", "back", "front_diagonal", "back_diagonal"), help="sprite view; side opts into facing inspection before video generation")
+    parser.add_argument("--direction", choices=handed_mod.VIEWS, help="sprite view; side opts into facing inspection before video generation")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="with --direction side: required direction (default right)")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="with --direction side: record only (none, default), or opt into mirror")
     parser.add_argument("--image", type=Path, help="the still to animate / the first frame (PNG/JPEG/WebP)")
