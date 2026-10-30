@@ -166,10 +166,11 @@ CURATOR_READS: dict[str, tuple[str, ...]] = {
 
 # On the wire, read by no script (dropping one changes the response bytes and any outside
 # caller, so they stay; listed here so a new key has to say which kind it is).
+# Spelt out, not named: a key no script reads is held to its declaration by this list alone.
 CURATOR_UNREAD = {
-    W.SAFE_MARGIN_X, W.SAFE_MARGIN_Y, W.LOGICAL_HEIGHT, W.SOURCE, W.STATE, W.ANCHOR_ERROR_CODE,
-    W.CONTRACT, W.REFS_STATES, W.SOURCELESS, W.SHEET_HEIGHT, W.PASSTHROUGH_COLOR_COUNT, W.SIZE,
-    W.PATH, W.NOTE, W.PITCH, W.RETURNCODE, W.STDOUT, W.EXPORT, W.GIF, W.SPACE, W.BACKUP,
+    "safeMarginX", "safeMarginY", "logicalHeight", "source", "state", "anchorErrorCode",
+    "contract", "refsStates", "sourceless", "sheetHeight", "passthroughColorCount", "size",
+    "path", "note", "pitch", "returncode", "stdout", "export", "gif", "space", "backup",
 }
 
 # Keys other modules own that reach the curator inside a body: the heal report
@@ -185,6 +186,8 @@ CURATOR_READS_OF_OTHERS: dict[str, tuple[str, ...]] = {
     extract.PROGRESS_PHASE: (rf'\bp\.{extract.PROGRESS_PHASE} === "{extract.PROGRESS_PHASE_COMPONENTS}"',),
     **{f"ref_{role}": (rf"\bref_{role}:",) for role in IMPORTED_REF_ROLES},
 }
+# The heal report's and progress file's keys no script reads, spelt out as `CURATOR_UNREAD` is.
+EXTRACT_UNREAD = {"op", "ts", "frozen", "notes"}
 
 # Dict keys and stores in serve_curation.py that are not on the curator wire: other
 # vocabularies the module also writes. Dicts by the def (or module table) they are in,
@@ -285,12 +288,24 @@ def test_every_curator_key_is_read_or_listed_as_unread():
         f"listed but not declared: {sorted(set(CURATOR_READS) | CURATOR_UNREAD - set(values))}")
 
 
+def test_every_heal_and_progress_key_is_read_or_listed_as_unread():
+    declared = {name: value for name, value in vars(extract).items()
+                if name.startswith(("HEAL_", "PROGRESS_")) and name not in ("PROGRESS_REL", "PROGRESS_PHASE_COMPONENTS")}
+    keys = set(CURATOR_READS_OF_OTHERS) | EXTRACT_UNREAD
+    assert set(declared.values()) == keys - {f"ref_{role}" for role in IMPORTED_REF_ROLES}, (
+        f"declared but neither read nor listed unread: {sorted(set(declared.values()) - keys)}")
+
+
 def test_serve_curation_writes_no_wire_key_as_text():
     source = Path(serve_curation.__file__).read_text(encoding="utf-8")
     raw = _raw_keys(source, CURATOR_OTHER_DICTS, CURATOR_OTHER_STORES)
     assert not raw, (f"{len(raw)} keys written as text in serve_curation.py — name them in `Wire` "
                      "(or, if not on the wire, list them above):\n"
                      + "\n".join(f"  {line}: {key!r}" for line, key, _ in raw))
+    headers = [(node.lineno, node.args[0].value) for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "send_header"
+               and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value in _declared(W).values()]
+    assert not headers, f"headers the curator reads sent as text — name them in `Wire`: {headers}"
 
 
 def test_every_wire_name_the_servers_use_is_declared():
@@ -317,7 +332,7 @@ COMPOSER_READS: dict[str, tuple[str, ...]] = {
     C.URL: (_member("data", C.URL),),
     C.ERROR: (_member("data", C.ERROR),),
 }
-COMPOSER_UNREAD = {C.FILES, C.CELL, C.CODE}
+COMPOSER_UNREAD = {"files", "cell", "code"}  # spelt out, as CURATOR_UNREAD
 COMPOSER_OTHER_DICTS = {
     ("CONTENT_TYPES", "*"),                # file suffix -> HTTP Content-Type
     ("_PICK_SCRIPTS", "*"),                # pick kind -> osascript

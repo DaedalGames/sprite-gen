@@ -1301,7 +1301,7 @@ class CurationHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type",
                              "image/gif" if filename.endswith(".gif") else "application/zip")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("X-Filename", filename)
+            self.send_header(Wire.FILENAME_HEADER, filename)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1510,7 +1510,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                 content_type = {"gif": "image/gif", "webm": "video/webm", "mp4": "video/mp4"}[fmt]
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
-                self.send_header("X-Filename", f"compare.{fmt}")
+                self.send_header(Wire.FILENAME_HEADER, f"compare.{fmt}")
                 self.send_header("Content-Disposition", f'attachment; filename="compare.{fmt}"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
