@@ -187,7 +187,7 @@ HOLD_TEXT = {
 # What stays put while a caller's own walk or run moves, by view: in place, and facing the way the image
 # faces. A request interpreter may ask for any gait (a sneak, a march, a stroll); the engine keeps it on the
 # spot and turned the right way, as the built-in gait sentences do. `{facing}` is the side view's.
-GAIT_STATES = frozenset({"walk", "run"})
+GAIT_STATES = nonloop.GAIT_STATES
 GAIT_HOLD_TEXT = {
     "front": "It stays in place as if on a treadmill, without coming any closer, and keeps facing the viewer the whole time.",
     "back": (

@@ -39,6 +39,8 @@ ANATOMY_TEXT = {'quadruped': 'Preserve quadruped anatomical structure without re
             'undulating, coiled, or fully flattened ground configurations during death or falls without '
             'introducing limbs.'}
 CYCLIC_STATES = frozenset({"idle", "walk", "run", "talk", "blink", "breathe"})
+# The gaits among them: a walk or run, filmed in place (`batch`) and checked for a far limb in view (`qa.handed`).
+GAIT_STATES = frozenset({"walk", "run"})
 STABLE_SECONDS = 0.2
 STABLE_MAX = 0.025  # distance / visible subject mass, independent of canvas padding
 POSE_SHAPE_TOLERANCE = 0.05
