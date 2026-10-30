@@ -43,7 +43,7 @@ from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
-from sprite_gen.video import nonloop
+from sprite_gen.video import effect, nonloop
 from sprite_gen.video import play as play_mod
 from sprite_gen.util.console import utf8_streams
 
@@ -60,7 +60,7 @@ STATE_DURATION_SECONDS = {"attack": 2}
 # States whose clip is pinned to end on the frame it starts from (first-last mode): the model
 # has to come back to the still, which closes a one-shot action instead of leaving it wherever
 # the strike ended, and closes an idle without asking for a repeating rhythm.
-PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", "effect"})
+PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", effect.STATE})
 # Pinned states whose whole clip is the loop: it starts and ends on the canvas, so `video-loop
 # --cycle pinned` keeps every frame but the last (a re-render of the first). An attack asked
 # for once is ready stance -> strike -> ready stance, so its whole clip is one attack too.
@@ -812,7 +812,7 @@ def run_item(
                     facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix)
             # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
             # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=effect.STATE if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
