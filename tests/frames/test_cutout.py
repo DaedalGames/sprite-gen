@@ -9,6 +9,7 @@ in it, but the corner flood-fill keys by position so it must survive.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -147,6 +148,18 @@ def test_the_tables_kept_by_key_name_name_the_keys() -> None:
     from sprite_gen.gen import chroma, logo
 
     assert set(chroma.KEY_BACKGROUND_TEXT) == set(logo.KEY_COLOUR_WORDS) == set(cutout_mod.KEY_TARGETS)
+
+
+def test_no_table_keys_a_key_colour_by_its_spelling() -> None:
+    """A table of the two key colours keyed on their text stays behind when `cutout.MAGENTA` or `GREEN` moves, and a
+    reader that looks a key up in it by the name fails. (`WHITE_CHECK_COLORS` is the three primaries, not the keys.)"""
+    from sprite_gen.frames import cutout as cutout_mod
+
+    root = Path(cli.__file__).parent
+    spelt = [f"{path.relative_to(root).as_posix()}:{node.lineno}" for path in sorted(root.rglob("*.py"))
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))) if isinstance(node, ast.Dict)
+             if set(cutout_mod.KEY_TARGETS) <= {key.value for key in node.keys if isinstance(key, ast.Constant)}]
+    assert spelt == []
 
 
 def test_every_video_key_flag_reads_its_declaration() -> None:

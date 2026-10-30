@@ -24,7 +24,7 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.frames import extract as extract_mod
-from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
+from sprite_gen.frames.cutout import GREEN, KEY_TARGETS, MAGENTA
 from sprite_gen.frames.extract import remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
 
@@ -35,9 +35,9 @@ KEYS: dict[str, dict[str, tuple[int, int, int]]] = {name: {"target": rgb} for na
 # reference for a clip (`video.batch.walk_start_prompt`) and a ref run whose transparency
 # `auto` planned as a chroma key (`gen.generate_image`) both end their prompt with it.
 KEY_BACKGROUND_TEXT = {
-    "green": ("The entire background is one perfectly flat, uniform pure green chroma-key fill (#00FF00) with no gradient, "
+    GREEN: ("The entire background is one perfectly flat, uniform pure green chroma-key fill (#00FF00) with no gradient, "
               "no texture, no shadow and no ground line."),
-    "magenta": ("The entire background is one perfectly flat, uniform pure magenta chroma-key fill (#FF00FF) with no "
+    MAGENTA: ("The entire background is one perfectly flat, uniform pure magenta chroma-key fill (#FF00FF) with no "
                 "gradient, no texture, no shadow and no ground line."),
 }
 

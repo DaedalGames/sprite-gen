@@ -74,8 +74,8 @@ REFUSED = ("mismatch", "no-text")  # the verdicts a text check refuses on
 # and lavender are not): a colour the style or scene names is looked for in the title's box at a smaller share
 # (`logo_matte.choose_key`).
 KEY_COLOUR_WORDS = {
-    "green": ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
-    "magenta": ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
+    GREEN: ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
+    MAGENTA: ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
 }
 # How many readings one text check may take: a reading that would refuse is read again, up to this many, and one
 # that spells the text passes (docs/logo.md, the text check).
