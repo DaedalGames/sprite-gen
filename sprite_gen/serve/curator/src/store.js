@@ -14,10 +14,9 @@ function isNumericScalar(v) {
 // smooth 모양 값의 허용 범위 — 파이썬 curation.BREATHE_SMOOTH_SHAPE_RANGES 미러.
 const BREATHE_SMOOTH_SHAPE_RANGES = { chest_y: [0.05, 0.95], chest_rx: [0.2, 3.0], chest_ry: [0.05, 1.5], shoulder: [0.0, 1.5], shoulder_lag: [0.0, 0.3], chest_tilt: [-60.0, 60.0], chest_bias: [-0.9, 0.9], chest_dir: [-90.0, 90.0], chest_x: [-1.0, 1.0], chest_bias_y: [-0.9, 0.9], chest_flat: [0.0, 0.9], inhale: [0.2, 0.8] };
 
-// pixel 의 둥근 가슴 — 파이썬 curation.BREATHE_ROUND_KEYS·BREATHE_ROUND_MAX·BREATHE_ROUND_SHAPE 미러. 둘 중 하나가 0 보다
+// pixel 의 둥근 가슴 — 파이썬 curation.BREATHE_ROUND_KEYS(breathe.js)·BREATHE_ROUND_MAX·BREATHE_ROUND_SHAPE 미러. 키 둘 중 하나가 0 보다
 // 크면 그 pixel 줄은 둥근 가슴 장을 굽는다: 가슴 타원 키·숨 꼭대기·토막을 smooth 처럼 읽고, 봉투 값(depth·depth_x·lag)은
 // 거부한다. 큐레이터는 이 장을 따라 그리지 않는다 (breathe.js 가 거부) — 적힌 그대로 들고 있는다.
-const BREATHE_ROUND_KEYS = ["chest_round", "arms_x"];
 const BREATHE_ROUND_MAX = 0.20;
 const BREATHE_ROUND_SHAPE = ["chest_y", "chest_rx", "chest_ry", "chest_tilt", "chest_bias", "chest_x", "chest_bias_y", "inhale"];
 

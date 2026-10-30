@@ -32,6 +32,8 @@ const BREATHE_RANGE_MAX = 0.20;
 // 굽기 방식 — 파이썬 curation.BREATHE_MODES 미러. 생략 = pixel. store.js 의 읽기 검사도 이 이름들을 쓴다.
 const BREATHE_MODES = ["pixel", "smooth"];
 const BREATHE_SMOOTH = BREATHE_MODES[1];
+// 둥근 가슴 키 — 파이썬 curation.BREATHE_ROUND_KEYS 미러. store.js 의 읽기 검사도 이 이름을 쓴다.
+const BREATHE_ROUND_KEYS = ["chest_round", "arms_x"];
 // 그림 자체의 테두리 — 파이썬 frames.extract.FRAME_SIDES·BORDER_MIN_FRACTION 미러 (거절 문구가 쓴다).
 const BREATHE_SIDES = ["top", "left", "right"];
 const BREATHE_SIDE_NAMES = { top: "위", left: "왼쪽", right: "오른쪽" };
@@ -343,7 +345,7 @@ function breatheComposite(base, cfg, phase) {
       "smooth 줄은 큐레이터가 따라 그리지 않는다 — 결과는 compose(GIF·아틀라스)나 `sprite-gen breathe` 로 본다.");
   }
   // 둥근 가슴 pixel 줄(chest_round·arms_x)도 미러가 없다 — 봉투 워프로 그리면 굽기와 다른 숨이다.
-  if (cfg && ["chest_round", "arms_x"].some((k) => Number(cfg[k]) > 0)) {
+  if (cfg && BREATHE_ROUND_KEYS.some((k) => Number(cfg[k]) > 0)) {
     throw new BreatheRefused(
       "둥근 가슴 줄(chest_round·arms_x)은 큐레이터가 따라 그리지 않는다 — 결과는 compose(GIF·아틀라스)나 "
       + "`sprite-gen breathe` 로 본다.");

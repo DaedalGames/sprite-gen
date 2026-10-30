@@ -491,7 +491,7 @@ def _warp(frame: Image.Image, anat: Anatomy, lag: float, t: float,
     return Image.fromarray(out, "RGBA")
 
 
-SIDE_NAMES = {"top": "위", "left": "왼쪽", "right": "오른쪽"}
+SIDE_NAMES = dict(zip(FRAME_SIDES, ("위", "왼쪽", "오른쪽")))
 
 
 def _sides_off(off: dict[str, int]) -> str:
