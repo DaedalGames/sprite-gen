@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (v3.10.1)
+## v3.10.1 - A frame made that shows the same picture as a frame beside it is refused; it is made again only on the side away from the picture it showed, or its run kept as filmed
 
 **Upgrading from 3.10.0: Every cut with no held cell, every cut whose frames between are real new pictures, and every `--fill-held off` run give the same cells as 3.10.0.** A run that 3.8.0 to 3.10.0 reported as filled although its frame between repeated a picture beside it is now made at another fraction where one passes, or kept as filmed with a warning. Its `faults` in `held_fill.before.held_runs` list `held`. At `--out-fps` and in an air retimed with `--air-retime`, such cells are now listed in `out_fps.shown_again` or `air_retime.shown_again` with a warning instead of being counted as made. On twelve tests of the suite that run the binary, 3.10.0 runs the binary 146 times and 3.10.1 runs it 188 times because 3.10.0 took frames between that showed a picture beside them again, while 3.10.1 refuses them and makes them again at other fractions. So a cut whose frames between show a picture beside them again asks the binary for more runs, and takes longer, than in 3.10.0.
 
