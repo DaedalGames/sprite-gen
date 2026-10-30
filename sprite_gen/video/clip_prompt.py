@@ -34,6 +34,7 @@ from sprite_gen.gen.handedness import Handed
 from sprite_gen.gen.video import DEFAULT_MODEL  # the clip model the prompt is for unless named: gen.video's default
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import body_plan as body_mod
+from sprite_gen.video import effect as effect_mod
 from sprite_gen.video import play as play_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.util.console import utf8_streams
@@ -106,7 +107,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         "cycle": cycle,
         "commands": {
             # a lifetime is framed as an effect, whatever its name
-            "canvas": f"sprite-gen video-canvas --still {still} --state {'effect' if lifetime else state} --facing {canvas_facing} --out <dir>/canvas.png --report <dir>/canvas.report.json",
+            "canvas": f"sprite-gen video-canvas --still {still} --state {effect_mod.STATE if lifetime else state} --facing {canvas_facing} --out <dir>/canvas.png --report <dir>/canvas.report.json",
             "clip": f"your video tool, not sprite-gen: image-to-video from <dir>/canvas.png with this prompt, {duration} s{end}, saved as <dir>/clip.mp4",
             "frames": "sprite-gen video-frames --clip <dir>/clip.mp4 --out-dir <dir>/frames --spill auto --reference <dir>/canvas.png",
             "loop": f"sprite-gen video-loop --frames-dir <dir>/frames/keyed --out-dir <dir>/loop --fps <fps in frames.report.json> --state {state} --cycle {cycle} --facing {loop_facing} --name {direction}-{state}",
