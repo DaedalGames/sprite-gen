@@ -225,7 +225,7 @@ BREATHE_LAG_MAX = 0.45
 # 큰 일러·영상 프레임용 — 머리를 자리·바이트 그대로 두고 가슴에서 둥글게 숨쉬게 한다
 # (`sprite_gen.effects.breathe`). smooth 의 기본 진폭은 일러에 맞게 작다 — 가슴 가운데가 목 아래
 # 몸통 높이의 0.85 % 오른다 (흉상 일러에서 화면 높이 약 0.5 %, 화면 크기로 봐도 숨이 세지 않다).
-BREATHE_MODES = ("pixel", "smooth")
+BREATHE_PIXEL, BREATHE_SMOOTH = BREATHE_MODES = ("pixel", "smooth")
 BREATHE_SMOOTH_DEPTH = 0.0085
 # smooth 의 가슴 부풂 — 가슴 가운데에서 이 비율만큼 넓어지고, 바깥으로 갈수록 무게만큼 준다.
 BREATHE_SMOOTH_DEPTH_X = 0.028
@@ -338,7 +338,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
         raise SystemExit(
             f"curation: states.{state}.breathe.mode = {mode!r} 를 모른다 — "
             f"{' | '.join(BREATHE_MODES)} 중 하나다 (생략하면 pixel). 조용히 pixel 로 굽지 않는다.")
-    smooth = mode == "smooth"
+    smooth = mode == BREATHE_SMOOTH
     # pixel 의 둥근 가슴·양팔 가로 — 생략(None)·0 은 꺼짐. 하나라도 0 보다 크면 그 줄은 round 장을 굽는다.
     amps = {}
     for name in BREATHE_ROUND_KEYS:

@@ -189,7 +189,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.curate.curation import BREATHE_SMOOTH_SHAPE_RANGES, state_breathe
+from sprite_gen.curate.curation import BREATHE_PIXEL, BREATHE_SMOOTH, BREATHE_SMOOTH_SHAPE_RANGES, state_breathe
 from sprite_gen.effects import breathe as breathe_mod
 from sprite_gen.effects.anatomy import Anatomy
 from sprite_gen.frames import folder as folder_mod
@@ -1251,8 +1251,8 @@ def read_breath(path: Path, lag: float | None, *, verb: str = VERB) -> Breath:
             and isinstance((report.get("resolved") or {}).get("anatomy"), dict)):
         raise SystemExit(f"{verb}: --breathe {path}: not a Breathe layer's record — sprite-gen breathe writes config, phases "
                          "and resolved.anatomy into breathe.json")
-    mode = report["config"].get("mode") or "pixel"
-    if mode != "smooth":
+    mode = report["config"].get("mode") or BREATHE_PIXEL
+    if mode != BREATHE_SMOOTH:
         raise SystemExit(f"{verb}: --breathe {path}: a {mode} breath — the part follows a smooth breath, which rests at the "
                          "first cell (a pixel breath's travelling wave moves it)")
     try:
