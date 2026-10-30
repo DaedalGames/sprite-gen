@@ -1,6 +1,6 @@
 # Video → sprite pipeline (engine SSoT)
 
-> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, the batch, a set's sheet, a walk or run's stop · Index: [docs/README.md](README.md)
+> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, a single play's root motion and its air retimed, the batch, a set's sheet, a walk or run's stop · Index: [docs/README.md](README.md)
 
 One still becomes a whole motion set: the still is padded into the canvas a state
 needs, Grok Imagine animates it in place, the clip is keyed frame by frame, and one
@@ -551,6 +551,9 @@ the cut removes an earlier one. An argument error touches nothing.
 the start image). The cycle is every frame but the last, which re-renders the first, so the
 wrap plays like the step into that last frame. Where the pinned frame redraws the first, `--wrap-blend auto` (the default) takes the first frame's drawing back over the last half second, a redraw only, recorded as `wrap_blend`. Passing `--wrap-blend off` cuts as filmed, but [the seam bridge](loop-repair.md#the-seam-bridge-a-loop-that-is-not-a-walk-whose-wrap-jumps) can still make frames round the wrap of a loop that is not a walk or run; for such a loop, pass `--repair off --wrap-blend off` for the earlier bytes. See [loop repair](loop-repair.md#6-the-redrawn-wrap-a-pinned-clip-whose-last-frame-the-model-drew-again) for the gating and blending rules.
 
+`--cycle once --start S --length L` plays exactly those frames once, a move cut out of a longer motion that settles
+on no pose ([root motion](#root-motion--a-cut-played-once-where-the-body-is-what-it-stands-on-its-air)).
+
 `--cycle once-return` is for a clip pinned to end on its first frame that plays once (`video-set
 --play once-return`, [play modes](#play-modes)). It keeps every frame, the last too, so the strip
 starts and ends on the first pose and a game plays it once and goes on from the pose it started in.
@@ -598,6 +601,78 @@ Outputs:
   `--gif-fps` still override; `--strip-height` caps the cell/strip/GIF height. Scaling up
   requires an explicit `--body-height` target and still respects that cap.
 - `<name>.webp` — same frames, lossless, `img2webp -exact`.
+
+### Root motion — a cut played once: where the body is, what it stands on, its air
+
+A cut played once with a body (`once`, `once-return`, `one-shot`: a jump, a vault, a strike; not an effect's
+lifetime) carries its root motion in the strip sidecar, `root_motion`, by default. The cells are the cut's as
+before (`sprite_gen/video/root_motion.py`). Everything is read on the strip's cells, at their times as they play:
+
+- `root` — each cell's root, in cell px from the cell's top-left: the subject's mass centre (the mean of its pixels,
+  alpha over 0, as `inspect-motion` reads a frame's `centroid_px`). **A game draws cell k with that point on the
+  body's place.** Moving the body by the roots' steps plays the cut as filmed; moving it by the game's own physics
+  plays the same cells on the game's path. The cells keep the clip's pixels (a jump rises inside its cell), so a game
+  that draws every cell at one place gets the motion as filmed without reading the key.
+- `ground_y` — the floor's row, cell px: the lowest row any frame of the clip reaches. A cell stands on it where its
+  lowest body row is within 4 source px of it (`nonloop.on_floor`, the frames the strip's standing height reads).
+- `contacts` — each run of cells on the ground (`by: ground`) or in a contact the caller names over frames of the
+  clip, in `inspect-motion`'s spans (`--contact hand=12:20`): a hand on a wall the clip does not draw, which no floor
+  shows.
+- `air` — each run of cells touching nothing: `takeoff` and `landing` (the cells before and after), `seconds` between
+  them, `apex_px` (how far the root rises over the take-off's, cell px) and `apex_cell`. An air whose take-off or
+  landing is not in the cut has `seconds: null`.
+- With `--meters-per-px M` (the metres a pixel of the clip as filmed holds: the standing height in metres over the
+  strip's `body_src_h`): `meters_per_px` (a cell px's), `root_m` (each root from the first cell's, metres, up
+  positive) and each air's `apex_m`.
+
+Tell the person each air in one line, its seconds and its apex (`air 0.42 s, apex 0.21 m`: the summary's `air`, a
+`video-set` item's `loop.air`).
+
+The root is the mass centre (the centre of mass), not a body part: in the air it is the point that falls on a parabola
+under gravity whatever the arms and legs do. On a synthetic jump whose mass centre flies under a known gravity it is
+read within 0.46 px (0.47 % of the body's standing height, `tests/video/test_root_motion.py`). As the legs tuck and
+stretch it moves inside the body, by several percent of the body's height on a hard tuck, so a game that pins a body
+part to its path reads that part itself.
+
+**A move cut out of a longer motion — `--cycle once --start S --length L`.** A vault in a run settles on no pose,
+so `once` finds no end and `one-shot` no return. Given both, `once` plays exactly those frames of the clip once
+(`terminal.kind: given`), its end pose not read.
+
+**The air given its own length, gravity and speed — `--air-retime gravity=G,air=T,speed=V`.** Each air with its
+take-off and its landing in the cut is given `T` seconds, a gravity of `G` m/s² and a speed along of `V` m/s, any of
+them, each the clip's own where not given (its gravity read off the root's rise over the line from take-off to
+landing). `G` and `V` need `--meters-per-px`. The cut is made again at its rate (`--out-fps`, or the clip's): the
+cells up to the take-off and from the landing at the clip's pace, the air's spread evenly over its new seconds, each
+showing the clip's pose at the same share of its air, made with RIFE between the two frames it falls between where
+it falls between them (`held_fill.at_times`, the frames between [the held cells](loop-repair.md) get), never a
+frame shown again. Each air cell is then moved whole, by whole pixels, until its root stands on the parabola from the
+take-off's root to the landing's; the landing and every cell after it are moved along by as much further as the air
+now carries the body, so a planted foot stays planted. The take-off, the landing and the cells before the take-off are
+the frames as filmed. The strip sidecar's `air_retime` says what was asked and, for each air, `seconds_before` and
+`seconds`, `apex_before_px` and `apex_px` (`apex_m`), the gravity and speed used, `moved_along_px`; and the cells made,
+the cells shown again, the poses over the cells; `root_motion` is read on the retimed cells. A cut with no such air,
+or a loop, is cut as filmed and says why. With no RIFE installed and a frame to make, the air is cut as filmed and a
+warning names the motion, its air cells and the install line; an air given its own seconds at the clip's rate (every
+cell a frame) needs none. `video-set --air-retime --meters-per-px` hands both to every cut.
+
+A vault cut out of a run, its hand on a wall the clip does not draw: `--cycle once --start 10 --length 40
+--contact hand=12:20 --meters-per-px 0.005 --air-retime gravity=9.81,air=0.6,speed=4` gives the flight from the
+hand leaving the wall to the landing 0.6 s at 9.81 m/s² and 4 m/s, its seconds held to whole cells (14 cells at 24
+fps, 0.583 s), and says its seconds and apex.
+
+What it takes from sprite-gen, and what it writes new:
+
+| Question | Answered by |
+|---|---|
+| Where is the body in a frame | `qa.motion.centroid`, `inspect-motion`'s `centroid_px`, taken out of `analyze_motion` |
+| Does a frame stand on the floor | `nonloop.on_floor`, the strip's standing-height rule, taken out of `loop.build_strip` |
+| Which frames does a named contact span | `qa.motion.contact_spans`, `inspect-motion --contacts` |
+| A cell at a time between two frames, judged, never a frame shown again | `held_fill.at_times`, taken out of `held_fill.upsample`, with RIFE located once a frame is to be made (`loop._located`) |
+| The poses over the cells | `held_fill.same_steps`, `held_fill.reading` |
+| The air, its seconds and apex; the clip's gravity; the cells' times and places on the parabola | new (`root_motion.read`, `retime`): no engine function read an air or a gravity |
+
+A jump in place given `speed=` goes the `--facing` way. A landing on something higher than the clip's floor (a box,
+a ledge) reads as air until the body comes down to the floor: name it with `--contact`.
 
 ## 5. Set — the batch
 
