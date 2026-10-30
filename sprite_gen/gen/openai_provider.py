@@ -251,7 +251,7 @@ def _ask(url: str, token: str, data: bytes, content_type: str) -> tuple[int, Any
     left of it."""
     deadline = time.monotonic() + GEN_TIMEOUT_SECONDS
     return retry.ask(lambda: http_image(url, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS, deadline=deadline),
-                     provider="openai", who="openai", label="gen", kind=refusal.provider_code, deadline=deadline)
+                     provider=address.OPENAI, who="openai", label="gen", kind=refusal.provider_code, deadline=deadline)
 
 
 def rate_limit_headers(headers: Any) -> dict[str, str]:
@@ -299,7 +299,7 @@ class OpenAIProvider:
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, f" ({label}).")
         data = json.dumps(body).encode("utf-8")
-        status, reply, _headers, _asks = _ask(address.url("openai", "/responses"), token, data, "application/json")
+        status, reply, _headers, _asks = _ask(address.url(address.OPENAI, "/responses"), token, data, "application/json")
         text, metadata = vision.response_text(status, reply, label=label)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -319,7 +319,7 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply, headers, asks = _ask(address.url("openai", endpoint), token, data, content_type)
+        status, reply, headers, asks = _ask(address.url(address.OPENAI, endpoint), token, data, content_type)
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).

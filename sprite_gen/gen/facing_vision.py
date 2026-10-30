@@ -92,7 +92,7 @@ def grok_inspect(path: Path, *, credential=None, call=None, prompt: str = INSPEC
     # The question's time limit is the transport's read timeout, from its first send: the waits before a
     # refused one goes again count in it (`retry`), and each send reads only what is left of it.
     send, deadline = call or xai.http_json, time.monotonic() + xai.HTTP_TIMEOUT_SECONDS
-    status, reply, _sends = xai.post(lambda *a: send(*a, deadline=deadline), address.url("xai", "/responses"),
+    status, reply, _sends = xai.post(lambda *a: send(*a, deadline=deadline), address.url(address.XAI, "/responses"),
                                      credential.token, request_body(path, GROK_MODEL, prompt=prompt, detail=detail),
                                      who="grok", label=_tag(label), deadline=deadline)
     text, metadata = response_text(status, reply, label=label)

@@ -199,7 +199,7 @@ def http_download(url: str, token: str, *, deadline: float | None = None) -> byt
     that gets no answer it can read whole — the connection failed or timed out, the body broke on the way,
     the deadline came — raises xai.TransportError, its words in `reason`. The clip is fetched through the xAI base
     when SPRITE_GEN_XAI_BASE_URL is set (`address.fetched`), else from `url` itself."""
-    request = urllib.request.Request(address.fetched("xai", url))
+    request = urllib.request.Request(address.fetched(address.XAI, url))
     try:
         try:
             with urllib.request.urlopen(request, timeout=time_left(HTTP_TIMEOUT_SECONDS, deadline)) as response:
@@ -531,7 +531,7 @@ def _submit_poll_publish(
     # some of the poll timeout, which counts from the first send.
     started = time.monotonic()
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
-    status, reply, _sends = post(call, address.url("xai", f"/videos/{endpoint}"), credential.token, body, who="xai", label=verb,
+    status, reply, _sends = post(call, address.url(address.XAI, f"/videos/{endpoint}"), credential.token, body, who="xai", label=verb,
                                  sleep=sleep, deadline=started + timeout)
     if status in (401, 403):
         raise SystemExit(
@@ -601,7 +601,7 @@ def _poll_publish(
         polls += 1
         lost: str | None = None
         try:
-            http, poll = call("GET", address.url("xai", f"/videos/{request_id}"), credential.token, None, deadline=deadline)
+            http, poll = call("GET", address.url(address.XAI, f"/videos/{request_id}"), credential.token, None, deadline=deadline)
         except TransportError as failed:
             lost, http, poll = failed.reason, None, None
         poll_status = poll.get("status") if isinstance(poll, dict) else None

@@ -57,7 +57,7 @@ def _code(body):
 
 def generate(document):
     key = credential()
-    req = Request(address.url('elevenlabs', f"/{document['endpoint']}?output_format={document['output_format']}"),
+    req = Request(address.url(address.ELEVENLABS, f"/{document['endpoint']}?output_format={document['output_format']}"),
                   data=json.dumps(document['body']).encode(),
                   headers={'xi-api-key': key, 'Content-Type': 'application/json'}, method='POST')
 
@@ -77,12 +77,12 @@ def generate(document):
 
     announce_api_billing('elevenlabs', AUTH_ENV, f" ({document['endpoint']}; the audio is cached, so the same "
                          "request is not bought twice).")
-    status, body, headers, asks = retry.ask(send, provider='elevenlabs', who='ElevenLabs', label='sound', kind=_code)
+    status, body, headers, asks = retry.ask(send, provider=address.ELEVENLABS, who='ElevenLabs', label='sound', kind=_code)
     if not 200 <= status < 300:
         raise ValueError(f'ElevenLabs refused sound (HTTP {status}, {_code(body) or "unclassified"}); {retry.tail(asks)}')
     if not isinstance(body, bytes) or not body:
         raise ValueError('ElevenLabs returned no audio; request outcome unresolved')
-    meta = {'provider': 'elevenlabs', 'auth_source': AUTH_ENV, 'model': document['body']['model_id'], 'asks': asks}
+    meta = {'provider': address.ELEVENLABS, 'auth_source': AUTH_ENV, 'model': document['body']['model_id'], 'asks': asks}
     # Only documented, constrained metadata; provider prose never enters a report or log.
     for header, field in (('request-id', 'request_id'), ('song-id', 'song_id')):
         value = headers.get(header, '')
