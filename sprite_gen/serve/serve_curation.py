@@ -1652,22 +1652,22 @@ class CurationHandler(BaseHTTPRequestHandler):
                     return
                 provider = str(payload.get("provider") or interpolate_mod.DEFAULT_PROVIDER)
                 if provider not in CURATOR_PROVIDERS:
-                    self._send_json({"error": f"unknown provider: {provider}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown provider: {provider}"}, 400)
                     return
                 result = run_interpolate(self.run_dir, state, index_a, index_b,
                                          t_value, payload.get("label") or None, provider)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
             if path == "/api/reroll":
                 payload = self._read_body()
                 state = str(payload.get("state") or "")
                 request = load_request(self.run_dir)
                 if state not in request.get("states", {}):
-                    self._send_json({"error": f"unknown state: {state}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown state: {state}"}, 400)
                     return
                 provider = str(payload.get("provider") or gen_mod.HARD_DEFAULT_PROVIDER)
                 if provider not in CURATOR_PROVIDERS:
-                    self._send_json({"error": f"unknown provider: {provider}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown provider: {provider}"}, 400)
                     return
                 result = run_reroll(self.run_dir, state, provider)
                 self._send_json(result, 200 if result[Wire.OK] else 500)

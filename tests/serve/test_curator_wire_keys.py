@@ -208,12 +208,6 @@ CURATOR_OTHER_STORES = {
     ("tnorm", "dy"),
     ("request", "fps"),                    # sprite-request.json
 }
-# Left as text in this change: the replies on the curator's provider lines, which another
-# change in the same plan rewrites; they move to `Wire.ERROR` with it.
-CURATOR_LEFT_AS_TEXT = Counter({
-    '{"error": f"unknown provider: {provider}"}': 2,
-    '{"error": f"unknown state: {state}"}': 1,
-})
 
 
 def _owner(stack: list[ast.AST]) -> str:
@@ -294,12 +288,9 @@ def test_every_curator_key_is_read_or_listed_as_unread():
 def test_serve_curation_writes_no_wire_key_as_text():
     source = Path(serve_curation.__file__).read_text(encoding="utf-8")
     raw = _raw_keys(source, CURATOR_OTHER_DICTS, CURATOR_OTHER_STORES)
-    left = Counter(text for _, _, text in raw if text in CURATOR_LEFT_AS_TEXT)
-    raw = [site for site in raw if site[2] not in CURATOR_LEFT_AS_TEXT]
     assert not raw, (f"{len(raw)} keys written as text in serve_curation.py — name them in `Wire` "
                      "(or, if not on the wire, list them above):\n"
                      + "\n".join(f"  {line}: {key!r}" for line, key, _ in raw))
-    assert left == CURATOR_LEFT_AS_TEXT, f"the text left for the provider change moved: {dict(left)}"
 
 
 def test_every_wire_name_the_servers_use_is_declared():
