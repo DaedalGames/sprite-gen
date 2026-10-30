@@ -61,7 +61,7 @@ from typing import Any, Callable
 from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import address, prompt_parts, refusal, retry
-from .base import announce_api_billing, print_json
+from .base import PROVIDER_GROK, announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
 from .xai import (
@@ -540,7 +540,7 @@ def _submit_poll_publish(
         )
     request_id = reply.get("request_id") if isinstance(reply, dict) else None
     if status not in (200, 202) or not request_id:
-        refused = refusal.read("grok", reply)
+        refused = refusal.read(PROVIDER_GROK, reply)
         raise SystemExit(
             f"{verb}: {refused.reason('generation request refused')} (HTTP {status}){refused.suffix()}: {_error_detail(reply, credential.token)}"
         )
@@ -637,7 +637,7 @@ def _poll_publish(
             )
         elif http not in (200, 202) or poll_status in _FAILED_STATUSES:
             # A failed poll carries `error` as an object `{code, message}`.
-            refused = refusal.read("grok", poll)
+            refused = refusal.read(PROVIDER_GROK, poll)
             raise SystemExit(
                 f"{verb}: generation {request_id} {refused.reason(f'ended with status={poll_status!r}')} "
                 f"(HTTP {http}){refused.suffix()}: {_error_detail(poll, credential.token)}"

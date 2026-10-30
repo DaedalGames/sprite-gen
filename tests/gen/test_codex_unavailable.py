@@ -152,6 +152,7 @@ def test_no_codex_login_and_nothing_chosen_ends_with_the_question_and_draws_noth
     question = base.asked_codex_unavailable(run.stderr)
     assert question["cause"] == "login" and question["reason"] == "codex CLI not found on PATH"
     assert question["choices"] == {"openai": "--provider openai", "grok": "--provider grok", "stop": None}
+    assert list(question["choices"]) == ["openai", "grok", "stop"]  # the line's order: dict == does not see it
     assert "OpenAI API" in question["question"] and "Grok" in question["question"] and "stop" in question["question"]
     assert not out.exists() and not report.exists()
 
@@ -344,6 +345,7 @@ def test_video_set_whose_mid_step_redraw_asked_stops_with_the_same_question(tmp_
     question = asked.value.question
     assert asked.value.code == base.CODEX_UNAVAILABLE_EXIT and question["cause"] == "login"
     assert question["choices"] == {"openai": "--still-provider openai", "grok": "--still-provider grok", "stop": None}
+    assert list(question["choices"]) == ["openai", "grok", "stop"]
     payload = json.loads((root / "set.report.json").read_text(encoding="utf-8"))
     assert payload["asked"] == question and payload["items"][0]["asked"]["cause"] == "login"
 

@@ -55,6 +55,9 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from sprite_gen.effects.breathe import (DEFAULT_DEPTH, DEFAULT_LAG, freeze_anatomy,
                                 reference_key)
+from sprite_gen.effects import interpolate as interpolate_mod
+from sprite_gen import gen as gen_mod
+from sprite_gen.gen.base import PROVIDER_CODEX, PROVIDER_GROK
 from sprite_gen.curate.curation import (CURATION_FILENAME, SCHEMA_VERSION, effective_logical_height,
                                  empty_curation, frame_variant, imported_ref_role,
                                  load_curation, load_curation_report, pixel_snap_scale,
@@ -914,8 +917,14 @@ def run_compose(run_dir: Path) -> dict:
     return _run_module("compose_atlas", run_dir)
 
 
+# The providers the curator's reroll and in-between buttons run, in the order its select offers them
+# (gen-trigger.js GEN_PROVIDERS mirrors it). The curator's own set: the reroll CLI takes every gen provider,
+# and capabilities.PROVIDER_CALLS["curation"] counts on openai not being here.
+CURATOR_PROVIDERS = (PROVIDER_CODEX, PROVIDER_GROK)
+
+
 def run_interpolate(run_dir: Path, state: str, index_a: int, index_b: int,
-                    t: float, label: str | None, provider: str = "codex") -> dict:
+                    t: float, label: str | None, provider: str = interpolate_mod.DEFAULT_PROVIDER) -> dict:
     """AI in-between (`sprite_gen.effects.interpolate`): 테이크 기록 + 전체 배치 재추출.
 
     생성은 서버 머신의 provider CLI(codex/grok, 머신 로컬 OAuth)가 수행한다 —
@@ -929,7 +938,7 @@ def run_interpolate(run_dir: Path, state: str, index_a: int, index_b: int,
     return _run_module("interpolate", run_dir, *extra)
 
 
-def run_reroll(run_dir: Path, state: str, provider: str = "codex") -> dict:
+def run_reroll(run_dir: Path, state: str, provider: str = gen_mod.HARD_DEFAULT_PROVIDER) -> dict:
     """행 리롤 (`sprite_gen.effects.reroll`): 새 테이크 생성 + 전체 배치 재추출.
 
     primary 를 덮지 않는다 — 후보군 병기(테이크)가 계약이다 (maintainer 2026-07-19
@@ -1499,8 +1508,8 @@ class CurationHandler(BaseHTTPRequestHandler):
                 if not 0.0 < t_value < 1.0:
                     self._send_json({"error": f"t must be inside (0, 1): {t_value}"}, 400)
                     return
-                provider = str(payload.get("provider") or "codex")
-                if provider not in ("codex", "grok"):
+                provider = str(payload.get("provider") or interpolate_mod.DEFAULT_PROVIDER)
+                if provider not in CURATOR_PROVIDERS:
                     self._send_json({"error": f"unknown provider: {provider}"}, 400)
                     return
                 result = run_interpolate(self.run_dir, state, index_a, index_b,
@@ -1514,8 +1523,8 @@ class CurationHandler(BaseHTTPRequestHandler):
                 if state not in request.get("states", {}):
                     self._send_json({"error": f"unknown state: {state}"}, 400)
                     return
-                provider = str(payload.get("provider") or "codex")
-                if provider not in ("codex", "grok"):
+                provider = str(payload.get("provider") or gen_mod.HARD_DEFAULT_PROVIDER)
+                if provider not in CURATOR_PROVIDERS:
                     self._send_json({"error": f"unknown provider: {provider}"}, 400)
                     return
                 result = run_reroll(self.run_dir, state, provider)

@@ -45,6 +45,7 @@ from . import address, refusal, retry
 from .xai import NO_ANSWER, error_body, read_whole, time_left
 from .base import (
     GEN_TIMEOUT_SECONDS,
+    PROVIDER_OPENAI,
     QUALITIES,
     TRANSPARENCY_NATIVE,
     GenRequest,
@@ -264,7 +265,7 @@ def _refusal(reply: Any) -> refusal.Refusal:
     moderation = error.get("moderation_details") if isinstance(error, dict) else None
     stage = moderation.get("moderation_stage") if isinstance(moderation, dict) else None
     details = (("moderation_stage", stage),) if stage in MODERATION_STAGES else ()
-    return refusal.read("openai", reply, details)
+    return refusal.read(PROVIDER_OPENAI, reply, details)
 
 
 def _publish_image(item: dict, path: Path) -> None:
@@ -281,7 +282,7 @@ def _publish_image(item: dict, path: Path) -> None:
 
 
 class OpenAIProvider:
-    name = "openai"
+    name = PROVIDER_OPENAI
     # `background: transparent` returns a real alpha channel on gpt-image-2.5.
     transparency = TRANSPARENCY_NATIVE
 

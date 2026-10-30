@@ -20,6 +20,7 @@ from PIL import Image, UnidentifiedImageError
 from . import address, refusal, retry, xai
 from .base import (
     GEN_TIMEOUT_SECONDS,
+    PROVIDER_GROK,
     RESOLUTIONS,
     TRANSPARENCY_CHROMA,
     GenRequest,
@@ -118,7 +119,7 @@ def _publish_image(item: dict, path: Path) -> None:
 
 
 class GrokProvider:
-    name = "grok"
+    name = PROVIDER_GROK
     transparency = TRANSPARENCY_CHROMA
 
     def inspect_facing(self, path: Path, workdir: Path) -> tuple[str, dict]:

@@ -60,6 +60,9 @@ from . import handedness as handed_mod
 from . import prompt_parts
 from .base import (
     CODEX_UNAVAILABLE_EXIT,
+    PROVIDER_CODEX,
+    PROVIDER_GROK,
+    PROVIDER_OPENAI,
     QUALITIES,
     RESOLUTIONS,
     TRANSPARENCY_CHROMA,
@@ -79,7 +82,7 @@ from .grok_provider import GrokProvider
 from .openai_provider import OpenAIProvider
 from sprite_gen.util.console import utf8_streams
 
-PROVIDERS = ("codex", "grok", "openai")
+PROVIDERS = (PROVIDER_CODEX, PROVIDER_GROK, PROVIDER_OPENAI)
 # `--alpha-mode`: `auto` reads the provider's declared strategy (the SSoT);
 # `native` / `chroma` force one. Forcing `native` on a chroma-only provider fails
 # loud — a strategy the backend cannot execute is not a fallback candidate.
@@ -91,11 +94,11 @@ ALPHA_MODES = (ALPHA_MODE_AUTO, *TRANSPARENCY_STRATEGIES)
 # An EXPLICIT `--provider` is always honored exactly — an explicitly named provider
 # that is down fails loud at generation time.
 DEFAULT_PROVIDER_ENV = "SPRITE_GEN_DEFAULT_PROVIDER"
-HARD_DEFAULT_PROVIDER = "codex"
+HARD_DEFAULT_PROVIDER = PROVIDER_CODEX
 # A per-call API-billed backend is never a default: only a choice the user made
 # reaches it, so nothing routes a subscription user onto metered credit unasked
 # (구독 우선 불변식 1-2).
-EXPLICIT_ONLY_PROVIDERS = ("openai",)
+EXPLICIT_ONLY_PROVIDERS = (PROVIDER_OPENAI,)
 # What a default codex that cannot run here turns into (수홍 2026-10-16, docs/gen.md "When codex cannot run"):
 # codex is not signed in (`codex_provider.codex_login`), or `codex exec` said its usage is used up
 # (`codex_provider.CodexUsageLimit`). `ask` (the default) ends the call with one question and nothing generated
@@ -104,7 +107,7 @@ EXPLICIT_ONLY_PROVIDERS = ("openai",)
 # key CODEX_UNAVAILABLE_SETTING), else `ask`. Until 2.44.0 it went to grok unasked.
 CODEX_UNAVAILABLE_ENV = "SPRITE_GEN_CODEX_UNAVAILABLE"
 CODEX_UNAVAILABLE_SETTING = "codex_unavailable"
-CODEX_UNAVAILABLE_CHOICES = ("ask", "grok", "openai")
+CODEX_UNAVAILABLE_CHOICES = ("ask", PROVIDER_GROK, PROVIDER_OPENAI)
 CODEX_UNAVAILABLE_DEFAULT = "ask"
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
@@ -228,11 +231,11 @@ def ui_kit_guide_size(aspect_ratio: str | None) -> tuple[int, int]:
 
 
 def _make_provider(name: str, *, keep_session: bool):
-    if name == "codex":
+    if name == PROVIDER_CODEX:
         return CodexProvider(keep_session=keep_session)
-    if name == "grok":
+    if name == PROVIDER_GROK:
         return GrokProvider()
-    if name == "openai":
+    if name == PROVIDER_OPENAI:
         return OpenAIProvider()
     raise SystemExit(f"gen: unknown provider {name!r}; expected one of {', '.join(PROVIDERS)}")
 
@@ -327,7 +330,7 @@ def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
 
     # Only a codex default turns into the user's choice. A grok default that is down
     # fails loud at generation time rather than reverse-falling back to codex.
-    if default == "codex":
+    if default == PROVIDER_CODEX:
         ok, reason = _codex_available()
         if not ok:
             return codex_unavailable("login", reason, default_source=source)
@@ -363,7 +366,7 @@ def codex_unavailable(cause: str, reason: str, *, default_source: str) -> tuple[
     choice, chosen_by = codex_unavailable_choice()
     if choice == "ask":
         raise ask_codex_unavailable(codex_unavailable_question(cause, reason))
-    return choice, {"from": "codex", "to": choice, "cause": cause, "reason": reason,
+    return choice, {"from": PROVIDER_CODEX, "to": choice, "cause": cause, "reason": reason,
                     "default_source": default_source, "chosen_by": chosen_by}
 
 

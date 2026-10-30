@@ -37,6 +37,7 @@ from pathlib import Path
 from .base import (
     GEN_TIMEOUT_SECONDS,
     LOGINS_OFF,
+    PROVIDER_CODEX,
     TRANSPARENCY_NATIVE,
     announce_api_billing,
     GenRequest,
@@ -378,7 +379,7 @@ def _no_image_records_message(rollout: Path, codex_home: Path) -> str:
 class CodexProvider:
     """Generate one image through codex `image_gen`."""
 
-    name = "codex"
+    name = PROVIDER_CODEX
     transparency = TRANSPARENCY_NATIVE
 
     def __init__(self, *, keep_session: bool = False) -> None:
