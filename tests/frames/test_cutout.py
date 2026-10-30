@@ -161,3 +161,4 @@ def test_the_cutout_key_flag_reads_cutout_keys() -> None:
     from sprite_gen.frames import cutout as cutout_mod
 
     assert _key_choices("cutout") is cutout_mod.KEYS
+    assert cutout_mod.KEYS == ("auto", "white", "magenta", "green", "measured")  # spelt out: the routes take these
