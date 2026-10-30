@@ -25,8 +25,10 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.frames import extract as extract_mod
 from sprite_gen.frames.cutout import GREEN, KEY_TARGETS, MAGENTA
-from sprite_gen.frames.extract import remove_chroma_background_ycbcr
+from sprite_gen.frames.extract import CHROMA_YCBCR, remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
+
+from .base import TRANSPARENCY_NATIVE
 
 
 KEYS: dict[str, dict[str, tuple[int, int, int]]] = {name: {"target": rgb} for name, rgb in KEY_TARGETS.items()}
@@ -250,7 +252,7 @@ def key_transparent(
     stats: dict[str, Any] = {
         "out": str(out_path),
         "mode": "RGBA",
-        "method": "ycbcr",
+        "method": CHROMA_YCBCR,
         "size": f"{width}x{height}",
         "key": key,
         "keyed_pixels": keyed,
@@ -328,7 +330,7 @@ def verify_native_alpha(
     stats: dict[str, Any] = {
         "out": str(out_path),
         "mode": "RGBA",
-        "method": "native",
+        "method": TRANSPARENCY_NATIVE,
         "size": f"{width}x{height}",
         "alpha_zero_pct": alpha_zero_pct,
         "partial_alpha_pct": round(partial / total * 100, 2) if total else 0.0,
