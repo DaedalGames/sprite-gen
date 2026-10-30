@@ -1389,11 +1389,12 @@ own". Where `less_bands` is under the largest of `BOB_OWN` (0.3) times `beat`, t
 less as much of the zoom as its band {a}% to {b}% of its height below its top reads, its top line's
 rise and fall twice an interval is {x} rows of {beat} ({percent}), {ratio} of the {less_lowest} left
 against the lowest row (at least 30%, {floor} rows and 0.6): the picture may zoom with the body, and the
-body's own is not told from it". Where `beat` is zero, as for a body whose top line holds still on the
+body's own is not told from it". Where `beat` is under `BEAT_STILL` (`1e-9` rows), as for a body whose top line holds still on the
 screen while only its lowest row rises and falls (a body that does not rise and fall whose foot drawn
 nearer is drawn lower each step), `{percent}` now reads "its top line holding still"
-(`local_cycle._share`). What the witness says is unchanged; before, `video-loop` stopped there on a
-division by zero.
+(`local_cycle._share`). The test is against `BEAT_STILL` rather than zero because a top line that does
+not rise and fall fits to round-off, which is 0 under one machine's numpy and a tiny nonzero value under
+another's. What the witness says is unchanged; before, `video-loop` stopped there on a division by zero.
 Since every band's `less` is `less_lowest` times (1 - `reads`), this
 hold catches every band seen that moves on the beat (its `reads` over 0.4): the body's own is witnessed
 only where every band seen holds still on the beat and what is left is still at least 30% of `beat` and
@@ -1458,7 +1459,8 @@ written). Recorded in `cycle.step_count.cycles`:
 (`half`, `quarter`, `edge` (frames whose lowest row is their last) and `body` are absent under the floors;
 `body` is also absent where under 8 frames are left; `body` is `{beat, lowest, sole, less_lowest, less_bands,
 still_bands, own, bands: {rows, width, zoom, beat, reads, less}, share, scale, least, scale_least,
-band_floor}`: `share` = `own` / `beat`, `scale` = `less_bands` / `less_lowest` (null where no band is seen),
+band_floor}`: `share` = `own` / `beat`, `scale` = `less_bands` / `less_lowest` (`share` and `scale` read 0.0
+where the value they are divided by is under `BEAT_STILL`, null where no band is seen),
 `least` = `BOB_OWN`, `scale_least` = `BOB_SCALE`, `band_floor` = `BAND_FLOOR`; values rounded to 0.01; `why` absent
 where it says `"cycles"`; `says` is `"cycles"` or null); `unwitnessed` true only where nothing witnessed; absent where not asked. `cue` and
 `bob` are recorded only where the picture passes. The same reading is used for the search's cut

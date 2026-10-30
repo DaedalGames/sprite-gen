@@ -92,6 +92,12 @@ BOB_OWN = 0.3
 BOB_SCALE = 0.6
 BAND_FLOOR = 1.0  # pixels of a band's mean width a zoom moves: under it the pixel grid moves the band as much
 BEAT_FRAMES = 8  # a rise and fall twice an interval is fitted (`twice_an_interval`) to no fewer frames
+# A line that does not rise and fall fits to round-off, not to nothing: exactly 0 under one machine's numpy, about 1e-30
+# rows under another's, and two lines that move alike leave about 1e-14 rows of each other. A line read in whole rows
+# moves a row or not at all, and a row in one frame reads about 1e-5 rows up and down at the least, on a clip of a
+# thousand frames. Under BEAT_STILL rows there is no rise and fall to take a share of (`_share`, `bob_word` `share` and
+# `scale`). What the witness says does not read it: its floors are whole rows.
+BEAT_STILL = 1e-9
 # The lines a walk's cut is read on (`cut_word`), and where each reads the body's top line: on the screen, and over its
 # feet (`over_feet`). Each says its own word; the cut's is the first either says, in CUT_WORDS' order.
 CUT_LINES = {'screen': 'on the screen', 'feet': 'over its feet'}
@@ -717,8 +723,8 @@ def over_feet(signals, interval):
 
 def _share(rows, beat):
     """`rows` as a share of the top line's rise and fall twice an interval (`beat`, `own_beat`), for a why: or, where
-    that is none, the top line holding still on the screen."""
-    return f"{rows/beat:.0%}" if beat else "its top line holding still"
+    that is none (under BEAT_STILL), the top line holding still on the screen."""
+    return f"{rows/beat:.0%}" if beat >= BEAT_STILL else "its top line holding still"
 
 def bob_word(signals, interval, *, feet=False):
     """Whether the body rises and falls twice an interval `interval` frames long (`read_cycles`), read off `signals`
@@ -764,9 +770,9 @@ def bob_word(signals, interval, *, feet=False):
         word['body'] = {**{k: None if v is None else round(v, 2) for k, v in beat.items() if k != 'bands'},
                         'bands': {'rows': bands['rows'], **{k: [None if v is None else round(v, 2) for v in bands[k]]
                                                             for k in ('width', 'zoom', 'beat', 'reads', 'less')}},
-                        'share': round(beat['own']/beat['beat'], 3) if beat['beat'] else 0.0,
+                        'share': round(beat['own']/beat['beat'], 3) if beat['beat'] >= BEAT_STILL else 0.0,
                         'scale': (None if beat['less_bands'] is None else
-                                  round(beat['less_bands']/beat['less_lowest'], 3) if beat['less_lowest'] else 0.0),
+                                  round(beat['less_bands']/beat['less_lowest'], 3) if beat['less_lowest'] >= BEAT_STILL else 0.0),
                         'least': BOB_OWN, 'scale_least': BOB_SCALE, 'band_floor': BAND_FLOOR}
     if half is None or quarter is None or half < BOB_TWICE or quarter > -BOB_TWICE:
         return {**word, 'says': None, 'why': f"{what} less its flow does not rise and fall twice an interval "
