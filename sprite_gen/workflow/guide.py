@@ -86,7 +86,7 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
     return {"kind": kind, "stage": stage, "status": "blocked" if blocked else "needs-input" if questions else "ready",
             "notice": " / ".join(labels), "selected": selected, "sources": sources,
             "settings_revision": snapshot["revision"], "settings_path": snapshot["path"],
-            "codex_unavailable": {"choice": codex_choice, "source": codex_choice_source},
+            CODEX_UNAVAILABLE_SETTING: {"choice": codex_choice, "source": codex_choice_source},
             "access": access, "blocked": blocked, "questions": questions, "pipeline": pipeline,
             CURATION: selected.get(CURATION, "ask") if stage == "finish" else "after-result",
             "save_candidate": selected if stage == "finish" and CURATION in selected else None}

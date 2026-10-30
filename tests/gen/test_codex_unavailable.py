@@ -360,6 +360,13 @@ def ready_login(monkeypatch):
         "billing": "subscription", "reason": "unverified media access"})
 
 
+def test_the_guide_reports_the_choice_under_the_name_the_setting_is_saved_by(ready_login, monkeypatch):
+    monkeypatch.setattr(guide, "CODEX_UNAVAILABLE_SETTING", "renamed")
+    monkeypatch.setattr(guide, "GENERAL_FIELDS", {"renamed": guide.GENERAL_FIELDS[gen.CODEX_UNAVAILABLE_SETTING]})
+    view = guide.guide("image", choices={"image_provider": "codex"}, confirmed_access=("codex",))
+    assert view["renamed"] == {"choice": "ask", "source": "default"}
+
+
 def test_the_guide_asks_what_to_do_when_codex_cannot_run_once_and_the_answer_is_saved(ready_login, monkeypatch):
     request = dict(choices={"image_provider": "codex"}, confirmed_access=("codex",))
     view = guide.guide("image", **request)
