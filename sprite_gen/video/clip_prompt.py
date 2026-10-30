@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from sprite_gen.frames.cutout import GREEN
+from sprite_gen.gen import prompt_parts
 from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen import handedness as handed_mod
@@ -82,7 +83,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
                                         model=model, handed=handed, body_plan=body_plan, play=play)
     prompt = parts.text
     # the caller's own words (--character, --motion) against the engine's: a conflict is a warning
-    warnings += [note["text"] for note in parts.notes if note["kind"] == "conflict"]
+    warnings += [note["text"] for note in parts.notes if note["kind"] == prompt_parts.CONFLICT]
     cycle = batch_mod.cycle_for(state, direction, play, pinned=pins)
     # as video-set places and cuts: a side or diagonal view takes the facing, front and back face right
     canvas_facing = loop_facing = facing if direction in handed_mod.LATERAL_VIEWS else "right"
