@@ -238,7 +238,7 @@ def load_asset_states(source: Path, *, state=None, fps=None, anchor=None) -> dic
         if "frame_layout" in data:
             states = list(data["frame_layout"]["rows"])
         elif data.get("kind") == SET_SHEET_KIND:
-            states =[row["code"] for row in data["rows"]]
+            states = [row["code"] for row in data["rows"]]
         elif isinstance(data.get("rows"), list) and "cell" in data:
             states = data["rows"]
         if not states or len(set(states)) != len(states):
