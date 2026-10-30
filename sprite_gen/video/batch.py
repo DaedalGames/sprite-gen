@@ -552,7 +552,7 @@ def _lite_text(state: str, direction: str, model: str | None, *, built_in: bool,
     if body_mod.biped(body_plan):
         calm, head = LITE_WALK_TEXT, LITE_HEAD_TEXT
     else:
-        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == "legless" for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
+        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == body_mod.LEGLESS for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
         head = LITE_HEAD_TEXT_ANY_BODY
     text = f" {calm}" if built_in else ""
     if direction in head:
