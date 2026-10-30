@@ -38,6 +38,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.curate.curation import imported_ref_role
 from sprite_gen.spec.runio import (
     LOCK_FILENAME,
+    REQUEST_FILENAME,
     acquire_run_dir_lock,
     atomic_save_image,
     atomic_write_text,
@@ -254,7 +255,7 @@ def write_run(
         "chroma_key": provenance.get("chroma_key", {"name": MAGENTA, "hex": format_hex(KEY_TARGETS[MAGENTA]), "rgb": list(KEY_TARGETS[MAGENTA])}),
         "states": request_states,
     }
-    atomic_write_text(out_dir / "sprite-request.json", json.dumps(request, ensure_ascii=False, indent=2) + "\n")
+    atomic_write_text(out_dir / REQUEST_FILENAME, json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(
         frames_root / "frames-manifest.json",
         json.dumps({"ok": True, "engine": "component-row", "run_dir": str(run_dir), "cell": request["cell"], "rows": manifest_rows, "errors": [], "warnings": []}, ensure_ascii=False, indent=2) + "\n",
@@ -374,7 +375,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
     }
     if iso:
         request["iso"] = iso  # ground-grid geometry for the curator overlay
-    atomic_write_text(out_dir / "sprite-request.json", json.dumps(request, ensure_ascii=False, indent=2) + "\n")
+    atomic_write_text(out_dir / REQUEST_FILENAME, json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(
         out_dir / "frames" / "frames-manifest.json",
         json.dumps({"ok": True, "engine": "component-row", "run_dir": str(run_dir), "cell": request["cell"],

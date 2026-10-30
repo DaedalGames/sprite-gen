@@ -20,7 +20,7 @@ from PIL import Image, ImageChops
 
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen._deps import np
-from sprite_gen.curate.curation import effective_logical_height, pixel_snap_scale
+from sprite_gen.curate.curation import CURATION_FILENAME, effective_logical_height, pixel_snap_scale
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, take_raw_rel
 from sprite_gen.spec.runio import (REQUEST_FILENAME, acquire_run_dir_lock, atomic_save_image,
                               atomic_write_text, load_request, publish_guard, relative_posix,
@@ -3236,7 +3236,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     if effective_chroma != chroma_config:
         request["chroma"] = effective_chroma
         atomic_write_text(
-            run_dir / "sprite-request.json",
+            run_dir / REQUEST_FILENAME,
             json.dumps(request, ensure_ascii=False, indent=2) + "\n",
         )
     states = list(request["states"]) if args.states == "all" else [state.strip() for state in args.states.split(",") if state.strip()]
@@ -3850,7 +3850,7 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
     # 재유도하지 않는다 (회귀: 서버 가동 중 엔진 편집 → heal 이 확정 down_idle 을
     # 재양자화해 드리프트). 해제는 사용자가 frozen 을 끄는 것뿐 — 관측 노트로 남긴다.
     frozen: set[str] = set()
-    curation_path = run_dir / "curation.json"
+    curation_path = run_dir / CURATION_FILENAME
     if curation_path.is_file():
         try:
             cur_states = json.loads(curation_path.read_text(encoding="utf-8")).get("states", {})

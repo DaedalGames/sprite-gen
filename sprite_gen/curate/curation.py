@@ -159,7 +159,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen.spec.layout import raw_rel
-from sprite_gen.spec.runio import load_request
+from sprite_gen.spec.runio import REQUEST_FILENAME, load_request
 from sprite_gen.util.resample import transform_cell
 
 CURATION_FILENAME = "curation.json"
@@ -629,7 +629,7 @@ def run_revision(run_dir: Path) -> str:
     stamped for a prior generation is detected as stale. Single source of run identity for
     the server, compose, export, and the webview."""
     h = hashlib.sha256()
-    for name in ("sprite-request.json", "frames/frames-manifest.json"):
+    for name in (REQUEST_FILENAME, "frames/frames-manifest.json"):
         try:
             h.update((run_dir / name).read_bytes())
         except OSError:
