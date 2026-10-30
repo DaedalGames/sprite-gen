@@ -38,7 +38,7 @@ from sprite_gen.effects import breathe, recolor, shadow
 from sprite_gen.scene import render, inspect_scene
 from sprite_gen.serve import serve_compose, serve_curation
 from sprite_gen.spec import migrate_breathe, migrate_request
-from sprite_gen.workflow import guide, preferences
+from sprite_gen.workflow import capabilities, guide, preferences
 from sprite_gen.util.console import utf8_streams
 
 
@@ -227,6 +227,12 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
     "scene-inspect": ("Measure scene loops, viewport clipping and repeated joins.", inspect_scene.add_arguments, inspect_scene.run),
     "workflow": ("Resolve image/sprite choices, check access and guide the next conversation step.", guide.add_arguments, guide.run),
     "defaults": ("Show, explicitly save or clear the defaults for each user workflow.", preferences.add_arguments, preferences.run),
+    # Read off this table and the parser it builds (docs/capabilities.md): a verb added here is listed there.
+    "capabilities": (
+        "Print what this engine can do as one JSON line: every verb and its arguments, read off this CLI's parser, the providers each verb may call and be billed by, and the provider address and login variables.",
+        capabilities.add_arguments,
+        capabilities.run,
+    ),
     "prepare": ("Prepare a sprite-gen component-row run.", prepare.add_arguments, prepare.run),
     "extract": ("Extract component-row sprite strips into clean RGBA frames.", _add_extract, extract.run),
     "compose-atlas": (

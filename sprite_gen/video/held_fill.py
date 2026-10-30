@@ -35,7 +35,9 @@ made again at another fraction of RETIME_T within half a cell of its own time, e
 why. A run is made whole or kept whole: half made it would step back.
 
 `upsample` gives a cut at a rate above its own (`--out-fps`) its frames between, at their own times, never a frame
-shown again; a cell where both frames beside its time show one picture (a hold kept) is that picture."""
+shown again; a cell where both frames beside its time show one picture (a hold kept) is that picture. `at_times` makes
+a cut's cells at any times so: `upsample`'s, and the air a single play's air retime gives a new length
+(`root_motion.retime`, docs/video-pipeline.md "Root motion")."""
 
 from __future__ import annotations
 
@@ -281,18 +283,17 @@ def times(n: int, fps: float, out_fps: float, *, ring: bool) -> list[float]:
     return [k * (n - 1) / (count - 1) for k in range(count)]
 
 
-def upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, ring: bool, fps: float, out_fps: float,
-             reads: bool | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
-    """`frames` given at `out_fps` (`times`): a cell on a frame's time is that frame, one between two frames showing
-    one picture is that picture, any other is made between the two at its own time (`_made`, within half a cell of
-    it), and one no frame made is taken for is the nearer frame and named (`shown_again`). `shows`: the frame each cell
-    is, None where it was made."""
+def at_times(frames: list[Image.Image], interpolate: rife_mod.Interpolate, at: Sequence[float], *, ring: bool,
+             spacing: float | Sequence[float], reads: bool | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+    """`frames` at the times `at`, in frames of the cut: a cell on a frame's time is that frame, one between two frames
+    showing one picture is that picture, any other is made between the two at its own time (`_made`, within half its
+    `spacing` of it: frames a cell, one for all or one each), and one no frame made is taken for is the nearer frame and
+    named (`shown_again`). The record: how many were made, the cells shown again, how each was (`frames`), and the
+    frame each cell is, None where it was made (`shows`)."""
     n = len(frames)
-    at = times(n, fps, out_fps, ring=ring)
     same = same_steps(frames + ([frames[0]] if ring else []))
     if reads is None:
         reads = bool(ghost_screen(frames)["reads"])
-    spacing = fps / out_fps
     out: list[Image.Image] = []
     made: list[dict[str, Any]] = []
     shown_again: list[int] = []
@@ -309,7 +310,8 @@ def upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, ri
             shows.append(a)
             continue
         t = tau - a
-        frame, how = _made(interpolate, frames[a], frames[(a + 1) % n], t, (t - spacing / 2, t + spacing / 2), reads=reads)
+        half = (spacing if isinstance(spacing, (int, float)) else spacing[k]) / 2
+        frame, how = _made(interpolate, frames[a], frames[(a + 1) % n], t, (t - half, t + half), reads=reads)
         if frame is None:
             out.append(frames[near % n])
             shows.append(near % n)
@@ -319,9 +321,16 @@ def upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, ri
         out.append(frame)
         shows.append(None)
         made.append({"cell": k, "between": [a, (a + 1) % n], **how})
-    return out, {"asked": out_fps, "fps": fps, "applied": True, "cells": len(out), "times": [round(x, 4) for x in at],
-                 "made": sum(1 for m in made if "taken" not in m), "shown_again": shown_again, "frames": made,
+    return out, {"made": sum(1 for m in made if "taken" not in m), "shown_again": shown_again, "frames": made,
                  "shows": shows}
+
+
+def upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, ring: bool, fps: float, out_fps: float,
+             reads: bool | None = None) -> tuple[list[Image.Image], dict[str, Any]]:
+    """`frames` given at `out_fps` (`times`), each cell at its own time (`at_times`, within half a cell of it)."""
+    at = times(len(frames), fps, out_fps, ring=ring)
+    out, made = at_times(frames, interpolate, at, ring=ring, spacing=fps / out_fps, reads=reads)
+    return out, {"asked": out_fps, "fps": fps, "applied": True, "cells": len(out), "times": [round(x, 4) for x in at], **made}
 
 
 def public(record: dict[str, Any]) -> dict[str, Any]:

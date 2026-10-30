@@ -9,6 +9,7 @@ MODULE_DOMAIN = {
     'sound': 'audio',
     'guide': 'workflow',
     'preferences': 'workflow',
+    'capabilities': 'workflow',
     'runio': 'spec',
     'assets': 'spec',
     'tile': 'background',

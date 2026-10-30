@@ -207,9 +207,10 @@ def project(baseline: Any, source: Source) -> tuple[Projection | None, str | Non
     # A held cut is read again only where its report records each frame's move, and the cut's frames before repair to
     # prove every one of them on (`source_projection`, the moves of the cells the repair replaced included).
     held = bool(hold.get("applied"))
-    # A cut whose held cells were made again (`held_fill`), or whose cells are times of their own (`out_fps`), shows
-    # frames the source does not hold.
+    # A cut whose held cells were made again (`held_fill`), or whose cells are times of their own (`out_fps`, an air
+    # retimed: `air_retime`), shows frames the source does not hold.
     if (any(k in m for k in ("cycle_align", "motion_anchor", "wrap_blend", "out_fps")) or (m.get("held_fill") or {}).get("made")
+            or (m.get("air_retime") or {}).get("applied")
             or held and ("cut_frames" not in hold or report.get("source_projection") is None)):
         return None, "source-processing-unsupported"
     moves, pad = _cut_moves(hold, n) if held else (None, None)

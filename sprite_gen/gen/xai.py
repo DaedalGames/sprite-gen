@@ -2,8 +2,10 @@
 """Shared xAI credentials and JSON transport for direct image/video generation.
 
 The user's Grok subscription login takes precedence over XAI_API_KEY. The key
-is used only when no login file exists. The Grok CLI alone writes/refreshes
-that login. Never spawn an agent or switch sources after a login failure.
+is used only when no login file exists, or when SPRITE_GEN_LOGINS=off reads no
+login (`base.logins_on`). The Grok CLI alone writes/refreshes that login. Never
+spawn an agent or switch sources after a login failure. Where the calls go is
+`address` ("xai"), read at each call.
 """
 from __future__ import annotations
 
@@ -19,9 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import refusal, retry
-from .base import env_api_key
+from .base import LOGINS_ENV, env_api_key, logins_on
 
-API_BASE = "https://api.x.ai/v1"
 AUTH_ENV = "XAI_API_KEY"
 AUTH_SOURCE_API_KEY = "XAI_API_KEY"
 AUTH_SOURCE_GROK_LOGIN = "grok-login"
@@ -105,9 +106,16 @@ def _load_grok_login(auth_path: Path, *, now: datetime) -> Credential:
 
 
 def resolve_credential(*, env: dict[str, str] | None = None, now: datetime | None = None) -> Credential:
-    """Prefer the subscription login; a failed login never switches to API credit."""
+    """Prefer the subscription login; a failed login never switches to API credit. With SPRITE_GEN_LOGINS=off no
+    login is looked for and the key is the one route."""
     env = os.environ if env is None else env
     now = now or datetime.now(timezone.utc)
+    if not logins_on(env):
+        api_key = env_api_key(AUTH_ENV, env, who="xai")
+        if api_key:
+            return Credential(token=api_key, source=AUTH_SOURCE_API_KEY)
+        raise SystemExit(f"xai: no xAI credential — {LOGINS_ENV}=off reads no grok login and {AUTH_ENV} is not set.\n"
+                         f"  export {AUTH_ENV}=<your xAI console key>, or unset {LOGINS_ENV} to use a grok login.")
     auth_path = grok_home() / "auth.json"
     # Only absence allows the API key. Broken links/directories are invalid
     # logins too, not permission to switch to another billing source.
