@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from conftest import rife_located
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import wrap_blend
 from tests.video.test_idle_still import _still_frames
@@ -419,7 +420,8 @@ def test_a_part_moved_on_a_redrawn_character_is_held_while_the_rest_is_blended(d
 
 
 @pytest.mark.slow
-def test_the_checkpoints_part_on_a_flat_figure_is_cut_as_filmed_with_a_warning(tmp_path: Path, capsys) -> None:
+@pytest.mark.timeout(900)  # 16 calls of the binary at 160 x 224 (the held fill's frames between, both cuts): seconds on a GPU, minutes on a CPU's Vulkan driver
+def test_the_checkpoints_part_on_a_flat_figure_is_cut_as_filmed_with_a_warning(tmp_path: Path, capsys, rife_runs) -> None:
     frames = []
     for t in range(N):
         f = _flat_base(t)
@@ -434,6 +436,7 @@ def test_the_checkpoints_part_on_a_flat_figure_is_cut_as_filmed_with_a_warning(t
     assert "the wrap blend was not used" in capsys.readouterr().err
     cut(tmp_path, keyed(tmp_path, frames, "keyed-off"), "off", wrap_blend="off", repair="off")
     assert outputs(tmp_path / "auto") == outputs(tmp_path / "off")
+    assert rife_runs() == (16 if rife_located() else 0)
 
 
 # --- 4. a 1 px line on a flat figure ---------------------------------------------------------------------------------------

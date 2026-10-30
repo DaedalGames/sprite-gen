@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from conftest import rife_located
 from sprite_gen.video import loop, batch, canvas, clip_prompt
 
 
@@ -30,9 +31,11 @@ def cut(tmp_path, **kwargs):
                          name="death", report_path=None, cycle_mode="once", **kwargs)
 
 
-def test_cut_keeps_final_pose_in_strip_and_once_previews(tmp_path):
+@pytest.mark.timeout(900)  # 20 calls of the binary at 128 x 96 (the held fill's frames between): seconds on a GPU, minutes on a CPU's Vulkan driver
+def test_cut_keeps_final_pose_in_strip_and_once_previews(tmp_path, rife_runs):
     keyed(tmp_path / "keyed")
     report = cut(tmp_path)
+    assert rife_runs() == (20 if rife_located() else 0)
     meta = report["strip"]
     assert report["cycle"]["kind"] == "once"
     assert meta["loop"] is False and meta["hold_last"] is True
