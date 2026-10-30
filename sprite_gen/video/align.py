@@ -1403,7 +1403,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                    + ". Stopped before anything was rewritten (--same-foot refuse)")
         if report_path is not None:
             loop_mod.write_loop_report(report_path.expanduser().resolve(), {
-                "kind": "sprite-gen-video-cycle-align-report", "applied": False, "refused": "same-foot", "why": message,
+                "kind": "sprite-gen-video-cycle-align-report", "applied": False, "refused": RETAKE_FEET_REASON, "why": message,
                 "same_foot": [{"dir": str(d), "name": meta_path.name[: -len(".strip.json")], **r["same_foot"]} for d, meta_path, r in twice],
                 "lengths": [len(f) for f in sources], "fps": round(fps, 4)})
         raise SystemExit(message)

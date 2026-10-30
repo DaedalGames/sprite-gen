@@ -47,6 +47,7 @@ from sprite_gen.video import loop
 from sprite_gen.video.frames import drop_specks
 from sprite_gen.video.interpolation_quality import OUTLINE_WARN, SMEAR_WARN
 from sprite_gen.video.playback import Playback, visible_bytes
+from sprite_gen.video.restoration import ARTIFACT_SUFFIXES
 
 N, FPS = 12, 24.0  # one cycle of twelve frames, half a second
 ZOOM = 2  # a source frame is twice the cell's size, so every cell is a resample, as a delivered loop's are
@@ -56,7 +57,6 @@ DAMAGED = (4, 9)  # the cells the stand-in jump repair made: interior, apart, no
 DELAY = round(1000 * (N / FPS) / N)  # the export's whole-millisecond delay, as `playback.mapping` reads it
 GHOST = 96  # the coverage a melted in-between leaves the feet at
 SCALE = 3  # page pixels per cell pixel in the enlarged GIFs
-ARTIFACTS = {"strip": ".strip.png", "meta": ".strip.json", "report": ".loop.json", "gif": ".gif", "webp": ".webp"}
 
 INK = (34, 26, 30, 255)  # every outline: dark, as `rife.smear` reads an outline
 EYE = (40, 32, 44, 255)
@@ -140,11 +140,11 @@ def melt(frame: Image.Image) -> Image.Image:
 
 
 def paths(directory: Path) -> dict[str, Path]:
-    return {k: directory / ("loop" + ext) for k, ext in ARTIFACTS.items()}
+    return {k: directory / ("loop" + ext) for k, ext in ARTIFACT_SUFFIXES.items()}
 
 
 def five(files: dict[str, Path]) -> dict[str, object]:
-    return {k: receipt(files[k]) for k in ARTIFACTS}
+    return {k: receipt(files[k]) for k in ARTIFACT_SUFFIXES}
 
 
 def run_cli(log: Path, *args: str) -> None:
@@ -229,7 +229,7 @@ def request(out: Path, n: int, baseline: dict[str, Path], origin: dict[str, Path
     """One `video-loop-repair` request and the `video-loop-compare` of the files it wrote."""
     here = out / f"request-{n}"
     here.mkdir()
-    given = [a for side, files in (("baseline", baseline), ("origin", origin)) for k in ARTIFACTS
+    given = [a for side, files in (("baseline", baseline), ("origin", origin)) for k in ARTIFACT_SUFFIXES
              for a in (f"--{side}-{k}", str(files[k]))]
     inputs = [a for k, p in source.items() for a in ("--" + k.replace("_", "-"), str(p))]
     run_cli(out / "logs" / f"request-{n}.repair.log", "video-loop-repair", *given, *inputs,
@@ -237,9 +237,9 @@ def request(out: Path, n: int, baseline: dict[str, Path], origin: dict[str, Path
             "--report", str(here / "repair.json"))
     repair = json.loads((here / "repair.json").read_bytes())
     candidate = {k: Path(p) for k, p in repair["outputs"].items()}
-    if set(candidate) != set(ARTIFACTS):
+    if set(candidate) != set(ARTIFACT_SUFFIXES):
         raise SystemExit(f"source_restoration_demo: request {n} wrote no candidate ({repair['status']}, {repair['reasons']})")
-    made = [a for k in ARTIFACTS for a in (f"--candidate-{k}", str(candidate[k]))]
+    made = [a for k in ARTIFACT_SUFFIXES for a in (f"--candidate-{k}", str(candidate[k]))]
     run_cli(out / "logs" / f"request-{n}.compare.log", "video-loop-compare", *given, *made, *inputs,
             "--repair-evidence", str(here / "repair.json"), "--report", str(here / "comparison.json"))
     return repair, json.loads((here / "comparison.json").read_bytes()), candidate

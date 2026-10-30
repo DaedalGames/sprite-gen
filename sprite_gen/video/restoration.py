@@ -51,7 +51,8 @@ KIND = "sprite-gen-video-loop-restoration"
 REPAIR_SCHEMA = 4
 COMPARISON_SCHEMA = 6
 MAX_PROPOSALS = 3
-ARTIFACTS = ("strip", "meta", "report", "gif", "webp")
+ARTIFACT_SUFFIXES = {"strip": ".strip.png", "meta": ".strip.json", "report": ".loop.json", "gif": ".gif", "webp": ".webp"}
+ARTIFACTS = tuple(ARTIFACT_SUFFIXES)
 LISTED = 256  # capped or protected pixels a report spells out; the masks always hold all of them
 
 # The guard in whole numbers is the same formula only while the bar is a whole number.
@@ -516,8 +517,7 @@ def _write_candidate(paths: dict[str, Path], out: Path, name: str, baseline: Loo
         raise ValueError("name must be a filename stem")
     out.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".restoration-", dir=out.parent))
-    names = {k: name + suffix for k, suffix in (("strip", ".strip.png"), ("meta", ".strip.json"),
-                                               ("report", ".loop.json"), ("gif", ".gif"), ("webp", ".webp"))}
+    names = {k: name + suffix for k, suffix in ARTIFACT_SUFFIXES.items()}
     try:
         if target is None:
             for key, filename in names.items():
@@ -614,7 +614,7 @@ def run(**kwargs: Any) -> int:
                         **{"--" + k.replace("_", "-"): p for k, p in inputs.items()},
                         **{f"{p.name} in --source-frames-dir": p for p in inputs["source_frames_dir"].glob("*.png")}},
                        {"--report": output}, verb="video-loop-repair")
-        if output.resolve() in {(out / (name + ext)).resolve() for ext in (".strip.png", ".strip.json", ".loop.json", ".gif", ".webp")}:
+        if output.resolve() in {(out / (name + ext)).resolve() for ext in ARTIFACT_SUFFIXES.values()}:
             raise ValueError("repair report cannot overwrite the candidate it writes")
         payload = restore(paths, origin, source.Source.read(**inputs), out_dir=out,
                           name=name, proposal_index=kwargs.get("proposal_index", 1))
