@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (v3.12.1)
+## v3.12.1 - A one-shot cut where no pair returns names its closest return, ratio and moved, and the report gains cycle.closest_return
 
 **Upgrading from 3.12.0: Thresholds, the search window, which clips are cut, and every cut's pictures and report values are the same as 3.12.0.** Only the refusal text changes where no pair of frames returns, and `--report` gains `cycle.closest_return`. The refusal now names the closest return, its frames, its ratio of departure, and that pair's moved instead of reporting `moved 0.00`. Where a pair returns but what lies between is not an action, or where no pair departs at all, the refusal line is the 3.12.0 line as before.
 
