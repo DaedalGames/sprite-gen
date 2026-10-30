@@ -97,6 +97,7 @@ ONE_SHOT_MIN_MOVED = 0.4
 ONE_SHOT_MIN_COHERENCE = 3.0  # departure must exceed three ordinary playback steps
 ONE_SHOT_MIN_ACTIVE = 4  # isolated keying/jitter spikes are not a performed action
 ONE_SHOT_PAD = 2  # one-shot: rest frames kept on each side of the excursion so the seam is rest -> rest
+ONE_SHOT_RETURN_MAX = 0.25  # one-shot: the return pair comes back to within a quarter of its departure
 CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", *nonloop.KINDS)
 # --cycle pinned: the clip was asked to end on its first frame (first-last mode). A re-rendered
 # first frame is never byte-identical to its source; on the analysis thumbnail (mean absolute
@@ -512,14 +513,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
     active component to have observed rest on BOTH sides. A clipped component
     at frame zero or n-1 is never repaired by padding. The existing contrast /
     moved-mass floors still reject stand jitter; return distance must additionally
-    be at most a quarter of the departure. No seam threshold is relaxed.
+    be at most a quarter of the departure (ONE_SHOT_RETURN_MAX). No seam threshold is relaxed.
     No cut is shorter than `min_len` (nor ONE_SHOT_MIN_LEN) or longer than `max_len`; `run_loop`
     passes ONE_SHOT_MIN_LEN unless the caller set --min-len (`CutWindow`).
+
+    Where no pair returns, the refusal names the closest return (`closest_return`: the pair, its return over its
+    departure, its moved), not the moved of the returned pairs, of which there are none.
     """
     n = len(D)
     adjacent = np.diag(D, 1)
     candidates = []
     max_moved = 0.0
+    closest: dict[str, Any] | None = None
     shortest = max(ONE_SHOT_MIN_LEN, min_len)
     for start in range(n - ONE_SHOT_MIN_LEN + 1):
         for end in range(start + shortest - 1, min(n, start + max_len)):
@@ -528,13 +533,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
             peak_at = start + int(np.argmax(e[start:end + 1]))
             peak = float(e[peak_at])
             departure = peak - seam / 2
-            if departure <= 0 or seam > departure * 0.25:
+            if departure <= 0:
+                continue
+            mass = float((frame_mass[start] + frame_mass[end]) / 2) if frame_mass is not None else 0
+            moved = departure / mass if mass > 0 else None
+            if closest is None or seam / departure < closest["ratio"]:
+                closest = {"pair": [start, end], "ratio": seam / departure, "seam": seam, "departure": departure,
+                           "moved": moved}
+            if seam > departure * ONE_SHOT_RETURN_MAX:
                 continue
             med = float(np.median(e))
             mad = float(np.median(np.abs(e - med))) or 1e-6
             contrast = (peak - med) / mad
-            mass = float((frame_mass[start] + frame_mass[end]) / 2) if frame_mass is not None else 0
-            moved = departure / mass if mass > 0 else None
             max_moved = max(max_moved, moved or 0)
             if contrast >= ONE_SHOT_MIN_CONTRAST:
                 rule = "contrast"
@@ -572,11 +582,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
                 "excursion_rule": rule, "departure": departure,
             })
     if not candidates:
+        if closest is not None and closest["ratio"] > ONE_SHOT_RETURN_MAX:
+            # No pair returns: the condition failed is the return, said on the pair that came closest.
+            a, b = closest["pair"]
+            said = (f"the clip does not come back to a pose it left: the closest return, frames {a}-{b}, is "
+                    f"{closest['ratio']:.2f} of its departure away, over {ONE_SHOT_RETURN_MAX}"
+                    + (f" (moved {closest['moved']:.2f}, need {ONE_SHOT_MIN_MOVED})" if closest["moved"] is not None else ""))
+        else:
+            said = (f"the clip never leaves its rest pose and returns with observed endpoints (moved {max_moved:.2f}, "
+                    f"need {ONE_SHOT_MIN_MOVED})")
         raise CycleSelectionError(
-            f"video-loop: no complete one-shot return — the clip never leaves its rest pose "
-            f"and returns with observed endpoints (moved {max_moved:.2f}, "
-            f"need {ONE_SHOT_MIN_MOVED})",
-            {"kind": "one-shot", "candidates": []},
+            f"video-loop: no complete one-shot return — {said}",
+            {"kind": "one-shot", "candidates": [], **({"closest_return": closest} if closest is not None else {})},
         )
     # Keep the full strongest action, then minimise excess rest. Do not choose a
     # tiny low-seam twitch just because its endpoints happen to match exactly.
