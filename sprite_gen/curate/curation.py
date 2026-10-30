@@ -163,13 +163,14 @@ from sprite_gen.spec.runio import load_request
 from sprite_gen.util.resample import transform_cell
 
 CURATION_FILENAME = "curation.json"
+CURATION_KIND = "sprite-gen-curation"  # 큐레이터 persistence.js 의 저장 payload 도 이 값이다
 SCHEMA_VERSION = 1
 IDENTITY = {"rotate": 0.0, "scale": 1.0, "dx": 0, "dy": 0, "shx": 0.0, "shy": 0.0, "flipX": 0}
 
 # Generation-material chip roles for imported `_refs/<role>-<name>.png` files
 # (run-contract.md §4). Single source shared by the importer (fail-loud on an
 # unknown role) and the webview server (render), so neither silently invents a role.
-IMPORTED_REF_ROLES = ("anchor", "basis", "guide")
+REF_ANCHOR, REF_BASIS, REF_GUIDE = IMPORTED_REF_ROLES = ("anchor", "basis", "guide")
 
 # 은퇴한 사이드카 키 -> 현행 키. `fit` 쪽과 같은 어휘 교체다 (runio.LEGACY_FIT_KEYS 참조):
 # "pixel perfect" 는 광의 통용어의 오용이고, 이 파이프라인이 하는 일의 정확한 명칭은
@@ -818,7 +819,7 @@ def load_curation_report(run_dir: Path) -> tuple[dict[str, Any] | None, dict[str
         return None, report
     raw_text = path.read_text(encoding="utf-8")
     data = json.loads(raw_text)
-    if data.get("kind") != "sprite-gen-curation":
+    if data.get("kind") != CURATION_KIND:
         raise SystemExit(f"{path} is not a sprite-gen-curation file")
     # 은퇴 키 이관 (메모리) — 다음 저장이 현행 키로 파일을 갱신한다. 두 키 동시 = hard fail.
     _migrate_curation_keys(data, str(path))
@@ -1117,7 +1118,7 @@ def write_curation_atomic(run_dir: Path, payload: dict[str, Any]) -> str | None:
 
     backup: str | None = None
 
-    if payload.get("kind") != "sprite-gen-curation":
+    if payload.get("kind") != CURATION_KIND:
         raise ValueError("payload is not a sprite-gen-curation document")
     _migrate_curation_keys(payload, str(run_dir / CURATION_FILENAME))
     payload = _carry_anchor_provenance(run_dir, payload)
@@ -1340,4 +1341,4 @@ def apply_transform(
 
 
 def empty_curation() -> dict[str, Any]:
-    return {"version": SCHEMA_VERSION, "kind": "sprite-gen-curation", "states": {}}
+    return {"version": SCHEMA_VERSION, "kind": CURATION_KIND, "states": {}}

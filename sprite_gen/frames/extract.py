@@ -3584,7 +3584,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     total_steps = len(states) * 2  # 1패스(컴포넌트/스냅) + 2패스(팔레트/배치)
     progress_step = 0
     for state in states:
-        _write_progress(run_dir, "extract", progress_step, total_steps, state, "components")
+        _write_progress(run_dir, "extract", progress_step, total_steps, state, PROGRESS_PHASE_COMPONENTS)
         progress_step += 1
         if state not in request["states"]:
             raise SystemExit(f"unknown state in request: {state}")
@@ -3837,7 +3837,7 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
     행은 스테이징+스왑 경로가 이전 세대를 바이트 그대로 남긴다 (Atomicity).
     """
     run_dir = Path(run_dir)
-    report: dict[str, Any] = {"healed": [], "kept_stale": [], "notes": []}
+    report: dict[str, Any] = {HEAL_HEALED: [], HEAL_KEPT_STALE: [], HEAL_NOTES: []}
     manifest_path = run_dir / "frames" / "frames-manifest.json"
     request_path = run_dir / REQUEST_FILENAME
     if not manifest_path.is_file() or not request_path.is_file():
@@ -3870,17 +3870,17 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
             for take in (request["states"][state].get("takes") or [])
         ]
         if all((run_dir / rel).is_file() for rel in raws):
-            report["healed"].append(state)
+            report[HEAL_HEALED].append(state)
         else:
-            report["kept_stale"].append(state)
+            report[HEAL_KEPT_STALE].append(state)
     if frozen_kept:
-        report["frozen"] = frozen_kept
-        report["notes"].append("frozen rows kept (user-approved, heal skipped): " + ", ".join(frozen_kept))
-    if report["kept_stale"]:
-        report["notes"].append(
+        report[HEAL_FROZEN] = frozen_kept
+        report[HEAL_NOTES].append("frozen rows kept (user-approved, heal skipped): " + ", ".join(frozen_kept))
+    if report[HEAL_KEPT_STALE]:
+        report[HEAL_NOTES].append(
             "stale rows kept as-is (raw missing, cannot re-derive): "
-            + ", ".join(report["kept_stale"]))
-    if report["healed"]:
+            + ", ".join(report[HEAL_KEPT_STALE]))
+    if report[HEAL_HEALED]:
         # 서브프로세스로 재추출한다: run-dir 락은 atexit 해제라, 장수 프로세스
         # (큐레이션 서버)가 인프로세스로 추출하면 락을 영구 보유해 이후의
         # compose/export 서브프로세스가 전부 죽는다. 자식 프로세스면 락 수명이
@@ -3907,28 +3907,43 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
         env = dict(os.environ)
         env["PYTHONPATH"] = (str(Path(__file__).resolve().parents[1])
                              + os.pathsep + env.get("PYTHONPATH", ""))
-        candidates = report["healed"]
-        report["healed"] = []
-        report["failed"] = []
+        candidates = report[HEAL_HEALED]
+        report[HEAL_HEALED] = []
+        report[HEAL_FAILED] = []
         for state in candidates:
             cmd = [sys.executable, "-m", "sprite_gen.frames.extract",
                    "--run-dir", str(run_dir), "--states", state, *extract_flags]
             proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if proc.returncode == 0:
-                report["healed"].append(state)
+                report[HEAL_HEALED].append(state)
             else:
-                report["failed"].append(state)
+                report[HEAL_FAILED].append(state)
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-                report["notes"].append(
+                report[HEAL_NOTES].append(
                     f"heal re-extract failed for {state} — prior generation kept: "
                     + " | ".join(tail))
-        if not report["failed"]:
-            del report["failed"]
+        if not report[HEAL_FAILED]:
+            del report[HEAL_FAILED]
     return report
 
 
 
 PROGRESS_REL = ".sprite-gen.progress.json"
+# 진행 파일의 키 — 큐레이션 서버가 파일째로 실어 보내고 큐레이터가 읽는다 (progress.js·i18n.js).
+PROGRESS_OP = "op"
+PROGRESS_DONE = "done"
+PROGRESS_TOTAL = "total"
+PROGRESS_LABEL = "label"
+PROGRESS_PHASE = "phase"
+PROGRESS_TS = "ts"
+PROGRESS_PHASE_COMPONENTS = "components"  # i18n.js 의 ko 문구가 이 값에 갈린다
+# heal_run 보고의 키 — 큐레이션 서버가 같은 모양을 만들고(_run_heal·_durable_failed_heal_report)
+# `run.heal` 로 실어 보내면 큐레이터가 읽는다 (boot.js). frozen·failed 는 있을 때만 실린다.
+HEAL_HEALED = "healed"
+HEAL_KEPT_STALE = "kept_stale"
+HEAL_FAILED = "failed"
+HEAL_FROZEN = "frozen"
+HEAL_NOTES = "notes"
 
 
 def _write_progress(run_dir: Path, op: str, done: int, total: int, label: str, phase: str) -> None:
@@ -3939,8 +3954,8 @@ def _write_progress(run_dir: Path, op: str, done: int, total: int, label: str, p
     import time as _time
     try:
         atomic_write_text(run_dir / PROGRESS_REL, json.dumps({
-            "op": op, "done": done, "total": total, "label": label,
-            "phase": phase, "ts": _time.time()}, ensure_ascii=False))
+            PROGRESS_OP: op, PROGRESS_DONE: done, PROGRESS_TOTAL: total, PROGRESS_LABEL: label,
+            PROGRESS_PHASE: phase, PROGRESS_TS: _time.time()}, ensure_ascii=False))
     except OSError:
         pass
 
