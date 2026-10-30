@@ -167,7 +167,7 @@ def project(baseline: Any, source: Source) -> tuple[Projection | None, str | Non
     from sprite_gen.video.frames import drop_specks
 
     m, report = baseline.meta, baseline.source_report
-    if report.get("kind") != "sprite-gen-video-loop-report" or report.get("status") != "passed":
+    if report.get("kind") != loop.REPORT_KIND or report.get("status") != loop.REPORT_PASSED:
         return None, "source-report-unverified"
     if loop.sway_recorded(m):
         return None, "follow-source-warp-unverified"

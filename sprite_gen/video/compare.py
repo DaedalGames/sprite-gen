@@ -92,7 +92,7 @@ class Loop:
         cycle = self.source_report.get("cycle")
         if not all(isinstance(v, dict) for v in (cut, src, cycle)):
             return "source-provenance-missing"
-        if self.source_report.get("kind") != "sprite-gen-video-loop-report" or self.source_report.get("status") != "passed":
+        if self.source_report.get("kind") != loop_mod.REPORT_KIND or self.source_report.get("status") != loop_mod.REPORT_PASSED:
             return "source-report-unverified"
         sha = src.get("sha256")
         if (src.get("kind") != "keyed-frame-sequence" or not isinstance(sha, str) or len(sha) != 64

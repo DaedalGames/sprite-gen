@@ -87,6 +87,10 @@ PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mea
 # Where a size hold or the gait fallback writes the frames it scaled back: a folder of the run's own in the out dir,
 # `.gait-fallback-frames.<pid>-<random>` (`_Scratch`), removed however the run ends.
 FALLBACK_FRAMES = "gait-fallback-frames"
+# What a video-loop report is (its `kind`), and the `status` of one whose cut was handed over: align, compare and
+# source read a report as a delivered loop's only when it says both.
+REPORT_KIND = "sprite-gen-video-loop-report"
+REPORT_PASSED = "passed"
 GIF_FPS_DEFAULT = 24.0  # GIF/WebP playback density = the source rate: every cycle frame is kept, a fast action never looks slow (12 made a jump read sluggish, 2026-09-09)
 GIF_FRAMES_MIN = 4
 ONE_SHOT_MIN_CONTRAST = 3.0  # one-shot: the excursion peak must stand this far above the rest-pose noise (in MADs)
@@ -2407,7 +2411,7 @@ def _cut_loop(
     masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
     report_base = {
-        "kind": "sprite-gen-video-loop-report", "frames_dir": str(frames_dir),
+        "kind": REPORT_KIND, "frames_dir": str(frames_dir),
         "source": evidence_mod.source_identity(files, fps),
         "producer": evidence_mod.engine_identity(),
         "out_dir": str(out_dir), "state": state, "fps": fps, "frames_total": n,
@@ -3215,7 +3219,7 @@ def _cut_loop(
 
     payload = {
         **report_base,
-        "kind": "sprite-gen-video-loop-report",
+        "kind": REPORT_KIND,
         "frames_dir": str(frames_dir),
         "out_dir": str(out_dir),
         "state": state,
@@ -3230,7 +3234,7 @@ def _cut_loop(
         "n_out": n_out,
         "gif_fps": gif_fps,
         "delay_ms": delay_ms,
-        "status": "passed",
+        "status": REPORT_PASSED,
         "resampled_seam": resampled_seam,
         "resampled_inner_mean_adjacent": resampled_adjacent,
         "resampled_seam_ratio": None if single_play else round(seam_ratio, 4),

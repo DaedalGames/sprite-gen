@@ -897,7 +897,7 @@ def cut_report(loop_dir: Path, meta_path: Path, meta: dict[str, Any]) -> tuple[P
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(data, dict) or data.get("kind") != "sprite-gen-video-loop-report" or data.get("status") != "passed":
+            if not isinstance(data, dict) or data.get("kind") != loop_mod.REPORT_KIND or data.get("status") != loop_mod.REPORT_PASSED:
                 continue
             cycle = data.get("cycle") or {}
             if (Path(str((data.get("strip") or {}).get("path", ""))).name == strip_name

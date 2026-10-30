@@ -205,7 +205,7 @@ def write_delivered(out: Path, source: dict[str, Path]) -> tuple[dict[str, Path]
             "cycle_frames": N, "subsampled": False, "loop": True, "scale": round(1 / ZOOM, 4),
             "source_rect": [0, 0, SW, SH], "sample_indices": list(range(N)), "foot_anchor": "none",
             "source_cut": {"source": identity, "start": 0, "length": N, "samples": list(range(N))}}
-    report = {"kind": "sprite-gen-video-loop-report", "status": "passed", "fps": FPS, "frames_total": N,
+    report = {"kind": loop.REPORT_KIND, "status": loop.REPORT_PASSED, "fps": FPS, "frames_total": N,
               "source": identity, "cycle": {"start": 0, "length": N}, "anchor": "none",
               "jump_repair": {"replaced": list(DAMAGED), "facing": "right"}, "strip": meta, "n_out": N, "delay_ms": DELAY,
               "note": ("synthetic stand-in for a delivered loop: cells cut by the loop recipe from drawn keyed frames; "
