@@ -572,6 +572,20 @@ wrap plays like the step into that last frame. Where the pinned frame redraws th
 `--cycle once --start S --length L` plays exactly those frames once, a move cut out of a longer motion that settles
 on no pose ([root motion](#root-motion--a-cut-played-once-where-the-body-is-what-it-stands-on-its-air)).
 
+A one-shot cut is accepted only where its two end frames return: the distance between the end frames is at most a quarter
+of how far the body departs between them, bounded by `ONE_SHOT_RETURN_MAX` (0.25). Other existing rules then apply to what
+lies between (contrast or moved mass over `ONE_SHOT_MIN_MOVED` 0.4, at least four active frames, a departure at least
+three times the steps between frames, and rest frames on both sides). A jump whose body crosses the canvas lands where it
+did not stand, so no two frames return and the one-shot cut refuses it. Where no pair returns, the refusal line names the
+closest return: `the clip does not come back to a pose it left: the closest return, frames A-B, is R of its departure away, over 0.25 (moved M, need 0.4)`.
+The report written with `--report` gains `cycle.closest_return` with keys `pair`, `ratio`, `seam`, `departure` and `moved`.
+
+Such a jump is cut with `video-loop --cycle once --start S --length L`, starting from the closest return's frames: pass
+`--start A` and `L` = B - A + 1, then move either end. Where a pair does return but what lies between is not an action
+(too little contrast or moved, fewer than four active frames, or a departure under three times the steps between its
+frames), or where no pair departs at all, the refusal gives the 3.12.0 line as before:
+`the clip never leaves its rest pose and returns with observed endpoints (moved M, need 0.4)`.
+
 `--cycle once-return` is for a clip pinned to end on its first frame that plays once (`video-set
 --play once-return`, [play modes](#play-modes)). It keeps every frame, the last too, so the strip
 starts and ends on the first pose and a game plays it once and goes on from the pose it started in.
