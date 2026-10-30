@@ -8,6 +8,10 @@ from sprite_gen.gen.openai_provider import AUTH_ENV as OPENAI_AUTH_ENV
 from sprite_gen.gen.openai_provider import resolve_credential as resolve_openai_credential
 from sprite_gen.gen.xai import AUTH_SOURCE_API_KEY, resolve_credential
 
+# The readings `guide` acts on, each written once: a login that cannot be used, and a route billed per call.
+LOGIN_UNAVAILABLE = "unavailable"
+BILLING_API_CREDIT = "api-credit"
+
 
 def probe_access(provider: str) -> dict:
     """One probe per provider: images and videos of a provider share its credential precedence."""
@@ -17,9 +21,9 @@ def probe_access(provider: str) -> dict:
         # The one reading of how codex is signed in; it never repeats what the CLI said.
         login = codex_provider.codex_login()
         if login.source is None:
-            return {**result, "login": "unavailable", "reason": f"{login.reason}; sign in and check again"}
+            return {**result, "login": LOGIN_UNAVAILABLE, "reason": f"{login.reason}; sign in and check again"}
         if login.source == codex_provider.AUTH_SOURCE_API_KEY:
-            return {**result, "login": "ready", "billing": "api-credit",
+            return {**result, "login": "ready", "billing": BILLING_API_CREDIT,
                     "reason": "codex is signed in with an API key and bills it per call; confirm this billing choice "
                               "or sign in with ChatGPT (`codex login`)."}
         return {**result, "login": "ready"}
@@ -30,9 +34,9 @@ def probe_access(provider: str) -> dict:
         try:
             resolve_openai_credential()
         except (SystemExit, OSError, ValueError):
-            return {**result, "login": "unavailable",
+            return {**result, "login": LOGIN_UNAVAILABLE,
                     "reason": f"{OPENAI_AUTH_ENV} is not set; export the key or choose another provider"}
-        return {**result, "login": "ready", "billing": "api-credit",
+        return {**result, "login": "ready", "billing": BILLING_API_CREDIT,
                 "reason": f"OpenAI images will use {OPENAI_AUTH_ENV} and separate API credit; confirm this billing choice."}
     if provider != PROVIDER_GROK:
         raise ValueError(f"unknown provider: {provider}")
@@ -40,8 +44,8 @@ def probe_access(provider: str) -> dict:
         # Images and videos use the same direct API credential precedence.
         credential = resolve_credential()
     except (SystemExit, OSError, ValueError):
-        return {**result, "login": "unavailable", "reason": "grok credential missing, expired or unreadable; check grok login"}
+        return {**result, "login": LOGIN_UNAVAILABLE, "reason": "grok credential missing, expired or unreadable; check grok login"}
     if credential.source == AUTH_SOURCE_API_KEY:
-        return {**result, "login": "ready", "billing": "api-credit",
+        return {**result, "login": "ready", "billing": BILLING_API_CREDIT,
                 "reason": "Grok media will use XAI_API_KEY and separate API credit; confirm this billing choice."}
     return {**result, "login": "ready"}

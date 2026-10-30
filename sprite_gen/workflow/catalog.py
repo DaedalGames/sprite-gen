@@ -29,13 +29,16 @@ _unregistered = [provider for provider in GUIDED_PROVIDERS if provider not in PR
 if _unregistered:
     raise RuntimeError(f"workflow catalog: guided provider(s) not registered: {', '.join(_unregistered)}")
 
+# The journeys' and fields' names, each written once: the keys of FLOWS and FIELDS, which `guide` reads by them.
+SPRITE, IMAGE = "sprite", "image"
+IMAGE_PROVIDER, MOTION_METHOD, CURATION = "image_provider", "motion_method", "curation"
 FIELDS = {
-    "image_provider": {"options": {provider: PROVIDER_LABELS[provider] for provider in GUIDED_PROVIDERS},
-                       "question": "이미지를 지피티로 만들까요, 그록으로 만들까요?"},
-    "motion_method": {"options": {k: v["label"] for k, v in MOTION_METHODS.items()},
-                      "question": "동작을 그록 영상으로 만들까요, 지피티 이미지 스프라이트로 만들까요?"},
-    "curation": {"options": {"open": "열기", "skip": "열지 않기"},
-                 "question": "큐레이션뷰에서 결과를 확인하고 골라볼까요?"},
+    IMAGE_PROVIDER: {"options": {provider: PROVIDER_LABELS[provider] for provider in GUIDED_PROVIDERS},
+                     "question": "이미지를 지피티로 만들까요, 그록으로 만들까요?"},
+    MOTION_METHOD: {"options": {k: v["label"] for k, v in MOTION_METHODS.items()},
+                    "question": "동작을 그록 영상으로 만들까요, 지피티 이미지 스프라이트로 만들까요?"},
+    CURATION: {"options": {"open": "열기", "skip": "열지 않기"},
+               "question": "큐레이션뷰에서 결과를 확인하고 골라볼까요?"},
 }
 # Settings every profile shares, asked once and saved beside the profiles (`preferences`, `general`). The one so
 # far: what a call that names no provider does when codex cannot run here (not signed in, or its usage used up) —
@@ -51,8 +54,8 @@ if list(GENERAL_FIELDS[CODEX_UNAVAILABLE_SETTING]["options"]) != list(CODEX_UNAV
     raise RuntimeError("workflow catalog: the codex-unavailable options must be gen.CODEX_UNAVAILABLE_CHOICES")
 
 FLOWS = {
-    "sprite": {"label": "스프라이트 만들기", "fields": ("image_provider", "motion_method", "curation")},
-    "image": {"label": "이미지 만들기", "fields": ("image_provider", "curation")},
+    SPRITE: {"label": "스프라이트 만들기", "fields": (IMAGE_PROVIDER, MOTION_METHOD, CURATION)},
+    IMAGE: {"label": "이미지 만들기", "fields": (IMAGE_PROVIDER, CURATION)},
 }
 
 
