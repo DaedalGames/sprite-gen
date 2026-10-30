@@ -1,6 +1,6 @@
 # Video → sprite pipeline (engine SSoT)
 
-> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, a single play's root motion and its air retimed, the batch, a set's sheet, a walk or run's stop · Index: [docs/README.md](README.md)
+> Owns: Pipeline B engine contract: state canvas, keyed frames, true-period and one-shot cycles, strip/GIF/WebP, a single play's root motion and its air retimed, obstacle plate painted and erased (--prop-plate), the batch, a set's sheet, a walk or run's stop · Index: [docs/README.md](README.md)
 
 One still becomes a whole motion set: the still is padded into the canvas a state
 needs, Grok Imagine animates it in place, the clip is keyed frame by frame, and one
@@ -94,6 +94,21 @@ family), the still's background is repainted to the **exact declared key** and t
 padding is that same pure key. A corner that survives the matte fails loud
 (the still is not on a key the engine can cut). `--key white` keeps the old behaviour: no
 chroma key, the padding is the corner colour.
+
+### Prop plate: `--prop-plate`
+
+A move over an obstacle (a vault, a jump over a low wall) needs something to clear. When asked in words for a wall in the background colour, a video model draws a black slab, and keying leaves that slab in the keyed frames. The obstacle is therefore painted into the still the clip is made from as a flat magenta plate, RGB (255, 0, 255), on the green key, which keying does not take and a later erase pass removes. `video-canvas --prop-plate` (off by default) paints this plate in front of the subject on the side it faces (`--facing`), standing on the subject's foot row (the plate's bottom row is the subject's bottom row). Sized from `canvas.subject_box` on the canvas whose background was normalized to the exact green key, its height is 0.49 of the subject height, its thickness is 0.20, and its near side is 0.84 of the subject height ahead of the subject's front. The flag requires a green key and `--report`. A run writes no canvas and refuses if the key is not green ("--prop-plate paints a magenta plate on a green key"), if `--report` is omitted, for state `effect` ("an effect keeps its source canvas; drop --prop-plate"), or if the plate falls past the canvas edge on the facing side ("frame the subject with room in front (--shape wide, --lead)"). The report records `prop_plate`: `box` (left, top, right, bottom in canvas pixels, right and bottom one past), `rgb`, `subject`, and `of_subject_height` (`height`, `width`, `gap`). This box is the single value used for painting and erasing; `video-frames` reads it from the report with no second copy.
+
+`video-frames --prop-plate <canvas report json>` takes the canvas report path, joining the inputs a run never overwrites. It is checked before frame extraction and refused before keying if the file is not a canvas report or holds no plate ("holds no plate; the canvas was made without --prop-plate"). The box is scaled to the clip's frames by the ratio of frame size to canvas size rounded outward on each axis, then widened by a 3 px rim on each side (`erase_box`). On a run that passed, every keyed frame is erased inside `erase_box` before handover: a pixel becomes fully transparent when red and blue lead green by more than 35 and red and blue are within 90 of each other, or when each channel (with alpha as one of the channels) is within 40 of the median that pixel shows over the whole clip. The median represents the plate and its surroundings because the subject crosses for part of the clip only; checking alpha prevents transparent background pixels from reading as black, keeping the subject's dark outline intact across the rim. Refused runs keep the plate in their refused folder. The frames report adds `prop_plate` (`canvas_report`, `erase_box`, `rim`, `frames`, `frames_changed`, `erased_px`). `video-loop` cuts of erased frames carry no plate; `video-set` does not paint or erase a plate.
+
+The video model must keep the plate where the canvas has it. In a frame where the model draws the plate one pixel off, the plate's sides stay as the codec's grey blend of magenta and green about one pixel wide down each side, which neither erase rule takes (in synthetic tests, frames with the plate one pixel to the right keep 188 and 95 such pixels). Subject edge pixels tinted magenta by the codec are erased with the plate (2 pixels in each of two frames in synthetic tests). No other guard, retry, or measurement is added.
+
+```bash
+sprite-gen video-canvas --still still.png --out canvas.png --state jump --key green --facing right --prop-plate --report canvas.json
+# film canvas.png into clip.mp4 (section 2)
+sprite-gen video-frames --clip clip.mp4 --out-dir frames --key green --reference canvas.png --prop-plate canvas.json
+sprite-gen video-loop --frames-dir frames/keyed --out-dir loop --fps 24 --state jump
+```
 
 ## 2. Clip — `sprite-gen video`
 
@@ -307,6 +322,8 @@ message with a small residual count is still a framing problem, not a key proble
 accepts only the subject at the edge — the clipping a `--fit tight` canvas chooses —
 and still fails a frame where the key alone reaches the edge, which is a keying defect
 whatever the framing.
+
+When filmed from a canvas holding an obstacle plate, `video-frames --prop-plate` erases the plate from every keyed frame before handover ([section 1](#prop-plate---prop-plate)).
 
 **A drawing cut by its own frame**. A bust or half-length drawing runs off the frame
 itself (its sleeve is cut off at the left, its hair at the top). In every frame of its clip the
@@ -568,6 +585,20 @@ wrap plays like the step into that last frame. Where the pinned frame redraws th
 
 `--cycle once --start S --length L` plays exactly those frames once, a move cut out of a longer motion that settles
 on no pose ([root motion](#root-motion--a-cut-played-once-where-the-body-is-what-it-stands-on-its-air)).
+
+A one-shot cut is accepted only where its two end frames return: the distance between the end frames is at most a quarter
+of how far the body departs between them, bounded by `ONE_SHOT_RETURN_MAX` (0.25). Other existing rules then apply to what
+lies between (contrast or moved mass over `ONE_SHOT_MIN_MOVED` 0.4, at least four active frames, a departure at least
+three times the steps between frames, and rest frames on both sides). A jump whose body crosses the canvas lands where it
+did not stand, so no two frames return and the one-shot cut refuses it. Where no pair returns, the refusal line names the
+closest return: `the clip does not come back to a pose it left: the closest return, frames A-B, is R of its departure away, over 0.25 (moved M, need 0.4)`.
+The report written with `--report` gains `cycle.closest_return` with keys `pair`, `ratio`, `seam`, `departure` and `moved`.
+
+Such a jump is cut with `video-loop --cycle once --start S --length L`, starting from the closest return's frames: pass
+`--start A` and `L` = B - A + 1, then move either end. Where a pair does return but what lies between is not an action
+(too little contrast or moved, fewer than four active frames, or a departure under three times the steps between its
+frames), or where no pair departs at all, the refusal gives the 3.12.0 line as before:
+`the clip never leaves its rest pose and returns with observed endpoints (moved M, need 0.4)`.
 
 `--cycle once-return` is for a clip pinned to end on its first frame that plays once (`video-set
 --play once-return`, [play modes](#play-modes)). It keeps every frame, the last too, so the strip

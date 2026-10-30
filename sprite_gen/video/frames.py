@@ -51,6 +51,11 @@ than `SPECK_APART` of the body's height from it. Its pixels are every opaque one
 check reads), corners joining them. Near the body, small detached pieces are the subject's own
 and stay: the outline's loose pixels one transparent pixel off, a shadow drawn under a shoe, a
 shoe's part the matte cut loose. How many each frame lost is in its report row (`specks`).
+
+A **plate** painted into the canvas (`video-canvas --prop-plate`, a low wall for the subject to clear) is taken out of
+every keyed frame of a run that passed: `--prop-plate` names that canvas's report, whose box is the plate's
+(`prop_plate.read`), and the erase runs on the frames before they are handed over (`prop_plate.erase`; the report's
+`prop_plate`). A refused run's frames keep it.
 """
 
 from __future__ import annotations
@@ -74,6 +79,7 @@ from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
 from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import prop_plate as plate_mod
 
 EDGE_ROWS = 4  # rows/cols inspected at each edge
 # Spill (key colour the video model painted INTO the subject — a reflection on
@@ -442,8 +448,8 @@ def _withdraw(keyed_dir: Path) -> Path:
 
 
 def _refuse_overlap(clip: Path, reference: Path | None, out_dir: Path, target: Path, report_given: bool,
-                    receipt: Path | None) -> None:
-    """A run never writes over, moves or deletes what it reads: `--clip` and `--reference`, each with every link or
+                    receipt: Path | None, plate: Path | None = None) -> None:
+    """A run never writes over, moves or deletes what it reads: `--clip`, `--reference` and `--prop-plate`, each with every link or
     folder its path looks up, against what it replaces in `--out-dir` (`raw/`'s frames, `keyed/`, `keyed.refused/`),
     its report and its source manifest (`runio.refuse_overlap`). Refused before anything is made."""
     out = out_dir.expanduser().resolve()
@@ -451,7 +457,7 @@ def _refuse_overlap(clip: Path, reference: Path | None, out_dir: Path, target: P
     outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
     if receipt is not None:
         outputs["--source-manifest"] = Path(receipt).expanduser().resolve()
-    refuse_overlap({"--clip": clip, "--reference": reference}, outputs, verb="video-frames")
+    refuse_overlap({"--clip": clip, "--reference": reference, "--prop-plate": plate}, outputs, verb="video-frames")
 
 
 def key_frames(
@@ -464,10 +470,12 @@ def key_frames(
     allow_subject: bool = False,
     decontam: str = DECONTAM_DEFAULT,
     alpha_mode: str = "chroma",
+    plate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Key `raw_files` into `keyed_dir` and read their edges; the report. The frames are keyed in a working folder
     beside it and handed over as `keyed_dir` when the run passes; a run that does not pass leaves them as
-    `refused_dir(keyed_dir)` and no `keyed_dir`. A refusal raises `KeyingRefused`, carrying the report."""
+    `refused_dir(keyed_dir)` and no `keyed_dir`. A refusal raises `KeyingRefused`, carrying the report. A `plate`
+    (`prop_plate.read`) is erased from the frames of a run that passed before they are handed over."""
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
@@ -482,6 +490,8 @@ def key_frames(
         report = (effect.key_frames(raw_files, work) if alpha_mode == "brightness" else
                   _key_chroma(raw_files, work, key=key, check_edges=check_edges, spill=spill, allow_subject=allow_subject,
                               decontam=decontam))
+        if plate is not None:
+            report["prop_plate"] = plate_mod.erase([work / f.name for f in raw_files], plate)
     except BaseException:
         shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
         work.rename(refused_dir(keyed_dir))
@@ -688,7 +698,7 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
-def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma") -> dict[str, Any]:
+def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma", prop_plate: Path | None = None) -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
@@ -713,7 +723,8 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     clip = clip.expanduser().resolve()
     if not clip.is_file():
         raise SystemExit(f"video-frames: clip not found: {clip}")
-    _refuse_overlap(given, reference, out_dir, target, report_path is not None, source_manifest)
+    _refuse_overlap(given, reference, out_dir, target, report_path is not None, source_manifest, prop_plate)
+    plate = plate_mod.read(prop_plate) if prop_plate is not None else None
     out_dir = out_dir.expanduser().resolve()
     raw_dir = out_dir / "raw"
     keyed_dir = out_dir / "keyed"
@@ -725,7 +736,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     files = extract(clip, raw_dir, meta["stream_index"])
     head = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
     try:
-        report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode)
+        report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode, plate=plate)
     except KeyingRefused as refused:
         # The run's record, written whatever it found: the frames it keyed are in `refused_dir`, and nothing is handed over.
         payload = {**head, "status": "refused", "error": str(refused), "keyed_dir": None, "refused_dir": str(refused_dir(keyed_dir)),
@@ -759,6 +770,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-manifest", type=Path, help="write exact clip/canvas/keyed-file digests and source timestamps (requires --reference)")
     parser.add_argument("--spill", choices=SPILL_MODES, default="small", help="small: correct only small key-tinted clusters (default); full: every key tint in the subject is spill; auto: decide from --reference")
     parser.add_argument("--reference", type=Path, help="the still the clip was made from (required by --spill auto)")
+    parser.add_argument("--prop-plate", type=Path, help="the `video-canvas --report` of a canvas painted with --prop-plate: the plate's box it holds is erased from every keyed frame (the subject crossing in front of it stays); the report's `prop_plate` says what went")
     parser.add_argument("--decontam", choices=DECONTAM_MODES, default=DECONTAM_DEFAULT, help="auto (default): re-explain key-tinted edges with the subject's own colours (one palette per clip, video fit) where it applies, the reason recorded where not (a white key, a subject with no interior; brightness alpha is off); palette: the same, failing where it cannot run; off: the matte as is")
 
 
@@ -768,8 +780,8 @@ def run(**kwargs: object) -> int:
                          spill=str(kwargs.get("spill") or "small"), reference=kwargs.get("reference"),  # type: ignore[arg-type]
                          allow_subject_edge_contact=bool(kwargs.get("allow_subject_edge_contact")),
                          decontam=str(kwargs.get("decontam") or DECONTAM_DEFAULT), source_manifest=kwargs.get("source_manifest"),
-                         alpha_mode=str(kwargs.get("alpha_mode") or "chroma"))  # type: ignore[arg-type]
-    summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report")}
+                         alpha_mode=str(kwargs.get("alpha_mode") or "chroma"), prop_plate=kwargs.get("prop_plate"))  # type: ignore[arg-type]
+    summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report") + (("prop_plate",) if "prop_plate" in payload else ())}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     line = decontam_warning(payload["decontam"])
     if line:
