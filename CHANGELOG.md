@@ -2,7 +2,7 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (v3.12.0)
+## v3.12.0 - Prop plate painted on the canvas (video-canvas --prop-plate) and erased from keyed frames (video-frames --prop-plate <canvas report json>)
 
 **Upgrading from 3.11.0: runs without the new options produce unchanged outputs: every canvas, frame, strip, GIF, WebP, and report keeps its exact bytes (with only the loop report's `producer.implementation_sha256` changing with source code changes).**
 
