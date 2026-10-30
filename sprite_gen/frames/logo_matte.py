@@ -69,6 +69,8 @@ from sprite_gen.frames.decontam import _box_sum, _ring_depth, learn_palette
 from sprite_gen.frames.extract import _grow_into
 
 KEYS = KEY_TARGETS
+LETTERING_BOX = "lettering-box"  # `choose_key`'s region when it read the colours in the title's box
+UNMIX = "logo-unmix"  # `matte`'s method: the lettering cut off its key here (`native` keeps the image's own alpha)
 KEY_FAMILY_DIST = 64.0  # CbCr distance from the declared key that a background sample may sit at
 BORDER_FRACTION = 1 / 64  # the border band read for the key: this share of the short side, at least 4 px
 MIN_BORDER_KEY_SHARE = 0.5  # share of that band that must be the key
@@ -165,7 +167,7 @@ def choose_key(mood: Image.Image, box: list[float] | None = None,
         left, top, right, bottom = (int(round(v * n)) for v, n in zip(box, (width, height, width, height)))
         if right - left >= 8 and bottom - top >= 8:
             rgb = rgb[max(0, top):bottom, max(0, left):right]
-            region = "lettering-box"
+            region = LETTERING_BOX
     scores = {}
     for key in KEYS:
         excess = key_excess(rgb, key)
@@ -434,7 +436,7 @@ def matte(image: Image.Image, *, key: str) -> tuple[Image.Image, dict[str, Any]]
     out[shown, :3] = np.round(colour[shown]).astype(np.uint8)
     out[..., 3] = alpha8.astype(np.uint8)
     stats = {
-        "method": "logo-unmix",
+        "method": UNMIX,
         "key": key,
         "background": background,
         "solid_px": int(solid.sum()),

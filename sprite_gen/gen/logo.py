@@ -274,7 +274,7 @@ def _reads(check: dict[str, Any]) -> str:
 def _in_hue(choice: dict[str, Any], *keys: str) -> str:
     """Where the key was chosen and how much of it is in each key's hue, with the brief's words for it: "the
     title's box in the mood image is 8.0 % green-hued (the brief names mint)"."""
-    where = "the title's box in the mood image" if choice["region"] == "lettering-box" else "the mood image"
+    where = "the title's box in the mood image" if choice["region"] == logo_matte.LETTERING_BOX else "the mood image"
     shares = []
     for key in keys:
         score = choice["scores"][key]
@@ -515,7 +515,7 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
              f"are drawn in the {key} key's colour, run again with --chroma-key {other}")
     _publish(logo_matte.preview(logo), files["logo.preview.png"])
     report["files"]["preview"] = str(files["logo.preview.png"])
-    if inside["wide"] and stats["method"] == "logo-unmix":
+    if inside["wide"] and stats["method"] == logo_matte.UNMIX:
         _publish(logo, files["logo.rejected.png"])
         report["files"]["rejected"] = str(files["logo.rejected.png"])
         again = f" --mood {files['mood.png']}" if files["mood.png"].is_file() else ""
