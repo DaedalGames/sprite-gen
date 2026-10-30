@@ -177,7 +177,8 @@ def _base_grid_response(run_dir: Path, base_path: Path) -> dict:
     if cached is not None:
         return cached
     request = load_request(run_dir)
-    chroma = tuple(request.get("chroma_key", {}).get("rgb") or (255, 0, 255))
+    from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
+    chroma = tuple(request.get("chroma_key", {}).get("rgb") or KEY_TARGETS[MAGENTA])
     from sprite_gen.frames.extract import (_grid_edges, detect_pixel_grid,
                                     remove_chroma_background_ycbcr, solid_alpha_bbox)
     with Image.open(base_path) as opened:
@@ -1399,7 +1400,8 @@ class CurationHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": f"unknown ops space: {space}"}, 400)
                     return
                 request = load_request(self.run_dir)
-                chroma = tuple(request.get("chroma_key", {}).get("rgb") or (255, 0, 255))
+                from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
+                chroma = tuple(request.get("chroma_key", {}).get("rgb") or KEY_TARGETS[MAGENTA])
                 backup = base_path.with_name(base_path.name + ".orig")
                 if not backup.exists():
                     import shutil as _shutil

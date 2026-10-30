@@ -48,7 +48,9 @@ from sprite_gen.spec.runio import (
     relative_posix,
 )
 from sprite_gen.frames.segment import mask_components
+from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.util.hexcolor import format_hex
 
 ALPHA_THRESHOLD = 16  # a pixel counts as content above this alpha
 MIN_GUTTER = 1        # a fully-empty line of >= this many px separates frames
@@ -249,7 +251,7 @@ def write_run(
         "engine": "component-row",
         "character": {"id": run_dir.name, "description": f"unpacked from atlas ({layout_source})"},
         "cell": {"shape": "rect" if cell_w != cell_h else "square", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
-        "chroma_key": provenance.get("chroma_key", {"name": "magenta", "hex": "#FF00FF", "rgb": [255, 0, 255]}),
+        "chroma_key": provenance.get("chroma_key", {"name": MAGENTA, "hex": format_hex(KEY_TARGETS[MAGENTA]), "rgb": list(KEY_TARGETS[MAGENTA])}),
         "states": request_states,
     }
     atomic_write_text(out_dir / "sprite-request.json", json.dumps(request, ensure_ascii=False, indent=2) + "\n")
@@ -367,7 +369,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
         "engine": "component-row",
         "character": {"id": run_dir.name, "description": f"imported PNG set from {first_dir}"},
         "cell": {"shape": "square" if cell_w == cell_h else "rect", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
-        "chroma_key": {"name": "magenta", "hex": "#FF00FF", "rgb": [255, 0, 255]},
+        "chroma_key": {"name": MAGENTA, "hex": format_hex(KEY_TARGETS[MAGENTA]), "rgb": list(KEY_TARGETS[MAGENTA])},
         "states": request_states,
     }
     if iso:

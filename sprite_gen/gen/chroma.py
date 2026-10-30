@@ -23,14 +23,12 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
 from sprite_gen.frames.extract import remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
 
 
-KEYS: dict[str, dict[str, tuple[int, int, int]]] = {
-    "magenta": {"target": (255, 0, 255)},
-    "green": {"target": (0, 255, 0)},
-}
+KEYS: dict[str, dict[str, tuple[int, int, int]]] = {name: {"target": rgb} for name, rgb in KEY_TARGETS.items()}
 
 # The sentence that asks a model for a key background, per key. A still redrawn from a
 # reference for a clip (`video.batch.walk_start_prompt`) and a ref run whose transparency
@@ -193,7 +191,7 @@ def key_transparent(
     input_path: Path,
     out_path: Path,
     *,
-    key: str = "magenta",
+    key: str = MAGENTA,
     white_check: Path | None = None,
     decontam: str = "off",
 ) -> dict[str, Any]:

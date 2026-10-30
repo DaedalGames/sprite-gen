@@ -64,10 +64,11 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
 from sprite_gen.frames.decontam import _box_sum, _ring_depth, learn_palette
 from sprite_gen.frames.extract import _grow_into
 
-KEYS: dict[str, tuple[int, int, int]] = {"magenta": (255, 0, 255), "green": (0, 255, 0)}
+KEYS = KEY_TARGETS
 KEY_FAMILY_DIST = 64.0  # CbCr distance from the declared key that a background sample may sit at
 BORDER_FRACTION = 1 / 64  # the border band read for the key: this share of the short side, at least 4 px
 MIN_BORDER_KEY_SHARE = 0.5  # share of that band that must be the key
@@ -125,7 +126,7 @@ def _cbcr(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def key_excess(rgb: np.ndarray, key: str) -> np.ndarray:
     """How much of the key's hue a colour carries (`extract._key_excess_field`)."""
-    if key == "magenta":
+    if key == MAGENTA:
         return np.minimum(rgb[..., 0], rgb[..., 2]) - rgb[..., 1]
     return rgb[..., 1] - np.maximum(rgb[..., 0], rgb[..., 2])
 
@@ -178,7 +179,7 @@ def choose_key(mood: Image.Image, box: list[float] | None = None,
                        "score": round(float(hold.mean()) - CHOICE_HUED_WEIGHT * hued, 4), "named": words,
                        "clash_at_pct": clash_at, "clashes": hued * 100 >= clash_at}
     left = [key for key in KEYS if not scores[key]["clashes"]]
-    key = max(left, key=lambda k: (scores[k]["score"], k == "magenta")) if left else None
+    key = max(left, key=lambda k: (scores[k]["score"], k == MAGENTA)) if left else None
     return {"key": key, "region": region, "scores": scores}
 
 

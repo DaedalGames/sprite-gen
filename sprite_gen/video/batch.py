@@ -1301,7 +1301,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--character", help="short subject phrase used in the prompts (e.g. 'The armored knight')")
     parser.add_argument("--duration", type=int, default=None, help=f"seconds per clip for every state (default: {DEFAULT_DURATION_SECONDS}, attack {STATE_DURATION_SECONDS['attack']}); a repeating motion holds enough cycles at 3 s and a longer clip only costs more (2026-09-18)")
     parser.add_argument("--resolution", default="720p")
-    parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto")
+    parser.add_argument("--key", choices=canvas_mod.KEYS, default="auto")
     parser.add_argument("--concurrency", type=int, default=3, help="parallel clip generations (starts are staggered regardless)")
     parser.add_argument("--start-gap", type=float, default=START_GAP_SECONDS, help="seconds between clip request starts")
     parser.add_argument("--shape", choices=canvas_mod.SHAPES, help="force one canvas shape for every state (e.g. wide for a costume or arms that leave a 1:1 frame; square keeps a side walk or run square whatever room its still leaves)")

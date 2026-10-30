@@ -46,6 +46,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from sprite_gen.frames.cutout import MAGENTA
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.video import body_plan as body_mod
@@ -444,7 +445,7 @@ def generate_image(
     resolution: str | None = None,
     transparent: bool = False,
     alpha_mode: str = ALPHA_MODE_AUTO,
-    chroma_key: str = "magenta",
+    chroma_key: str = MAGENTA,
     white_check: Path | None = None,
     trim_alpha: bool = False,
     keep_session: bool = False,
@@ -831,7 +832,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "colours after the matte. off (default) publishes the matte as it is; auto runs it where it "
         "applies (chroma strategy, a subject interior); palette demands it",
     )
-    parser.add_argument("--chroma-key", choices=sorted(chroma_mod.KEYS), default="magenta")
+    parser.add_argument("--chroma-key", choices=sorted(chroma_mod.KEYS), default=MAGENTA)
     parser.add_argument("--facing", choices=(*facing_mod.FACINGS, "preserve"), default="preserve", help="with --ref: required direction; preserve (default) leaves prompt and pixels unchanged")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="with --ref and --facing: record only (none, default), or opt into mirror / one regen")
     parser.add_argument("--direction", choices=handed_mod.VIEWS, help="draw the still at this sprite view: the engine's view sentence is added to the prompt (side and diagonal views also take --facing right|left)")

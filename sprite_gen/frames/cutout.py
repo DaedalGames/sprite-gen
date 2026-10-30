@@ -51,12 +51,16 @@ ERODE_DEFAULT = 1.0  # soft-erode radius (fractional part shaves the last ring t
 CHROMA_TOLERANCE = 26  # flood-fill background membership: max per-channel diff from the estimated bg colour
 CORNER_MIN_BRIGHT = 225  # a corner pixel must be at least this bright (min channel) to seed the bg colour estimate
 
-# Key colours reused from the generation contract (chroma.py KEYS). The extract
-# engine keys these out; cutout only detects them and routes.
+# The key colours, the one table: gen's `chroma.KEYS` is built from it, and the logo matte and
+# slice-sheet key by it. The extract engine keys these out; cutout only detects them and routes.
+MAGENTA, GREEN = "magenta", "green"
 KEY_TARGETS: dict[str, tuple[int, int, int]] = {
-    "magenta": (255, 0, 255),
-    "green": (0, 255, 0),
+    MAGENTA: (255, 0, 255),
+    GREEN: (0, 255, 0),
 }
+# `--key`: auto reads the corners; white is the position matte; a key colour is the chroma engine;
+# measured is the measured matte.
+KEYS = ("auto", "white", *KEY_TARGETS, "measured")
 # extract.remove_chroma_background params — the extract CLI defaults (SSoT: extract.py argparse).
 _EXTRACT_KEY_THRESHOLD = 96.0
 _EXTRACT_FRINGE_THRESHOLD = 180.0
@@ -433,7 +437,7 @@ def cutout(
     located, nothing was made transparent, or any transparent pixel keeps non-zero RGB
     (No Silent Fallback).
     """
-    if key not in ("auto", "white", "magenta", "green", "measured"):
+    if key not in KEYS:
         raise SystemExit(f"cutout: unknown key {key!r}; expected one of auto|white|magenta|green|measured")
     if decontam not in ("off", "auto", "palette"):
         raise SystemExit(f"cutout: unknown decontam {decontam!r}; expected off|auto|palette")
@@ -446,7 +450,7 @@ def cutout(
         route = "measured"
     if route == "measured":
         result, route_stats = _measured_route(image, decontam, key)
-    elif route in ("magenta", "green"):
+    elif route in KEY_TARGETS:
         result, route_stats = extract_route(image, route, spill_max_fraction=spill_max_fraction,
                                             spill_min_tint=spill_min_tint, spill_require_hue=spill_require_hue,
                                             decontam=decontam, decontam_fit=decontam_fit,
@@ -514,7 +518,7 @@ def add_arguments(p: Any) -> None:
     p.add_argument("--out", type=Path, help="output PNG (default: <input>_cutout.png)")
     p.add_argument(
         "--key",
-        choices=["auto", "white", "magenta", "green", "measured"],
+        choices=KEYS,
         default="auto",
         help="background type; auto detects from corners (white→matte, magenta/green→extract engine, any other "
         "colour→measured matte); a magenta/green background the engine does not recognise is measured too",

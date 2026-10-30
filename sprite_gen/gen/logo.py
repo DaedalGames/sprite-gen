@@ -40,6 +40,7 @@ from PIL import Image
 
 import sprite_gen.gen as gen_pkg
 from sprite_gen.frames import logo_matte
+from sprite_gen.frames.cutout import GREEN, MAGENTA
 from sprite_gen.spec.runio import atomic_save_image, atomic_write_text, new_stage, refuse_overlap, same_folder
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
@@ -107,7 +108,7 @@ def mood_prompt(text: str, *, subtitle: str | None = None, style: str | None = N
 
 
 def lettering_prompt(text: str, *, subtitle: str | None = None, composition: str = "title-screen",
-                     language: str | None = None, key: str = "magenta") -> str:
+                     language: str | None = None, key: str = MAGENTA) -> str:
     """Step 2: only the lettering of the attached mood image, as it is drawn there, on a flat key."""
     picture = COMPOSITIONS[composition]["picture"]
     words = _quoted(text) + (f" and the subtitle {_quoted(subtitle)}" if subtitle else "")
@@ -467,7 +468,7 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
     report["steps"]["key"] = {**choice, "key": key, "source": "auto" if chroma_key == "auto" else "explicit"}
     if key is None:
         raise _Refusal("key", f"logo: the title's colours carry both keys' hues — "
-                       f"{_in_hue(choice, 'green', 'magenta')}; a letter in the key's hue comes out see-through on "
+                       f"{_in_hue(choice, GREEN, MAGENTA)}; a letter in the key's hue comes out see-through on "
                        "it, and there is no third key. Restyle the title without one of them, or name the key to lose "
                        f"with --chroma-key (--mood {files['mood.png']} skips the mood image; the lettering was not "
                        "bought)")
@@ -508,7 +509,7 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
     inside = logo_matte.see_through_inside(logo)
     report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key),
                       "see_through_inside": inside}
-    other = "green" if key == "magenta" else "magenta"
+    other = GREEN if key == MAGENTA else MAGENTA
     if cover["visible_opaque_share"] < logo_matte.SEE_THROUGH_WARN_SHARE:
         warn(f"only {cover['visible_opaque_share'] * 100:.0f}% of the visible lettering is opaque; if the letters "
              f"are drawn in the {key} key's colour, run again with --chroma-key {other}")

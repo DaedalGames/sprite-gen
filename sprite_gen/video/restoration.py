@@ -107,7 +107,7 @@ def _source_key(src: source.Source) -> str | None:
     key = src.record["recipe"].get("key")
     if key == "auto":
         key = (src.record["recipe"].get("spill") or {}).get("key")
-    return key if key in ("green", "magenta") else None
+    return key if key in KEY_TARGETS else None
 
 
 def source_key_weight(cropped: Image.Image, size: tuple[int, int], key: str) -> Any:

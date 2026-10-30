@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from sprite_gen.frames.cutout import GREEN
+from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.gen.handedness import Handed
@@ -35,12 +37,12 @@ from sprite_gen.video.body_plan import Body
 from sprite_gen.util.console import utf8_streams
 
 DEFAULT_MODEL = "grok-imagine-video-1.5"
-START_STILL_KEYS = ("green", "magenta")
+START_STILL_KEYS = tuple(KEY_BACKGROUND_TEXT)
 
 
 def plan_prompt(*, direction: str, state: str, facing: str = "right", character: str | None = None,
                 motion: str | None = None, model: str = DEFAULT_MODEL, last_frame: bool = True,
-                unpinned: bool = False, duration: int | None = None, key: str = "green",
+                unpinned: bool = False, duration: int | None = None, key: str = GREEN,
                 handed: list[Handed] | None = None, body_plan: list[Body] | None = None, end_frame: Path | None = None,
                 play: str | None = None) -> dict[str, Any]:
     """The prompt `video-set` would send for (direction, state), and how its clip is to be cut. `handed`
@@ -141,7 +143,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--end-frame", type=Path, help="non-loop terminal-pose canvas to pin instead of returning to the starting image")
     parser.add_argument("--no-last-frame", action="store_true", help="the clip source cannot pin an end frame (ZCRE's grok-imagine-video-1.5): states filmed pinned are refused")
     parser.add_argument("--unpinned", action="store_true", help="with --no-last-frame: film a pinned state without the pin, with a warning, instead of refusing it")
-    parser.add_argument("--key", choices=START_STILL_KEYS, default="green", help="the still's chroma key, for a front or back walk's mid-step redraw sentence (default green)")
+    parser.add_argument("--key", choices=START_STILL_KEYS, default=GREEN, help="the still's chroma key, for a front or back walk's mid-step redraw sentence (default green)")
     parser.add_argument("--json", action="store_true", help="print the whole record (prompt, duration, end-frame pin, loop cut, commands) instead of the prompt alone")
 
 
@@ -152,7 +154,7 @@ def run(**kwargs: object) -> int:
         character=kwargs.get("character"), motion=kwargs.get("motion"),  # type: ignore[arg-type]
         model=str(kwargs.get("model") or DEFAULT_MODEL), last_frame=not kwargs.get("no_last_frame"),
         unpinned=bool(kwargs.get("unpinned")), duration=(int(kwargs["duration"]) if kwargs.get("duration") else None),  # type: ignore[arg-type]
-        key=str(kwargs.get("key") or "green"),
+        key=str(kwargs.get("key") or GREEN),
         handed=handed_mod.parse_all(list(kwargs.get("handed") or [])) or None,  # type: ignore[arg-type]
         body_plan=body_mod.parse_all(list(kwargs.get("body_plan") or [])) or None,  # type: ignore[arg-type]
     )

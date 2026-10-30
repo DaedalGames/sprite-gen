@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.util.hexcolor import format_hex, parse_hex
 from sprite_gen.curate.anchor import anchor_ref_rel
+from sprite_gen.frames.cutout import GREEN, KEY_TARGETS, MAGENTA
 from sprite_gen.frames.extract import color_distance
 from sprite_gen.spec.layout import TAXONOMY, guide_rel, prompt_rel, raw_rel
 from sprite_gen.spec.subject import SUBJECTS
@@ -187,8 +188,8 @@ DEFAULT_ACTIONS_ANY_BODY = {
 }
 
 CHROMA_CANDIDATES = [
-    ("magenta", "#FF00FF"),
-    ("green", "#00FF00"),
+    (MAGENTA, format_hex(KEY_TARGETS[MAGENTA])),
+    (GREEN, format_hex(KEY_TARGETS[GREEN])),
     ("cyan", "#00FFFF"),
     ("blue", "#004DFF"),
 ]
@@ -417,7 +418,7 @@ def choose_chroma_key(reference: Path | None, requested: str) -> dict[str, Any]:
     if background["mode"] == "heterogeneous":
         print(f"WARNING: chroma_key auto: {background['note']}", file=sys.stderr)
     if not pixels:
-        rgb = parse_hex_color("#FF00FF")
+        rgb = KEY_TARGETS[MAGENTA]
         reason = (
             "no base reference to sample"
             if background["mode"] == "absent"
@@ -426,8 +427,8 @@ def choose_chroma_key(reference: Path | None, requested: str) -> dict[str, Any]:
         if background["mode"] != "absent":
             print(f"WARNING: chroma_key auto: {reason}; defaulting to magenta", file=sys.stderr)
         return {
-            "name": "magenta",
-            "hex": "#FF00FF",
+            "name": MAGENTA,
+            "hex": format_hex(rgb),
             "rgb": list(rgb),
             "selection": "fallback",
             "background": background,
