@@ -186,6 +186,24 @@ def test_video_loop_carries_the_root_motion_of_a_jump_and_retimes_its_air(tmp_pa
     assert record["poses"] == meta["held_fill"]["poses"] and record["cells"] == meta["frames"]
 
 
+def test_an_air_whose_frames_between_show_a_frame_beside_them_again_names_those_cells(tmp_path, capsys):
+    # An interpolator that gives back the frame before makes no air cell between two frames: each is refused (`held`),
+    # tried again only later within half a cell, and is the nearer frame, named in the record and in a warning line.
+    calls: list[float] = []
+
+    def stuck(a, b, t):
+        calls.append(t)
+        return a
+
+    rep = _run(tmp_path, J.jump(), "stuck", state="jump", cycle_mode="once", air_retime=f"air={2 * J.AIR}",
+               meters_per_px=J.METERS_PER_PX, interpolate=stuck)
+    record = _meta(rep)["air_retime"]
+    assert record["applied"] and record["made"] == 0 and len(record["shown_again"]) == 10
+    assert all(t["faults"] == ["held"] and t["t"] >= 0.5 for m in rep["air_retime"]["frames"] for t in m["tries"])
+    assert len(calls) == 10 * 5  # 0.5, then 0.55 to 0.7: half a cell is a quarter of a frame
+    cells = ", ".join(map(str, record["shown_again"]))
+    assert f"10 cells of the retimed air ({cells}) show the frame beside them again" in capsys.readouterr().err
+
 @pytest.mark.real_rife
 @pytest.mark.timeout(900)  # 10 calls of the binary at about 210 x 250, each judged: seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_makes_the_air_twice_as_long_with_no_frame_shown_again(tmp_path):
@@ -245,6 +263,23 @@ def test_a_retimed_cut_records_each_cell_as_the_frame_it_is_and_a_cell_made_or_m
                                          rf"\(cell_record\.cells\[{first}\]\.as_filmed\)"):
         sway.recut_pair(meta, _meta(read), hashlib.sha256(Path(read["strip"]["path"]).read_bytes()).hexdigest(),
                         strip_sha256=sha)
+
+
+def test_a_retimed_cut_whose_frames_between_show_a_frame_again_records_those_cells_as_the_nearer_frame(tmp_path):
+    """The same air half as long again with an interpolator that gives back the frame before: no cell between two
+    frames is made (each refused, `held`), each is the nearer frame (`air_retime.shown_again`), and the strip's record of
+    its cells names that frame (`source_frames`, held_fill.at_times'), not the frame before its time."""
+    rep = _run(tmp_path, J.jump(), "stuck", state="jump", cycle_mode="once", air_retime=f"air={1.5 * J.AIR}",
+               interpolate=lambda a, b, t: a)
+    meta = _meta(rep)
+    record = meta["air_retime"]
+    between = [c for c, t in enumerate(meta["source_cut"]["times"]) if abs(t - round(t)) > held_fill.SNAP]
+    assert record["applied"] and record["made"] == 0 and record["shown_again"] == between and len(between) == 10
+    sha = hashlib.sha256(Path(rep["strip"]["path"]).read_bytes()).hexdigest()
+    cells, times = sway.cell_record(meta, sha), meta["source_cut"]["times"]
+    assert len(cells) == meta["frames"] == len(times)
+    assert [cell["source_frame"] for cell in cells] == [round(t) for t in times]
+    assert any(round(times[c]) != math.floor(times[c]) for c in between)
 
 
 def test_gravity_or_speed_without_metres_per_pixel_is_refused(tmp_path):

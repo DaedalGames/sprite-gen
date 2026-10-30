@@ -158,6 +158,35 @@ def test_a_stalled_walk_has_its_held_cells_made_between_the_poses_beside_them(tm
     assert rep["seam_measurement"] == "rendered-cells"
 
 
+@pytest.mark.parametrize("given", ["the frame before", "the frame after"])
+def test_an_interpolator_that_gives_the_pose_back_leaves_the_stalled_walk_as_filmed_and_says_so(given, tmp_path, capsys):
+    # No frame between at all: each frame it gives is a pose beside it, a held cell itself. Tried again only on the
+    # side away from that pose (later for the frame before, earlier for the frame after) within half a cell, never
+    # taken: the cut is delivered as filmed, its record and its warnings say both runs are still held.
+    calls: list[float] = []
+
+    def stuck(a, b, t):
+        calls.append(t)
+        return a if given == "the frame before" else b
+
+    rep = _run(tmp_path, shown_again(walk(), STALLED), interpolate=stuck, **STALLED_CUT)
+    assert rep["status"] == "passed"
+    record = rep["held_fill"]
+    assert record["made"] == [] and "interpolator" not in record
+    runs = record["before"]["held_runs"]
+    assert [(r["start"], r["length"], r["filled"]) for r in runs] == [(5, 2, False), (14, 3, False)]
+    assert all("held" in r["faults"] for r in runs)
+    assert [[t["t"] for t in r["tries"][0]["tries"]] for r in runs] == (
+        [[0.5, 0.55, 0.6, 0.65, 0.7], [0.3333, 0.35, 0.4, 0.45]] if given == "the frame before"
+        else [[0.5, 0.45, 0.4, 0.35, 0.3], [0.3333, 0.3, 0.25, 0.2]])
+    assert len(calls) == sum(len(r["tries"][0]["tries"]) for r in runs) == 9
+    assert (record["cells"], record["poses"], record["held_runs"]) == (
+        N + 3, N, [{"start": 5, "length": 2}, {"start": 14, "length": 3}])
+    assert _pictures(Path(rep["out_dir"]), "m") == STALLED_OFF
+    err = capsys.readouterr().err
+    assert "held cells 5-6 kept as filmed" in err and "held cells 14-16 kept as filmed" in err
+
+
 def test_fill_held_off_cuts_the_stalled_walk_as_before_and_still_names_its_runs(tmp_path):
     rep = _run(tmp_path, shown_again(walk(), STALLED), fill_held="off", **STALLED_CUT)
     assert _pictures(Path(rep["out_dir"]), "m") == STALLED_OFF
@@ -240,7 +269,14 @@ def test_a_once_cut_and_a_one_shot_have_their_held_cells_made_too(tmp_path):
     record = rep["held_fill"]
     start = rep["cycle"]["start"]
     assert [(r["start"], r["filled"]) for r in record["before"]["held_runs"] if r["filled"]] == [(20 - start, True)]
-    assert between.calls == [(20.0, 21.0, 0.5)]
+    # Half way, and a twentieth on, the body has sunk less than a pixel: each such frame shows frame 20 again and is
+    # refused (`held`). A frame nearer frame 20 would show it too, so the cell is made again only later, at the nearest
+    # fraction where the body has moved.
+    assert between.calls == [(20.0, 21.0, t) for t in (0.5, 0.55, 0.6)]
+    made = next(r for r in record["frames"] if r["cell"] == 21 - start)
+    assert (made["t"], made["from_t"]) == (0.6, 0.5)
+    assert [(t["faults"], t.get("shows")) for t in made["tries"]] == [(["held"], ["a"])] * 2 + [([], None)]
+    assert all(r["start"] != 20 - start for r in record["held_runs"])  # read again, the cell made is a pose of its own
     hopped = shown_again(hop(), {18: 2})
     rep = _run(tmp_path, hopped, "hop", interpolate=lambda a, b, t: Image.blend(a, b, t), state="jump", cycle_mode="one-shot")
     assert any(r["start"] + rep["cycle"]["start"] == 18 for r in rep["held_fill"]["before"]["held_runs"])
@@ -291,6 +327,66 @@ def test_a_frame_between_that_cross_fades_two_poses_is_not_taken():
     out, record = held_fill.fill(frames, lambda a, b, t: Image.blend(a, b, t), ring=True)
     assert record["made"] == [] and [o.tobytes() for o in out] == [f.tobytes() for f in frames]
     assert all(not r["filled"] and "ghost" in r["faults"] for r in record["before"]["held_runs"])
+
+
+@pytest.mark.parametrize("given", ["the frame before", "the frame after"])
+def test_a_frame_between_that_shows_a_pose_beside_it_again_is_not_taken(given):
+    frames = shown_again(walk(), STALLED)[: N + 3]
+    calls: list[float] = []
+
+    def back(a, b, t):
+        calls.append(t)
+        return a if given == "the frame before" else b
+
+    out, record = held_fill.fill(frames, back, ring=True)
+    assert record["made"] == [] and [o.tobytes() for o in out] == [f.tobytes() for f in frames]
+    runs = record["before"]["held_runs"]
+    assert all(not r["filled"] and r["faults"] == ["held"] for r in runs)
+    # Each run's first cell tried at its own time, then at the other fractions within half a cell of it on the side
+    # away from the pose it showed again: later for the frame before, earlier for the frame after.
+    shown, later = ("a", True) if given == "the frame before" else ("b", False)
+    for r in runs:
+        tries = r["tries"][0]["tries"]
+        assert len(tries) > 1 and all(t["faults"] == ["held"] and t["shows"] == [shown] for t in tries)
+        assert [t["t"] for t in tries] == sorted((t["t"] for t in tries), reverse=not later)
+    assert (record["poses"], record["held_runs"]) == (N, [{"start": 5, "length": 2}, {"start": 14, "length": 3}])
+
+
+def _lit(blue: int) -> Image.Image:
+    """`planter(10)` with its body `blue` in the blue channel: one pose, lit differently."""
+    a = np.asarray(planter(10)).copy()
+    a[30:110, 50:70] = (90, 90, blue, 255)
+    return Image.fromarray(a, "RGBA")
+
+
+def test_a_frame_between_that_shows_both_poses_beside_it_is_not_made_again():
+    # The pose after the held one lit 40 levels brighter (over PIXEL_SAME): any frame between them shows one of the
+    # two, and half way it shows both again. No fraction can show a picture of its own, so it is made once.
+    a, b = _lit(200), _lit(240)
+    frames = [planter(0), a, a, b, planter(20)]
+    calls: list[float] = []
+    out, record = held_fill.fill(frames, lambda x, y, t: calls.append(t) or Image.blend(x, y, t), ring=False)
+    run = record["before"]["held_runs"][0]
+    assert (run["start"], run["length"], run["filled"], run["faults"]) == (1, 2, False, ["held"])
+    assert calls == [0.5]
+    assert run["tries"][0]["tries"] == [{"t": 0.5, "faults": ["held"], "shows": ["a", "b"]}]
+    assert record["made"] == [] and [o.tobytes() for o in out] == [f.tobytes() for f in frames]
+
+
+def test_a_run_whose_frames_between_show_one_picture_twice_is_kept_as_filmed():
+    # An interpolator that draws the time half way whatever it is asked: a run of two is made, a run of three would
+    # show its one frame between on both its cells.
+    frames = shown_again(walk(), STALLED)[: N + 3]
+    between = Between(walk_at, range(N + 6), period=N)
+    out, record = held_fill.fill(frames, lambda a, b, t: between(a, b, 0.5), ring=True)
+    runs = record["before"]["held_runs"]
+    assert [(r["start"], r["filled"]) for r in runs] == [(5, True), (14, False)]
+    assert runs[1]["faults"] == ["held"] and [row["cell"] for row in runs[1]["tries"]] == [15, 16]
+    # The second shows the first again, the cell before it: made again only later, within half a cell.
+    assert [(t["t"], t["shows"]) for t in runs[1]["tries"][1]["tries"]] == [(t, ["before"]) for t in (0.6667, 0.7, 0.75, 0.8)]
+    assert record["made"] == [6] and out[6].tobytes() == walk_at(5.5).tobytes()
+    assert [o.tobytes() for o in out[14:17]] == [f.tobytes() for f in frames[14:17]]
+    assert record["held_runs"] == [{"start": 14, "length": 3}]
 
 
 def test_the_opening_and_the_closing_pose_of_a_cut_played_once_are_kept():
@@ -411,6 +507,31 @@ def test_a_one_shot_asked_for_at_60_fps_keeps_its_first_and_last_frame(tmp_path)
     filmed = hop()[rep["cycle"]["start"]: rep["cycle"]["start"] + L]
     assert cells[0].tobytes() == filmed[0].tobytes() and cells[-1].tobytes() == filmed[-1].tobytes()
     assert record["out_fps"]["applied"] is True
+
+
+def test_a_cell_at_a_higher_rate_whose_frame_between_shows_a_frame_again_is_named_shown_again():
+    # Five frames at 24 fps given at 60: eleven cells, three on a frame's time. An interpolator that gives back the frame
+    # before makes none of the eight between: each is the nearer frame, named.
+    frames = walk()[:5]
+    out, record = held_fill.upsample(frames, lambda a, b, t: a, ring=False, fps=24.0, out_fps=60.0)
+    assert record["made"] == 0 and record["shown_again"] == [1, 2, 3, 4, 6, 7, 8, 9]
+    assert all(t["faults"] == ["held"] for m in record["frames"] for t in m["tries"])
+    # Each tried again only later than its own time: a frame nearer the one it showed would show it too.
+    assert all(t["t"] >= m["t"] for m in record["frames"] for t in m["tries"])
+    assert [o.tobytes() for o in out] == [frames[round(k * 0.4)].tobytes() for k in range(11)]
+
+
+def test_two_cells_at_a_higher_rate_between_one_pair_are_not_one_picture():
+    # Given at 60, the cells at 0.4 and 0.8 of a step both lie between its two frames. An interpolator that draws the
+    # time half way whatever it is asked makes the first; the second would show it again, and is the nearer frame.
+    frames = walk()[:5]
+    between = Between(walk_at, range(5))
+    out, record = held_fill.upsample(frames, lambda a, b, t: between(a, b, 0.5), ring=False, fps=24.0, out_fps=60.0)
+    assert record["shown_again"] == [2, 4, 7, 9] and record["made"] == 4
+    # The second shows the first again, the cell before it: made again only later, at 0.85, the last fraction there.
+    assert [[t["t"] for t in m["tries"]] for m in record["frames"] if m["cell"] == 2] == [[0.8, 0.85]]
+    assert out[1].tobytes() == walk_at(0.5).tobytes() and out[2].tobytes() == frames[1].tobytes()
+    assert out[3].tobytes() == walk_at(1.5).tobytes() and out[4].tobytes() == frames[2].tobytes()
 
 
 def test_no_rife_delivers_a_clip_asked_for_at_a_higher_rate_at_its_own(tmp_path, monkeypatch, capsys):

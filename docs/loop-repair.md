@@ -2788,7 +2788,8 @@ plays the clip's filmed frames, none made between two others, and names a run it
 | Kept: a loop's last cells | A run that ends on a loop's last cell | Its next pose is across the wrap: made, the last cell would change and with it the wrap. A run that opens a loop is made (its first cell stays). A periodic cut chooses its wrap where the steps either side read alike, so a held run seldom closes it; a fixed cut whose last cells are held keeps them, and its wrap then steps from a held picture (cut it elsewhere, or `--fill-held off` to keep the whole cut as filmed). |
 | A frame made, judged | `align.measure_made` and `interpolation_quality.faults` (smear, outline, ghost, hole, doubled), the alignment's own | One acceptance policy for every frame RIFE makes (section 4). |
 | A part standing still, kept still (`still_kept`) | The outline pixels both frames draw in one place in one colour (solid at alpha 128, within 24 levels) must be drawn there in the frame made, within a pixel, for at least `STILL_KEPT_MIN` 0.8 of them in every window a tenth of the body high that holds 12 or more; else the fault `contact` | A foot planted or a hand on a ledge stays where it stood. A synthetic in-between that drags a planted foot 3 px along the floor keeps 0.50 of its window; one off by a pixel, 1.00. |
-| A frame refused | Made again at the fraction of `RETIME_T` nearest its own within half a cell of it, its ghost band under `RETIME_WINDOW_MAX` (section 4's bar for a frame made off its time); else the run is kept as filmed, with a warning naming the cells and the faults | A frame half way that RIFE cannot draw is often clean nearer one side. |
+| A picture of its own (`same_picture`) | The frame made must not read as the same picture (the reading above) as either frame it is made between or as the cell delivered before it (in a run of three, at `--out-fps` or in an air retimed with `--air-retime`, that can be a frame made too); else the fault `held` | An interpolator that gives back a frame it was handed, or one picture at two times, makes no frame between. Taken, the cell would be counted as made and still show the picture beside it. On a synthetic stalled walk (runs of two and three cells) whose interpolator gives back the frame before, both runs are kept as filmed (24/27 poses/cells). Each first cell is tried at its own time and then only later within half a cell (0.5 to 0.7, and 0.3333 to 0.45). `warning:` lines name cells 5-6 and 14-16. A synthetic fall that sinks less than a pixel in half a frame shows the frame before it again at 0.5 and 0.55, and is made at 0.6. |
+| A frame refused | Made again at the fraction of `RETIME_T` nearest its own within half a cell of it, its ghost band under `RETIME_WINDOW_MAX` (section 4's bar for a frame made off its time). One refused as `held` is made again only on the side away from the picture it showed (later where it showed the frame before or the cell before it, earlier where it showed the frame after), and not again where it showed both. Else the run is kept as filmed, with a warning naming the cells and the faults | A frame half way that RIFE cannot draw is often clean nearer one side. The frames between run from one pose to the next, so a fraction nearer a picture a frame showed again shows it too. On the cuts of eight tests that reach the binary through the default fill, trying every fraction within half a cell ran the binary 214 times. The side rule runs it 124 times and makes the same cells (3.10.0, which took such frames, ran it 90 times). |
 | Whole or not at all | A run is made whole or kept whole | Half made, it would step back to the held picture and on again. |
 | Order | After the anchor and `source_projection`, before the ghost screen, the wrap blend, the part pop and the jump repair | Everything that reads the flow and the wrap reads the cut as it will play. |
 | No RIFE | The held cells are delivered as filmed, the cut passes, and a `warning:` line names the motion, the cells and `sprite-gen rife install`; `held_fill.unmade` records them | Never a failure, never silent. |
@@ -2805,14 +2806,15 @@ its drawings on its own cells, not on the clip's hold.
 time of its own, made by RIFE between the frames beside it, judged as the fill's frames are, never showing a frame
 again. A loop has round(L x F / fps) cells over its cycle's seconds, at times k x L / cells; a cut played once runs
 from its first frame to its last, round((L - 1) x F / fps) + 1 cells, each 1/F. A cell on a frame's time is that
-frame; one between two frames showing one picture (a hold kept) is that picture; one no frame made is taken for is
-the nearer frame, named (`out_fps.shown_again`). The record's `out_fps.source_frames` gives the frame each cell is
-(null where it was made), which the strip record's `cell_record` reads for its `source_frame` (`docs/video-pipeline.md`
-section 6). `cycle/` holds every cell; the strip holds them up to its cell and
-width caps, subsampled past them as any strip is (`subsampled`). The strip metadata says `out_fps` and `source_fps`,
-and `source_cut.times` in place of `samples`. With no RIFE the cut is delivered at its own rate with a `warning:` line
-and `out_fps.applied` false. `video-cycle-align` and `video-stop` refuse such a loop (each makes its own frames
-between from the cut at the clip's rate), and restoration reads it as `source-processing-unsupported`.
+frame; one between two frames showing one picture (a hold kept) is that picture; one no frame made is taken for (a
+fault, or `held`: the frame shows the picture of a frame beside it, or of the cell before it, again) is the nearer
+frame, listed in `out_fps.shown_again` and named in a `warning:` line. The record's `out_fps.source_frames` gives the
+frame each cell is (null where it was made), which the strip record's `cell_record` reads for its `source_frame`
+(`docs/video-pipeline.md` section 6). `cycle/` holds every cell; the strip holds them
+up to its cell and width caps, subsampled past them as any strip is (`subsampled`). The strip metadata says `out_fps`
+and `source_fps`, and `source_cut.times` in place of `samples`. With no RIFE the cut is delivered at its own rate with
+a `warning:` line and `out_fps.applied` false. `video-cycle-align` and `video-stop` refuse such a loop (each makes its
+own frames between from the cut at the clip's rate), and restoration reads it as `source-processing-unsupported`.
 
 Where sprite-gen gives frames at a higher rate than it was given them:
 
@@ -2838,6 +2840,7 @@ Where sprite-gen gives frames at a higher rate than it was given them:
 | Solid pixels | `legs.LOW_ALPHA` | |
 | The window a tenth of the body high | `rife.GHOST_BAND` | |
 | The same picture (`same_steps`) | New | A distance over the mass (`nonloop.STABLE_MAX`, `held.measure`'s steps) reads a one-pixel move of a small part as held; `held.measure` reads a rhythm of redrawn drawings, not a frame shown again. |
+| Whether a frame made shows a picture of its own (`same_picture`, the fault `held`) | `same_steps`, the reading above, on each pair | |
 | A part standing still (`still_kept`) | New | `rife.hole` reads a hole through a limb, `inspect-motion` a foot's place in spans a person marks; neither reads whether an in-between keeps what both its frames hold still. |
 | The times of a higher rate (`times`, `upsample`) | New | `align.resample` resamples a loop as a ring to a length; a cut played once runs from its first frame to its last. |
 
