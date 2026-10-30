@@ -52,7 +52,10 @@ def _number(value, name):
     return value
 
 
-def _contact_spans(contacts, count):
+def contact_spans(contacts, count):
+    """Zero-based inclusive spans of frames, ordered and apart: `0:4,8:12`, consecutive indices, or (start, end) pairs
+    (`analyze_motion`); a single play's contacts a clip does not show are named in the same form (video-loop --contact,
+    sprite_gen/video/root_motion.py)."""
     if contacts is None:
         return []
     if isinstance(contacts, str):
@@ -112,6 +115,13 @@ def _foot_roi(foot_box, size):
     if min(x, y) < 0 or min(width, height) <= 0 or x + width > size[0] or y + height > size[1]:
         raise ValueError("foot_box must fit inside the frame canvas with positive dimensions")
     return x, y, width, height
+
+
+def centroid(mask):
+    """The mean of a silhouette's pixels, at their centres: [x, y], or None where it is empty. A frame's `centroid_px`,
+    and the root of a single play's cell (sprite_gen/video/root_motion.py)."""
+    ys, xs = np.nonzero(mask)
+    return [float(xs.mean() + 0.5), float(ys.mean() + 0.5)] if len(xs) else None
 
 
 def _bbox(mask):
@@ -266,7 +276,7 @@ def analyze_motion(sequence: FrameSequence, *, contacts=None, foot_box=None, fac
     anchor = [_number(v, "anchor") for v in sequence.anchor]
     if facing not in (None, "left", "right"):
         raise ValueError("facing must be left or right")
-    spans = _contact_spans(contacts, len(frames))
+    spans = contact_spans(contacts, len(frames))
     box = _foot_roi(foot_box, (width, height))
     starts = []
     elapsed = 0.0
@@ -320,12 +330,11 @@ def analyze_motion(sequence: FrameSequence, *, contacts=None, foot_box=None, fac
                 if touches:
                     sides[side].append(index)
                     edge_sides.append(side)
-        ys, xs = np.nonzero(mask)
         rows.append({
             "frame": index, "time_seconds": starts[index], "duration_seconds": durations[index],
             "bbox": bbox, "anchor_px": anchor.copy(),
             "bbox_from_anchor": [v - anchor[i % 2] for i, v in enumerate(bbox)] if bbox else None,
-            "centroid_px": [float(xs.mean() + 0.5), float(ys.mean() + 0.5)] if bbox else None,
+            "centroid_px": centroid(mask),
             "opaque_pixels": int(mask.sum()), "edge_sides": edge_sides,
         })
     bboxes = [row["bbox"] for row in rows if row["bbox"] is not None]

@@ -930,6 +930,7 @@ function openZoom(stateName, idx, keepWidth) {
         const { anatomy } = await fetchBreatheAnatomy(
           stateName, bm.cfg.rigid_row, bm.cfg.axis_x, bm.cfg.torso_half);
         bm.cfg.anatomy = anatomy;
+        syncRange(); // 세기 줄의 가로 범위는 해부(봉투)에 달렸다
         syncLines();
         commit();
         rebuildStrip();
@@ -1149,10 +1150,11 @@ function openZoom(stateName, idx, keepWidth) {
         if (!e0.breathe && !beforeCfg && bm.histPos <= 0) {
           const sib = run.states
             .map((s) => (s.name !== stateName && entries[s.name] ? entries[s.name].breathe : null))
-            .find((b) => b && typeof b.depth === "number");
+            .find((b) => b && (typeof b.depth === "number" || breatheHasBounds(b)));
           if (sib) {
-            bm.cfg.depth = sib.depth;
-            bm.cfg.depth_x = sib.depth_x == null ? null : sib.depth_x;
+            // 형제 줄의 크기 키(최소·최대 넷 또는 세기) — 둘을 같이 적으면 굽기가 거부하므로 기본 세기를 먼저 지운다
+            for (const k of ["depth", "depth_x", ...BREATHE_RANGE_KEYS]) delete bm.cfg[k];
+            Object.assign(bm.cfg, breatheSizeOf(sib));
             bm.cfg.breaths = sib.breaths;
             bm.cfg.lag = sib.lag;
           }
@@ -1252,18 +1254,6 @@ function openZoom(stateName, idx, keepWidth) {
     onWrap.appendChild(onCheck);
     onWrap.appendChild(Object.assign(document.createElement("span"), { textContent: t("rowBreathe") }));
     bar.appendChild(onWrap);
-    const mkSel = (values, current, fmt, onchange) => {
-      const sel = document.createElement("select");
-      for (const v of values) {
-        const o = document.createElement("option");
-        o.value = String(v);
-        o.textContent = fmt(v);
-        if (v === current) o.selected = true;
-        sel.appendChild(o);
-      }
-      sel.addEventListener("change", () => onchange(parseInt(sel.value, 10)));
-      return sel;
-    };
     // 강체 경계는 하나뿐이라 +선/−선 버튼이 없다. 경계는 드래그로만 움직이고,
     // 자동 검출값으로 되돌리는 버튼을 대신 둔다 (수동 override 해제).
     const autoBtn = document.createElement("button");
@@ -1279,25 +1269,61 @@ function openZoom(stateName, idx, keepWidth) {
       pushHist();
     });
     bar.appendChild(autoBtn);
-    // 진폭 = 몸통 높이 비율. px 가 아니라 비율이라 캐릭터가 달라도 같은 뜻을 갖는다.
-    const depthSel = mkSel([3, 4, 5, 6, 8, 10, 12], Math.round((bm.cfg.depth || 0.06) * 100),
-      (v) => `${t("breatheAmp")} ${v}%`,
-      (v) => { bm.cfg.depth = (v || 6) / 100; commit(); pushHist(); });
-    // 가로 독립 진폭 (maintainer 요청 2026-07-30): "따름" = depth 와 동일(레거시), 0 = 가로 끄기.
-    const depthXSel = document.createElement("select");
-    for (const v of ["follow", 0, 3, 4, 5, 6, 8, 10, 12]) {
-      const o = document.createElement("option");
-      o.value = String(v);
-      o.textContent = v === "follow" ? t("breatheAmpXFollow") : `${t("breatheAmpX")} ${v}%`;
-      depthXSel.appendChild(o);
+    // 숨의 크기 = 가로·세로 최소·최대 (2026-10-29). 원본 대비 비율이라 캐릭터가 달라도 같은 뜻이다: 가로는 숨이 가장 큰
+    // 줄에서 몸통이 넓어지는 몫, 세로는 목 아래 몸 높이 대비 머리 끝(smooth 는 가슴)이 오르는 몫 (음수 = 내려감).
+    // 세기(depth)만 적힌 줄은 그 세기가 오가는 범위(breatheRange)를 보여 주고, 손잡이 하나를 고치면 줄을 네 키로 옮긴다 —
+    // 손대지 않은 손잡이는 반올림하지 않은 값 그대로 옮겨 그 축은 옛 세기와 같은 바이트로 구워진다.
+    const rangeInputs = {};
+    const rangeWrap = document.createElement("span");
+    rangeWrap.className = "breathe-range";
+    for (const axis of ["width", "height"]) {
+      const group = document.createElement("span");
+      group.title = t(axis === "width" ? "tBreatheWidth" : "tBreatheHeight");
+      group.appendChild(Object.assign(document.createElement("span"),
+        { textContent: t(axis === "width" ? "breatheWidth" : "breatheHeight") }));
+      for (const end of ["min", "max"]) {
+        const key = `${axis}_${end}`;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.step = "0.5";
+        input.min = String(-BREATHE_RANGE_MAX * 100);
+        input.max = String(BREATHE_RANGE_MAX * 100);
+        input.title = t(end === "min" ? "breatheMin" : "breatheMax");
+        input.addEventListener("change", () => setRange(key, input.value));
+        if (end === "max") group.appendChild(Object.assign(document.createElement("span"), { textContent: "~" }));
+        group.appendChild(input);
+        rangeInputs[key] = input;
+      }
+      group.appendChild(Object.assign(document.createElement("span"), { textContent: "%" }));
+      rangeWrap.appendChild(group);
     }
-    depthXSel.value = bm.cfg.depth_x == null ? "follow" : String(Math.round(bm.cfg.depth_x * 100));
-    if (depthXSel.selectedIndex < 0) depthXSel.value = "follow"; // 목록 밖 수동값 — 표시만 따름으로
-    depthXSel.addEventListener("change", () => {
-      bm.cfg.depth_x = depthXSel.value === "follow" ? null : Number(depthXSel.value) / 100;
+    // 둥근 가슴 줄은 봉투 값을 안 쓰고(굽기가 거부), pixel 세기 줄의 가로는 해부가 와야 안다 — 그때는 null.
+    const currentRange = () => (breatheRound(bm.cfg) ? null : breatheRange(bm.cfg.anatomy, bm.cfg));
+    // 입력은 0.1% 단위로 받아 ±상한 안, 같은 축의 다른 끝을 넘지 않게 둔다 (최소 > 최대는 굽기가 거부한다).
+    const setRange = (key, pct) => {
+      const range = currentRange();
+      const v = Number(pct);
+      if (!range || pct === "" || !Number.isFinite(v)) { syncRange(); return; }
+      const now = { width_min: range.width[0], width_max: range.width[1],
+                    height_min: range.height[0], height_max: range.height[1] };
+      const share = Math.max(-BREATHE_RANGE_MAX, Math.min(BREATHE_RANGE_MAX, Math.round(v * 10) / 1000));
+      now[key] = key.endsWith("_min") ? Math.min(share, now[key.replace("_min", "_max")])
+        : Math.max(share, now[key.replace("_max", "_min")]);
+      delete bm.cfg.depth;
+      delete bm.cfg.depth_x;
+      Object.assign(bm.cfg, now);
+      syncRange();
       commit();
       pushHist();
-    });
+    };
+    function syncRange() {
+      const range = currentRange();
+      for (const [key, input] of Object.entries(rangeInputs)) {
+        const [axis, end] = key.split("_");
+        input.disabled = !bm.enabled || !range;
+        input.value = range ? String(Math.round(range[axis][end === "min" ? 0 : 1] * 1000) / 10) : "";
+      }
+    }
     // 호흡 횟수: 숫자 입력 + −/+ 스텝퍼 (maintainer 2026-07-18 — 약수 셀렉트 대신 자유 입력;
     // 나눠떨어지지 않으면 fit_breathe_pattern 이 보정하고 스트립 캡션이 알려준다)
     const breathWrap = document.createElement("span");
@@ -1346,17 +1372,14 @@ function openZoom(stateName, idx, keepWidth) {
     breathWrap.appendChild(breathInput);
     breathWrap.appendChild(plusBtn);
     breathWrap.appendChild(fitBadge);
-    bar.appendChild(depthSel);
-    bar.appendChild(depthXSel);
+    bar.appendChild(rangeWrap);
     bar.appendChild(breathWrap);
     toolbar.appendChild(bar);
     function syncBreatheControls() {
       onCheck.checked = bm.enabled;
       const off = !bm.enabled;
-      for (const el of [autoBtn, depthSel, depthXSel, minusBtn, breathInput, plusBtn]) el.disabled = off;
-      depthSel.value = String(Math.round((bm.cfg.depth || 0.06) * 100));
-      depthXSel.value = bm.cfg.depth_x == null ? "follow" : String(Math.round(bm.cfg.depth_x * 100));
-      if (depthXSel.selectedIndex < 0) depthXSel.value = "follow";
+      for (const el of [autoBtn, minusBtn, breathInput, plusBtn]) el.disabled = off;
+      syncRange();
       breathInput.value = String(bm.cfg.breaths || 1);
       syncFitBadge();
     }

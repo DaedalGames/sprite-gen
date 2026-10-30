@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from conftest import feet_unseen
+from conftest import feet_unseen, rife_located
 from sprite_gen.video import align, batch, local_cycle, loop, period
 from tests.video.test_video_pipeline import HAS_IMG2WEBP
 
@@ -139,8 +139,9 @@ def _same_but_the_screen(a: Path, b: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(900)  # 8 calls of the binary at 270 x 220 (the held fill's frames between, both cuts): seconds on a GPU, minutes on a CPU's Vulkan driver
 @pytest.mark.parametrize("cycle, suspect", [(CYCLE, True)])
-def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatch, cycle, suspect):
+def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatch, cycle, suspect, rife_runs):
     """A one-step cut: with the screen or without it, every image, the strip metadata and the report
     are the same but for its record, and the gait observation's copy of it. The screen is computed
     after the cut is chosen and only stored (`local_cycle.py`), so one cut answers for any cycle."""
@@ -150,6 +151,7 @@ def test_the_step_screen_changes_nothing_but_its_own_record(tmp_path, monkeypatc
     monkeypatch.setattr(period, "step_screen", lambda *a, **k: {"stubbed": True})
     _cut(tmp_path / "unscreened", keyed)
     _same_but_the_screen(tmp_path / "screened", tmp_path / "unscreened")
+    assert rife_runs() == (8 if rife_located() else 0)
 
 
 @pytest.mark.slow
@@ -161,9 +163,11 @@ def test_the_step_screen_reads_a_cycle_on_a_frame_count_that_is_not_whole(tmp_pa
 
 
 @pytest.mark.slow
-def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, tmp_path):
+@pytest.mark.timeout(900)  # 6 calls of the binary at 280 x 220 (the held fill's frames between): seconds on a GPU, minutes on a CPU's Vulkan driver
+def test_steps_1_cuts_the_walk_again_two_steps_long_where_its_arms_close(slow, tmp_path, rife_runs):
     root, keyed, first = slow
     report = _cut(tmp_path / "out", keyed, "--steps", "1")
+    assert rife_runs() == (6 if rife_located() else 0)
     cycle = report["cycle"]
     assert cycle["length"] in (CYCLE - 1, CYCLE, CYCLE + 1)
     L = first["cycle"]["length"]

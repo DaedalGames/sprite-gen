@@ -24,7 +24,7 @@ def offline(monkeypatch):
 
     def run_loop(*a, **kw):
         loops.append((kw["name"], kw["facing"]))
-        return {"cycle": {"length": 10, "period_global": 10, "ratio": 0.2}, "resampled_seam_ratio": 0.2, "n_out": 10,
+        return {"cycle": {"length": 10, "period_global": 10, "ratio": 0.2}, "resampled_seam_ratio": 0.2, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 10,
                 "gif": {"file": "loop.gif"}, "webp": {"file": "loop.webp"}, "strip": {"path": "strip.png"}}
     monkeypatch.setattr(batch.loop_mod, "run_loop", run_loop)
     monkeypatch.setattr(batch, "_staggered_start", lambda gap: None)

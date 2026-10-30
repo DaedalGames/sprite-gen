@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
+from conftest import rife_located
 from sprite_gen.video import batch, clip_prompt, effect, loop, nonloop, play
 from test_clip_prompt import PUNCH, punch_frames
 
@@ -184,7 +185,7 @@ def stub_set(tmp_path, monkeypatch, *, bases, states, **kwargs):
     def loop_stub(frames, out, **kw):
         seen.setdefault(out.parent.name, {})["cycle"] = kw["cycle_mode"]
         return {"cycle": {"kind": kw["cycle_mode"], "length": 24, "period_global": None, "ratio": 0},
-                "resampled_seam_ratio": None, "n_out": 24, "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s"}}
+                "resampled_seam_ratio": None, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 24, "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s"}}
 
     monkeypatch.setattr(batch.frames_mod, "run_frames", frames_stub)
     monkeypatch.setattr(batch.loop_mod, "run_loop", loop_stub)
@@ -257,8 +258,10 @@ def test_a_once_return_that_does_not_come_back_is_refused(tmp_path) -> None:
     assert json.loads((tmp_path / "out" / "punch.loop.report.json").read_text())["status"] == "failed"
 
 
-def test_a_once_return_cut_keeps_both_ends_and_plays_once(tmp_path) -> None:
+@pytest.mark.timeout(900)  # 36 calls of the binary at 96 x 96 (the held fill's frames between): seconds on a GPU, minutes on a CPU's Vulkan driver
+def test_a_once_return_cut_keeps_both_ends_and_plays_once(tmp_path, rife_runs) -> None:
     report = cut(tmp_path, punch_frames(tmp_path / "frames", (96, 96), count=90))
+    assert rife_runs() == (36 if rife_located() else 0)
     meta = report["strip"]
     assert report["cycle"]["kind"] == "once-return" and report["cycle"]["length"] == 90
     assert meta["loop"] is False and meta["hold_last"] is False and meta["returns"] is True

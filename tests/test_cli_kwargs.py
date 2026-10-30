@@ -117,7 +117,8 @@ def test_a_verb_called_without_a_required_flag_names_it(module, run, required):
 def test_no_function_reads_a_parsers_actions_but_these():
     """`parser._actions` read anywhere else in the engine is a second reading of keyword arguments,
     the copy this file exists to keep out. `extract._nondefault_args` asks another question of its
-    parser: which flags a run set off their defaults, for the manifest."""
+    parser: which flags a run set off their defaults, for the manifest. `capabilities._parser` asks
+    what each verb's parser declares, for a machine to read (docs/capabilities.md)."""
     readers = set()
     for path in sorted((ROOT / "sprite_gen").rglob("*.py")):
         for function in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -125,4 +126,5 @@ def test_no_function_reads_a_parsers_actions_but_these():
                     isinstance(node, ast.Attribute) and node.attr == "_actions" for node in ast.walk(function)):
                 readers.add((path.relative_to(ROOT).as_posix(), function.name))
     assert readers == {("sprite_gen/util/cli_kwargs.py", "namespace_from_kwargs"),
-                       ("sprite_gen/frames/extract.py", "_nondefault_args")}
+                       ("sprite_gen/frames/extract.py", "_nondefault_args"),
+                       ("sprite_gen/workflow/capabilities.py", "_parser")}

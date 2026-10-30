@@ -68,6 +68,7 @@ from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video import gait_fallback
+from sprite_gen.video import held_fill as held_fill_mod
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video.interpolation_quality import ghost_screen
@@ -132,6 +133,9 @@ def read_loop(meta_path: Path) -> tuple[dict[str, Any], list[Image.Image], str]:
         raise SystemExit(f"{PROG}: {strip_path.name} is {strip.size[0]}x{strip.size[1]}, its sidecar says {n * w}x{h}")
     if meta.get("loop") is False:
         raise SystemExit(f"{PROG}: {meta_path.name} plays once (loop false); a stop leaves a loop")
+    if "out_fps" in meta:
+        raise SystemExit(f"{PROG}: {meta_path.name} was cut at --out-fps {meta['out_fps']:g}, its cells each a time of their own; "
+                         "a stop is cut from a loop at its clip's rate (video-loop without --out-fps)")
     state = str(meta.get("state") or "")
     if not loop_mod.profile_for(state).gait:
         raise SystemExit(f"{PROG}: {meta_path.name} is a {state or 'state-less'} loop; a stop is cut from a walk or run loop")
@@ -422,7 +426,13 @@ def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "
     last = _box(stop_cells[-1])
     # Read as filmed, at the keyed frames' own size, as video-loop reads its cut: a part-covered band is a
     # number of pixels thick, and scaled down a ghost's band falls under it.
-    screen = ghost_screen([Image.open(files[j]).convert("RGBA") for j in shown])
+    filmed = [Image.open(files[j]).convert("RGBA") for j in shown]
+    screen = ghost_screen(filmed)
+    # The stop's frames shown again (docs/loop-repair.md section 7): named, never made between — a stop plays the clip's
+    # filmed frames, none made between two others.
+    reading = held_fill_mod.reading(held_fill_mod.same_steps(filmed))
+    held = {"mode": "off", "why": "a stop plays the clip's filmed frames, none made between two others", "made": [],
+            "before": reading, **reading}
     for g in screen.get("ghosts", []):
         g["clip_frame"] = shown[g["frame"]]
     delay = round(1000 / fps, 2)
@@ -435,7 +445,7 @@ def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "
         "from_loop": {"strip_sha256": strip_sha, "state": meta.get("state"), "frames": len(cells), "w": w, "h": h,
                       "from_cell": found["entry"]["from_cell"]},
         "source_cut": {"source": identity, "frames": shown, "entry": found["entry"]["frame"], "rest_end": found["rest"]["end"]},
-        "speed": speed, "seam_steps": found["seam"]["steps"],
+        "speed": speed, "seam_steps": found["seam"]["steps"], "held_fill": held,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     strip = Image.new("RGBA", (cw * len(stop_cells), ch), (0, 0, 0, 0))
@@ -469,6 +479,9 @@ def make_stop(frames_dir: Path, loop_meta: Path, out_dir: Path, *, name: str = "
               f"{100 * g['ghost']:.2f} % of its body — a filmed ghost, kept as filmed", file=sys.stderr)
     if not screen["reads"]:
         print(f"{PROG}: warning: the ghost screen does not read this stop — {screen['why']}", file=sys.stderr)
+    for run in held["held_runs"]:
+        print(f"{PROG}: warning: cells {run['start']}-{run['start'] + run['length'] - 1} show one picture "
+              f"({held_fill_mod.said(held)} poses/cells): the clip stalls there, played as filmed", file=sys.stderr)
     payload["report"] = str(target)
     return payload
 

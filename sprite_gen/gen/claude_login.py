@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from . import anthropic_api as api
-from .base import env_api_key, provider_binary, provider_subprocess_env
+from .base import LOGINS_ENV, env_api_key, logins_on, provider_binary, provider_subprocess_env
 
 BINARY = "claude"
 AUTH_SOURCE_LOGIN = "claude-login"
@@ -119,15 +119,21 @@ def login(env: Mapping[str, str] | None = None, *, run: Run = subprocess.run) ->
 
 def resolve_credential(*, batch: bool = False, env: Mapping[str, str] | None = None,
                        run: Run = subprocess.run) -> Credential:
-    """The subscription login first; `ANTHROPIC_API_KEY` only when no login is here, or for a Message
-    Batch, which only the API runs. Neither is a refusal naming both."""
-    if not batch:
+    """The subscription login first; `ANTHROPIC_API_KEY` only when no login is here, for a Message Batch, which
+    only the API runs, or with SPRITE_GEN_LOGINS=off, which asks the binary nothing. Neither is a refusal naming
+    both."""
+    asks = not batch and logins_on(env)
+    if asks:
         found = login(env, run=run)
         if found is not None:
             return Credential(AUTH_SOURCE_LOGIN, login=found)
     key = env_api_key(api.AUTH_ENV, env, who="pixel-draw")
     if key:
         return Credential(AUTH_SOURCE_API_KEY, token=key)
+    if not batch and not asks:
+        raise SystemExit(f"pixel-draw: no Claude credential — {LOGINS_ENV}=off reads no subscription login and "
+                         f"{api.AUTH_ENV} is not set.\n  export {api.AUTH_ENV}=<your Claude Console API key> "
+                         f"(platform.claude.com/settings/keys), or unset {LOGINS_ENV} to draw on your Claude subscription.")
     if batch:
         raise SystemExit(f"pixel-draw: --batch is Anthropic's Message Batches API, which runs on {api.AUTH_ENV} "
                          f"only, and it is not set.\n  export {api.AUTH_ENV}=<your Claude Console API key>, or "

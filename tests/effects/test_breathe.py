@@ -587,7 +587,7 @@ def test_a_clip_off_the_drawings_border_keeps_the_margin_advice() -> None:
     message = _clip_refusal(_cut_bust(touch=False))
     assert re.search(r"왼쪽 변 밖 \d+", message), message
     assert "--mode smooth" not in message, message
-    assert "셀 여백을 늘리거나 depth 를 낮춰라" in message, message
+    assert "셀 여백을 늘리거나 숨의 크기(depth, 또는 최소·최대)를 줄여라" in message, message
 
 
 # ── 8. 얼굴이 몸통에 있는 실루엣 (목 없음) ─────────────────────────

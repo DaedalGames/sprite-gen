@@ -60,12 +60,12 @@ from typing import Any, Callable
 
 from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
-from . import prompt_parts, refusal, retry
+from . import address, prompt_parts, refusal, retry
 from .base import announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
 from .xai import (
-    API_BASE, AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
+    AUTH_ENV, AUTH_SOURCE_API_KEY, AUTH_SOURCE_GROK_LOGIN,
     HTTP_TIMEOUT_SECONDS, GROK_REFRESH_COMMAND, GROK_REFRESH_WHERE, GROK_LOGIN_COMMAND,
     NO_ANSWER, Credential, HttpCall, TransportError, resolve_credential, http_json, no_answer, post,
     read_whole, rejected_fix, time_left,
@@ -197,8 +197,9 @@ def http_download(url: str, token: str, *, deadline: float | None = None) -> byt
     """The clip's bytes, read whole — by `deadline` (a `time.monotonic()` instant) when one is given: each
     wait is cut to what is left of it (xai.read_whole). An error status raises DownloadRefused; a download
     that gets no answer it can read whole — the connection failed or timed out, the body broke on the way,
-    the deadline came — raises xai.TransportError, its words in `reason`."""
-    request = urllib.request.Request(url)
+    the deadline came — raises xai.TransportError, its words in `reason`. The clip is fetched through the xAI base
+    when SPRITE_GEN_XAI_BASE_URL is set (`address.fetched`), else from `url` itself."""
+    request = urllib.request.Request(address.fetched("xai", url))
     try:
         try:
             with urllib.request.urlopen(request, timeout=time_left(HTTP_TIMEOUT_SECONDS, deadline)) as response:
@@ -530,7 +531,7 @@ def _submit_poll_publish(
     # some of the poll timeout, which counts from the first send.
     started = time.monotonic()
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
-    status, reply, _sends = post(call, f"{API_BASE}/videos/{endpoint}", credential.token, body, who="xai", label=verb,
+    status, reply, _sends = post(call, address.url("xai", f"/videos/{endpoint}"), credential.token, body, who="xai", label=verb,
                                  sleep=sleep, deadline=started + timeout)
     if status in (401, 403):
         raise SystemExit(
@@ -600,7 +601,7 @@ def _poll_publish(
         polls += 1
         lost: str | None = None
         try:
-            http, poll = call("GET", f"{API_BASE}/videos/{request_id}", credential.token, None, deadline=deadline)
+            http, poll = call("GET", address.url("xai", f"/videos/{request_id}"), credential.token, None, deadline=deadline)
         except TransportError as failed:
             lost, http, poll = failed.reason, None, None
         poll_status = poll.get("status") if isinstance(poll, dict) else None

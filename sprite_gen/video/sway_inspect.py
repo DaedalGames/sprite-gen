@@ -188,16 +188,7 @@ def seam(a: tuple[float, ...], b: tuple[float, ...], move_a: tuple[float, float]
     return float(jump[k]), [round(float(x[k]), 3), round(float(y[k]), 3)]
 
 
-def jacobian(move_x: np.ndarray, move_y: np.ndarray) -> np.ndarray:
-    """Per pixel of a moved cell, but for those on its edge, the area of the source it takes. The moved cell's
-    pixel p is read from the source at p less its move, so the area is read between p's neighbours on either
-    side, across and down, as half of how far apart those are read: 1 where nothing moves, 0 where the picture
-    stops, under 0 where it runs backwards. Between the neighbours on either side, not from p to the next pixel
-    one way: read one way, a round region a few pixels across reads steeper on the side it bulges to than its
-    weight is anywhere. One row and one column shorter than the cell at each edge."""
-    across_x, across_y = (move_x[1:-1, 2:] - move_x[1:-1, :-2]) / 2, (move_y[1:-1, 2:] - move_y[1:-1, :-2]) / 2
-    down_x, down_y = (move_x[2:, 1:-1] - move_x[:-2, 1:-1]) / 2, (move_y[2:, 1:-1] - move_y[:-2, 1:-1]) / 2
-    return (1 - across_x) * (1 - down_y) - down_x * across_y
+jacobian = sway.jacobian  # the area of the source a moved pixel takes; the band's ledger reads it too
 
 
 def _least(area: np.ndarray | None, mask: np.ndarray) -> tuple[float, list[int] | None]:

@@ -45,6 +45,7 @@ POSE_SHAPE_TOLERANCE = 0.05
 POSE_FLOOR_TOLERANCE = 0.02
 GROUND_HEIGHT_MAX = 0.8
 GROUND_STATES = frozenset({"death", "fall"})
+GROUND_PX = 4  # a body whose lowest row is this close to the floor row stands on it (`on_floor`)
 
 
 Box = tuple[int, int, int, int]
@@ -86,6 +87,14 @@ def hold_ending(D: np.ndarray, masses: np.ndarray, fps: float, *, pose: EndPose)
                            "diameter": diameter, "max": STABLE_MAX, "normalization": "subject-mass",
                            "pose": evidence}
     raise ValueError(f"once has no stable end pose: {reason} ({count} frames, limit {STABLE_MAX})")
+
+
+def given_ending(D: np.ndarray, masses: np.ndarray, fps: float, *, start: int, length: int) -> tuple[int, int, dict[str, Any]]:
+    """The bounds the caller names (`video-loop --cycle once --start --length`): those frames played once, a move cut
+    out of a longer motion (a vault in a run) that settles on no pose, so none is read."""
+    if start < 0 or length < 2 or start + length > len(D):
+        raise ValueError(f"--start {start} --length {length} does not fit {len(D)} frames")
+    return start, start + length - 1, {"kind": "given", "start": start, "length": length}
 
 
 def end_pose(state: str | None, frames: list[Image.Image], features: Callable[[Image.Image], np.ndarray]) -> EndPose:
@@ -190,6 +199,13 @@ def metadata(cycle: dict[str, Any], indices: list[int]) -> dict[str, Any]:
             "end_frame": len(indices) - 1,
             "events": [{"frame": min(range(len(indices)), key=lambda k: abs(indices[k] - event)),
                         "name": "motion_peak"}]}
+
+
+def on_floor(box: Box, floor: int) -> bool:
+    """Whether a body box (`body_box`) stands on the floor: its lowest row within GROUND_PX of the floor's, the lowest
+    row a body reaches. The strip's standing height is read on the frames that do (`loop.build_strip`), and a single
+    play's contacts with the ground are (sprite_gen/video/root_motion.py)."""
+    return box[3] >= floor - GROUND_PX
 
 
 def body_box(frame: Any) -> Box | None:
