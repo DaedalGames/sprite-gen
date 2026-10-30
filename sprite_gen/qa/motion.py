@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 
 NEAR_SILHOUETTE_IOU = 0.98
+# What an inspect-motion report is (its `kind`): a scene's stride reads a report only when it says this
+# (`scene.model`).
+REPORT_KIND = "sprite-gen-motion-report"
 
 
 def _number(value, name):
@@ -379,7 +382,7 @@ def analyze_motion(sequence: FrameSequence, *, contacts=None, foot_box=None, fac
     if exact or exact_silhouette or near_silhouette:
         warnings.append("Repeated poses retain all source frame durations; no frames were removed.")
     return {
-        "kind": "sprite-gen-motion-report", "version": 1, "status": status,
+        "kind": REPORT_KIND, "version": 1, "status": status,
         "frame_count": len(frames), "duration_seconds": elapsed, "size": [width, height],
         "anchor_px": anchor, "facing": facing, "contacts": spans, "foot_box": list(box) if box else None,
         "duplicate_frames": {"exact": exact, "adjacent_exact": adjacent_exact,
