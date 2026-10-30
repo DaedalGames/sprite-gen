@@ -183,6 +183,24 @@ def test_video_loop_carries_the_root_motion_of_a_jump_and_retimes_its_air(tmp_pa
     assert record["poses"] == meta["held_fill"]["poses"] and record["cells"] == meta["frames"]
 
 
+def test_an_air_whose_frames_between_show_a_frame_beside_them_again_names_those_cells(tmp_path, capsys):
+    # An interpolator that gives back the frame before makes no air cell between two frames: each is refused (`held`),
+    # tried again only later within half a cell, and is the nearer frame, named in the record and in a warning line.
+    calls: list[float] = []
+
+    def stuck(a, b, t):
+        calls.append(t)
+        return a
+
+    rep = _run(tmp_path, J.jump(), "stuck", state="jump", cycle_mode="once", air_retime=f"air={2 * J.AIR}",
+               meters_per_px=J.METERS_PER_PX, interpolate=stuck)
+    record = _meta(rep)["air_retime"]
+    assert record["applied"] and record["made"] == 0 and len(record["shown_again"]) == 10
+    assert all(t["faults"] == ["held"] and t["t"] >= 0.5 for m in rep["air_retime"]["frames"] for t in m["tries"])
+    assert len(calls) == 10 * 5  # 0.5, then 0.55 to 0.7: half a cell is a quarter of a frame
+    cells = ", ".join(map(str, record["shown_again"]))
+    assert f"10 cells of the retimed air ({cells}) show the frame beside them again" in capsys.readouterr().err
+
 @pytest.mark.real_rife
 @pytest.mark.timeout(900)  # 10 calls of the binary at about 210 x 250, each judged: seconds on a GPU, minutes on a CPU's Vulkan driver
 def test_real_rife_makes_the_air_twice_as_long_with_no_frame_shown_again(tmp_path):
