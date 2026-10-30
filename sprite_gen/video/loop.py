@@ -2238,7 +2238,7 @@ def _cell_record(strip_bytes: bytes, cells: list[Image.Image], *, start: int, le
     def frame(c: int) -> int:
         if upsampled is None:
             return c
-        shown = upsampled["shows"][c]
+        shown = upsampled["source_frames"][c]
         return shown if shown is not None else min(length - 1, math.floor(upsampled["times"][c]))
 
     return {"strip_sha256": evidence_mod.digest(strip_bytes), "cells": [
@@ -2927,7 +2927,7 @@ def _cut_loop(
                 record = report_base["air_retime"]
                 held_record["out_fps"] = {"asked": out_fps, "fps": fps, "applied": True, "cells": len(frames),
                                           "times": [round(x, 4) for x in upsampled], "made": record["made"],
-                                          "shown_again": record["shown_again"], "shows": retimed["shows"]}
+                                          "shown_again": record["shown_again"], "source_frames": retimed["source_frames"]}
     if out_fps is not None and retimed is None:
         # A rate above the clip's: every cell at its own time, made between the frames beside it (held_fill.upsample).
         try:

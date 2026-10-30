@@ -357,7 +357,7 @@ def test_a_walk_asked_for_at_60_fps_is_made_of_frames_between(tmp_path):
 def test_a_cut_at_a_rate_of_its_own_records_each_cell_as_the_frame_it_is_and_a_cell_made_between_as_not_filmed(tmp_path):
     # The strip's record of its cells (`cell_record`, video-sway --read-on-cut) of a walk that shows frame 9 twice, its
     # held cells kept, at --out-fps 49: a cell that is a frame (on its time, a hair before it, or between the two frames
-    # of one picture, that picture again; `out_fps.shows`) is that frame as filmed; one made between two frames reads
+    # of one picture, that picture again; `out_fps.source_frames`) is that frame as filmed; one made between two frames reads
     # as the frame before its time, is not as filmed but where its pixels are that frame's, and --read-on-cut does not
     # pair it.
     clip, between = shown_again(walk(), {9: 2}), Between(walk_at, range(N + 6), period=N)
@@ -369,11 +369,11 @@ def test_a_cut_at_a_rate_of_its_own_records_each_cell_as_the_frame_it_is_and_a_c
     cells = sway.cell_record(own, _sha(Path(rep["strip"]["path"])))
     shown = _cycle(rep)
     kinds = []
-    for c, (cell, times, shows) in enumerate(zip(cells, record["times"], record["shows"])):
+    for c, (cell, times, source) in enumerate(zip(cells, record["times"], record["source_frames"])):
         assert cell["anchor_move_px"] == [0, 0] and cell["scale"] == {"size_hold": 1.0, "gait_fallback": 1.0}
         frame = clip[cell["source_frame"]].tobytes()
-        if shows is not None:
-            assert cell["source_frame"] == shows and cell["as_filmed"] is True and shown[c].tobytes() == frame
+        if source is not None:
+            assert cell["source_frame"] == source and cell["as_filmed"] is True and shown[c].tobytes() == frame
             kinds.append("on" if abs(times - round(times)) <= held_fill.SNAP else "again")
         else:
             # the stand-in draws the walk again at the cell's time: now and then that is a frame's own picture

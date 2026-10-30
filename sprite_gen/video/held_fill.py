@@ -289,7 +289,7 @@ def at_times(frames: list[Image.Image], interpolate: rife_mod.Interpolate, at: S
     showing one picture is that picture, any other is made between the two at its own time (`_made`, within half its
     `spacing` of it: frames a cell, one for all or one each), and one no frame made is taken for is the nearer frame and
     named (`shown_again`). The record: how many were made, the cells shown again, how each was (`frames`), and the
-    frame each cell is, None where it was made (`shows`)."""
+    frame each cell is, None where it was made (`source_frames`)."""
     n = len(frames)
     same = same_steps(frames + ([frames[0]] if ring else []))
     if reads is None:
@@ -297,32 +297,32 @@ def at_times(frames: list[Image.Image], interpolate: rife_mod.Interpolate, at: S
     out: list[Image.Image] = []
     made: list[dict[str, Any]] = []
     shown_again: list[int] = []
-    shows: list[int | None] = []
+    source_frames: list[int | None] = []
     for k, tau in enumerate(at):
         near = round(tau)
         if abs(tau - near) <= SNAP:
             out.append(frames[near % n])
-            shows.append(near % n)
+            source_frames.append(near % n)
             continue
         a = math.floor(tau)
         if same[a]:
             out.append(frames[a])
-            shows.append(a)
+            source_frames.append(a)
             continue
         t = tau - a
         half = (spacing if isinstance(spacing, (int, float)) else spacing[k]) / 2
         frame, how = _made(interpolate, frames[a], frames[(a + 1) % n], t, (t - half, t + half), reads=reads)
         if frame is None:
             out.append(frames[near % n])
-            shows.append(near % n)
+            source_frames.append(near % n)
             shown_again.append(k)
             made.append({"cell": k, "between": [a, (a + 1) % n], "taken": near % n, **how})
             continue
         out.append(frame)
-        shows.append(None)
+        source_frames.append(None)
         made.append({"cell": k, "between": [a, (a + 1) % n], **how})
     return out, {"made": sum(1 for m in made if "taken" not in m), "shown_again": shown_again, "frames": made,
-                 "shows": shows}
+                 "source_frames": source_frames}
 
 
 def upsample(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, ring: bool, fps: float, out_fps: float,

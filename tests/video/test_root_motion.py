@@ -217,7 +217,7 @@ def test_no_rife_leaves_the_air_as_filmed_and_says_which_motion(tmp_path, monkey
 
 def test_a_retimed_cut_records_each_cell_as_the_frame_it_is_and_a_cell_made_or_moved_as_not_filmed(tmp_path):
     """The strip's record of its cells (`cell_record`, video-sway --read-on-cut) of the jump with its air half as long
-    again, on the clip's own canvas: a cell held_fill.at_times takes as a frame (`shows`) is that frame, one made between
+    again, on the clip's own canvas: a cell held_fill.at_times takes as a frame (`source_frames`) is that frame, one made between
     two frames reads as the frame before its time; the cells up to the take-off are their frames as filmed, and no air
     cell (made, or moved onto the parabola) nor any from the landing on (moved along) is, so --read-on-cut does not
     pair it."""
