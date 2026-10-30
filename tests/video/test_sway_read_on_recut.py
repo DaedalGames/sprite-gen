@@ -31,7 +31,8 @@ from PIL import Image
 from sprite_gen import cli
 from sprite_gen.video import align, loop, motion_anchor, sway
 
-from tests.video.test_follow_read_on import H, N, PATCH, SHIFT, W, aligned, cells_of, copy, cut, files, meta_of, runner, sha
+from tests.video.test_follow_read_on import (Blend, H, N, PATCH, SHIFT, W, aligned, cells_of, copy, cut, files, meta_of, runner,
+                                             sha)
 from tests.video.test_gait_fallback import walking_away
 from tests.video.test_ghost_given_way import _cut as ghost_cut, _keyed as ghost_keyed
 from tests.video.test_loop_repair import _no_rife
@@ -340,6 +341,43 @@ def test_a_loop_aligned_from_a_cut_whose_kept_record_does_not_give_the_frame_as_
         change(loop_dir/loop.CYCLE_SOURCE_DIR/'run.strip.json', a)
     refused(loop_dir, dict(region_mask=mask, read_on=sha(a/'run.strip.png'), read_on_cut=a/'run.strip.png', **KW), said,
             region)
+
+
+def test_a_loop_aligned_to_more_cells_says_where_each_is_from_and_read_on_cut_reads_the_cut_s_own_record(tmp_path):
+    # video-cycle-align stretching the cut (13 cells to 17, as a set stretches a loop of 18 to its 24). The aligned strip is
+    # another strip of another length: its record holds no record of the cut's cells to go stale; the alignment's record
+    # gives each of its cells, the frame of the cut it is or the two it is made between, and the cut's own record is kept
+    # as it was beside the frames as filmed, 13 cells, for --read-on-cut to read.
+    b, a, _, region, mask = aligned_cut(tmp_path)
+    kw = dict(region_mask=mask, read_on=sha(a/'run.strip.png'), read_on_cut=a/'run.strip.png', **KW)
+    made = aligned(b, tmp_path/'made', length=17, between='rife', interpolate=Blend())
+    meta, cells = meta_of(made), cells_of(made)
+    cells_from, cut_cells = meta['cycle_align']['cells_from'], cells_of(b)
+    kept = json.loads((made/loop.CYCLE_SOURCE_DIR/'run.strip.json').read_text())
+    assert len(cells) == len(cells_from) == 17 and CR not in meta
+    assert kept == meta_of(b) and [c['source_frame'] for c in kept[CR]['cells']] == list(range(1, 1+N))
+    between = [k for k, entry in enumerate(cells_from) if 'between' in entry]
+    assert 0 < len(between) < 17
+    for k, entry in enumerate(cells_from):
+        if k in between:  # a frame of its own, a copy of no cell of the cut
+            assert not any(np.array_equal(cells[k], cell) for cell in cut_cells)
+        else:
+            assert np.array_equal(cells[k], cut_cells[entry['source']])
+    # A cell made between has no cell of the cut, and the reading is not carried: refused on the pair the kept record gives.
+    before = files(made)
+    with pytest.raises(SystemExit, match=rf"paired at source frame 4 with the cut this loop was aligned from \(.*\), but "
+                                         rf"uncertain: cell {between[0]} is made between the cut's frames"):
+        sway.sway_loop(made, [region], **kw)
+    assert files(made) == before
+    # Stretched by the cut's own cells, shown again, every cell is one of the cut's, and the pair is carried through.
+    shown = aligned(b, tmp_path/'shown', length=17)
+    entries = meta_of(shown)['cycle_align']['cells_from']
+    assert len(entries) == 17 and all('source' in entry for entry in entries) and CR not in meta_of(shown)
+    read_on = sway.sway_loop(shown, [region], **kw)['read_on']
+    assert read_on['relation'] == 'recut' and read_on['shift_px'] == [3, 2]
+    assert read_on['source_frame'] == 4 and read_on['cut_cell'] == 3
+    assert read_on['cut_cells'] == [entry['source'] for entry in entries]
+    assert read_on['base_cell'] == read_on['cut_cells'].index(3)
 
 
 # ---------------------------------------------------------------- the frame where each cut's anchor moved it

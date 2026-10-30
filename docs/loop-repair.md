@@ -1760,11 +1760,14 @@ step count counted them, else the search's cut), `cut_witness.held` is `"unwitne
 half a cycle or two, and, where its step screen suspects the cut is one step, adds what settles that
 (`video-loop --steps 1`); a cut the step count had already held (crossings left on steps,
 `step_count.cycles.unwitnessed`) is recorded `{cut, held: "step count"}` and named as before.
-`"one step"` is held, never cut again two of its lengths long: a body that rises and falls once in the cut may be
-one step of a walk whose legs are drawn alike (half its cycle), or a whole cycle of a body that rises and falls
-once a cycle: a limp, or a legless body bouncing as it goes (the walk window already admits a legless body's fast
-bounce); nothing that reads no leg tells the two apart, and cutting again two long would loop two cycles of the
-second. The warning of a cut held on one step names the line or lines its body's top line rose and fell once on
+A cut two lengths long comes only from the picture read before this step (`loop._two_lengths`,
+docs/video-pipeline.md), and the cut read here is the one that step handed on, so `"one step"` is held,
+never cut again two of its lengths long: a body that rises and falls once in the cut may be one step of a
+walk whose legs are drawn alike (half its cycle), or a whole cycle of a body that rises and falls once a
+cycle: a limp, or a legless body bouncing as it goes (the walk window already admits a legless body's fast
+bounce); nothing that reads no leg tells the two apart, and cutting again two long would loop two cycles of
+the second.
+The warning of a cut held on one step names the line or lines its body's top line rose and fell once on
 ("the body's top line on the screen", "over its feet", or "on the screen and over its feet") and, for the other
 line, that it says nothing, with that line's why. `local_cycle.held_verdict` refuses by name, with a `ValueError`,
 a cut held on one step whose record names no line it was read on (no `by` or `lines`), and `step_verdict` with it;

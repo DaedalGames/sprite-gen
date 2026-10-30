@@ -464,6 +464,8 @@ distances: the analysis canvas moves every frame by the drift it reads, one vert
 and a slope tilted by frames that open higher moves frames two steps apart further than one step apart
 where the body runs in place, so two lengths on read no nearer there. A drift the clip does walk only
 makes two lengths on read farther: it keeps a cut one step, never doubles one.
+The cut so chosen then goes to the cut's witness like any other (`loop._witnessed`, docs/loop-repair.md
+section 3, "The step count").
 
 A cut the clip gives no two — two lengths on no nearer, one length on the same picture, no window to
 cut, a gate that would not pass it — and a cut under any other anchor are kept as cut, recorded in
