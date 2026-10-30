@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import rife_located
 from sprite_gen.video import loop
 from tests.video import test_gait_fallback as fallback_clips
 from tests.video import test_loop_prop_seam_held as held_clips
@@ -49,27 +50,28 @@ def _hop(root: Path) -> Path:
 
 MOTION = ("--anchor", "motion-auto", "--repair", "off")
 
-# path, clip, arguments, what the report shows the path ran, and whether the cut is made at all
+# path, clip, arguments, what the report shows the path ran, whether the cut is made at all, and the runs of RIFE its
+# held fill asks for where the binary is found (two a frame between)
 ROWS = [
     # A window that holds one step of a walk whose steps are seen: no cut of two steps there, and none of one.
     ("first", _slow, ("--state", "walk", *MOTION, "--max-len", "25"),
-     lambda r: "gait_fallback" not in r and r["error"].startswith("no cut of two steps in --max-len 25"), False),
-    ("first", _slow, ("--state", "walk", *MOTION, "--min-len", "18"), lambda r: "gait_fallback" not in r, True),
+     lambda r: "gait_fallback" not in r and r["error"].startswith("no cut of two steps in --max-len 25"), False, 0),
+    ("first", _slow, ("--state", "walk", *MOTION, "--min-len", "18"), lambda r: "gait_fallback" not in r, True, 6),
     ("two-step", _held, ("--state", "walk", *MOTION, "--max-len", "25"),
-     lambda r: r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"]["max_len"] == 25, True),
+     lambda r: r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"]["max_len"] == 25, True, 0),
     ("two-step", _held, ("--state", "walk", *MOTION, "--max-len", "47"),  # 47 of 47-49 read
      lambda r: r["cycle"]["seam_pop"]["held_edge"]["two_step"]["lengths"] == [47, 47]
-     and r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"] == {"max_len": 47, "lengths_over": [48, 49]}, True),
-    ("two-step", _held, ("--state", "walk", *MOTION, "--min-len", "20"), lambda r: r["cycle"]["seam_pop"]["applied"], True),
+     and r["cycle"]["seam_pop"]["held_edge"]["two_step_capped"] == {"max_len": 47, "lengths_over": [48, 49]}, True, 0),
+    ("two-step", _held, ("--state", "walk", *MOTION, "--min-len", "20"), lambda r: r["cycle"]["seam_pop"]["applied"], True, 0),
     ("counted", _short, ("--state", "walk", *MOTION, "--max-len", "42", "--steps", "1"),
-     lambda r: r["cycle"]["steps"]["window"] == [41, 42] and r["cycle"]["steps"]["counted_window"] == [41, 43], True),
-    ("counted", _slow, ("--state", "walk", *MOTION, "--min-len", "18", "--steps", "1"), lambda r: r["cycle"]["steps"]["by"] == "given", True),
-    ("fallback", _slow_front, ("--state", "walk", *MOTION, "--max-len", "36"), lambda r: r["gait_fallback"]["window"] == [12, 36], False),
-    ("fallback", _slow_front, ("--state", "walk", *MOTION, "--min-len", "30"), lambda r: r["gait_fallback"]["window"][0] == 30, True),
-    ("one-shot", _hop, ("--state", "jump", "--max-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True),
-    ("one-shot", _hop, ("--state", "jump", "--min-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True),
+     lambda r: r["cycle"]["steps"]["window"] == [41, 42] and r["cycle"]["steps"]["counted_window"] == [41, 43], True, 6),
+    ("counted", _slow, ("--state", "walk", *MOTION, "--min-len", "18", "--steps", "1"), lambda r: r["cycle"]["steps"]["by"] == "given", True, 6),
+    ("fallback", _slow_front, ("--state", "walk", *MOTION, "--max-len", "36"), lambda r: r["gait_fallback"]["window"] == [12, 36], False, 0),
+    ("fallback", _slow_front, ("--state", "walk", *MOTION, "--min-len", "30"), lambda r: r["gait_fallback"]["window"][0] == 30, True, 22),
+    ("one-shot", _hop, ("--state", "jump", "--max-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True, 0),
+    ("one-shot", _hop, ("--state", "jump", "--min-len", "30"), lambda r: r["periodic_attempt"] is not None and r["cycle"]["kind"] == "one-shot", True, 0),
     ("fixed", _hop, ("--state", "jump", "--cycle", "fixed", "--start", "50", "--length", "40", "--max-len", "30"),
-     lambda r: r["cycle"]["window_refused"] == {"min_len": None, "max_len": 30}, False),
+     lambda r: r["cycle"]["window_refused"] == {"min_len": None, "max_len": 30}, False, 0),
 ]
 
 
@@ -78,8 +80,9 @@ def _bound(args: tuple[str, ...], flag: str) -> int | None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("path, clip, args, ran, cut", ROWS, ids=[f"{r[0]}{''.join(r[2][-2:])}" for r in ROWS])
-def test_an_explicit_window_holds_on_every_path(tmp_path, path, clip, args, ran, cut):
+@pytest.mark.timeout(900)  # up to 22 calls of the binary at about 280 x 200 (a row's runs): seconds on a GPU, minutes on a CPU's Vulkan driver
+@pytest.mark.parametrize("path, clip, args, ran, cut, runs", ROWS, ids=[f"{r[0]}{''.join(r[2][-2:])}" for r in ROWS])
+def test_an_explicit_window_holds_on_every_path(tmp_path, path, clip, args, ran, cut, runs, rife_runs):
     keyed = clip(tmp_path / "clip")
     report_path = tmp_path / "loop.json"
     try:
@@ -88,6 +91,7 @@ def test_an_explicit_window_holds_on_every_path(tmp_path, path, clip, args, ran,
         code = exc.code
     report = json.loads(report_path.read_text())
     assert ran(report), report.get("cycle")
+    assert rife_runs() == (runs if rife_located() else 0)
     lo, hi = _bound(args, "--min-len"), _bound(args, "--max-len")
     if not cut:
         assert code != 0 and report["status"] == "failed", report.get("cycle")

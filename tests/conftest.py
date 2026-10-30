@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -214,6 +214,36 @@ def feet_unseen() -> Generator[None, None, None]:
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(crossings, "read", lambda sig: crossings.Reading(len(sig["gap"]), "gap", [], why="the feet read as unseen (test)"))
         yield
+
+
+def rife_located() -> bool:
+    """Whether `rife.locate()` finds rife-ncnn-vulkan here, as the tests marked real_rife ask before they run: where it
+    does, a cut's default fill (`--fill-held auto`) makes its frames between with it."""
+    from sprite_gen.video import rife
+
+    try:
+        rife.locate()
+    except rife.RifeUnavailable:
+        return False
+    return True
+
+
+@pytest.fixture
+def rife_runs(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    """The runs of RIFE asked for while the test runs, over every `rife.Rife` located in it (`Rife.calls`: the binary's
+    calls), read when called. A test that reaches the binary through a cut's default fill pins its count: each run is
+    seconds on a CPU's Vulkan driver, so a change that asks for more fails as a count, not as a test out of time."""
+    from sprite_gen.video import rife
+
+    located: list[rife.Rife] = []
+    init = rife.Rife.__init__
+
+    def counted(self: rife.Rife, *args: object, **kwargs: object) -> None:
+        init(self, *args, **kwargs)
+        located.append(self)
+
+    monkeypatch.setattr(rife.Rife, "__init__", counted)
+    return lambda: sum(r.calls for r in located)
 
 
 @pytest.fixture(autouse=True)

@@ -185,11 +185,14 @@ def test_jump_repair_rejects_a_proposal_that_carries_a_ghost(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.real_rife
+@pytest.mark.timeout(900)  # 20 calls of the binary at 128 x 192: seconds on a GPU, a minute or two on a CPU's Vulkan driver
 def test_real_rife_delivers_no_cell_carrying_a_filmed_ghost():
     """A filmed ghost resampled 4 to 8 through the real RIFE: before the screen the ghost itself was
     taken at its own time, unmeasured, and the frames made beside it carried it, judged only beyond it."""
     frames = [_walker(18, -18), _band(_walker(15, -15)), _walker(12, -12), _walker(9, -9)]
-    out, facts = align.resample(frames, 8, rife.Rife())
+    interpolate = rife.Rife()
+    out, facts = align.resample(frames, 8, interpolate)
     assert all(f is not frames[1] for f in out)
     assert max(rife.ghost(f) for f in out) <= GHOST_WARN
     assert [g["frame"] for g in facts["ghost_screen"]["ghosts"]] == [1]
+    assert interpolate.calls == 20
