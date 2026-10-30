@@ -40,6 +40,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from sprite_gen.frames.cutout import GREEN, KEY_TARGETS
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import loop
@@ -167,7 +168,7 @@ def write_source(out: Path) -> dict[str, Path]:
     frames = [draw(k) for k in range(N)]
     for k, f in enumerate(frames):
         f.save(keyed / f"frame-{k:04d}.png")
-        screen = Image.new("RGB", f.size, (0, 255, 0))
+        screen = Image.new("RGB", f.size, KEY_TARGETS[GREEN])
         screen.paste(f, mask=f.getchannel("A"))
         screen.save(green / f"frame-{k:04d}.png")
     canvas = out / "source" / "canvas.png"
@@ -182,7 +183,7 @@ def write_source(out: Path) -> dict[str, Path]:
     report = out / "source" / "frames.json"
     report.write_text(json.dumps({
         "kind": "sprite-gen-video-frames-report", "fps": FPS, "frames": N, "width": SW, "height": SH,
-        "stream_index": 0, "key": "green",
+        "stream_index": 0, "key": GREEN,
         "note": "synthetic: the keyed frames are drawn by scripts/dev/source_restoration_demo.py, not keyed from the clip"},
         indent=2) + "\n")
     manifest = out / "source" / "source.json"
