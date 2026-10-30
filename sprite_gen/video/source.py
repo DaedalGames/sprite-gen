@@ -118,7 +118,7 @@ class Source:
                     raise ValueError("source must contain PNG frames")
                 images.append(im.convert("RGBA"))
             hashes.append(bytes.fromhex(evidence.digest(blob)))
-        identity = {"kind": "keyed-frame-sequence", "sha256": evidence.digest(b"".join(hashes)),
+        identity = {"kind": evidence.SOURCE_KIND, "sha256": evidence.digest(b"".join(hashes)),
                     "frames": len(images), "fps": fps}
         if m.get("source") != identity or report.get("frames") != len(images):
             raise ValueError("source sequence identity differs from actual files")
