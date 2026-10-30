@@ -264,7 +264,7 @@ def test_video_set_cuts_a_searched_walk_with_motion_auto_unless_told(tmp_path: P
 
     def fake_loop(frames_dir, out_dir, **kw):
         seen.update(anchor=kw["anchor"], cycle_mode=kw["cycle_mode"])
-        return {"cycle": {"kind": "periodic", "length": 24, "period_global": 24, "ratio": 0.2}, "resampled_seam_ratio": 0.3, "n_out": 8,
+        return {"cycle": {"kind": "periodic", "length": 24, "period_global": 24, "ratio": 0.2}, "resampled_seam_ratio": 0.3, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 8,
                 "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s", "drift_px": 0},
                 "retake": {"reason": "start-stop", "reasons": ["start-stop"], "start_stop": {}, "remedy": "retake"}}
 
