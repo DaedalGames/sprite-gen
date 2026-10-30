@@ -62,7 +62,7 @@ from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import anthropic_api as api
 from . import claude_login, refusal
-from .anthropic_api import ApiError, Reply
+from .anthropic_api import EFFORTS, ApiError, Reply
 from .base import announce_api_billing, flags_over_spec, print_json
 from .pixel_gates import EFFECT, KINDS, SPRITE, TILE, colors_used, evaluate, safe_area
 from .pixel_grid import (
@@ -85,7 +85,6 @@ EFFECT_FRAMES = ("birth", "peak", "decay", "gone")
 CANDIDATES_MIN, CANDIDATES_MAX, CANDIDATES_DEFAULT = 1, 6, 2
 EFFORT_CHOICES = ("medium", "high", "xhigh")
 EFFORT_DEFAULT = "high"
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
 LOWER_EFFORT = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low"}
 MAX_TOKENS_SINGLE, MAX_TOKENS_MULTI = 32000, 64000
 MAX_TOKENS_MIN = 1024
@@ -1104,7 +1103,7 @@ def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], ki
         for i, pixels in enumerate(frames.values()):
             strip.paste(image_of(pixels), (i * grid.width, 0))
         strip.save(directory / "effect.strip.png")
-        meta = {"kind": "effect", "frames": len(frames), "w": grid.width, "h": grid.height,
+        meta = {"kind": EFFECT, "frames": len(frames), "w": grid.width, "h": grid.height,
                 "loop": False, "hold_last": False, "end_frame": len(frames) - 1,
                 "events": [], "blend": "add", "anchor": [grid.width / 2, grid.height / 2],
                 "delay_ms": duration_ms, "frame_names": list(frames)}
