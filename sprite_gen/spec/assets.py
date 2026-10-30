@@ -20,6 +20,9 @@ from pathlib import Path
 
 from PIL import Image
 
+# An external asset descriptor's kind: ordered frame files with their durations (`effects.shadow` writes one), read
+# by `load_asset`.
+ASSET_KIND = "sprite-gen-asset"
 # The video-set direction sheet's kind: `video-set-sheet` writes it (`set_sheet.KIND` is this name, as set_sheet
 # imports this module) and `load_asset` reads a descriptor that says it as one.
 SET_SHEET_KIND = "sprite-gen-video-set-sheet"
@@ -275,7 +278,7 @@ def _load_asset(source, snapshot, *, state=None, fps=None, anchor=None):
             raise ValueError("asset descriptor must be an object")
         meta.update({key: data[key] for key in PLAYBACK_FIELDS if key in data})
         declared_anchor = data.get("anchor")
-        if data.get("kind") == "sprite-gen-asset":
+        if data.get("kind") == ASSET_KIND:
             if data.get("version") != 1 or state is not None:
                 raise ValueError("external asset requires version 1 and no --state")
             entries = data.get("frames")
