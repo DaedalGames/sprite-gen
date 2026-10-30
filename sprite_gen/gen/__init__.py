@@ -46,6 +46,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from sprite_gen.frames import extract as extract_mod
 from sprite_gen.frames.cutout import MAGENTA
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
@@ -450,7 +451,7 @@ def generate_image(
     trim_alpha: bool = False,
     keep_session: bool = False,
     workdir: Path | None = None,
-    decontam: str = "off",
+    decontam: str = extract_mod.OFF,
     layout_guide: bool | str | None = False,
 ) -> GenResult:
     """Generate one image and return a GenResult. Raises SystemExit on any failure.
@@ -459,9 +460,9 @@ def generate_image(
     guide_kind = layout_guide_kind(layout_guide)
     if guide_kind == "ui-kit":
         ui_kit_guide_size(aspect_ratio)
-    if decontam not in ("off", "auto", "palette"):
+    if decontam not in extract_mod.DECONTAM_MODES:
         raise SystemExit(f"gen: unknown --decontam {decontam!r}; expected off|auto|palette")
-    if decontam == "palette" and not transparent:
+    if decontam == extract_mod.PALETTE and not transparent:
         raise SystemExit("gen: --decontam applies to the chroma key of a --transparent image; add --transparent")
     prompt = (prompt or "").strip()
     if not prompt:
@@ -484,7 +485,7 @@ def generate_image(
         # The layout guide is an attached image as much as a --ref is: the same step down applies.
         attached_for_strategy = [*refs, Path(LAYOUT_GUIDE_NAME)] if guide_kind else refs
         strategy, strategy_source = resolve_transparency_strategy(backend, alpha_mode, refs=attached_for_strategy)
-        if decontam == "palette" and strategy != TRANSPARENCY_CHROMA:
+        if decontam == extract_mod.PALETTE and strategy != TRANSPARENCY_CHROMA:
             # before the provider is called: a paid generation must not end in this refusal
             raise SystemExit(f"gen: --decontam removes a chroma key; this image would use {strategy} alpha "
                              "(pass --alpha-mode chroma to key it instead)")
@@ -560,7 +561,7 @@ def generate_image(
         if strategy_source == STRATEGY_SOURCE_REFS:
             raw_alpha = chroma_mod.classify_raw_alpha(raw)
             if raw_alpha["verdict"] == chroma_mod.RAW_ALPHA_REAL:
-                if decontam != "off":
+                if decontam != extract_mod.OFF:
                     # The generation is paid for and its alpha is good: decontam has no key to
                     # remove, so it is skipped and said, not refused (see the refusal before the call).
                     decontam_skipped = {
@@ -568,7 +569,7 @@ def generate_image(
                         "skipped": f"the raw came back with a transparent background "
                                    f"({raw_alpha['alpha_zero_pct']}% alpha 0) and has no key to remove",
                     }
-                    print(f"[gen] {'warning: ' if decontam == 'palette' else ''}--decontam {decontam} skipped: "
+                    print(f"[gen] {'warning: ' if decontam == extract_mod.PALETTE else ''}--decontam {decontam} skipped: "
                           f"{decontam_skipped['skipped']}", file=sys.stderr)
                 strategy, strategy_source = TRANSPARENCY_NATIVE, STRATEGY_SOURCE_REFS_RAW_ALPHA
                 print(
@@ -734,7 +735,7 @@ def _run(args: argparse.Namespace) -> int:
         trim_alpha=bool(getattr(args, "trim_alpha", False)),
         keep_session=args.keep_session,
         workdir=args.workdir,
-        decontam=str(getattr(args, "decontam", None) or "off"),
+        decontam=str(getattr(args, "decontam", None) or extract_mod.OFF),
         layout_guide=getattr(args, "layout_guide", None),
     ))
     payload = result.to_dict()
@@ -826,8 +827,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--decontam",
-        choices=("off", "auto", "palette"),
-        default="off",
+        choices=extract_mod.DECONTAM_MODES,
+        default=extract_mod.OFF,
         help="chroma keying: re-explain key-tinted edges (hair strands, outlines) with the subject's own "
         "colours after the matte. off (default) publishes the matte as it is; auto runs it where it "
         "applies (chroma strategy, a subject interior); palette demands it",

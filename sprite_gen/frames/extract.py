@@ -529,6 +529,12 @@ _SPILL_MIN_TINT = 40.0
 # reference at this same threshold before choosing full correction.
 _SPILL_FULL_MIN_TINT = 8.0
 DEFAULT_UNMIX_REACH = 4
+# The edge decontamination pass after the matte (`sprite_gen.frames.decontam`): "palette" runs the pass and fails loud
+# when it cannot; "auto" runs it wherever it applies (a chroma key, a subject interior to learn from) and otherwise
+# reports why it did not; "off" leaves the matte as it is.
+OFF, AUTO, PALETTE = DECONTAM_MODES = ("off", "auto", "palette")
+# The background matting path (`--chroma-mode`, the request's chroma.mode): the RGB engine or chrominance-plane matting.
+CHROMA_RGB, CHROMA_YCBCR = CHROMA_MODES = ("rgb", "ycbcr")
 
 
 def hard_key_mask(source_rgb: np.ndarray, alpha: np.ndarray, chroma_key: tuple[int, int, int],
@@ -656,7 +662,7 @@ def remove_chroma_background(
     spill_min_tint: float = _SPILL_MIN_TINT,
     spill_require_hue: bool = False,
     background_key: tuple[int, int, int] | None = None,
-    decontam: str = "off",
+    decontam: str = OFF,
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
@@ -678,14 +684,14 @@ def remove_chroma_background(
     `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`),
     and `decontam_history` is a clip's record of its last frame for the video fit (`decontaminate`'s `history`).
     """
-    if decontam != "off":
+    if decontam != OFF:
         from sprite_gen.frames import decontam as decontam_module
         decontam_module.validate(decontam, decontam_fit)
     rgba = image.convert("RGBA")
     width, height = rgba.size
     data = np.array(rgba, dtype=np.uint8)  # (H, W, 4); written back at the end
     source_rgb = data[..., :3].astype(np.int32)
-    source_alpha = data[..., 3].copy() if decontam != "off" else None  # coverage decontam may give back
+    source_alpha = data[..., 3].copy() if decontam != OFF else None  # coverage decontam may give back
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     unseen = 255
 
@@ -840,7 +846,7 @@ def remove_chroma_background(
                 )
                 if coverage > 0:
                     data[y, x] = (*despilled, alpha)
-    if decontam != "off":
+    if decontam != OFF:
         data, stats = decontam_module.decontaminate(source_rgb, data, keyed_mask, chroma_key, fit=decontam_fit,
                                                     alpha_depth=unmix_reach, palette=decontam_palette, mode=decontam,
                                                     source_alpha=source_alpha, edge_band=decontam_edge_band,
@@ -1180,7 +1186,7 @@ def remove_chroma_background_ycbcr(
     chroma_key: tuple[int, int, int],
     warnings: list[str] | None = None,
     *,
-    decontam: str = "off",
+    decontam: str = OFF,
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
@@ -1199,7 +1205,7 @@ def remove_chroma_background_ycbcr(
     over this matte's output; its geometry is the RGB path's hard cut at the
     default `--key-threshold`, so both mattes share one definition of the edge.
     """
-    if decontam != "off":
+    if decontam != OFF:
         from sprite_gen.frames import decontam as decontam_module
         decontam_module.validate(decontam, decontam_fit)
 
@@ -1244,7 +1250,7 @@ def remove_chroma_background_ycbcr(
                 out = retry
 
     _cleanup_alpha_ycc(out)
-    if decontam != "off":
+    if decontam != OFF:
         source = np.array(rgba, dtype=np.uint8)
         source_rgb = source[..., :3].astype(np.int32)
         painted = detect_background_key_rgb(rgba, chroma_key, DEFAULT_KEY_THRESHOLD)
@@ -2844,7 +2850,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--chroma-mode",
-        choices=("rgb", "ycbcr"),
+        choices=CHROMA_MODES,
         default=None,
         help="background matting path; overrides request chroma.mode "
         "(ycbcr = chrominance-plane matting with border-mode key detection, "
@@ -2852,7 +2858,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--decontam",
-        choices=("off", "auto", "palette"),
+        choices=DECONTAM_MODES,
         default=None,
         help="edge decontamination after the matte; overrides request chroma.decontam "
         "(palette = re-explain key-tinted edges with the subject's own colours, auto = where it "
@@ -3206,16 +3212,16 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     chroma_mode = (
         args.chroma_mode
         if args.chroma_mode is not None
-        else str(chroma_config.get("mode", "rgb"))
+        else str(chroma_config.get("mode", CHROMA_RGB))
     )
-    if chroma_mode not in ("rgb", "ycbcr"):
+    if chroma_mode not in CHROMA_MODES:
         raise SystemExit("chroma.mode must be 'rgb' or 'ycbcr'")
     decontam_mode = (
         args.decontam
         if args.decontam is not None
-        else str(chroma_config.get("decontam", "off"))
+        else str(chroma_config.get("decontam", OFF))
     )
-    if decontam_mode not in ("off", "auto", "palette"):
+    if decontam_mode not in DECONTAM_MODES:
         raise SystemExit("chroma.decontam must be 'off', 'auto' or 'palette'")
     effective_chroma = {
         **chroma_config,
@@ -3224,9 +3230,9 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
         "spill_max_fraction": spill_max_fraction,
     }
     # Recorded once it is in play, so a run keyed before decontam existed keeps its request bytes.
-    if decontam_mode != "off" or "decontam" in chroma_config:
+    if decontam_mode != OFF or "decontam" in chroma_config:
         effective_chroma["decontam"] = decontam_mode
-    decontam_kwargs = {} if decontam_mode == "off" else {"decontam": decontam_mode}
+    decontam_kwargs = {} if decontam_mode == OFF else {"decontam": decontam_mode}
     if effective_chroma != chroma_config:
         request["chroma"] = effective_chroma
         atomic_write_text(
@@ -3390,7 +3396,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             all_errors.append(f"{tag}: missing raw strip {raw_path}")
             return None
         with Image.open(raw_path) as opened:
-            if chroma_mode == "ycbcr":
+            if chroma_mode == CHROMA_YCBCR:
                 ycc_notes: list[str] = []
                 strip = remove_chroma_background_ycbcr(opened, chroma_key, ycc_notes, **decontam_kwargs)
                 all_warnings.extend(f"{tag}: {note}" for note in ycc_notes)

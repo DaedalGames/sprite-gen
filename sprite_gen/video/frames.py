@@ -125,7 +125,7 @@ SPECK_APART = 0.1
 # (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
 # key, a subject with no interior) the frames keep the matte's bytes and the report says why;
 # brightness alpha has no key, so `auto` is off there.
-DECONTAM_MODES = ("off", "auto", "palette")
+from sprite_gen.frames.extract import DECONTAM_MODES  # noqa: E402 — the one declaration, under the name video-set reads
 DECONTAM_DEFAULT = "auto"
 DECONTAM_FIT = "video"
 DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",

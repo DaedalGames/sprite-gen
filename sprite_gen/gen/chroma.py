@@ -23,6 +23,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.frames import extract as extract_mod
 from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
 from sprite_gen.frames.extract import remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
@@ -193,7 +194,7 @@ def key_transparent(
     *,
     key: str = MAGENTA,
     white_check: Path | None = None,
-    decontam: str = "off",
+    decontam: str = extract_mod.OFF,
 ) -> dict[str, Any]:
     """Key a chroma-background PNG to a clean transparent RGBA PNG.
 
@@ -220,7 +221,7 @@ def key_transparent(
     warnings: list[str] = []
     decontam_stats: dict[str, Any] = {}
     # the default call keeps its pre-decontam signature, so a caller's matte stand-in still fits
-    extra = {} if decontam == "off" else {"decontam": decontam, "decontam_stats": decontam_stats}
+    extra = {} if decontam == extract_mod.OFF else {"decontam": decontam, "decontam_stats": decontam_stats}
     image = remove_chroma_background_ycbcr(source, KEYS[key]["target"], warnings, **extra)
     pixels = image.load()
     width, height = image.size
@@ -260,7 +261,7 @@ def key_transparent(
     }
     if warnings:
         stats["warnings"] = warnings
-    if decontam != "off":
+    if decontam != extract_mod.OFF:
         stats["decontam"] = decontam_stats
     if white_check is not None:
         stats["white_check"] = str(white_check)
