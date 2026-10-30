@@ -147,7 +147,6 @@ OVERLAP_WRAP_OFF = "turned off (--overlap-wrap off)"
 # warn: a warning line, the loop kept; refuse: the loop fails.
 UNFIXED_MODES = ("warn", "refuse")
 SIZE_HOLD_MODES = ("auto", "off")
-FACINGS = ("right", "left")
 # Where `video-cycle-align` keeps the cut as filmed (sprite_gen/video/align.py). A new cut makes
 # the kept one stale, so writing the cycle removes it: an alignment after a re-cut (say, once RIFE
 # is installed and the jumps are repaired) reads the new cut, not the old one.
@@ -2334,6 +2333,7 @@ def _cut_loop(
         raise SystemExit(f"video-loop: unknown --wrap-blend {wrap_blend!r}; expected one of {', '.join(wrap_blend_mod.MODES)}")
     if unfixed not in UNFIXED_MODES:
         raise SystemExit(f"video-loop: unknown --unfixed {unfixed!r}; expected one of {', '.join(UNFIXED_MODES)}")
+    from sprite_gen.gen.facing import FACINGS
     if facing not in FACINGS:
         raise SystemExit(f"video-loop: unknown --facing {facing!r}; expected one of {', '.join(FACINGS)}")
     if seam_pop_max is not None and not (math.isfinite(seam_pop_max) and seam_pop_max > 0):
@@ -3265,6 +3265,7 @@ def _seam_pop_max(value: str) -> float | None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    from sprite_gen.gen.facing import FACINGS
     parser.add_argument("--frames-dir", required=True, type=Path, help="keyed RGBA frames from `sprite-gen video-frames` (…/keyed)")
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--fps", type=float, default=24.0, help="frame rate of the keyed frames (from the frames report)")

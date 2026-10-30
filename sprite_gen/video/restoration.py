@@ -98,7 +98,7 @@ def key_weight(rgba: Any, key: str) -> Any:
 
 def _jump_facing(origin: Loop) -> str | None:
     """The facing the jump repair read the origin's frames with, as its record says; None when it names none."""
-    from sprite_gen.video.loop import FACINGS
+    from sprite_gen.gen.facing import FACINGS
     facing = (origin.source_report.get("jump_repair") or {}).get("facing")
     return facing if facing in FACINGS else None
 
