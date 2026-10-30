@@ -107,8 +107,9 @@ EXPLICIT_ONLY_PROVIDERS = (PROVIDER_OPENAI,)
 # key CODEX_UNAVAILABLE_SETTING), else `ask`. Until 2.44.0 it went to grok unasked.
 CODEX_UNAVAILABLE_ENV = "SPRITE_GEN_CODEX_UNAVAILABLE"
 CODEX_UNAVAILABLE_SETTING = "codex_unavailable"
-CODEX_UNAVAILABLE_CHOICES = ("ask", PROVIDER_GROK, PROVIDER_OPENAI)
-CODEX_UNAVAILABLE_DEFAULT = "ask"
+CODEX_UNAVAILABLE_ASK = "ask"
+CODEX_UNAVAILABLE_CHOICES = (CODEX_UNAVAILABLE_ASK, PROVIDER_GROK, PROVIDER_OPENAI)
+CODEX_UNAVAILABLE_DEFAULT = CODEX_UNAVAILABLE_ASK
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
 # (`draw_guide`, the same 9.4 % safe margin), attached after the caller's refs, with
@@ -364,7 +365,7 @@ def codex_unavailable(cause: str, reason: str, *, default_source: str) -> tuple[
     the user's choice: raises the question (`CodexUnavailableAsk`) for `ask`, else returns the chosen provider and
     the switch the report keeps as `provider_fallback`."""
     choice, chosen_by = codex_unavailable_choice()
-    if choice == "ask":
+    if choice == CODEX_UNAVAILABLE_ASK:
         raise ask_codex_unavailable(codex_unavailable_question(cause, reason))
     return choice, {"from": PROVIDER_CODEX, "to": choice, "cause": cause, "reason": reason,
                     "default_source": default_source, "chosen_by": chosen_by}

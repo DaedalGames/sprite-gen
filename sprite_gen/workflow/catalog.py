@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """The two user journeys and their selectable fields, declared once."""
-from sprite_gen.gen import CODEX_UNAVAILABLE_CHOICES, CODEX_UNAVAILABLE_SETTING, PROVIDERS
+from sprite_gen.gen import CODEX_UNAVAILABLE_ASK, CODEX_UNAVAILABLE_CHOICES, CODEX_UNAVAILABLE_SETTING, PROVIDERS
 from sprite_gen.gen.base import PROVIDER_CODEX, PROVIDER_GROK, PROVIDER_OPENAI
 
 MOTION_METHODS = {
@@ -45,7 +45,7 @@ FIELDS = {
 # `gen.codex_unavailable_choice` reads it, docs/gen.md "When codex cannot run" owns the rule.
 GENERAL_FIELDS = {
     CODEX_UNAVAILABLE_SETTING: {
-        "options": {"ask": "멈추고 묻기 (기본)", PROVIDER_GROK: "그록으로 만들기",
+        "options": {CODEX_UNAVAILABLE_ASK: "멈추고 묻기 (기본)", PROVIDER_GROK: "그록으로 만들기",
                     PROVIDER_OPENAI: "OpenAI API 로 만들기 (호출당 과금)"},
         "question": "지피티(codex)를 쓸 수 없을 때 — 로그인이 없거나 사용량을 다 썼을 때 — 어떻게 할까요?",
     },

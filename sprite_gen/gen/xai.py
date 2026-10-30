@@ -24,7 +24,7 @@ from . import address, refusal, retry
 from .base import LOGINS_ENV, env_api_key, logins_on
 
 AUTH_ENV = "XAI_API_KEY"
-AUTH_SOURCE_API_KEY = "XAI_API_KEY"
+AUTH_SOURCE_API_KEY = AUTH_ENV
 AUTH_SOURCE_GROK_LOGIN = "grok-login"
 HTTP_TIMEOUT_SECONDS = 120
 

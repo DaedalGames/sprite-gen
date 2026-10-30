@@ -52,6 +52,7 @@ from .base import (
 AUTH_SOURCE_LOGIN = "codex-login"  # signed in with ChatGPT: the subscription
 AUTH_SOURCE_API_KEY = "codex-api-key"  # signed in with an API key: billed per call
 LOGIN_PROBE_TIMEOUT_SECONDS = 15
+BINARY = "codex"
 LOGIN_HINT = "`codex login` signs your ChatGPT subscription in"
 
 
@@ -106,7 +107,7 @@ def codex_login() -> CodexLogin:
     not asked and is not usable: its login is all it runs on."""
     if not logins_on():
         return CodexLogin(None, LOGINS_OFF)
-    binary = provider_binary("codex")
+    binary = provider_binary(BINARY)
     try:
         completed = subprocess.run([binary, "login", "status"], capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", env=provider_subprocess_env(),
@@ -424,7 +425,7 @@ class CodexProvider:
         except OSError as exc:
             raise SystemExit(f"codex-gen: cannot create Codex generated-images dir {gen_dir}: {exc}") from exc
         cmd = [
-            provider_binary("codex"),
+            provider_binary(BINARY),
             "exec",
             "--json",
             "--sandbox",
