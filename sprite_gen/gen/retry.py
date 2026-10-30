@@ -77,6 +77,9 @@ ACT_FIRST: dict[str, frozenset[str]] = {
     address.XAI: frozenset(),
     address.ELEVENLABS: frozenset(),
 }
+# ElevenLabs documents only these two 429 codes as requests it could not process.
+# https://elevenlabs.io/docs/help-center/technical/api-error-code-429 (2026-10-13).
+ELEVENLABS_BUSY = ("system_busy", "too_many_concurrent_requests")
 GET_AGAIN = frozenset({429, 500, 502, 503, 504, 529})
 
 Sleep = Callable[[float], None]
@@ -110,11 +113,9 @@ def _act_first(provider: str, body: Any) -> bool:
 def again_after(provider: str, method: str, status: int, body: Any, headers: Any, failures: int) -> float | None:
     """Seconds to wait before sending the request again after its `failures`-th failed answer in a row,
     or None when it is not sent again (the rule in the module docstring)."""
-    # ElevenLabs documents only these two 429 codes as requests it could not process.
-    # https://elevenlabs.io/docs/help-center/technical/api-error-code-429 (2026-10-13).
     if provider == address.ELEVENLABS and method != "GET":
         detail = body.get("detail") if isinstance(body, dict) else None
-        if not isinstance(detail, dict) or detail.get("status") not in ("system_busy", "too_many_concurrent_requests"):
+        if not isinstance(detail, dict) or detail.get("status") not in ELEVENLABS_BUSY:
             return None
     if failures > ASKS_AGAIN:
         return None

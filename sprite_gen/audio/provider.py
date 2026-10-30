@@ -14,7 +14,7 @@ from sprite_gen.gen.xai import error_body, NO_ANSWER
 
 AUTH_ENV = 'ELEVENLABS_API_KEY'
 FORMAT = 'mp3_44100_128'
-SAFE_CODES = frozenset({'system_busy', 'too_many_concurrent_requests', 'quota_exceeded',
+SAFE_CODES = frozenset({*retry.ELEVENLABS_BUSY, 'quota_exceeded',
     'invalid_api_key', 'missing_permissions', 'bad_prompt', 'bad_composition_plan',
     'content_policy_violation', 'unauthorized', 'invalid_request'})
 
