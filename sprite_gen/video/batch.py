@@ -43,7 +43,7 @@ from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
-from sprite_gen.video import nonloop
+from sprite_gen.video import effect, nonloop
 from sprite_gen.video import play as play_mod
 from sprite_gen.util.console import utf8_streams
 
@@ -60,7 +60,7 @@ STATE_DURATION_SECONDS = {"attack": 2}
 # States whose clip is pinned to end on the frame it starts from (first-last mode): the model
 # has to come back to the still, which closes a one-shot action instead of leaving it wherever
 # the strike ended, and closes an idle without asking for a repeating rhythm.
-PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", "effect"})
+PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", effect.STATE})
 # Pinned states whose whole clip is the loop: it starts and ends on the canvas, so `video-loop
 # --cycle pinned` keeps every frame but the last (a re-render of the first). An attack asked
 # for once is ready stance -> strike -> ready stance, so its whole clip is one attack too.
@@ -187,7 +187,7 @@ HOLD_TEXT = {
 # What stays put while a caller's own walk or run moves, by view: in place, and facing the way the image
 # faces. A request interpreter may ask for any gait (a sneak, a march, a stroll); the engine keeps it on the
 # spot and turned the right way, as the built-in gait sentences do. `{facing}` is the side view's.
-GAIT_STATES = frozenset({"walk", "run"})
+GAIT_STATES = nonloop.GAIT_STATES
 GAIT_HOLD_TEXT = {
     "front": "It stays in place as if on a treadmill, without coming any closer, and keeps facing the viewer the whole time.",
     "back": (
@@ -552,7 +552,7 @@ def _lite_text(state: str, direction: str, model: str | None, *, built_in: bool,
     if body_mod.biped(body_plan):
         calm, head = LITE_WALK_TEXT, LITE_HEAD_TEXT
     else:
-        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == "legless" for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
+        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == body_mod.LEGLESS for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
         head = LITE_HEAD_TEXT_ANY_BODY
     text = f" {calm}" if built_in else ""
     if direction in head:
@@ -812,7 +812,7 @@ def run_item(
                     facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix)
             # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
             # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=effect.STATE if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
@@ -1301,7 +1301,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--character", help="short subject phrase used in the prompts (e.g. 'The armored knight')")
     parser.add_argument("--duration", type=int, default=None, help=f"seconds per clip for every state (default: {DEFAULT_DURATION_SECONDS}, attack {STATE_DURATION_SECONDS['attack']}); a repeating motion holds enough cycles at 3 s and a longer clip only costs more (2026-09-18)")
     parser.add_argument("--resolution", default="720p")
-    parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto")
+    parser.add_argument("--key", choices=canvas_mod.KEYS, default="auto")
     parser.add_argument("--concurrency", type=int, default=3, help="parallel clip generations (starts are staggered regardless)")
     parser.add_argument("--start-gap", type=float, default=START_GAP_SECONDS, help="seconds between clip request starts")
     parser.add_argument("--shape", choices=canvas_mod.SHAPES, help="force one canvas shape for every state (e.g. wide for a costume or arms that leave a 1:1 frame; square keeps a side walk or run square whatever room its still leaves)")

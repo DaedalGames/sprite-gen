@@ -87,6 +87,10 @@ PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mea
 # Where a size hold or the gait fallback writes the frames it scaled back: a folder of the run's own in the out dir,
 # `.gait-fallback-frames.<pid>-<random>` (`_Scratch`), removed however the run ends.
 FALLBACK_FRAMES = "gait-fallback-frames"
+# What a video-loop report is (its `kind`), and the `status` of one whose cut was handed over: align, compare and
+# source read a report as a delivered loop's only when it says both.
+REPORT_KIND = "sprite-gen-video-loop-report"
+REPORT_PASSED = "passed"
 GIF_FPS_DEFAULT = 24.0  # GIF/WebP playback density = the source rate: every cycle frame is kept, a fast action never looks slow (12 made a jump read sluggish, 2026-09-09)
 GIF_FRAMES_MIN = 4
 ONE_SHOT_MIN_CONTRAST = 3.0  # one-shot: the excursion peak must stand this far above the rest-pose noise (in MADs)
@@ -144,7 +148,6 @@ OVERLAP_WRAP_OFF = "turned off (--overlap-wrap off)"
 # warn: a warning line, the loop kept; refuse: the loop fails.
 UNFIXED_MODES = ("warn", "refuse")
 SIZE_HOLD_MODES = ("auto", "off")
-FACINGS = ("right", "left")
 # Where `video-cycle-align` keeps the cut as filmed (sprite_gen/video/align.py). A new cut makes
 # the kept one stale, so writing the cycle removes it: an alignment after a re-cut (say, once RIFE
 # is installed and the jumps are repaired) reads the new cut, not the old one.
@@ -2347,6 +2350,7 @@ def _cut_loop(
         raise SystemExit(f"video-loop: unknown --wrap-blend {wrap_blend!r}; expected one of {', '.join(wrap_blend_mod.MODES)}")
     if unfixed not in UNFIXED_MODES:
         raise SystemExit(f"video-loop: unknown --unfixed {unfixed!r}; expected one of {', '.join(UNFIXED_MODES)}")
+    from sprite_gen.gen.facing import FACINGS
     if facing not in FACINGS:
         raise SystemExit(f"video-loop: unknown --facing {facing!r}; expected one of {', '.join(FACINGS)}")
     if seam_pop_max is not None and not (math.isfinite(seam_pop_max) and seam_pop_max > 0):
@@ -2424,7 +2428,7 @@ def _cut_loop(
     masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
     report_base = {
-        "kind": "sprite-gen-video-loop-report", "frames_dir": str(frames_dir),
+        "kind": REPORT_KIND, "frames_dir": str(frames_dir),
         "source": evidence_mod.source_identity(files, fps),
         "producer": evidence_mod.engine_identity(),
         "out_dir": str(out_dir), "state": state, "fps": fps, "frames_total": n,
@@ -3232,7 +3236,7 @@ def _cut_loop(
 
     payload = {
         **report_base,
-        "kind": "sprite-gen-video-loop-report",
+        "kind": REPORT_KIND,
         "frames_dir": str(frames_dir),
         "out_dir": str(out_dir),
         "state": state,
@@ -3247,7 +3251,7 @@ def _cut_loop(
         "n_out": n_out,
         "gif_fps": gif_fps,
         "delay_ms": delay_ms,
-        "status": "passed",
+        "status": REPORT_PASSED,
         "resampled_seam": resampled_seam,
         "resampled_inner_mean_adjacent": resampled_adjacent,
         "resampled_seam_ratio": None if single_play else round(seam_ratio, 4),
@@ -3278,6 +3282,7 @@ def _seam_pop_max(value: str) -> float | None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    from sprite_gen.gen.facing import FACINGS
     parser.add_argument("--frames-dir", required=True, type=Path, help="keyed RGBA frames from `sprite-gen video-frames` (…/keyed)")
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--fps", type=float, default=24.0, help="frame rate of the keyed frames (from the frames report)")

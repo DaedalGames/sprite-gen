@@ -125,12 +125,13 @@ SPECK_APART = 0.1
 # (olive on green), and the pass gives it the subject's colour back. Where it cannot run (a white
 # key, a subject with no interior) the frames keep the matte's bytes and the report says why;
 # brightness alpha has no key, so `auto` is off there.
-DECONTAM_MODES = ("off", "auto", "palette")
-DECONTAM_DEFAULT = "auto"
+from sprite_gen.frames.extract import AUTO, DECONTAM_MODES, OFF, PALETTE  # noqa: E402 — the one declaration, under the name video-set reads
+DECONTAM_DEFAULT = AUTO
 DECONTAM_FIT = "video"
 DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
                       "key_part_kept_px", "behind_kept_px", "held_px", "settled_px", "blending_px")
 BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
+REPORT_KIND = "sprite-gen-video-frames-report"
 
 
 def _require(binary: str) -> str:
@@ -479,7 +480,7 @@ def key_frames(
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness" and decontam == "palette":
+    if alpha_mode == "brightness" and decontam == PALETTE:
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if alpha_mode == "chroma" and spill not in ("small", "full"):
         raise SystemExit(f"video-frames: key_frames takes a resolved spill mode (small|full), got {spill!r}")
@@ -496,8 +497,8 @@ def key_frames(
         shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
         work.rename(refused_dir(keyed_dir))
         raise
-    if alpha_mode == "brightness" and decontam == "auto":
-        report["decontam"] = {"mode": "auto", "applied_frames": 0, "reason": BRIGHTNESS_NO_KEY}
+    if alpha_mode == "brightness" and decontam == AUTO:
+        report["decontam"] = {"mode": AUTO, "applied_frames": 0, "reason": BRIGHTNESS_NO_KEY}
     shutil.rmtree(refused_dir(keyed_dir), ignore_errors=True)
     work.rename(keyed_dir)
     return report
@@ -533,7 +534,7 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
             **({"edge_border": border} if policy == "border" else {}),
             "rows": rows,
         }
-        if decontam != "off" and decontam_first is not None:
+        if decontam != OFF and decontam_first is not None:
             report["decontam"] = {
                 "mode": decontam,
                 "fit": DECONTAM_FIT,
@@ -571,7 +572,7 @@ def _key_chroma(raw_files: list[Path], keyed_dir: Path, *, key: str, check_edges
         w, h = image.size
         alpha_zero_pct = round(100 * hist[0] / (w * h), 2)
         row = {"frame": src.name, "alpha_zero_pct": alpha_zero_pct, "route": stats.get("route"), "specks": specks}
-        if decontam != "off":
+        if decontam != OFF:
             done = stats["decontam"]
             if done.get("applied"):
                 if clip_palette is None:
@@ -643,7 +644,7 @@ def decontam_warning(decontam: dict[str, Any]) -> str | None:
     or the guard kept the edge beside a small key-coloured part. None when there is nothing to look
     at (the pass off, or brightness alpha)."""
     mode = decontam.get("mode")
-    if mode in (None, "off") or decontam.get("reason") == BRIGHTNESS_NO_KEY:
+    if mode in (None, OFF) or decontam.get("reason") == BRIGHTNESS_NO_KEY:
         return None
     if not decontam.get("applied_frames"):
         return (f"decontam {mode} did not run ({decontam.get('reason')}): the frames are the matte's, "
@@ -702,7 +703,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
-    if alpha_mode == "brightness" and decontam == "palette":
+    if alpha_mode == "brightness" and decontam == PALETTE:
         raise SystemExit("video-frames: brightness alpha does not use --decontam")
     if source_manifest is not None and reference is None:
         raise SystemExit("video-frames: --source-manifest needs --reference (the source canvas)")
@@ -734,7 +735,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     decision = ({"mode": "off", "reason": "brightness alpha"} if alpha_mode == "brightness" else
                 decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"})
     files = extract(clip, raw_dir, meta["stream_index"])
-    head = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
+    head = {"kind": REPORT_KIND, "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
     try:
         report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode, plate=plate)
     except KeyingRefused as refused:
@@ -760,7 +761,8 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--alpha-mode", choices=("chroma", "brightness"), default="chroma", help="chroma key (default), or emitted light on black: brightness alpha, unpremultiplied RGB, no speck/edge cleanup; dark smoke becomes faint")
+    from . import effect
+    parser.add_argument("--alpha-mode", choices=effect.ALPHA_MODES, default="chroma", help="chroma key (default), or emitted light on black: brightness alpha, unpremultiplied RGB, no speck/edge cleanup; dark smoke becomes faint")
     parser.add_argument("--clip", required=True, type=Path, help="mp4 from `sprite-gen video`, or one made elsewhere from a `video-canvas` still (a video MCP such as ZCRE); an audio track and a cover image are left out")
     parser.add_argument("--out-dir", required=True, type=Path, help="writes raw/ and keyed/ here; a refused run leaves keyed.refused/ and no keyed/")
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto", help="background key (auto reads the corners)")
