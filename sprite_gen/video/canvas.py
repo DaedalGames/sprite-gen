@@ -457,7 +457,7 @@ def run_canvas(
     tmp.replace(out)
     if state == "effect":
         report["end_frame"] = str(effect.empty_end(out, out.with_name(out.stem + ".end.png")))
-    payload = {"kind": "sprite-gen-video-canvas-report", "still": str(still), "out": str(out), "state": state, **report}
+    payload = {"kind": plate_mod.CANVAS_REPORT, "still": str(still), "out": str(out), "state": state, **report}
     if report_path is not None:
         atomic_write_text(report_path.expanduser().resolve(), json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return payload

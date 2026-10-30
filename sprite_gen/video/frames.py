@@ -131,6 +131,7 @@ DECONTAM_FIT = "video"
 DECONTAM_STAT_KEYS = ("changed_px", "refit_px", "tint_px", "recovered_px", "unexplained_px", "restored_px", "key_hue_capped_px",
                       "key_part_kept_px", "behind_kept_px", "held_px", "settled_px", "blending_px")
 BRIGHTNESS_NO_KEY = "brightness alpha has no key colour to remove"
+REPORT_KIND = "sprite-gen-video-frames-report"
 
 
 def _require(binary: str) -> str:
@@ -734,7 +735,7 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
     decision = ({"mode": "off", "reason": "brightness alpha"} if alpha_mode == "brightness" else
                 decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"})
     files = extract(clip, raw_dir, meta["stream_index"])
-    head = {"kind": "sprite-gen-video-frames-report", "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
+    head = {"kind": REPORT_KIND, "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
     try:
         report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode, plate=plate)
     except KeyingRefused as refused:

@@ -44,7 +44,7 @@ from sprite_gen.frames.cutout import GREEN, KEY_TARGETS
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import loop
-from sprite_gen.video.frames import drop_specks
+from sprite_gen.video.frames import REPORT_KIND as FRAMES_REPORT_KIND, drop_specks
 from sprite_gen.video.interpolation_quality import OUTLINE_WARN, SMEAR_WARN
 from sprite_gen.video.playback import Playback, visible_bytes
 from sprite_gen.video.restoration import ARTIFACT_SUFFIXES
@@ -182,7 +182,7 @@ def write_source(out: Path) -> dict[str, Path]:
                     "-map_metadata", "-1", str(clip)], check=True)
     report = out / "source" / "frames.json"
     report.write_text(json.dumps({
-        "kind": "sprite-gen-video-frames-report", "fps": FPS, "frames": N, "width": SW, "height": SH,
+        "kind": FRAMES_REPORT_KIND, "fps": FPS, "frames": N, "width": SW, "height": SH,
         "stream_index": 0, "key": GREEN,
         "note": "synthetic: the keyed frames are drawn by scripts/dev/source_restoration_demo.py, not keyed from the clip"},
         indent=2) + "\n")

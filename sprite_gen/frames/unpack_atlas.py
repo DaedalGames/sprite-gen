@@ -39,6 +39,7 @@ from sprite_gen.curate.curation import imported_ref_role
 from sprite_gen.spec.runio import (
     LOCK_FILENAME,
     REQUEST_FILENAME,
+    REQUEST_KIND,
     acquire_run_dir_lock,
     atomic_save_image,
     atomic_write_text,
@@ -53,6 +54,7 @@ from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
 from sprite_gen.util.console import utf8_streams
 from sprite_gen.util.hexcolor import format_hex
 
+UNPACK_SOURCE_KIND = "sprite-gen-unpack-source"
 ALPHA_THRESHOLD = 16  # a pixel counts as content above this alpha
 MIN_GUTTER = 1        # a fully-empty line of >= this many px separates frames
 
@@ -248,7 +250,7 @@ def write_run(
 
     request = {
         "version": 1,
-        "kind": "sprite-gen-request",
+        "kind": REQUEST_KIND,
         "engine": "component-row",
         "character": {"id": run_dir.name, "description": f"unpacked from atlas ({layout_source})"},
         "cell": {"shape": "rect" if cell_w != cell_h else "square", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
@@ -262,7 +264,7 @@ def write_run(
     )
     source_doc = {
         "version": 1,
-        "kind": "sprite-gen-unpack-source",
+        "kind": UNPACK_SOURCE_KIND,
         "layout_source": layout_source,
         "cell": {"width": cell_w, "height": cell_h},
         **provenance,
@@ -366,7 +368,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
     first_dir = groups[0]["paths"][0].parent
     request = {
         "version": 1,
-        "kind": "sprite-gen-request",
+        "kind": REQUEST_KIND,
         "engine": "component-row",
         "character": {"id": run_dir.name, "description": f"imported PNG set from {first_dir}"},
         "cell": {"shape": "square" if cell_w == cell_h else "rect", "width": cell_w, "height": cell_h, "size": cell_w, "safe_margin": 0},
@@ -383,7 +385,7 @@ def import_png_groups(out_dir: Path, groups: list[dict[str, Any]], iso: dict[str
     )
     atomic_write_text(
         out_dir / "unpack-source.json",
-        json.dumps({"version": 1, "kind": "sprite-gen-unpack-source", "layout_source": "imported-pngs",
+        json.dumps({"version": 1, "kind": UNPACK_SOURCE_KIND, "layout_source": "imported-pngs",
                     "cell": {"width": cell_w, "height": cell_h}, "source_dir": str(first_dir),
                     "files": source_files, "labels": source_labels,
                     "groups": [str(g["name"]) for g in groups],

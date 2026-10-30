@@ -112,6 +112,7 @@ from sprite_gen.video import rife as rife_mod
 from sprite_gen.video.interpolation_quality import CROSSFADE_LOOK, GHOST_WARN, SMEAR_WARN, OUTLINE_WARN, clean_beside, faults, ghost_screen, looks
 from sprite_gen.util.console import utf8_streams
 
+REPORT_KIND = "sprite-gen-video-cycle-align-report"
 SNAP = 0.03  # a sample time within this of a source frame takes that frame
 SOURCE_DIR = loop_mod.CYCLE_SOURCE_DIR  # removed by video-loop whenever it cuts the loop again
 RATE_TOLERANCE = 0.002  # frame rates read back from the strip metadata agree within this
@@ -1312,7 +1313,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                    " — or add --multi-cycle warn to align the set as it is (docs/loop-repair.md section 4)")
         if report_path is not None:
             loop_mod.write_loop_report(report_path.expanduser().resolve(), {
-                "kind": "sprite-gen-video-cycle-align-report", "applied": False, "refused": "cycle-suspects", "why": message, "command": command,
+                "kind": REPORT_KIND, "applied": False, "refused": "cycle-suspects", "why": message, "command": command,
                 "multi_cycle": multi_cycle, "lengths": [len(f) for f in sources], "fps": round(fps, 4), "suspects": suspects,
                 "cycles_given": {str(loops[i][0]): k for i, k in given.items()}, "feet_given": {str(loops[i][0]): f for i, f in told.items()}})
         raise CycleSuspects(message, suspects, command)
@@ -1403,7 +1404,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                    + ". Stopped before anything was rewritten (--same-foot refuse)")
         if report_path is not None:
             loop_mod.write_loop_report(report_path.expanduser().resolve(), {
-                "kind": "sprite-gen-video-cycle-align-report", "applied": False, "refused": RETAKE_FEET_REASON, "why": message,
+                "kind": REPORT_KIND, "applied": False, "refused": RETAKE_FEET_REASON, "why": message,
                 "same_foot": [{"dir": str(d), "name": meta_path.name[: -len(".strip.json")], **r["same_foot"]} for d, meta_path, r in twice],
                 "lengths": [len(f) for f in sources], "fps": round(fps, 4)})
         raise SystemExit(message)
@@ -1437,7 +1438,7 @@ def align_set(loop_dirs: list[Path], *, length: int | None = None, interpolate: 
                  for r in rows if r["start_foot"] is None and r["view"] is not None]
     warnings += [f"{r['dir'] if shared else r['name']}: --foot says {r['foot_given'][0]} lands on its larger strike, its view's "
                  f"{r['foot']['cue']} said {r['foot_disagrees'][0]}; started as given" for r in rows if r.get("foot_disagrees")]
-    report = {"kind": "sprite-gen-video-cycle-align-report", "applied": True, "length": target,
+    report = {"kind": REPORT_KIND, "applied": True, "length": target,
               "length_rule": "requested" if length is not None else "median",
               "between": between, "start_foot": start_foot, "retake": retakes, "warnings": warnings,
               "lengths": lengths, "multi_cycle": multi_cycle, "suspects": suspects, "unnamed_feet": unnamed,

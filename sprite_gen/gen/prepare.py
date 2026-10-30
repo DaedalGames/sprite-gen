@@ -25,7 +25,7 @@ from sprite_gen.curate.anchor import anchor_ref_rel
 from sprite_gen.frames.cutout import GREEN, KEY_TARGETS, MAGENTA
 from sprite_gen.frames.extract import color_distance
 from sprite_gen.spec.layout import TAXONOMY, guide_rel, prompt_rel, raw_rel
-from sprite_gen.spec.runio import REQUEST_FILENAME
+from sprite_gen.spec.runio import REQUEST_FILENAME, REQUEST_KIND
 from sprite_gen.spec.subject import SUBJECTS
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
@@ -1068,7 +1068,7 @@ def _run(args: argparse.Namespace):
     chroma_key = choose_chroma_key(base_dest, args.chroma_key)
     request = {
         "version": 1,
-        "kind": "sprite-gen-request",
+        "kind": REQUEST_KIND,
         "engine": "component-row",
         "character": {
             "id": args.character_id,
