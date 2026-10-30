@@ -49,6 +49,7 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.frames.cutout import KEY_TARGETS, extract_route
 from sprite_gen.frames.extract import is_border_key_candidate
+from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen.handedness import VIEWS
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.console import utf8_streams
@@ -456,7 +457,7 @@ def run_canvas(
     tmp.replace(out)
     if state == "effect":
         report["end_frame"] = str(effect.empty_end(out, out.with_name(out.stem + ".end.png")))
-    payload = {"kind": "sprite-gen-video-canvas-report", "still": str(still), "out": str(out), "state": state, **report}
+    payload = {"kind": plate_mod.CANVAS_REPORT, "still": str(still), "out": str(out), "state": state, **report}
     if report_path is not None:
         atomic_write_text(report_path.expanduser().resolve(), json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return payload
@@ -467,7 +468,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", required=True, type=Path, help="padded PNG to feed `sprite-gen video`")
     parser.add_argument("--state", help="motion state name (jump/attack/projectile/... — selects the canvas row)")
     parser.add_argument("--shape", choices=SHAPES, help="override the state's canvas shape")
-    parser.add_argument("--facing", choices=("right", "left"), default="right", help="which way the subject faces (wide canvases add room in front)")
+    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the subject faces (wide canvases add room in front)")
     parser.add_argument("--headroom", type=float, help="tall/wide: empty fraction of canvas height above the still (default from the profile)")
     parser.add_argument("--lead", type=float, help="wide: empty fraction in front of the subject (default from the profile)")
     parser.add_argument("--trail", type=float, help="wide: empty fraction behind the subject, for a weapon drawn back (default from the profile)")

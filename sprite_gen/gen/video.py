@@ -61,7 +61,8 @@ from typing import Any, Callable
 from sprite_gen.spec.runio import atomic_write_text, refuse_overlap
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import address, prompt_parts, refusal, retry
-from .base import announce_api_billing, print_json
+from . import handedness as handed_mod
+from .base import PROVIDER_GROK, announce_api_billing, print_json
 from .facing import FACINGS, validate as validate_facing
 from sprite_gen.video import facing as facing_mod
 from .xai import (
@@ -199,7 +200,7 @@ def http_download(url: str, token: str, *, deadline: float | None = None) -> byt
     that gets no answer it can read whole — the connection failed or timed out, the body broke on the way,
     the deadline came — raises xai.TransportError, its words in `reason`. The clip is fetched through the xAI base
     when SPRITE_GEN_XAI_BASE_URL is set (`address.fetched`), else from `url` itself."""
-    request = urllib.request.Request(address.fetched("xai", url))
+    request = urllib.request.Request(address.fetched(address.XAI, url))
     try:
         try:
             with urllib.request.urlopen(request, timeout=time_left(HTTP_TIMEOUT_SECONDS, deadline)) as response:
@@ -404,7 +405,7 @@ class VideoResult:
 
 def _validate(request: VideoRequest) -> None:
     validate_facing(request.facing, request.facing_fix)
-    if request.direction not in (None, "side", "front", "back", "front_diagonal", "back_diagonal"):
+    if request.direction not in (None, *handed_mod.VIEWS):
         raise SystemExit("video: --direction must be side, front, back, front_diagonal or back_diagonal")
     if request.facing_fix not in facing_mod.FIXES:
         raise SystemExit("video: --facing-fix must be mirror or none")
@@ -531,7 +532,7 @@ def _submit_poll_publish(
     # some of the poll timeout, which counts from the first send.
     started = time.monotonic()
     timeout = POLL_TIMEOUT_SECONDS if poll_timeout is None else poll_timeout
-    status, reply, _sends = post(call, address.url("xai", f"/videos/{endpoint}"), credential.token, body, who="xai", label=verb,
+    status, reply, _sends = post(call, address.url(address.XAI, f"/videos/{endpoint}"), credential.token, body, who="xai", label=verb,
                                  sleep=sleep, deadline=started + timeout)
     if status in (401, 403):
         raise SystemExit(
@@ -540,7 +541,7 @@ def _submit_poll_publish(
         )
     request_id = reply.get("request_id") if isinstance(reply, dict) else None
     if status not in (200, 202) or not request_id:
-        refused = refusal.read("grok", reply)
+        refused = refusal.read(PROVIDER_GROK, reply)
         raise SystemExit(
             f"{verb}: {refused.reason('generation request refused')} (HTTP {status}){refused.suffix()}: {_error_detail(reply, credential.token)}"
         )
@@ -601,7 +602,7 @@ def _poll_publish(
         polls += 1
         lost: str | None = None
         try:
-            http, poll = call("GET", address.url("xai", f"/videos/{request_id}"), credential.token, None, deadline=deadline)
+            http, poll = call("GET", address.url(address.XAI, f"/videos/{request_id}"), credential.token, None, deadline=deadline)
         except TransportError as failed:
             lost, http, poll = failed.reason, None, None
         poll_status = poll.get("status") if isinstance(poll, dict) else None
@@ -637,7 +638,7 @@ def _poll_publish(
             )
         elif http not in (200, 202) or poll_status in _FAILED_STATUSES:
             # A failed poll carries `error` as an object `{code, message}`.
-            refused = refusal.read("grok", poll)
+            refused = refusal.read(PROVIDER_GROK, poll)
             raise SystemExit(
                 f"{verb}: generation {request_id} {refused.reason(f'ended with status={poll_status!r}')} "
                 f"(HTTP {http}){refused.suffix()}: {_error_detail(poll, credential.token)}"
@@ -1003,7 +1004,7 @@ def _add_prompt_and_report(parser: argparse.ArgumentParser) -> None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--direction", choices=("side", "front", "back", "front_diagonal", "back_diagonal"), help="sprite view; side opts into facing inspection before video generation")
+    parser.add_argument("--direction", choices=handed_mod.VIEWS, help="sprite view; side opts into facing inspection before video generation")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="with --direction side: required direction (default right)")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="with --direction side: record only (none, default), or opt into mirror")
     parser.add_argument("--image", type=Path, help="the still to animate / the first frame (PNG/JPEG/WebP)")

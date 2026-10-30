@@ -26,6 +26,13 @@ from PIL import Image, UnidentifiedImageError
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
+# The image providers' names, each written once. The sets of them (`gen.PROVIDERS`, its hard default, the
+# explicit-only ones) are `sprite_gen.gen`'s; the names are here because the adapters name themselves with them and
+# `gen` imports the adapters before it declares its sets. The HTTP hosts behind them are `address`'s, another name set.
+PROVIDER_CODEX = "codex"
+PROVIDER_GROK = "grok"
+PROVIDER_OPENAI = "openai"
+
 # Transparency strategy — a capability each provider declares exactly once
 # (`Provider.transparency`). The orchestrator reads it; nothing else decides.
 #   native — the model returns a genuinely transparent PNG (alpha channel) when
@@ -170,7 +177,7 @@ def codex_unavailable_question(cause: str, reason: str, *, flag: str = "--provid
         "reason": reason,
         "question": f"codex cannot run here ({reason}). Generate with the OpenAI API (billed per call), "
                     "with Grok, or stop?",
-        "choices": {"openai": f"{flag} openai", "grok": f"{flag} grok", "stop": None},
+        "choices": {PROVIDER_OPENAI: f"{flag} {PROVIDER_OPENAI}", PROVIDER_GROK: f"{flag} {PROVIDER_GROK}", "stop": None},
     }
 
 
