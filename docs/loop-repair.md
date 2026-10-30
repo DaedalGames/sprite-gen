@@ -2808,7 +2808,9 @@ again. A loop has round(L x F / fps) cells over its cycle's seconds, at times k 
 from its first frame to its last, round((L - 1) x F / fps) + 1 cells, each 1/F. A cell on a frame's time is that
 frame; one between two frames showing one picture (a hold kept) is that picture; one no frame made is taken for (a
 fault, or `held`: the frame shows the picture of a frame beside it, or of the cell before it, again) is the nearer
-frame, listed in `out_fps.shown_again` and named in a `warning:` line. `cycle/` holds every cell; the strip holds them
+frame, listed in `out_fps.shown_again` and named in a `warning:` line. The record's `out_fps.source_frames` gives the
+frame each cell is (null where it was made), which the strip record's `cell_record` reads for its `source_frame`
+(`docs/video-pipeline.md` section 6). `cycle/` holds every cell; the strip holds them
 up to its cell and width caps, subsampled past them as any strip is (`subsampled`). The strip metadata says `out_fps`
 and `source_fps`, and `source_cut.times` in place of `samples`. With no RIFE the cut is delivered at its own rate with
 a `warning:` line and `out_fps.applied` false. `video-cycle-align` and `video-stop` refuse such a loop (each makes its

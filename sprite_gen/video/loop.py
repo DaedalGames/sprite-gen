@@ -157,6 +157,18 @@ FOLLOW_SOURCE = "follow.source.png"
 CYCLE_REFUSED_DIR = "cycle.refused"
 SWAY_RECORD = "follow"
 SWAY_RECORD_KEYS = ("sway", "follow")
+# The strip's record of each of its cells, in its `<name>.strip.json` and bound to it by its PNG's sha256 (`strip_sha256`):
+# per cell the source frame it is, where the anchor moved that frame before the crop (`anchor_move_px`, across and down),
+# the factor each step that holds a clip's frames to one size scaled it by about its feet before the cut (`scale`; 1
+# where the step did not hold them), and whether it is that frame as filmed but for that move (`as_filmed`: its pixels at
+# the end of the cut are its pixels anchored, before any repair, and nothing held the clip's frames). `video-sway
+# --read-on-cut` pairs two cuts of one clip by it alone. An alignment does not carry it over to the strip it makes; it
+# keeps the cut's own strip record beside the cut's frames (`cycle.source/<name>.strip.json`).
+CELL_RECORD = "cell_record"
+CELL_SCALE_STEPS = {"size_hold": "the size hold", "gait_fallback": "the gait fallback"}  # each, in words
+# How the frames of a cut at --anchor motion or motion-auto are made before any repair, as their receipt names it
+# (`source_projection.recipe`; a cut at --anchor none or body is made by `source.RECIPE`): laid by the correction.
+MOTION_RECIPE = "motion-anchor-correction-v1"
 
 
 def sway_recorded(meta: dict) -> bool:
@@ -708,14 +720,19 @@ def body_wrap_offset(frames: list[Image.Image], *, band: float = BODY_ANCHOR_BAN
     return min(range(-search, search + 1), key=cost)
 
 
+def ramp_offset(wrap_dx: int, k: int, length: int) -> int:
+    """How far across the ramp of a cycle `length` frames long moves its frame k (`ramp_frames`): round(wrap_dx * k / L)."""
+    return int(round(wrap_dx * k / length))
+
+
 def ramp_frames(frames: list[Image.Image], wrap_dx: int) -> list[Image.Image]:
-    """Shift frame k by round(wrap_dx * k / L) so the cycle's end returns to its start."""
+    """Shift frame k by round(wrap_dx * k / L) (`ramp_offset`) so the cycle's end returns to its start."""
     L = len(frames)
     if wrap_dx == 0 or L < 2:
         return frames
     out = []
     for k, im in enumerate(frames):
-        dx = int(round(wrap_dx * k / L))
+        dx = ramp_offset(wrap_dx, k, L)
         if dx == 0:
             out.append(im)
             continue
@@ -1854,12 +1871,14 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
 def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, trajectory: np.ndarray, analysis: dict[str, Any],
                  *, fps: float, window: CutWindow, prof: LoopProfile, state: str, steps: int | None, seam_max: float,
                  seam_pop_max: float | None, scratch: _Scratch, said: dict[str, Any],
-                 turn: body_turn_mod.Turn | None = None) -> tuple[dict[str, Any], list[Path], dict[str, Any]]:
+                 turn: body_turn_mod.Turn | None = None
+                 ) -> tuple[dict[str, Any], list[Path], dict[str, Any], list[float] | None]:
     """`--anchor motion-auto`'s cut of `frames` — the clip after its lead-in, held, `files` written of them and `D`,
     `trajectory` and `analysis` read on them (auto_motion.analyse): the search, the gait fallback after a first search
     that finds nothing, then the count, given (`steps`, `_counted`) or the clip's crossings (`_by_steps`) and, for a cut
     one step long that neither counted, the clip two lengths on (`_two_lengths`). Returns the
-    cut, and the files and the analysis it was read on (the gait fallback's, where it scaled the frames back); `said`
+    cut, the files and the analysis it was read on (the gait fallback's, where it scaled the frames back), and the factor
+    the gait fallback scaled each frame by (None where it did not); `said`
     takes what the report adds (`automatic_motion_analysis` read again, `gait_fallback`), whether a cut is found or the
     search raises. With `turn` (body_turn.Turn), no cut that holds a frame of a body turn is taken."""
     lo, hi = window.lo, window.hi
@@ -1868,6 +1887,7 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
     searched: dict[str, Any] = {"min_len": lo, "max_len": hi}
     refused: ValueError | None = None
     cycle = None
+    undone: list[float] | None = None
     # The cuts the search chooses among, read before one is cut as the seam gate and the seam pop gate read the loop.
     cells = CutOnCells(frames, pop_max=seam_pop_max)
     try:
@@ -1884,6 +1904,7 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
         if abs(drift["drift"]) >= gait_fallback.SCALE_DRIFT_MIN:
             fallback["padding_ltrb"] = list(gait_fallback.undo_padding(frames, drift))
             frames = gait_fallback.undo_scale(frames, drift, pad=tuple(fallback["padding_ltrb"]))
+            undone = [gait_fallback.frame_hold(k, drift)["scale"] for k in range(len(frames))]
             files = gait_fallback.write_frames(frames, [f.name for f in files], scratch.new())
             D, trajectory, analysis = auto_motion.analyse(frames, fps=fps)
             said["automatic_motion_analysis"] = analysis
@@ -1921,7 +1942,7 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
         # A cut one step long that nothing counted: the clip itself is asked for two (`_two_lengths`).
         cycle = _two_lengths(cycle, prof=prof, fps=fps, state=state, window=window, D=D, trajectory=trajectory, frames=frames,
                              files=files, moved=moved, detect=detect, cells=cells, seam_max=seam_max, turn=turn)
-    return cycle, files, analysis
+    return cycle, files, analysis, undone
 
 
 def _from_lead_in(record: Any, lead: int) -> Any:
@@ -2120,12 +2141,13 @@ def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor:
     return wrap_blend_mod.apply(frames, pin, fps=fps, seam_max=seam_max)
 
 
-def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
-               cut: tuple[int, int] | None = None) -> tuple[list[Image.Image] | None, dict[str, Any], Any]:
+def _size_hold(frames: list[Image.Image], *, lo: int, hi: int, cut: tuple[int, int] | None = None
+               ) -> tuple[list[Image.Image] | None, dict[str, Any], Any, list[float] | None]:
     """A walk or run held at its first frame's size, and its feet on the first frame's row, before its cut is chosen
     (`--size-hold auto`): the frames held (None: the clip changes size by less than SIZE_HOLD_MIN, read one cycle on,
-    and is cut as filmed), the report's `size_hold`, and where a box of a frame as filmed lands in its held frame
-    (`gait_fallback.held_box`, None when not held).
+    and is cut as filmed), the report's `size_hold`, where a box of a frame as filmed lands in its held frame
+    (`gait_fallback.held_box`), and the factor each frame was scaled by (`gait_fallback.frame_hold`); the last two None
+    when not held.
 
     A clip filmed from its first frame only grows or shrinks as it plays, so the frame one cycle on is not the size of
     the first and the loop pops at the wrap; a walk away from the camera climbs the frame as well, and held at its size
@@ -2140,14 +2162,14 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
                             **{k: measured[k] for k in ("height_first_px", "height_last_px", "drift", "method",
                                                         "lag", "pairs", "per_lag", "pose_match", "drift_fitted_line")}}
     if abs(measured["drift"]) < gait_fallback.SIZE_HOLD_MIN:
-        return None, hold, None
+        return None, hold, None, None
     feet = gait_fallback.foot_drift(frames, measured)
     if cut is not None:
         seen = hold["at_cut"] = gait_fallback.at_cut(frames, measured, feet, start=cut[0], length=cut[1])
         if not seen["size"]:
             hold["why"] = ("the cut does not change size a cycle of its length apart as the clip reads it (frames that are "
                            "not the walk, or a clip too short to show its cycle twice): cut as filmed")
-            return None, hold, None
+            return None, hold, None, None
         if feet["held"] and not seen["feet"]:
             feet = {**feet, "held": False, "lift": None,
                     "why": "the cut's feet do not move a cycle of its length apart as the clip reads them"}
@@ -2159,7 +2181,8 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
         # The move each frame of the cut was held by, exact (`gait_fallback.frame_hold`): `video-loop-repair` holds the
         # cut's source frames by it again before it reads them (sprite_gen/video/source.py).
         hold["cut_frames"] = [gait_fallback.frame_hold(k, measured, lift) for k in range(cut[0], cut[0] + cut[1])]
-    return held, hold, partial(gait_fallback.held_box, measured=measured, pad=pad, lift=lift)
+    return (held, hold, partial(gait_fallback.held_box, measured=measured, pad=pad, lift=lift),
+            [gait_fallback.frame_hold(k, measured, lift)["scale"] for k in range(len(frames))])
 
 
 class _Scratch:
@@ -2191,6 +2214,38 @@ def _refuse_overlap(frames_dir: Path, files: list[Path], out_dir: Path, name: st
     outputs = {f"{path.name} in --out-dir": path for path in (*handed_over(out, name), out / CYCLE_REFUSED_DIR)}
     outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
     refuse_overlap({"--frames-dir": frames_dir, **{f"{f.name} in --frames-dir": f for f in files}}, outputs, verb="video-loop")
+
+
+def _cell_record(strip_bytes: bytes, cells: list[Image.Image], *, start: int, length: int, samples: list[int],
+                 anchored: list[str], wrap_dx: int, motion: dict[str, Any] | None,
+                 scales: dict[str, list[float]], upsampled: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The strip's record of its cells (`CELL_RECORD`), bound to the strip by its PNG's sha256: for each cell, the frame of
+    the cut it shows at the end of the cut (`cells`, frame `samples[c]` of a cut `length` frames long from clip frame
+    `start`; at --out-fps or with its air retimed, `upsampled`, the frame cell `samples[c]` is, and one made between two
+    frames reads as the frame at or before its time, as the seam reads it), the source frame it is, where the anchor
+    moved that frame before the crop (the body anchor's ramp, `ramp_offset` of `wrap_dx`; the motion correction's place,
+    `motion_anchor.laid_at`; nothing at --anchor none or feet),
+    the factor each step that held the clip's frames to one size scaled it by (`scales`, per clip frame; 1 where none did),
+    and whether it is that frame as filmed but for the anchor's move: its pixels are its pixels anchored, before any
+    repair (`anchored`, the cut's receipt), and no step held the clip's frames. What made a cell otherwise — a repair, a
+    blend at the wrap, a hold, a frame between at --out-fps or in a retimed air, the air retime's move — is not listed:
+    the cell's pixels say it."""
+    def moved(k: int) -> list[int]:
+        if motion is not None:
+            return list(motion_anchor.laid_at(motion, k))
+        return [ramp_offset(wrap_dx, k, length), 0]
+
+    def frame(c: int) -> int:
+        if upsampled is None:
+            return c
+        shown = upsampled["source_frames"][c]
+        return shown if shown is not None else min(length - 1, math.floor(upsampled["times"][c]))
+
+    return {"strip_sha256": evidence_mod.digest(strip_bytes), "cells": [
+        {"source_frame": start + k, "anchor_move_px": moved(k),
+         "scale": {step: scales[step][start + k] if step in scales else 1.0 for step in CELL_SCALE_STEPS},
+         "as_filmed": not scales and evidence_mod.digest(cell.tobytes()) == anchored[k]}
+        for k, cell in ((frame(c), cell) for c, cell in zip(samples, cells))]}
 
 
 def run_loop(frames_dir: Path, out_dir: Path, **options: Any) -> dict[str, Any]:
@@ -2372,15 +2427,19 @@ def _cut_loop(
     shifted = False
     clip_files, clip_D = files, D
     files, D = files[skip:], D[skip:, skip:]
+    # Per step that holds a clip's frames to one size (`CELL_SCALE_STEPS`), the factor it scaled each frame of the clip by,
+    # where it held them (`cell_record`).
+    clip_scales: dict[str, list[float]] = {}
     try:
         if anchor == "motion-auto":
             source_frames = gait_frames[skip:]
             if size_hold == "auto":
                 # Held before the search (`_size_hold`), the cut is chosen on frames of one size whose feet stand on one
                 # row. The gait fallback below then finds nothing to undo.
-                held, report_base["size_hold"], _ = _size_hold(source_frames, lo=lo, hi=hi)
+                held, report_base["size_hold"], _, scales = _size_hold(source_frames, lo=lo, hi=hi)
                 if held is not None:
                     source_frames = held
+                    clip_scales["size_hold"] = [1.0] * skip + scales
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())
             else:
                 report_base["size_hold"] = {"applied": False, "why": "--size-hold off"}
@@ -2442,7 +2501,9 @@ def _cut_loop(
                         print(f"video-loop: warning: {body_turn_mod.unfound(turning)}", file=sys.stderr)
                     raise
             report_base.update(said)
-            cycle, files, analysis = found
+            cycle, files, analysis, undone = found
+            if undone is not None:
+                clip_scales["gait_fallback"] = [1.0] * skip + undone
             if turn is not None:
                 cut = (cycle["start"] + skip, cycle["length"])
                 holds = turn.held(cycle["start"], cycle["length"])
@@ -2484,9 +2545,10 @@ def _cut_loop(
                 # A walk or run cut the caller names is held as a search's cut is (`_size_hold`), read over the whole clip,
                 # and cut on the frames held: the cut's distances, its count and the seam the gate reads are the frames
                 # that play. The clip is then the clip held (a fixed cut leaves no lead-in out).
-                held, report_base["size_hold"], box_of = _size_hold(gait_frames, lo=lo, hi=hi, cut=(start, length))
+                held, report_base["size_hold"], box_of, scales = _size_hold(gait_frames, lo=lo, hi=hi, cut=(start, length))
                 if held is not None:
                     gait_frames = held
+                    clip_scales["size_hold"] = scales
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())
                     D = distance_matrix(files)
                     clip_files, clip_D = files, D
@@ -2626,11 +2688,14 @@ def _cut_loop(
             refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
-    if anchor in ("none", "body") and cycle["kind"] != "lifetime":
+    # Each frame of the cut anchored, before any repair, pixel for pixel: its receipt, and what each cell's record reads
+    # whether it is that frame as filmed (`cell_record`).
+    anchored = [evidence_mod.digest(f.tobytes()) for f in frames]
+    if anchor != "feet" and cycle["kind"] != "lifetime":
         from sprite_gen.video.source import RECIPE
         report_base["source_projection"] = {
-            "recipe": RECIPE, "wrap_dx_px": wrap_dx,
-            "before_repair_pixels_sha256": [evidence_mod.digest(f.tobytes()) for f in frames],
+            "recipe": MOTION_RECIPE if motion is not None else RECIPE, "wrap_dx_px": wrap_dx,
+            "before_repair_pixels_sha256": anchored,
         }
     # A loop closes on its first cell again; a cut played once runs from its first to its last.
     ring = cycle["kind"] not in ("one-shot", "lifetime", *nonloop.KINDS)
@@ -2862,7 +2927,7 @@ def _cut_loop(
                 record = report_base["air_retime"]
                 held_record["out_fps"] = {"asked": out_fps, "fps": fps, "applied": True, "cells": len(frames),
                                           "times": [round(x, 4) for x in upsampled], "made": record["made"],
-                                          "shown_again": record["shown_again"]}
+                                          "shown_again": record["shown_again"], "source_frames": retimed["source_frames"]}
     if out_fps is not None and retimed is None:
         # A rate above the clip's: every cell at its own time, made between the frames beside it (held_fill.upsample).
         try:
@@ -2983,7 +3048,12 @@ def _cut_loop(
     n_out = min(n_out, int(strip_meta["frames"]))
     strip_path = out_dir / f"{name}.strip.png"
     strip.save(strip_path)
-    atomic_write_text(out_dir / f"{name}.strip.json", json.dumps(strip_meta, indent=2) + "\n")
+    cell_record = _cell_record(strip_path.read_bytes(), [frames[k] for k in strip_meta["sample_indices"]], start=i,
+                               length=L, samples=strip_meta["sample_indices"], anchored=anchored, wrap_dx=wrap_dx,
+                               motion=motion, scales=clip_scales,
+                               upsampled=None if upsampled is None else retimed if retimed is not None else held_record["out_fps"])
+    # The record of its cells is the strip's own: written beside it, not into the report.
+    atomic_write_text(out_dir / f"{name}.strip.json", json.dumps({**strip_meta, CELL_RECORD: cell_record}, indent=2) + "\n")
 
     # resampled GIF/WebP frames: same crop as the strip, n_out evenly across the cycle
     single_play = cycle["kind"] in nonloop.KINDS

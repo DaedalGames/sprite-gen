@@ -41,7 +41,10 @@ of `cycle.source/` (`{"source": i}`, as many times as it is taken) or a frame ma
 `follow.cut_origin`: its sha256, cell size, scale and crop origin, its cells, and the body's motion as
 `video-follow` reads it there), and every later one keeps it: regions somebody located on the cut's
 first cell are carried to the aligned loop by these two (`video-follow --read-on`), not read again on a
-first cell that is another. Neither changes a pixel of the strip, the GIF or the WebP. A loop never aligned whose
+first cell that is another. The first also keeps the cut's own strip record beside its frames as filmed
+(`cycle.source/<name>.strip.json`, the record of each of its cells with it: `loop.CELL_RECORD`), which the
+aligned strip does not carry over, as it is another strip; `video-sway --read-on-cut` opens it there.
+Neither changes a pixel of the strip, the GIF or the WebP. A loop never aligned whose
 strip as cut is not there (`cut_strip`) is refused by name before any loop of the set is touched: no later
 alignment could record its origin.
 
@@ -1030,8 +1033,11 @@ def _rebuild(loop_dir: Path, meta_path: Path, meta: dict[str, Any], frames: list
              record: dict[str, Any], *, cells_from: list[dict[str, Any]] | None = None,
              origin: dict[str, Any] | None = None) -> dict[str, Any]:
     """Write the aligned cycle, strip, GIF and WebP over the loop's own, at the loop's own cell size rules. `cells_from`
-    says where each of `frames` is from; the record keeps it per cell of the strip, with the cut's `origin`."""
+    says where each of `frames` is from; the record keeps it per cell of the strip, with the cut's `origin`. On a loop
+    never aligned, the cut's own strip record is kept beside its frames as filmed first (`cycle.source/`), as it was."""
     name = meta_path.name[: -len(".strip.json")]
+    if "cycle_align" not in meta:
+        shutil.copyfile(meta_path, loop_dir / SOURCE_DIR / meta_path.name)
     cycle_dir = loop_dir / "cycle"
     cycle_dir.mkdir(exist_ok=True)
     for old in cycle_dir.glob("frame-*.png"):
@@ -1050,7 +1056,9 @@ def _rebuild(loop_dir: Path, meta_path: Path, meta: dict[str, Any], frames: list
         record["follow_cleared"] = True
     (loop_dir / loop_mod.FOLLOW_SOURCE).unlink(missing_ok=True)
     # a loop one cycle of which was taken out (`--cycles` k > 1) no longer holds the steps it was counted with
-    merged = {**{k: v for k, v in meta.items() if k not in strip_meta and k not in ("cycle_align", *loop_mod.SWAY_RECORD_KEYS)
+    # and the record of the cut's cells is the cut's strip's, not this one's
+    merged = {**{k: v for k, v in meta.items() if k not in strip_meta
+                 and k not in ("cycle_align", loop_mod.CELL_RECORD, *loop_mod.SWAY_RECORD_KEYS)
                  and not (k == "steps" and "cycle_taken" in record)}, **strip_meta}
     if meta.get("foot_anchor") and meta.get("foot_anchor") != "feet":
         merged["foot_anchor"] = meta["foot_anchor"]
