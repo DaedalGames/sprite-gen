@@ -31,13 +31,13 @@ from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.gen.handedness import Handed
+from sprite_gen.gen.video import DEFAULT_MODEL  # the clip model the prompt is for unless named: gen.video's default
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video import play as play_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.util.console import utf8_streams
 
-DEFAULT_MODEL = "grok-imagine-video-1.5"
 START_STILL_KEYS = tuple(KEY_BACKGROUND_TEXT)
 
 
